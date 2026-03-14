@@ -7,6 +7,7 @@ Automated crypto quant for Binance spot: BTC DCA core plus altcoin trend rotatio
 ## Layout
 
 - **main.py** — Live script (run hourly).
+- **shadow_replay.py** — Local end-to-end shadow replay for the trend sleeve using historical upstream artifacts.
 - **requirements.txt** — Python deps.
 
 ## Strategy Overview
@@ -101,6 +102,7 @@ Runs hourly; signals are daily trend and risk, not high-frequency.
 - If the fresh upstream payload is stale or malformed, the runtime does not silently treat weaker fallbacks as equivalent.
 - In degraded mode, the script prefers the last known good upstream payload, then a validated local file fallback, and pauses new trend buys by default unless `TREND_POOL_ALLOW_NEW_ENTRIES_ON_DEGRADED=1`.
 - Retired symbols stay in state until sold; active pool changes are source-tagged in state for auditability.
+- A bounded soft sizing tilt from optional upstream `selection_meta` is available behind flags only; it is not enabled by default.
 
 ## Environment
 
@@ -126,6 +128,9 @@ Optional:
 | `TREND_POOL_ACCEPTABLE_MODES` | Comma-separated allowed upstream modes (default `core_major`) |
 | `TREND_POOL_EXPECTED_SIZE` | Expected upstream live-pool size for contract checks (default `5`) |
 | `TREND_POOL_ALLOW_NEW_ENTRIES_ON_DEGRADED` | Allow trend buys when running on last-known-good or fallback pool sources (default `false`) |
+| `TREND_POOL_SOFT_TILT_ENABLED` | Enable optional bounded sizing tilt from upstream `selection_meta` (default `false`) |
+| `TREND_POOL_SOFT_TILT_FIELD` | Upstream `selection_meta` field to use for tilt, e.g. `final_score` |
+| `TREND_POOL_SOFT_TILT_STRENGTH` | Bounded tilt strength, typically small like `0.10` to `0.20` |
 
 ## Deploy (self-hosted runner + workflow)
 
@@ -185,10 +190,19 @@ export GOOGLE_APPLICATION_CREDENTIALS=/path/to/gcp-sa.json
 python main.py
 ```
 
+### Local shadow replay
+
+To replay the downstream trend sleeve against locally generated upstream shadow releases:
+
+```bash
+python3 shadow_replay.py --release-index ../CryptoLeaderRotation/data/output/shadow_releases/release_index.csv --name baseline
+```
+
 ## Notes
 
 - The upstream CryptoLeaderRotation project is the primary selector and contract owner for the monthly live pool.
 - Local stable-quality pool ranking logic in this repo remains as a runtime fallback and execution convenience, not the preferred healthy input.
+- `shadow_replay.py` is the additive end-to-end research path for the downstream trend sleeve. It uses historical upstream shadow-release artifacts plus local daily price history; it does not require live Firestore or Binance connectivity.
 
 ## Telegram
 

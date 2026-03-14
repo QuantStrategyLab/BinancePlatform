@@ -62,6 +62,13 @@ def get_env_int(name, default):
         return int(default)
 
 
+def get_env_float(name, default):
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:
+        return float(default)
+
+
 def get_env_bool(name, default=False):
     value = os.getenv(name)
     if value is None:
@@ -173,6 +180,34 @@ def extract_trend_pool_symbols(payload, symbol_map):
     return deduped
 
 
+def parse_selection_meta(payload, symbols):
+    if not isinstance(payload, dict):
+        return {}
+    raw_meta = payload.get("selection_meta")
+    if not isinstance(raw_meta, dict):
+        return {}
+
+    parsed = {}
+    for symbol in symbols:
+        symbol_meta = raw_meta.get(symbol)
+        if not isinstance(symbol_meta, dict):
+            continue
+        cleaned = {}
+        for field, value in symbol_meta.items():
+            if value is None:
+                continue
+            if isinstance(value, (int, float)):
+                cleaned[str(field)] = float(value)
+                continue
+            try:
+                cleaned[str(field)] = float(value)
+            except Exception:
+                cleaned[str(field)] = value
+        if cleaned:
+            parsed[symbol] = cleaned
+    return parsed
+
+
 def get_trend_pool_contract_settings():
     return {
         "max_age_days": max(0, get_env_int("TREND_POOL_MAX_AGE_DAYS", DEFAULT_TREND_POOL_MAX_AGE_DAYS)),
@@ -268,6 +303,9 @@ def validate_trend_pool_payload(
         "symbol_map": symbol_map,
         "source_project": source_project,
     }
+    selection_meta = parse_selection_meta(payload or {}, symbols)
+    if selection_meta:
+        normalized_payload["selection_meta"] = selection_meta
 
     return {
         "ok": not errors,
@@ -1177,6 +1215,56 @@ def select_rotation_weights(indicators_map, prices, btc_snapshot, candidate_pool
     }
 
 
+def apply_selection_meta_soft_tilt(selected_candidates, selection_meta, field, strength):
+    """Apply a bounded sizing tilt using additive upstream selection metadata."""
+    if not selected_candidates or not isinstance(selection_meta, dict):
+        return selected_candidates
+
+    strength = max(0.0, min(float(strength), 0.49))
+    if strength <= 0.0:
+        return selected_candidates
+
+    values = {}
+    for symbol in selected_candidates:
+        symbol_meta = selection_meta.get(symbol, {})
+        if not isinstance(symbol_meta, dict):
+            continue
+        raw_value = symbol_meta.get(field)
+        try:
+            values[symbol] = float(raw_value)
+        except Exception:
+            continue
+
+    series = pd.Series(values, dtype=float)
+    if len(series) < 2 or series.nunique(dropna=True) <= 1:
+        return selected_candidates
+
+    normalized = (series - series.min()) / (series.max() - series.min())
+    multipliers = 1.0 + strength * ((normalized * 2.0) - 1.0)
+
+    adjusted = {}
+    total_weight = 0.0
+    for symbol, payload in selected_candidates.items():
+        multiplier = float(multipliers.get(symbol, 1.0))
+        tilted_weight = float(payload["weight"]) * multiplier
+        adjusted[symbol] = {
+            **payload,
+            "weight_before_tilt": float(payload["weight"]),
+            "soft_tilt_field": str(field),
+            "soft_tilt_value": float(series.get(symbol)) if symbol in series.index else None,
+            "soft_tilt_multiplier": multiplier,
+            "weight": tilted_weight,
+        }
+        total_weight += tilted_weight
+
+    if total_weight <= 0.0:
+        return selected_candidates
+
+    for symbol in adjusted:
+        adjusted[symbol]["weight"] = adjusted[symbol]["weight"] / total_weight
+    return adjusted
+
+
 def get_tradable_qty(symbol, total_qty, prices, min_bnb_value):
     """Reserve BNB for fees; rest is tradable."""
     if symbol != "BNBUSDT":
@@ -1200,6 +1288,9 @@ def main():
     MIN_BNB_VALUE, BUY_BNB_AMOUNT = 10.0, 15.0
     BTC_STATUS_REPORT_INTERVAL_HOURS = max(1, min(24, get_env_int("BTC_STATUS_REPORT_INTERVAL_HOURS", 24)))
     allow_new_trend_entries_on_degraded = get_env_bool("TREND_POOL_ALLOW_NEW_ENTRIES_ON_DEGRADED", False)
+    soft_tilt_enabled = get_env_bool("TREND_POOL_SOFT_TILT_ENABLED", False)
+    soft_tilt_field = str(os.getenv("TREND_POOL_SOFT_TILT_FIELD", "final_score")).strip() or "final_score"
+    soft_tilt_strength = get_env_float("TREND_POOL_SOFT_TILT_STRENGTH", 0.15)
 
     api_key = os.getenv('BINANCE_API_KEY')
     api_secret = os.getenv('BINANCE_API_SECRET')
@@ -1306,6 +1397,15 @@ def main():
             active_trend_pool,
             ROTATION_TOP_N,
         )
+        if soft_tilt_enabled:
+            tilted_candidates = apply_selection_meta_soft_tilt(
+                selected_candidates,
+                trend_pool_resolution.get("payload", {}).get("selection_meta", {}),
+                field=soft_tilt_field,
+                strength=soft_tilt_strength,
+            )
+            if tilted_candidates is not selected_candidates:
+                selected_candidates = tilted_candidates
 
         total_equity = u_total + fuel_val + trend_val + dca_val
         btc_target_ratio = get_dynamic_btc_target_ratio(total_equity)
@@ -1380,6 +1480,10 @@ def main():
         log_buffer.append(f"🗓️ 月更趋势池: {pool_text}")
         log_buffer.append(f"🧪 稳健质量排名: {ranking_preview}")
         log_buffer.append(f"🎯 轮动候选: {selected_text}")
+        if soft_tilt_enabled and selected_candidates:
+            log_buffer.append(
+                f"🪶 软倾斜: field={soft_tilt_field} strength={soft_tilt_strength:.2f}"
+            )
 
         # --- Trend: monthly pool + relative-BTC rotation ---
         for symbol, config in runtime_trend_universe.items():
