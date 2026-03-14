@@ -7,6 +7,10 @@ Automated crypto quant for Binance spot: BTC DCA core plus altcoin trend rotatio
 ## Layout
 
 - **main.py** — Live script (run hourly).
+- **shadow_replay.py** — Local end-to-end shadow replay for the trend sleeve using historical upstream artifacts.
+- **run_challenger_robustness.py** — Additive robustness runner for baseline vs challenger shadow-replay comparisons.
+- **run_shadow_candidate_monitor.py** — Dual-track shadow monitor for the official baseline and the `challenger_topk_60` candidate.
+- **run_monthly_shadow_monitor.py** — Operator-friendly monthly wrapper for the dual-track shadow monitor.
 - **requirements.txt** — Python deps.
 
 ## Strategy Overview
@@ -185,10 +189,94 @@ export GOOGLE_APPLICATION_CREDENTIALS=/path/to/gcp-sa.json
 python main.py
 ```
 
+### Local shadow replay
+
+To replay the downstream trend sleeve against locally generated upstream shadow releases:
+
+```bash
+python3 shadow_replay.py --release-index ../CryptoLeaderRotation/data/output/shadow_releases/release_index.csv --name baseline
+```
+
+For challenger robustness work, the repo also includes a matrix runner that compares baseline and challenger release histories across activation-lag, friction, and missing-release stress cases:
+
+```bash
+python3 run_challenger_robustness.py
+```
+
+For the ongoing shadow-production candidate workflow, use the dedicated dual-track monitor:
+
+```bash
+python3 run_shadow_candidate_monitor.py
+```
+
+For the recurring monthly operator workflow, use:
+
+```bash
+python3 run_monthly_shadow_monitor.py
+```
+
+Or the local helper target:
+
+```bash
+make monthly-shadow-monitor
+```
+
 ## Notes
 
 - The upstream CryptoLeaderRotation project is the primary selector and contract owner for the monthly live pool.
 - Local stable-quality pool ranking logic in this repo remains as a runtime fallback and execution convenience, not the preferred healthy input.
+- `shadow_replay.py` is the additive end-to-end research path for the downstream trend sleeve. It uses historical upstream shadow-release artifacts plus local daily price history; it does not require live Firestore or Binance connectivity.
+- `run_challenger_robustness.py` is research-only. It does not change live defaults; it exists to test whether a challenger advantage is broad, lag-tolerant, and resilient to mild friction or missing monthly releases.
+- `run_shadow_candidate_monitor.py` is shadow-only. Real execution still references the official baseline track; the challenger candidate is loaded only for paper comparison and must never drive orders.
+
+## Shadow Candidate Gates
+
+The current `challenger_topk_60` track is a shadow-production candidate, not a live switch.
+
+Before any future controlled production trial, the candidate should keep clearing all of these:
+
+- sustained outperformance versus the baseline over a new forward observation window
+- excess returns that are not overly concentrated in a few months or releases
+- acceptable lag and friction sensitivity
+- no major deterioration in risk-off behavior
+- no operational ambiguity about track identity, freshness, or shadow-only isolation
+
+## Monthly Shadow Monitor
+
+Canonical monthly command:
+
+```bash
+python3 run_monthly_shadow_monitor.py
+```
+
+Canonical reports:
+
+- `reports/shadow_candidate_track_summary.csv`
+- `reports/shadow_candidate_side_by_side_summary.csv`
+- `reports/shadow_candidate_promotion_watchlist.csv`
+- `reports/shadow_candidate_sensitivity_summary.csv`
+- `reports/shadow_candidate_concentration_summary.csv`
+- `reports/shadow_candidate_regime_summary.csv`
+
+The monthly console summary prints:
+
+- baseline CAGR / Sharpe / max drawdown
+- challenger CAGR / Sharpe / max drawdown
+- recent 12-month outperformance rate
+- recent 6-month outperformance rate
+- top-5 positive excess concentration share
+- current recommendation
+
+Recommendation policy:
+
+- `remain shadow-only`
+  - challenger is no longer clearly ahead or fails key risk/concentration/sensitivity gates
+- `continue observation`
+  - challenger remains cumulatively ahead and operationally acceptable, but breadth is still not strong enough for a trial
+- `candidate for future controlled trial`
+  - challenger stays ahead and also clears the recent-breadth and sensitivity gates
+
+Real execution remains baseline-only. The challenger track is shadow-only and cannot place orders.
 
 ## Telegram
 
