@@ -307,6 +307,35 @@ Recommendation policy:
 
 Real execution remains baseline-only. The challenger track is shadow-only and cannot place orders.
 
+## Monthly Shadow Review
+
+Operator flow:
+
+1. refresh the shadow monitor reports:
+   `make monthly-shadow-monitor`
+2. build the reporting-only monthly review package:
+   `make monthly-ai-briefing`
+
+Keep these three layers separate when reading runtime logs or reports:
+
+- upstream official input pool
+  the monthly symbols accepted from the upstream contract for this cycle
+- downstream observation/candidate panel
+  local display and ranking context only; not necessarily the same displayed set as the upstream official pool line
+- actual rotation target / execution decision
+  the final top-2 action set, or a defensive no-candidate stance
+
+Operator read order:
+
+- `reports/monthly_ai_review.md`
+  human-readable monthly summary for direct review
+- `reports/monthly_chatgpt_prompt.md`
+  paste-ready prompt for manual ChatGPT interpretation
+- `reports/monthly_ai_review.json`
+  machine-readable structure for consistent downstream tooling
+
+These monthly review outputs are reporting-only. Baseline remains official/live, `challenger_topk_60` remains shadow-only, and no automatic switch behavior is implied.
+
 ## Monthly AI Briefing
 
 Operator flow:
