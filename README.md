@@ -172,7 +172,7 @@ Optional:
 
 ## Deploy (self-hosted runner + workflow)
 
-The repo is intended to run on a **self-hosted GitHub Actions runner** (e.g. a VPS). The workflow checks out code, installs dependencies, writes GCP credentials from a secret to `gcp-key.json`, then runs `main.py`. No manual “download and cron on your PC” flow.
+The repo is intended to run on a **self-hosted GitHub Actions runner** (e.g. a VPS). The workflow checks out code, installs dependencies, writes GCP credentials into a runner temp file inside the execution step, removes that file automatically on exit, then runs `main.py`. No manual “download and cron on your PC” flow.
 
 ### 1. Self-hosted runner
 
@@ -181,7 +181,7 @@ The repo is intended to run on a **self-hosted GitHub Actions runner** (e.g. a V
 
 ### 2. Workflow and schedule
 
-- **`.github/workflows/main.yml`** defines the job: checkout → write `gcp-key.json` from secret → create/update venv and install deps → run `venv/bin/python main.py`.
+- **`.github/workflows/main.yml`** defines the job: checkout → create/update venv and install deps → write a temporary GCP credential file inside the execution step → run `venv/bin/python main.py` → clean the temp file via shell trap.
 - **Triggers:** `push` to `main` (job runs; strategy step runs only on `workflow_dispatch` or `schedule`), and optionally **schedule** (e.g. hourly) so the strategy runs periodically without a push.
 - To run the strategy on a schedule, add `schedule` to the workflow `on:` block, for example:
 
@@ -206,7 +206,7 @@ In **Settings → Secrets and variables → Actions**, add:
 | `BINANCE_API_SECRET` | Binance API secret |
 | `TG_TOKEN` | Telegram bot token |
 | `TG_CHAT_ID` | Telegram chat ID |
-| `GCP_SA_KEY` | Full JSON content of the GCP service account key (written by the workflow to `gcp-key.json` as `GOOGLE_APPLICATION_CREDENTIALS`) |
+| `GCP_SA_KEY` | Full JSON content of the GCP service account key (written by the workflow to a temp file and exported as `GOOGLE_APPLICATION_CREDENTIALS` only for the strategy step) |
 
 The workflow passes these into the “执行交易策略” step; it does not use a `.env` file on the runner.
 

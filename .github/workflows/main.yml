@@ -14,10 +14,7 @@ jobs:
       - name: 1. 拉取最新代码
         uses: actions/checkout@v3
 
-      - name: 2. 生成 GCP 密钥
-        run: echo '${{ secrets.GCP_SA_KEY }}' > gcp-key.json
-
-      - name: 3. 准备/更新依赖环境（智能复用）
+      - name: 2. 准备/更新依赖环境（智能复用）
         run: |
           REQ_FILE="requirements-lock.txt"
           if [ ! -f "$REQ_FILE" ]; then REQ_FILE="requirements.txt"; fi
@@ -43,17 +40,26 @@ jobs:
             fi
           fi
 
-      - name: 4. 执行交易策略
+      - name: 3. 执行交易策略
         if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
         run: |
+          set -euo pipefail
+          if [ -z "${GCP_SA_KEY:-}" ]; then
+            echo "Missing GCP_SA_KEY secret." >&2
+            exit 1
+          fi
+          CREDENTIALS_FILE="$(mktemp "${RUNNER_TEMP:-/tmp}/binancequant-gcp-key.XXXXXX.json")"
+          cleanup() {
+            rm -f "$CREDENTIALS_FILE"
+          }
+          trap cleanup EXIT
+          umask 077
+          printf '%s' "$GCP_SA_KEY" > "$CREDENTIALS_FILE"
+          export GOOGLE_APPLICATION_CREDENTIALS="$CREDENTIALS_FILE"
           venv/bin/python main.py
         env:
           BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
           BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          GOOGLE_APPLICATION_CREDENTIALS: ./gcp-key.json
-
-      - name: 5. 清理临时密钥
-        if: always()
-        run: rm -f gcp-key.json
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
