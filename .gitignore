@@ -8,3 +8,4 @@ reports/
 venv/
 .venv_requirements_hash
 gcp-key.json
+.local/

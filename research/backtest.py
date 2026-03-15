@@ -847,7 +847,7 @@ def run_strategy_comparison():
 
     print("===== 全自动选池研究回测（每小时执行，尽量贴近当前 main.py）=====")
     print("说明: 所有策略都保留 BTC 动态仓位 + AHR 定投/高估减仓 + BTC 趋势闸门 + ATR/SMA60 风控。")
-    print("本轮重点比较 固定5币池 基准 与 稳健质量排序家族的不同参数变体。")
+    print("当前重点比较 固定5币池 基准 与 稳健质量排序家族的不同参数变体。")
 
     for window_name, _, _ in WINDOWS:
         print(f"\n--- {window_name} ---")

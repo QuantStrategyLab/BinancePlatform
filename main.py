@@ -1110,7 +1110,7 @@ def _append_rotation_summary(log_buffer, active_trend_pool, pool_ranking, select
     )
     append_log(log_buffer, f"🗓️ 上游官方月度池: {pool_text}")
     append_log(log_buffer, f"🧪 下游观察候选面板: {ranking_preview}")
-    append_log(log_buffer, f"🎯 本轮实际轮动决策: {selected_text}")
+    append_log(log_buffer, f"🎯 当前实际轮动决策: {selected_text}")
     append_log(log_buffer, "ℹ️ 观察面板仅用于展示/排序，不等同于上游官方月度池。")
 
 
