@@ -1062,20 +1062,15 @@ def _run_daily_circuit_breaker(
 
 def _append_rotation_summary(log_buffer, active_trend_pool, pool_ranking, selected_candidates):
     pool_text = "、".join(active_trend_pool) if active_trend_pool else "暂无可用池"
-    ranking_preview = (
-        "、".join(f"{item['symbol']}(SQ:{item['score']:.2f})" for item in pool_ranking[:TREND_POOL_SIZE])
-        if pool_ranking
-        else "沿用上月趋势池"
-    )
+    candidate_count = len(pool_ranking) if pool_ranking else len(active_trend_pool)
     selected_text = (
         "、".join(f"{symbol}({meta['weight']:.0%},RS:{meta['relative_score']:.2f})" for symbol, meta in selected_candidates.items())
         if selected_candidates
         else "无候选，保持防守"
     )
     append_log(log_buffer, f"🗓️ 上游官方月度池: {pool_text}")
-    append_log(log_buffer, f"🧪 下游观察候选面板: {ranking_preview}")
-    append_log(log_buffer, f"🎯 当前实际轮动决策: {selected_text}")
-    append_log(log_buffer, "ℹ️ 观察面板仅用于展示/排序，不等同于上游官方月度池。")
+    append_log(log_buffer, f"📌 执行候选数量: {candidate_count}")
+    append_log(log_buffer, f"🎯 当前执行目标: {selected_text}")
 
 
 def _get_trend_sell_reason(state, symbol, curr_price, indicators, selected_candidates, atr_multiplier):

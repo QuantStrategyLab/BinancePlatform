@@ -10,11 +10,35 @@ Automated crypto quant for Binance spot: BTC DCA core plus altcoin trend rotatio
 
 **Python runtime:** Prefer Python `3.11`. CI is pinned to 3.11, and local helper commands now prefer `python3.11` when available while still falling back to `python3`.
 
+## Execution Engine Boundary
+
+`BinanceQuant` is the downstream execution engine in this two-repo setup.
+
+Upstream inputs it expects from `CryptoLeaderRotation`:
+
+- validated monthly `live_pool.json` / `live_pool_legacy.json`
+- publish metadata such as `as_of_date`, `version`, `mode`, `pool_size`, and `source_project`
+- Firestore summary payloads that carry the same stable contract
+
+Responsibilities owned here:
+
+- upstream artifact freshness, schema, and contract validation
+- degraded-mode fallback ladder and state persistence
+- exchange execution, order safety checks, and balance handling
+- circuit-breaker logic, runtime error handling, and minimal Telegram alerts
+- fixed-input replay and operator smoke checks for the execution path
+
+Non-goals:
+
+- monthly research reporting
+- upstream release review packages or artifact change narratives
+- deep strategy-analysis commentary beyond the execution decision needed for this cycle
+
 ## Repo Shape
 
 - `main.py` is the live orchestration entrypoint.
 - `strategy_core.py` contains shared pure strategy logic.
-- `research/` contains optional audit and historical analysis tools.
+- `research/` contains optional audit-only backtest tools and is not part of the hourly execution path.
 - `run_*` scripts are local operators' helpers for fixed-input replay and maintenance.
 - `tests/fixtures/` contains fixed inputs used by the replay regression tests.
 
@@ -30,7 +54,7 @@ Automated crypto quant for Binance spot: BTC DCA core plus altcoin trend rotatio
 - **exchange_support.py** — Spot balance, earn-buffer, and exchange quantity-format helpers.
 - **trend_pool_support.py** — Upstream trend-pool contract parsing, validation, and fallback helpers.
 - **trade_state_support.py** — Trade-state normalization and retired-position tracking helpers.
-- **research/backtest.py** — Research backtest / strategy-comparison runner against Binance history; useful for audit/repro, not required for hourly live execution.
+- **research/backtest.py** — Optional audit-only backtest / strategy-comparison runner; not part of the live execution contract.
 - **run_cycle_replay.py** — Fixed-input dry-run executor for one full strategy cycle using local fixtures.
 - **requirements.txt** — Human-maintained top-level Python deps.
 - **requirements-lock.txt** — Pinned dependency set used by CI/deploy when present.
@@ -40,7 +64,7 @@ Generated local outputs under `reports/` are intentionally not committed. Fixed-
 ## Strategy Overview
 
 - **BTC core:** Valuation-based DCA (AHR999) and scaled take-profit (Z-Score vs dynamic threshold). Target weight grows with equity.
-- **Trend layer:** Monthly refreshed pool (upstream or internal stable-quality rank), then Top 2 by relative-BTC strength, inverse-vol weighted. Only active when BTC gate is on.
+- **Trend layer:** Monthly refreshed pool (upstream or internal fallback logic), then Top 2 by relative-BTC strength, inverse-vol weighted. Only active when BTC gate is on.
 
 Runs hourly; signals are daily trend and risk, not high-frequency.
 
@@ -59,8 +83,6 @@ Runs hourly; signals are daily trend and risk, not high-frequency.
 **Universe:** Prefer the upstream live pool. Source hierarchy is: fresh upstream Firestore payload → last known good upstream payload from state → validated local upstream file fallback → static universe emergency fallback.
 
 **Official input pool:** Upstream publishes a 5-coin production pool; this repo consumes that pool as the monthly official input set.
-
-**Observation panel:** The repo may also show a local stable-quality ranking / observation panel for display and diagnostics. That panel is not the upstream official pool line and is not itself the execution target.
 
 **Actual rotation target:** The live trend sleeve still acts only on the final top-2 rotation decision, or on a defensive "no candidate / keep current stance" outcome when no symbol qualifies.
 
@@ -135,8 +157,8 @@ Runs hourly; signals are daily trend and risk, not high-frequency.
 In runtime output, keep these layers separate:
 
 - upstream official pool: the monthly symbols accepted from the upstream contract
-- downstream observation/candidate panel: local display and ranking context
-- actual rotation decision: the final top-2 action set, or a defensive no-candidate stance
+- execution candidates: the local decision set for this cycle
+- degraded source status: whether the cycle is using fresh upstream, last-known-good, local-file, or static fallback
 
 **Validation and degraded mode:**
 
@@ -232,7 +254,7 @@ python main.py
 
 ### Local research backtest
 
-To compare the fixed-pool baseline and the auto-pool research variants against Binance historical data:
+For audit-only local research work outside the live execution path:
 
 ```bash
 python3 -m research.backtest
@@ -248,7 +270,7 @@ python3 run_cycle_replay.py --run-id local-check
 
 This emits a structured JSON report with:
 
-- selected upstream pool and final candidates
+- selected upstream pool and execution candidates
 - trend buy/sell intents
 - BTC DCA intents
 - earn subscribe/redeem intents

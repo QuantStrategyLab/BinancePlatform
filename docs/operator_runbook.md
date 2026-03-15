@@ -17,6 +17,22 @@ Supporting modules with operational impact:
 - `trend_pool_support.py` for upstream payload validation
 - `live_services.py` for Firestore and Telegram adapters
 
+## Execution Boundary
+
+`BinanceQuant` is the downstream execution engine.
+
+It is responsible for:
+
+- consuming upstream live-pool artifacts and Firestore summary payloads
+- validating freshness, contract shape, and fallback eligibility
+- executing orders, persisting runtime state, and emitting minimal operator alerts
+
+It is not responsible for:
+
+- monthly research reporting
+- upstream release summaries or review packages
+- maintaining a second copy of the upstream publish narrative
+
 ## Normal Live Flow
 
 1. Load runtime credentials and Firestore state.
@@ -29,6 +45,12 @@ Supporting modules with operational impact:
 4. Capture Binance balances and market snapshots.
 5. Run trend rotation, BTC DCA, and earn-buffer maintenance.
 6. Persist updated state and notifications.
+
+Runtime output should stay operational:
+
+- current upstream source and degraded status
+- current execution targets and intents
+- exceptions, circuit breakers, and alert-worthy failures
 
 ## Degraded Mode Ladder
 
