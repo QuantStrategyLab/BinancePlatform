@@ -42,6 +42,6 @@ def send_tg_msg(token, chat_id, text):
         return
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": chat_id, "text": f"🤖 加密货币量化助手：\n{text}"}, timeout=10)
+        requests.post(url, data={"chat_id": chat_id, "text": f"🤖 Crypto quant assistant:\n{text}"}, timeout=10)
     except Exception:
         print("Telegram send failed")

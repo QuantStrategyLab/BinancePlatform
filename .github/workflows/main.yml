@@ -7,10 +7,10 @@ jobs:
   deploy:
     runs-on: self-hosted
     steps:
-      - name: 1. 拉取最新代码
+      - name: 1. Checkout latest code
         uses: actions/checkout@v3
 
-      - name: 2. 准备/更新依赖环境（智能复用）
+      - name: 2. Prepare or update dependency environment
         run: |
           REQ_FILE="requirements-lock.txt"
           if [ ! -f "$REQ_FILE" ]; then REQ_FILE="requirements.txt"; fi
@@ -18,7 +18,7 @@ jobs:
           if command -v python3.11 >/dev/null 2>&1; then PYTHON_BIN="python3.11"; fi
           echo "Using interpreter: $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))"
 
-          # 如果还没有虚拟环境，先创建并完整安装一次
+          # Create the virtual environment on first run, then reuse it when possible.
           if [ ! -d "venv" ]; then
             "$PYTHON_BIN" -m venv venv
             venv/bin/pip install -U pip
@@ -27,16 +27,16 @@ jobs:
           else
             CURR_HASH=$(sha256sum "$REQ_FILE" | cut -d' ' -f1)
             if [ -f ".venv_requirements_hash" ] && [ "$CURR_HASH" = "$(cat .venv_requirements_hash)" ]; then
-              echo "$REQ_FILE 未变化，跳过依赖安装，直接复用 venv。"
+              echo "$REQ_FILE unchanged; reusing the existing venv."
             else
-              echo "$REQ_FILE 有变化，更新依赖环境。"
+              echo "$REQ_FILE changed; updating the dependency environment."
               venv/bin/pip install -U pip
               venv/bin/pip install -r "$REQ_FILE"
               echo "$CURR_HASH" > .venv_requirements_hash
             fi
           fi
 
-      - name: 3. 执行交易策略
+      - name: 3. Run trading strategy
         run: |
           set -euo pipefail
           if [ -z "${GCP_SA_KEY:-}" ]; then

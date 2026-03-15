@@ -47,9 +47,9 @@ def capture_market_snapshot(
             )
             u_total -= buy_bnb_amount
             bnb_total += (buy_bnb_amount * 0.995) / bnb_price
-            append_log_fn(log_buffer, "🔧 BNB 自动补仓完成")
+            append_log_fn(log_buffer, "🔧 BNB top-up completed")
         except Exception as exc:
-            runtime_notify_fn(runtime, report, f"⚠️ BNB补仓失败: {exc}")
+            runtime_notify_fn(runtime, report, f"⚠️ BNB top-up failed: {exc}")
 
     prices = {}
     balances = {}

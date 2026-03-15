@@ -471,14 +471,14 @@ def build_btc_manual_hint(btc_snapshot):
     sell_trigger = btc_snapshot["sell_trigger"]
 
     if ahr < 0.45:
-        return "AHR999 处于极低估区，可关注额外抄底资金安排。"
+        return "AHR999 is deeply undervalued; consider reserving extra discretionary buy budget."
     if ahr < 0.8:
-        return "AHR999 偏低，若有额外现金可考虑分批加大抄底预算。"
+        return "AHR999 is low; if extra cash is available, consider scaling discretionary buys."
     if zscore >= sell_trigger:
-        return "Z-Score 已进入系统止盈区，若主观仓位较重可考虑额外落袋。"
+        return "Z-Score is inside the profit-taking zone; consider extra discretionary trimming if exposure is heavy."
     if zscore >= sell_trigger * 0.9:
-        return "Z-Score 接近止盈阈值，注意高位风险。"
-    return "BTC 估值处于中性区间，优先按系统节奏执行。"
+        return "Z-Score is approaching the profit-taking threshold; stay alert to elevated risk."
+    return "BTC valuation is neutral; follow the system cadence."
 
 
 def maybe_send_periodic_btc_status_report(
@@ -499,18 +499,18 @@ def maybe_send_periodic_btc_status_report(
     if not report_bucket or state.get("last_btc_status_report_bucket") == report_bucket:
         return
 
-    gate_text = "开启" if btc_snapshot["regime_on"] else "关闭"
+    gate_text = "ON" if btc_snapshot["regime_on"] else "OFF"
     text = (
-        "🛰️ [策略心跳]\n"
-        f"时间(UTC): {now_utc.strftime('%Y-%m-%d %H:%M')}\n"
-        f"总净值: ${total_equity:.2f}\n"
-        f"趋势层权益: ${trend_layer_equity:.2f} ({trend_daily_pnl:.2%})\n"
-        f"BTC 现价: ${btc_price:.2f}\n"
+        "🛰️ [Strategy heartbeat]\n"
+        f"Time (UTC): {now_utc.strftime('%Y-%m-%d %H:%M')}\n"
+        f"Total equity: ${total_equity:.2f}\n"
+        f"Trend sleeve equity: ${trend_layer_equity:.2f} ({trend_daily_pnl:.2%})\n"
+        f"BTC price: ${btc_price:.2f}\n"
         f"AHR999: {btc_snapshot['ahr999']:.3f}\n"
-        f"Z-Score: {btc_snapshot['zscore']:.2f} / 阈值 {btc_snapshot['sell_trigger']:.2f}\n"
-        f"BTC 目标仓位: {btc_target_ratio:.1%}\n"
-        f"BTC 闸门: {gate_text}\n"
-        f"提示: {build_btc_manual_hint(btc_snapshot)}"
+        f"Z-Score: {btc_snapshot['zscore']:.2f} / Threshold {btc_snapshot['sell_trigger']:.2f}\n"
+        f"BTC target allocation: {btc_target_ratio:.1%}\n"
+        f"BTC gate: {gate_text}\n"
+        f"Note: {build_btc_manual_hint(btc_snapshot)}"
     )
     if notifier_fn is None:
         send_tg_msg(tg_token, tg_chat_id, text)
@@ -775,12 +775,12 @@ def ensure_asset_available_runtime(runtime, report, asset, required_amount, log_
                     payload={"productId": product_id, "amount": redeem_amt},
                     effect_type="earn_redeem",
                 )
-                append_log(log_buffer, f"🔄 [交易调度] {asset} 现货不足，准备赎回: {redeem_amt}")
+                append_log(log_buffer, f"🔄 [Execution] spot {asset} short, redeeming from earn: {redeem_amt}")
                 if not runtime.dry_run:
                     time.sleep(3)
                 return True
     except Exception as exc:
-        runtime_notify(runtime, report, f"⚠️ [交易调度] {asset} 赎回失败: {exc}")
+        runtime_notify(runtime, report, f"⚠️ [Execution] {asset} redeem failed: {exc}")
     return False
 
 
@@ -816,7 +816,7 @@ def manage_usdt_earn_buffer_runtime(runtime, report, target_buffer, log_buffer, 
                     payload={"productId": product_id, "amount": excess},
                     effect_type="earn_subscribe",
                 )
-                append_log(log_buffer, f"📥 [资金管家] 现货结余过多，自动存入理财: ${excess:.2f}")
+                append_log(log_buffer, f"📥 [Cash manager] excess spot balance subscribed to earn: ${excess:.2f}")
         elif spot_free < target_buffer - 5.0:
             shortfall = round(target_buffer - spot_free, 4)
             earn_positions = runtime.client.get_simple_earn_flexible_product_position(asset=asset)
@@ -840,9 +840,9 @@ def manage_usdt_earn_buffer_runtime(runtime, report, target_buffer, log_buffer, 
                         payload={"productId": product_id, "amount": redeem_amt},
                         effect_type="earn_redeem",
                     )
-                    append_log(log_buffer, f"📤 [资金管家] 现货水位偏低，自动补充现货: ${redeem_amt:.2f}")
+                    append_log(log_buffer, f"📤 [Cash manager] spot buffer low, redeeming to spot: ${redeem_amt:.2f}")
     except Exception as exc:
-        append_log(log_buffer, f"⚠️ USDT理财池维护失败: {exc}")
+        append_log(log_buffer, f"⚠️ USDT earn buffer maintenance failed: {exc}")
 
 
 def get_tradable_qty(symbol, total_qty, prices, min_bnb_value):
@@ -885,7 +885,7 @@ def _ensure_runtime_client(runtime, report):
                 continue
             append_report_error(report, f"Unable to connect Binance API: {exc}", stage="client")
             report["status"] = "aborted"
-            runtime_notify(runtime, report, f"❌ 无法连接 Binance API: {str(exc)}")
+            runtime_notify(runtime, report, f"❌ Unable to connect to Binance API: {str(exc)}")
             return False
 
     return False
@@ -986,20 +986,20 @@ def _compute_daily_pnls(state, total_equity, trend_layer_equity):
 
 
 def _append_portfolio_report(log_buffer, allocation, fuel_val, daily_pnl, trend_daily_pnl, btc_snapshot):
-    append_log(log_buffer, "━━━━━━━━━ 📦 全景资产报告 ━━━━━━━━━")
-    append_log(log_buffer, f"💰 总 净 值 : ${allocation['total_equity']:.2f} (组合日内: {daily_pnl:.2%})")
+    append_log(log_buffer, "━━━━━━━━━ 📦 Portfolio snapshot ━━━━━━━━━")
+    append_log(log_buffer, f"💰 Total equity: ${allocation['total_equity']:.2f} (daily portfolio: {daily_pnl:.2%})")
     append_log(
         log_buffer,
-        f"🪙 BTC 核心仓目标占比: {allocation['btc_target_ratio']:.1%} | 现值 ${allocation['dca_val']:.2f} | 可用 ${allocation['dca_usdt_pool']:.2f}",
+        f"🪙 BTC core target: {allocation['btc_target_ratio']:.1%} | current ${allocation['dca_val']:.2f} | available ${allocation['dca_usdt_pool']:.2f}",
     )
     append_log(
         log_buffer,
-        f"🔥 趋势池目标占比: {allocation['trend_target_ratio']:.1%} | 现值 ${allocation['trend_val']:.2f} | 可用 ${allocation['trend_usdt_pool']:.2f} | 趋势层日内: {trend_daily_pnl:.2%}",
+        f"🔥 Trend sleeve target: {allocation['trend_target_ratio']:.1%} | current ${allocation['trend_val']:.2f} | available ${allocation['trend_usdt_pool']:.2f} | trend sleeve daily: {trend_daily_pnl:.2%}",
     )
-    append_log(log_buffer, f"⛽ BNB 燃料仓: ${fuel_val:.2f}")
+    append_log(log_buffer, f"⛽ BNB fuel reserve: ${fuel_val:.2f}")
     append_log(
         log_buffer,
-        f"🚦 BTC 闸门: {'开启' if btc_snapshot['regime_on'] else '关闭'} | Ahr999={btc_snapshot['ahr999']:.3f} | Z-Score={btc_snapshot['zscore']:.2f}",
+        f"🚦 BTC gate: {'ON' if btc_snapshot['regime_on'] else 'OFF'} | Ahr999={btc_snapshot['ahr999']:.3f} | Z-Score={btc_snapshot['zscore']:.2f}",
     )
     append_log(log_buffer, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
@@ -1034,7 +1034,7 @@ def _run_daily_circuit_breaker(
         )
         try:
             if qty <= 0:
-                runtime_notify(runtime, report, f"⚠️ 熔断抛售跳过 {symbol}：数量格式化后为 0，保留状态等待人工检查。")
+                runtime_notify(runtime, report, f"⚠️ Circuit-breaker sell skipped for {symbol}: formatted quantity is 0; state kept for manual review.")
                 continue
             if not ensure_asset_available_runtime(runtime, report, config["base_asset"], qty, log_buffer):
                 raise RuntimeError(f"{config['base_asset']} unavailable for circuit-breaker sell")
@@ -1052,27 +1052,27 @@ def _run_daily_circuit_breaker(
                 {"is_holding": False, "entry_price": 0.0, "highest_price": 0.0},
             )
         except Exception as exc:
-            runtime_notify(runtime, report, f"❌ 熔断抛售失败 {symbol}: {exc}")
+            runtime_notify(runtime, report, f"❌ Circuit-breaker sell failed for {symbol}: {exc}")
 
     state.update({"is_circuit_broken": True})
     runtime_set_trade_state(runtime, report, state, reason="daily_circuit_breaker")
-    runtime_notify(runtime, report, f"🚫 触发趋势层每日熔断({trend_daily_pnl:.2%})！趋势策略清空，BTC 定投保持。")
+    runtime_notify(runtime, report, f"🚫 Daily trend sleeve circuit breaker triggered ({trend_daily_pnl:.2%}); trend positions cleared while BTC DCA remains active.")
     return True
 
 
 def _append_rotation_summary(log_buffer, official_trend_pool, active_trend_pool, selected_candidates):
-    official_pool_text = "、".join(official_trend_pool) if official_trend_pool else "暂无上游池"
-    execution_pool_text = "、".join(active_trend_pool) if active_trend_pool else "暂无可用池"
+    official_pool_text = ", ".join(official_trend_pool) if official_trend_pool else "no upstream pool available"
+    execution_pool_text = ", ".join(active_trend_pool) if active_trend_pool else "no execution pool available"
     execution_pool_count = len(active_trend_pool)
     selected_text = (
-        "、".join(f"{symbol}({meta['weight']:.0%},RS:{meta['relative_score']:.2f})" for symbol, meta in selected_candidates.items())
+        ", ".join(f"{symbol}({meta['weight']:.0%},RS:{meta['relative_score']:.2f})" for symbol, meta in selected_candidates.items())
         if selected_candidates
-        else "无候选，保持防守"
+        else "no candidates; stay defensive"
     )
-    append_log(log_buffer, f"🗓️ 上游官方月度池: {official_pool_text}")
-    append_log(log_buffer, f"🧭 当前月度执行池: {execution_pool_text}")
-    append_log(log_buffer, f"📌 当前月度执行池数量: {execution_pool_count}")
-    append_log(log_buffer, f"🎯 当前执行目标: {selected_text}")
+    append_log(log_buffer, f"🗓️ Upstream official monthly pool: {official_pool_text}")
+    append_log(log_buffer, f"🧭 Current monthly execution pool: {execution_pool_text}")
+    append_log(log_buffer, f"📌 Current monthly execution pool size: {execution_pool_count}")
+    append_log(log_buffer, f"🎯 Current execution targets: {selected_text}")
 
 
 def _get_trend_sell_reason(state, symbol, curr_price, indicators, selected_candidates, atr_multiplier):
@@ -1126,7 +1126,7 @@ def _execute_trend_sells(
             continue
 
         if should_skip_duplicate_trend_action(state, symbol, "sell", today_id_str):
-            append_log(log_buffer, f"⏸️ 跳过重复卖出 {symbol}，同日卖出已记录。")
+            append_log(log_buffer, f"⏸️ Skipping duplicate sell for {symbol}; a same-day sell is already recorded.")
             continue
 
         qty = format_qty(runtime.client, symbol, balances[symbol])
@@ -1142,7 +1142,7 @@ def _execute_trend_sells(
         )
         try:
             if qty <= 0:
-                runtime_notify(runtime, report, f"⚠️ [趋势卖出跳过] {symbol}\n原因: {sell_reason}\n数量格式化后为 0，保留状态等待人工检查。")
+                runtime_notify(runtime, report, f"⚠️ [Trend sell skipped] {symbol}\nReason: {sell_reason}\nFormatted quantity is 0; state kept for manual review.")
                 continue
             if not ensure_asset_available_runtime(runtime, report, config["base_asset"], qty, log_buffer):
                 raise RuntimeError(f"{config['base_asset']} unavailable for trend sell")
@@ -1166,9 +1166,9 @@ def _execute_trend_sells(
             )
             record_trend_action(state, symbol, "sell", today_id_str)
             runtime_set_trade_state(runtime, report, state, reason=f"trend_sell:{symbol}")
-            runtime_notify(runtime, report, f"🚨 [趋势卖出] {symbol}\n原因: {sell_reason}\n价格: ${curr_price:.2f}")
+            runtime_notify(runtime, report, f"🚨 [Trend sell] {symbol}\nReason: {sell_reason}\nPrice: ${curr_price:.2f}")
         except Exception as exc:
-            runtime_notify(runtime, report, f"⚠️ [趋势卖出失败] {symbol}\n原因: {sell_reason}\n错误: {exc}")
+            runtime_notify(runtime, report, f"⚠️ [Trend sell failed] {symbol}\nReason: {sell_reason}\nError: {exc}")
 
     return u_total
 
@@ -1229,7 +1229,7 @@ def _execute_trend_buys(
             continue
 
         if should_skip_duplicate_trend_action(state, symbol, "buy", today_id_str):
-            append_log(log_buffer, f"⏸️ 跳过重复买入 {symbol}，同日买入已记录。")
+            append_log(log_buffer, f"⏸️ Skipping duplicate buy for {symbol}; a same-day buy is already recorded.")
             continue
 
         qty = format_qty(runtime.client, symbol, buy_u * 0.985 / curr_price)
@@ -1247,7 +1247,7 @@ def _execute_trend_buys(
         )
         try:
             if qty <= 0 or usdt_cost <= 0:
-                runtime_notify(runtime, report, f"⚠️ [趋势买入跳过] {symbol}\n预算: ${buy_u:.2f}\n数量格式化后为 0，未修改持仓状态。")
+                runtime_notify(runtime, report, f"⚠️ [Trend buy skipped] {symbol}\nBudget: ${buy_u:.2f}\nFormatted quantity is 0; position state unchanged.")
                 continue
             if not ensure_asset_available_runtime(runtime, report, "USDT", usdt_cost, log_buffer):
                 raise RuntimeError("USDT unavailable for trend buy")
@@ -1274,10 +1274,10 @@ def _execute_trend_buys(
             runtime_notify(
                 runtime,
                 report,
-                f"✅ [趋势买入] {symbol}\n现价: ${curr_price:.2f}\n金额: ${buy_u:.2f}\n轮动权重: {candidate_meta['weight']:.0%}\n相对BTC分数: {candidate_meta['relative_score']:.2f}",
+                f"✅ [Trend buy] {symbol}\nPrice: ${curr_price:.2f}\nBudget: ${buy_u:.2f}\nRotation weight: {candidate_meta['weight']:.0%}\nRelative BTC score: {candidate_meta['relative_score']:.2f}",
             )
         except Exception as exc:
-            runtime_notify(runtime, report, f"⚠️ [趋势买入失败] {symbol}\n预算: ${buy_u:.2f}\n错误: {exc}")
+            runtime_notify(runtime, report, f"⚠️ [Trend buy failed] {symbol}\nBudget: ${buy_u:.2f}\nError: {exc}")
 
     return u_total
 
@@ -1295,8 +1295,8 @@ def _append_trend_symbol_status(log_buffer, runtime_trend_universe, prices, tren
                 + 0.2 * (indicators["roc120"] - btc_snapshot["btc_roc120"])
             ) / indicators["vol20"]
             abs_momentum = 0.5 * indicators["roc20"] + 0.3 * indicators["roc60"] + 0.2 * indicators["roc120"]
-            score_text = f" | 相对BTC: {rel_score:.2f} | 动量: {abs_momentum:.2%}"
-        append_log(log_buffer, f" └ {symbol}: {'📈持仓' if st['is_holding'] else '💤空仓'} | 现价: ${curr_price:.4f}{score_text}")
+            score_text = f" | rel BTC: {rel_score:.2f} | momentum: {abs_momentum:.2%}"
+        append_log(log_buffer, f" └ {symbol}: {'📈holding' if st['is_holding'] else '💤flat'} | price: ${curr_price:.4f}{score_text}")
 
 
 def _execute_trend_rotation(
@@ -1403,7 +1403,7 @@ def _execute_btc_dca_cycle(
     ahr = btc_snapshot["ahr999"]
     zscore = btc_snapshot["zscore"]
     sell_trigger = btc_snapshot["sell_trigger"]
-    append_log(log_buffer, f"🧭 BTC 囤币雷达: Ahr999={ahr:.3f} | Z-Score={zscore:.2f} (阈值:{sell_trigger:.2f})")
+    append_log(log_buffer, f"🧭 BTC accumulation radar: Ahr999={ahr:.3f} | Z-Score={zscore:.2f} (threshold:{sell_trigger:.2f})")
 
     base_order = get_dynamic_btc_base_order(total_equity)
     multiplier = 0
@@ -1429,7 +1429,7 @@ def _execute_btc_dca_cycle(
         )
         try:
             if qty <= 0 or buy_cost <= 0:
-                runtime_notify(runtime, report, "⚠️ [定投建仓跳过] BTC 数量格式化后为 0，未执行买入。")
+                runtime_notify(runtime, report, "⚠️ [BTC DCA buy skipped] formatted quantity is 0; buy not executed.")
             else:
                 if not ensure_asset_available_runtime(runtime, report, "USDT", buy_cost, log_buffer):
                     raise RuntimeError("USDT unavailable for BTC DCA buy")
@@ -1447,10 +1447,10 @@ def _execute_btc_dca_cycle(
                 balances["BTCUSDT"] += qty
                 u_total -= buy_cost
                 state["dca_last_buy_date"] = today_id_str
-                runtime_notify(runtime, report, f"🛡️ [定投建仓] BTC 买入\nAhr999: {ahr:.2f}\n目标仓位: {btc_target_ratio:.1%}\n数量: {qty} BTC")
+                runtime_notify(runtime, report, f"🛡️ [BTC DCA buy] BTC\nAhr999: {ahr:.2f}\nTarget allocation: {btc_target_ratio:.1%}\nQuantity: {qty} BTC")
                 runtime_set_trade_state(runtime, report, state, reason="btc_dca_buy")
         except Exception as exc:
-            runtime_notify(runtime, report, f"⚠️ [定投建仓失败] BTC\n错误: {exc}")
+            runtime_notify(runtime, report, f"⚠️ [BTC DCA buy failed] BTC\nError: {exc}")
 
     if zscore > sell_trigger and dca_val > 20 and state.get("dca_last_sell_date") != today_id_str:
         sell_pct = 0.1
@@ -1470,7 +1470,7 @@ def _execute_btc_dca_cycle(
         )
         try:
             if qty <= 0:
-                runtime_notify(runtime, report, "⚠️ [定投止盈跳过] BTC 数量格式化后为 0，未执行卖出。")
+                runtime_notify(runtime, report, "⚠️ [BTC DCA trim skipped] formatted quantity is 0; sell not executed.")
             else:
                 if not ensure_asset_available_runtime(runtime, report, "BTC", qty, log_buffer):
                     raise RuntimeError("BTC unavailable for DCA sell")
@@ -1488,10 +1488,10 @@ def _execute_btc_dca_cycle(
                 balances["BTCUSDT"] = max(0.0, balances["BTCUSDT"] - qty)
                 u_total += qty * btc_price
                 state["dca_last_sell_date"] = today_id_str
-                runtime_notify(runtime, report, f"💰 [定投止盈] BTC 逃顶\n比例: {sell_pct*100}%\n数量: {qty} BTC")
+                runtime_notify(runtime, report, f"💰 [BTC DCA trim] BTC\nRatio: {sell_pct*100}%\nQuantity: {qty} BTC")
                 runtime_set_trade_state(runtime, report, state, reason="btc_dca_sell")
         except Exception as exc:
-            runtime_notify(runtime, report, f"⚠️ [定投止盈失败] BTC\n错误: {exc}")
+            runtime_notify(runtime, report, f"⚠️ [BTC DCA trim failed] BTC\nError: {exc}")
 
     return u_total
 
@@ -1550,7 +1550,7 @@ def execute_cycle(runtime):
         _append_portfolio_report(log_buffer, allocation, fuel_val, daily_pnl, trend_daily_pnl, btc_snapshot)
 
         if state.get("is_circuit_broken"):
-            log_buffer.insert(0, f"🔒 熔断锁死中。NAV: ${total_equity:.2f}")
+            log_buffer.insert(0, f"🔒 Circuit breaker latched. NAV: ${total_equity:.2f}")
             return report
 
         if _run_daily_circuit_breaker(
@@ -1639,7 +1639,7 @@ def execute_cycle(runtime):
         if runtime.print_traceback:
             traceback.print_exc()
         try:
-            runtime_notify(runtime, report, f"❌ 系统崩溃:\n{str(exc)[:200]}")
+            runtime_notify(runtime, report, f"❌ System crash:\n{str(exc)[:200]}")
         except Exception:
             pass
     finally:

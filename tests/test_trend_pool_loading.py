@@ -212,7 +212,7 @@ class TrendPoolLoadingTests(unittest.TestCase):
         total_balance = main.get_total_balance(EarnFailureClient(), "USDT", log_buffer=log_buffer)
 
         self.assertAlmostEqual(total_balance, 2.0)
-        self.assertTrue(any("理财余额读取失败" in message for message in log_buffer))
+        self.assertTrue(any("earn balance lookup failed" in message for message in log_buffer))
 
     def test_format_trend_pool_source_logs_highlights_degraded_buy_pause(self):
         log_lines = format_trend_pool_source_logs(
@@ -230,7 +230,7 @@ class TrendPoolLoadingTests(unittest.TestCase):
 
         self.assertIn("last_known_good", log_lines[0])
         self.assertTrue(any("payload stale" in line for line in log_lines))
-        self.assertTrue(any("暂停新的趋势买入" in line for line in log_lines))
+        self.assertTrue(any("pausing new trend buys" in line for line in log_lines))
 
     def test_append_rotation_summary_separates_upstream_and_execution_pool(self):
         log_buffer = []
@@ -242,10 +242,10 @@ class TrendPoolLoadingTests(unittest.TestCase):
             {},
         )
 
-        self.assertEqual(log_buffer[0], "🗓️ 上游官方月度池: TRXUSDT、ETHUSDT、BCHUSDT、NEARUSDT、SOLUSDT")
-        self.assertEqual(log_buffer[1], "🧭 当前月度执行池: TRXUSDT、ETHUSDT、BCHUSDT")
-        self.assertEqual(log_buffer[2], "📌 当前月度执行池数量: 3")
-        self.assertEqual(log_buffer[3], "🎯 当前执行目标: 无候选，保持防守")
+        self.assertEqual(log_buffer[0], "🗓️ Upstream official monthly pool: TRXUSDT, ETHUSDT, BCHUSDT, NEARUSDT, SOLUSDT")
+        self.assertEqual(log_buffer[1], "🧭 Current monthly execution pool: TRXUSDT, ETHUSDT, BCHUSDT")
+        self.assertEqual(log_buffer[2], "📌 Current monthly execution pool size: 3")
+        self.assertEqual(log_buffer[3], "🎯 Current execution targets: no candidates; stay defensive")
 
     def test_allocate_trend_buy_budget_renormalizes_remaining_buy_candidates(self):
         selected_candidates = {

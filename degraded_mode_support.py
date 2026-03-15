@@ -160,7 +160,7 @@ def format_trend_pool_source_logs(
 ) -> list[str]:
     log_lines = [
         (
-            f"📡 趋势池来源: {trend_pool_resolution['source_kind']} | "
+            f"📡 Trend pool source: {trend_pool_resolution['source_kind']} | "
             f"mode={trend_pool_resolution['mode'] or 'unknown'} | "
             f"version={trend_pool_resolution['version'] or 'unknown'} | "
             f"as_of={trend_pool_resolution['as_of_date'] or 'n/a'} | "
@@ -169,5 +169,5 @@ def format_trend_pool_source_logs(
     ]
     log_lines.extend(f"   · {message}" for message in trend_pool_resolution.get("messages", [])[-3:])
     if trend_pool_resolution["degraded"] and not allow_new_trend_entries:
-        log_lines.append("⚠️ 上游趋势池处于降级模式，暂停新的趋势买入并优先沿用既有月池。")
+        log_lines.append("⚠️ Upstream trend pool is degraded; pausing new trend buys and retaining the current monthly execution pool.")
     return log_lines

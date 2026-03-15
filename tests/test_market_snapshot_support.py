@@ -72,7 +72,7 @@ class MarketSnapshotSupportTests(unittest.TestCase):
         self.assertEqual(snapshot["balances"]["SOLUSDT"], 2.0)
         self.assertEqual(snapshot["balances"]["BTCUSDT"], 0.01)
         self.assertEqual(snapshot["trend_indicators"]["ETHUSDT"]["score"], 1.0)
-        self.assertIn("BNB 自动补仓完成", "".join(log_buffer))
+        self.assertIn("BNB top-up completed", "".join(log_buffer))
 
     def test_capture_market_snapshot_raises_when_btc_snapshot_is_missing(self):
         runtime = SimpleNamespace(

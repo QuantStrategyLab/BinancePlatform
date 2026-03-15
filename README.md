@@ -1,6 +1,6 @@
 # BinanceQuant
 
-Language: English | [简体中文](README.zh-CN.md)
+Language: English | [Simplified Chinese](README.zh-CN.md)
 
 Automated crypto quant for Binance spot: BTC DCA core plus altcoin trend rotation. Uses valuation (AHR999, Z-Score) and trend gates (MA200, slope). Compatible with Binance flexible earn (auto redeem/subscribe), USDT buffer, BNB fuel, Telegram alerts, and Firestore state.
 
@@ -235,7 +235,7 @@ In **Settings → Secrets and variables → Actions**, add:
 | `TG_CHAT_ID` | Telegram chat ID |
 | `GCP_SA_KEY` | Full JSON content of the GCP service account key (written by the runtime workflow to a temp file and exported as `GOOGLE_APPLICATION_CREDENTIALS` only for the strategy step) |
 
-The runtime workflow passes these into the “执行交易策略” step; it does not use a `.env` file on the runner.
+The runtime workflow passes these into the `Run trading strategy` step; it does not use a `.env` file on the runner.
 
 ### 4. GCP / Firestore
 
