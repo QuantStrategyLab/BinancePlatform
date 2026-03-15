@@ -232,6 +232,21 @@ class TrendPoolLoadingTests(unittest.TestCase):
         self.assertTrue(any("payload stale" in line for line in log_lines))
         self.assertTrue(any("暂停新的趋势买入" in line for line in log_lines))
 
+    def test_append_rotation_summary_separates_upstream_and_execution_pool(self):
+        log_buffer = []
+
+        main._append_rotation_summary(
+            log_buffer,
+            ["TRXUSDT", "ETHUSDT", "BCHUSDT", "NEARUSDT", "SOLUSDT"],
+            ["TRXUSDT", "ETHUSDT", "BCHUSDT"],
+            {},
+        )
+
+        self.assertEqual(log_buffer[0], "🗓️ 上游官方月度池: TRXUSDT、ETHUSDT、BCHUSDT、NEARUSDT、SOLUSDT")
+        self.assertEqual(log_buffer[1], "🧭 当前月度执行池: TRXUSDT、ETHUSDT、BCHUSDT")
+        self.assertEqual(log_buffer[2], "📌 当前月度执行池数量: 3")
+        self.assertEqual(log_buffer[3], "🎯 当前执行目标: 无候选，保持防守")
+
     def test_allocate_trend_buy_budget_renormalizes_remaining_buy_candidates(self):
         selected_candidates = {
             "ETHUSDT": {"weight": 0.5},

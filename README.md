@@ -157,7 +157,8 @@ Runs hourly; signals are daily trend and risk, not high-frequency.
 In runtime output, keep these layers separate:
 
 - upstream official pool: the monthly symbols accepted from the upstream contract
-- execution candidates: the local decision set for this cycle
+- current monthly execution pool: the local pool retained for this month before final buy gating
+- current execution targets: the symbols that actually qualify for this cycle
 - degraded source status: whether the cycle is using fresh upstream, last-known-good, local-file, or static fallback
 
 **Validation and degraded mode:**

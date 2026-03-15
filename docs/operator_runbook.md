@@ -49,6 +49,7 @@ It is not responsible for:
 Runtime output should stay operational:
 
 - current upstream source and degraded status
+- upstream official pool and current local execution pool logged as separate concepts
 - current execution targets and intents
 - exceptions, circuit breakers, and alert-worthy failures
 

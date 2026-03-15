@@ -1060,16 +1060,18 @@ def _run_daily_circuit_breaker(
     return True
 
 
-def _append_rotation_summary(log_buffer, active_trend_pool, pool_ranking, selected_candidates):
-    pool_text = "、".join(active_trend_pool) if active_trend_pool else "暂无可用池"
-    candidate_count = len(pool_ranking) if pool_ranking else len(active_trend_pool)
+def _append_rotation_summary(log_buffer, official_trend_pool, active_trend_pool, selected_candidates):
+    official_pool_text = "、".join(official_trend_pool) if official_trend_pool else "暂无上游池"
+    execution_pool_text = "、".join(active_trend_pool) if active_trend_pool else "暂无可用池"
+    execution_pool_count = len(active_trend_pool)
     selected_text = (
         "、".join(f"{symbol}({meta['weight']:.0%},RS:{meta['relative_score']:.2f})" for symbol, meta in selected_candidates.items())
         if selected_candidates
         else "无候选，保持防守"
     )
-    append_log(log_buffer, f"🗓️ 上游官方月度池: {pool_text}")
-    append_log(log_buffer, f"📌 执行候选数量: {candidate_count}")
+    append_log(log_buffer, f"🗓️ 上游官方月度池: {official_pool_text}")
+    append_log(log_buffer, f"🧭 当前月度执行池: {execution_pool_text}")
+    append_log(log_buffer, f"📌 当前月度执行池数量: {execution_pool_count}")
     append_log(log_buffer, f"🎯 当前执行目标: {selected_text}")
 
 
@@ -1314,7 +1316,7 @@ def _execute_trend_rotation(
     allow_pool_refresh,
     atr_multiplier,
 ):
-    active_trend_pool, pool_ranking = refresh_rotation_pool(
+    active_trend_pool, _ = refresh_rotation_pool(
         state,
         trend_indicators,
         btc_snapshot,
@@ -1331,7 +1333,12 @@ def _execute_trend_rotation(
     report["selected_symbols"]["active_trend_pool"] = list(active_trend_pool)
     report["selected_symbols"]["selected_candidates"] = list(selected_candidates.keys())
 
-    _append_rotation_summary(log_buffer, active_trend_pool, pool_ranking, selected_candidates)
+    _append_rotation_summary(
+        log_buffer,
+        list(TREND_UNIVERSE.keys()),
+        active_trend_pool,
+        selected_candidates,
+    )
     u_total = _execute_trend_sells(
         runtime,
         report,
