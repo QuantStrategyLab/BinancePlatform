@@ -428,13 +428,14 @@ def simulate_window(strategy, window_name: str, start: pd.Timestamp, end: pd.Tim
 
         if last_reset_date != today_utc:
             daily_equity_base = total_equity
-            daily_trend_equity_base = trend_layer_equity
+            # Match live circuit breaker basis: real trend holdings only.
+            daily_trend_equity_base = trend_val
             last_reset_date = today_utc
             is_circuit_broken = False
 
         daily_pnl = 0.0 if not daily_equity_base else (total_equity - daily_equity_base) / daily_equity_base
         trend_daily_pnl = (
-            0.0 if not daily_trend_equity_base else (trend_layer_equity - daily_trend_equity_base) / daily_trend_equity_base
+            0.0 if not daily_trend_equity_base else (trend_val - daily_trend_equity_base) / daily_trend_equity_base
         )
         if trend_daily_pnl <= CIRCUIT_BREAKER_PCT and not is_circuit_broken:
             for symbol in trend_symbols:

@@ -48,6 +48,9 @@ def build_default_state(
         "BTCUSDT": {"holding_qty": 0.0, "avg_cost": 0.0},
         "daily_equity_base": 0.0,
         "daily_trend_equity_base": 0.0,
+        # Where `daily_trend_equity_base` comes from (e.g. "trend_val").
+        # Used to avoid false circuit-breaker triggers after strategy changes/deploys.
+        "daily_trend_pnl_basis": "",
         "last_reset_date": "",
         "is_circuit_broken": False,
         "dca_last_buy_date": "",

@@ -488,7 +488,7 @@ def maybe_send_periodic_btc_status_report(
     now_utc,
     interval_hours,
     total_equity,
-    trend_layer_equity,
+    trend_holdings_equity,
     trend_daily_pnl,
     btc_price,
     btc_snapshot,
@@ -504,7 +504,7 @@ def maybe_send_periodic_btc_status_report(
         "🛰️ [Strategy heartbeat]\n"
         f"Time (UTC): {now_utc.strftime('%Y-%m-%d %H:%M')}\n"
         f"Total equity: ${total_equity:.2f}\n"
-        f"Trend sleeve equity: ${trend_layer_equity:.2f} ({trend_daily_pnl:.2%})\n"
+        f"Trend holdings equity: ${trend_holdings_equity:.2f} ({trend_daily_pnl:.2%})\n"
         f"BTC price: ${btc_price:.2f}\n"
         f"AHR999: {btc_snapshot['ahr999']:.3f}\n"
         f"Z-Score: {btc_snapshot['zscore']:.2f} / Threshold {btc_snapshot['sell_trigger']:.2f}\n"
@@ -1012,29 +1012,49 @@ def _compute_portfolio_allocation(runtime_trend_universe, balances, prices, u_to
     return allocation
 
 
-def _maybe_reset_daily_state(state, runtime, report, today_utc, total_equity, trend_layer_equity):
-    if state.get("last_reset_date") == today_utc:
+def _maybe_reset_daily_state(state, runtime, report, today_utc, total_equity, trend_val_equity):
+    """
+    Circuit breaker uses trend daily PnL.
+    PnL basis is ONLY the real trend holdings value (`trend_val`),
+    so manual "USDT 零用钱" won't affect the trend circuit breaker.
+    """
+    desired_basis = "trend_val"
+    last_reset_date = state.get("last_reset_date")
+    pnl_basis = state.get("daily_trend_pnl_basis")
+
+    if last_reset_date != today_utc:
+        state.update(
+            {
+                "daily_equity_base": total_equity,
+                "daily_trend_equity_base": trend_val_equity,
+                "daily_trend_pnl_basis": desired_basis,
+                "last_reset_date": today_utc,
+                "is_circuit_broken": False,
+            }
+        )
+        runtime_set_trade_state(runtime, report, state, reason="daily_reset")
         return
 
-    state.update(
-        {
-            "daily_equity_base": total_equity,
-            "daily_trend_equity_base": trend_layer_equity,
-            "last_reset_date": today_utc,
-            "is_circuit_broken": False,
-        }
-    )
-    runtime_set_trade_state(runtime, report, state, reason="daily_reset")
+    # Basis migration within the same day (e.g. after deploy):
+    # update the trend PnL base but keep circuit breaker latch.
+    if pnl_basis != desired_basis:
+        state.update(
+            {
+                "daily_trend_equity_base": trend_val_equity,
+                "daily_trend_pnl_basis": desired_basis,
+            }
+        )
+        runtime_set_trade_state(runtime, report, state, reason="trend_pnl_basis_migrate")
 
 
-def _compute_daily_pnls(state, total_equity, trend_layer_equity):
+def _compute_daily_pnls(state, total_equity, trend_equity):
     daily_pnl = (
         (total_equity - state["daily_equity_base"]) / state["daily_equity_base"]
         if state.get("daily_equity_base", 0) > 0
         else 0.0
     )
     trend_daily_pnl = (
-        (trend_layer_equity - state["daily_trend_equity_base"]) / state["daily_trend_equity_base"]
+        (trend_equity - state["daily_trend_equity_base"]) / state["daily_trend_equity_base"]
         if state.get("daily_trend_equity_base", 0) > 0
         else 0.0
     )
@@ -1596,13 +1616,14 @@ def execute_cycle(runtime):
         allocation = _compute_portfolio_allocation(runtime_trend_universe, balances, prices, u_total, fuel_val)
         total_equity = allocation["total_equity"]
         trend_layer_equity = allocation["trend_layer_equity"]
+        trend_val_equity = allocation["trend_val"]
 
         now_utc = runtime.now_utc
         today_utc = now_utc.strftime("%Y-%m-%d")
         today_id_str = now_utc.strftime("%Y%m%d")
 
-        _maybe_reset_daily_state(state, runtime, report, today_utc, total_equity, trend_layer_equity)
-        daily_pnl, trend_daily_pnl = _compute_daily_pnls(state, total_equity, trend_layer_equity)
+        _maybe_reset_daily_state(state, runtime, report, today_utc, total_equity, trend_val_equity)
+        daily_pnl, trend_daily_pnl = _compute_daily_pnls(state, total_equity, trend_val_equity)
         _append_portfolio_report(log_buffer, allocation, fuel_val, daily_pnl, trend_daily_pnl, btc_snapshot)
 
         if state.get("is_circuit_broken"):
@@ -1643,10 +1664,11 @@ def execute_cycle(runtime):
         post_trade_allocation = _compute_portfolio_allocation(runtime_trend_universe, balances, prices, u_total, fuel_val)
         total_equity = post_trade_allocation["total_equity"]
         trend_layer_equity = post_trade_allocation["trend_layer_equity"]
+        trend_val_equity = post_trade_allocation["trend_val"]
         btc_target_ratio = post_trade_allocation["btc_target_ratio"]
         dca_usdt_pool = post_trade_allocation["dca_usdt_pool"]
         dca_val = post_trade_allocation["dca_val"]
-        _, trend_daily_pnl = _compute_daily_pnls(state, total_equity, trend_layer_equity)
+        _, trend_daily_pnl = _compute_daily_pnls(state, total_equity, trend_val_equity)
 
         u_total = _execute_btc_dca_cycle(
             runtime,
@@ -1679,7 +1701,7 @@ def execute_cycle(runtime):
             now_utc,
             btc_status_report_interval_hours,
             total_equity,
-            trend_layer_equity,
+            trend_val_equity,
             trend_daily_pnl,
             prices["BTCUSDT"],
             btc_snapshot,

@@ -97,7 +97,7 @@ Runs hourly; signals are daily trend and risk, not high-frequency.
 ## Risk
 
 - **BTC gate:** Trend layer only when `BTC price > MA200` and `MA200 slope > 0`.
-- **Circuit breaker:** If trend-layer daily PnL ≤ threshold, flatten trend book; BTC core unchanged.
+- **Circuit breaker:** If trend-layer daily PnL ≤ threshold, flatten trend book; BTC core unchanged. (Daily PnL is computed from real trend holdings value only, excluding the allocated USDT cash pool.)
 - **BNB:** Auto top-up for fees; not in trend rotation.
 
 ## Earn Compatibility
