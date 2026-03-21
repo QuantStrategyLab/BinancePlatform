@@ -1743,6 +1743,11 @@ def main():
     runtime = build_live_runtime()
     report = execute_cycle(runtime)
     print("\n".join(report.get("log_lines", [])))
+
+    os.makedirs("reports", exist_ok=True)
+    with open("reports/execution_report.json", "w") as f:
+        json.dump(report, f, indent=2, default=str)
+
     if report.get("status") != "ok":
         sys.exit(1)
 
