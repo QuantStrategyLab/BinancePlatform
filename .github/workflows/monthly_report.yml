@@ -1,0 +1,70 @@
+name: Monthly Execution Report
+
+"on":
+  schedule:
+    - cron: '0 0 1 * *'
+  workflow_dispatch:
+    inputs:
+      report_month:
+        description: 'Report month (YYYY-MM), defaults to last month'
+        required: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine report month
+        id: month
+        run: |
+          if [ -n "${{ inputs.report_month }}" ]; then
+            echo "month=${{ inputs.report_month }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "month=$(date -u -d '1 month ago' +%Y-%m)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch logs branch data
+        id: fetch
+        run: |
+          MONTH="${{ steps.month.outputs.month }}"
+          if ! git fetch origin logs; then
+            echo "No logs branch found."
+            echo "has_data=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git ls-tree -d "origin/logs" "hourly/${MONTH}" >/dev/null 2>&1; then
+            git checkout origin/logs -- "hourly/${MONTH}/"
+            echo "has_data=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No data for ${MONTH} on logs branch."
+            echo "has_data=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run aggregation
+        if: steps.fetch.outputs.has_data == 'true'
+        run: |
+          python scripts/run_monthly_report_bundle.py \
+            --month "${{ steps.month.outputs.month }}" \
+            --output-dir data/output
+
+      - name: Create monthly review issue
+        if: steps.fetch.outputs.has_data == 'true'
+        run: |
+          MONTH="${{ steps.month.outputs.month }}"
+          gh issue create \
+            --title "Monthly Execution Review: ${MONTH}" \
+            --label "monthly-review" \
+            --body-file data/output/ai_review_input.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

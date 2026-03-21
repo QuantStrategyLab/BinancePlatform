@@ -1,0 +1,117 @@
+name: AI Monthly Review
+
+"on":
+  issues:
+    types: [opened]
+
+jobs:
+  ai-review:
+    if: contains(github.event.issue.labels.*.name, 'monthly-review')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Claude Code Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          model: claude-sonnet-4-6-20250514
+          use_bedrock: false
+          use_vertex: false
+          allowed_tools: |
+            Read
+            Glob
+            Grep
+            Bash(git log:*)
+            Bash(git diff:*)
+          custom_instructions: |
+            You are reviewing the monthly execution report for BinanceQuant,
+            an automated crypto quantitative trading system for Binance Spot.
+            It runs hourly, executing a BTC DCA core strategy plus altcoin trend
+            rotation using symbols from an upstream CryptoLeaderRotation pool.
+
+            The Issue body contains the full monthly execution review data.
+            Analyze it and provide your review in BOTH English and Chinese.
+
+            ## Review Scope
+
+            1. **Trade Execution Quality**
+               - Are buy/sell frequencies reasonable for the month?
+               - Any abnormally dense trading periods suggesting misbehavior?
+               - Is the BTC DCA pattern consistent with the expected valuation-based scaling?
+
+            2. **Circuit Breaker Events**
+               - How many times was the circuit breaker triggered?
+               - Do triggers cluster around specific dates (possible market events)?
+               - Any repeated trigger patterns suggesting the threshold needs adjustment?
+
+            3. **Degraded Mode Events**
+               - How often did the system fall back from healthy upstream data?
+               - What degradation levels were reached?
+               - Were degraded episodes prolonged, suggesting an upstream issue?
+
+            4. **PnL Summary**
+               - Overall portfolio performance for the month.
+               - BTC core vs trend sleeve performance separately.
+               - Any concerning drawdowns?
+
+            5. **Upstream Pool Change Impact**
+               - Did pool symbol rotations cause significant position churn?
+               - Were there any symbols added that might have low liquidity concerns?
+
+            6. **Error Patterns**
+               - Are there systematic API failures or infrastructure issues?
+               - Do errors cluster at specific times?
+
+            7. **Earn Buffer Behavior**
+               - Is the subscribe/redeem frequency efficient?
+               - Is excessive churning eroding capital efficiency?
+
+            ## Output Format
+
+            Structure your response as:
+
+            ---
+            ## English
+
+            ### Trade Execution Quality
+            ...
+            ### Circuit Breaker Analysis
+            ...
+            ### Degraded Mode Analysis
+            ...
+            ### PnL Summary
+            ...
+            ### Upstream Pool Impact
+            ...
+            ### Error Patterns
+            ...
+            ### Earn Buffer Efficiency
+            ...
+            ### Operator Action Items
+            ...
+
+            ---
+            ## 中文
+
+            ### 交易执行质量
+            ...
+            ### 熔断器分析
+            ...
+            ### 降级模式分析
+            ...
+            ### 收益摘要
+            ...
+            ### 上游池变更影响
+            ...
+            ### 错误模式
+            ...
+            ### 理财缓冲效率
+            ...
+            ### 操作员待办事项
+            ...
