@@ -34,10 +34,39 @@
 - **trade_state_support.py** — 持仓状态标准化、退役仓位跟踪、重复动作保护。
 - **research/backtest.py** — 研究和审计用回测，不参与 live 小时执行。
 - **run_cycle_replay.py** — 用固定 fixtures 执行单轮 dry-run。
+- **scripts/run_monthly_report_bundle.py** — 月度聚合脚本：将每小时执行 JSON 汇总为审阅包和 Markdown。
 - **requirements.txt** — 人工维护的顶层依赖。
 - **requirements-lock.txt** — CI / deploy 优先使用的锁定依赖版本。
 
 `reports/` 下的本地生成物默认不提交。`tests/fixtures/` 会提交，因为它们属于可复现回归测试的一部分。
+
+## 执行日志与月度审阅
+
+每次小时运行后，完整的执行报告 JSON 会推送到 orphan `logs` 分支，路径为 `hourly/{YYYY-MM}/{YYYY-MM-DDTHHMM}.json`。
+
+每月 1 日（UTC 00:00），**月度执行报告**工作流会聚合上月所有小时日志，创建结构化审阅包，并开启一个带 `monthly-review` 标签的 GitHub Issue。
+
+**AI 月度审阅**工作流在该 Issue 标签触发时，发布双语（English + 中文）分析，涵盖交易执行质量、熔断器事件、降级模式事件、收益摘要、上游池变更影响、错误模式和理财缓冲效率。
+
+### 工作流
+
+| 工作流 | 文件 | 触发方式 | 运行器 |
+|--------|------|---------|--------|
+| 运行时 | `main.yml` | `workflow_dispatch` | self-hosted |
+| CI | `ci.yml` | 推送到 main | ubuntu-latest |
+| 月度报告 | `monthly_report.yml` | 每月 1 日 + 手动 | ubuntu-latest |
+| AI 审阅 | `ai_review.yml` | issue 标签 `monthly-review` | ubuntu-latest |
+
+### 所需 Secrets
+
+| Secret | 使用者 |
+|--------|--------|
+| `BINANCE_API_KEY` | 运行时 |
+| `BINANCE_API_SECRET` | 运行时 |
+| `TG_TOKEN` | 运行时 |
+| `TG_CHAT_ID` | 运行时 |
+| `GCP_SA_KEY` | 运行时 |
+| `ANTHROPIC_API_KEY` | AI 审阅 |
 
 ## 策略概览
 
@@ -203,6 +232,7 @@
 - `TG_TOKEN`
 - `TG_CHAT_ID`
 - `GCP_SA_KEY`
+- `ANTHROPIC_API_KEY`
 
 ### 4. GCP / Firestore
 

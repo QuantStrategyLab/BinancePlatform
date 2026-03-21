@@ -56,10 +56,39 @@ Non-goals:
 - **trade_state_support.py** — Trade-state normalization and retired-position tracking helpers.
 - **research/backtest.py** — Optional audit-only backtest / strategy-comparison runner; not part of the live execution contract.
 - **run_cycle_replay.py** — Fixed-input dry-run executor for one full strategy cycle using local fixtures.
+- **scripts/run_monthly_report_bundle.py** — Monthly aggregation script: hourly execution JSONs to review bundle and markdown.
 - **requirements.txt** — Human-maintained top-level Python deps.
 - **requirements-lock.txt** — Pinned dependency set used by CI/deploy when present.
 
 Generated local outputs under `reports/` are intentionally not committed. Fixed-input fixtures under `tests/fixtures/` are committed because they are part of the dry-run regression harness.
+
+## Execution Logging & Monthly Review
+
+Each hourly run pushes the full execution report JSON to an orphan `logs` branch under `hourly/{YYYY-MM}/{YYYY-MM-DDTHHMM}.json`.
+
+On the 1st of each month (UTC 00:00), the **Monthly Execution Report** workflow aggregates all hourly logs from the previous month, creates a structured review bundle, and opens a GitHub Issue labeled `monthly-review`.
+
+An **AI Monthly Review** workflow triggers on that issue label and posts a bilingual (English + Chinese) analysis covering trade execution quality, circuit breaker events, degraded mode episodes, PnL breakdown, upstream pool impact, error patterns, and earn buffer efficiency.
+
+### Workflows
+
+| Workflow | File | Trigger | Runner |
+|----------|------|---------|--------|
+| Runtime | `main.yml` | `workflow_dispatch` | self-hosted |
+| CI | `ci.yml` | push to main | ubuntu-latest |
+| Monthly Report | `monthly_report.yml` | 1st of month + manual | ubuntu-latest |
+| AI Review | `ai_review.yml` | issue labeled `monthly-review` | ubuntu-latest |
+
+### Required Secrets
+
+| Secret | Used by |
+|--------|---------|
+| `BINANCE_API_KEY` | Runtime |
+| `BINANCE_API_SECRET` | Runtime |
+| `TG_TOKEN` | Runtime |
+| `TG_CHAT_ID` | Runtime |
+| `GCP_SA_KEY` | Runtime |
+| `ANTHROPIC_API_KEY` | AI Review |
 
 ## Strategy Overview
 
@@ -236,6 +265,7 @@ In **Settings → Secrets and variables → Actions**, add:
 | `TG_TOKEN` | Telegram bot token |
 | `TG_CHAT_ID` | Telegram chat ID |
 | `GCP_SA_KEY` | Full JSON content of the GCP service account key (written by the runtime workflow to a temp file and exported as `GOOGLE_APPLICATION_CREDENTIALS` only for the strategy step) |
+| `ANTHROPIC_API_KEY` | Anthropic API key (used by the AI Review workflow to post monthly bilingual analysis) |
 
 The runtime workflow passes these into the `Run trading strategy` step; it does not use a `.env` file on the runner.
 
