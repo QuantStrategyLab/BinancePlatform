@@ -1,0 +1,64 @@
+{
+  "status": "ok",
+  "run_id": "20260327T100154Z",
+  "dry_run": false,
+  "selected_symbols": {
+    "active_trend_pool": [
+      "TRXUSDT",
+      "ETHUSDT",
+      "BCHUSDT"
+    ],
+    "selected_candidates": []
+  },
+  "buy_sell_intents": [],
+  "btc_dca_intents": [],
+  "redemption_subscription_intents": [],
+  "notifications": [],
+  "state_write_intents": [
+    {
+      "reason": "trend_pool_metadata_refresh"
+    },
+    {
+      "reason": "cycle_complete"
+    }
+  ],
+  "side_effect_summary": {
+    "executed_call_count": 2,
+    "suppressed_call_count": 0
+  },
+  "error_summary": {
+    "errors": []
+  },
+  "log_lines": [
+    "\ud83d\udce1 Trend pool source: fresh_upstream | mode=core_major | version=2026-03-15-core_major | as_of=2026-03-15 | project=crypto-leader-rotation",
+    "   \u00b7 Loaded fresh upstream trend pool from firestore:strategy/CRYPTO_LEADER_ROTATION_LIVE_POOL",
+    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 \ud83d\udce6 Portfolio snapshot \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501",
+    "\ud83d\udcb0 Total equity: $308.85 (daily portfolio: -0.44%)",
+    "\ud83e\ude99 BTC core target: 14.5% | current $77.14 | available $0.00",
+    "\ud83d\udd25 Trend sleeve target: 85.5% | current $0.00 | available $221.21 | trend sleeve daily: 0.00%",
+    "\u26fd BNB fuel reserve: $10.49",
+    "\ud83d\udea6 BTC gate: OFF | Ahr999=0.753 | Z-Score=-1.40",
+    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501",
+    "\ud83d\uddd3\ufe0f Upstream official monthly pool: TRXUSDT, NEARUSDT, BCHUSDT, ETHUSDT, SOLUSDT",
+    "\ud83e\udded Current monthly execution pool: TRXUSDT, ETHUSDT, BCHUSDT",
+    "\ud83d\udccc Current monthly execution pool size: 3",
+    "\ud83c\udfaf Current execution targets: no candidates; stay defensive",
+    " \u2514 TRXUSDT: \ud83d\udca4flat | price: $0.3137 | rel BTC: 14.76 | momentum: 8.91%",
+    " \u2514 NEARUSDT: \ud83d\udca4flat | price: $1.2137 | rel BTC: -0.13 | momentum: -12.44%",
+    " \u2514 BCHUSDT: \ud83d\udca4flat | price: $466.6763 | rel BTC: 2.99 | momentum: -6.55%",
+    " \u2514 ETHUSDT: \ud83d\udca4flat | price: $2040.7799 | rel BTC: -0.60 | momentum: -13.86%",
+    " \u2514 SOLUSDT: \ud83d\udca4flat | price: $85.0949 | rel BTC: -1.44 | momentum: -16.37%",
+    "\ud83e\udded BTC accumulation radar: Ahr999=0.753 | Z-Score=-1.40 (threshold:2.50)"
+  ],
+  "total_equity_usdt": 308.84563578434097,
+  "trend_equity_usdt": 0.0,
+  "circuit_breaker_triggered": false,
+  "degraded_mode_level": null,
+  "upstream_pool_symbols": [
+    "TRXUSDT",
+    "NEARUSDT",
+    "BCHUSDT",
+    "ETHUSDT",
+    "SOLUSDT"
+  ]
+}
