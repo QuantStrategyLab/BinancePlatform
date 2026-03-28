@@ -27,16 +27,21 @@ jobs:
       - name: Compile scripts
         run: |
           python -m py_compile \
+            application/cycle_service.py \
+            degraded_mode_support.py \
+            entrypoints/cli.py \
+            market_snapshot_support.py \
             main.py \
+            notify_i18n_support.py \
             research/backtest.py \
-            strategy_core.py \
-            runtime_support.py \
-            live_services.py \
-            exchange_support.py \
-            trend_pool_support.py \
-            trade_state_support.py \
             run_cycle_replay.py \
-            scripts/run_monthly_report_bundle.py
+            runtime_config_support.py \
+            runtime_support.py \
+            scripts/run_monthly_report_bundle.py \
+            strategy_core.py \
+            live_services.py \
+            trend_pool_support.py \
+            trade_state_support.py
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
