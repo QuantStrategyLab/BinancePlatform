@@ -6,6 +6,8 @@ Automated crypto quant for Binance spot: BTC DCA core plus altcoin trend rotatio
 
 **Trend universe source:** Prefer the upstream published pool from CryptoLeaderRotation. This repo now validates upstream payload freshness and contract shape before using it, keeps a last known good upstream payload in state, and only reaches static fallback as an explicit degraded last resort.
 
+The current `crypto_leader_rotation` pure strategy modules are sourced from `CryptoStrategies`.
+
 **Workspace assumption:** Local replay and monitoring helpers expect the upstream repo to be checked out at `../CryptoLeaderRotation` unless you override the relevant path flags/env vars.
 
 **Python runtime:** Prefer Python `3.11`. CI is pinned to 3.11, and local helper commands now prefer `python3.11` when available while still falling back to `python3`.

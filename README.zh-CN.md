@@ -11,6 +11,8 @@
 
 **趋势池来源：** 优先消费上游 `CryptoLeaderRotation` 发布的月度 live pool。本仓库会先校验上游 payload 的新鲜度和契约字段，再决定是否采用；同时会把成功接受过的上游 payload 作为 last known good 保存在状态中；只有前面几层都不可用时才会退化到本地静态 fallback。
 
+当前 `crypto_leader_rotation` 的纯策略模块来自 `CryptoStrategies`。
+
 **工作区假设：** 本地 replay、monitor 和 review 工具默认假设上游仓库位于 `../CryptoLeaderRotation`。如果目录不同，可以通过参数或环境变量覆盖。
 
 **Python 版本：** 推荐 `Python 3.11`。CI 固定在 `3.11`，本地辅助命令会优先使用 `python3.11`，没有时回退到 `python3`。
