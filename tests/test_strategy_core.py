@@ -7,7 +7,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import strategy_core
+try:
+    import strategy_core
+except ModuleNotFoundError as exc:
+    if exc.name != "pandas":
+        raise
+    strategy_core = None
 
 
 def make_indicator(close, vol20, *, bonus_bias=0.0):
@@ -29,6 +34,7 @@ def make_indicator(close, vol20, *, bonus_bias=0.0):
 
 
 class StrategyCoreTests(unittest.TestCase):
+    @unittest.skipIf(strategy_core is None, "pandas is not installed")
     def test_build_rotation_pool_ranking_applies_membership_bonus(self):
         btc_snapshot = {
             "btc_roc20": 0.03,
@@ -54,6 +60,7 @@ class StrategyCoreTests(unittest.TestCase):
         self.assertEqual([item["symbol"] for item in ranking], ["SOLUSDT", "ETHUSDT"])
         self.assertGreater(ranking[0]["score"], ranking[1]["score"])
 
+    @unittest.skipIf(strategy_core is None, "pandas is not installed")
     def test_select_rotation_weights_supports_equal_and_inverse_vol(self):
         btc_snapshot = {
             "btc_roc20": 0.03,
@@ -89,6 +96,7 @@ class StrategyCoreTests(unittest.TestCase):
         self.assertAlmostEqual(inverse_vol_weights["ETHUSDT"]["weight"], 2.0 / 3.0)
         self.assertAlmostEqual(inverse_vol_weights["SOLUSDT"]["weight"], 1.0 / 3.0)
 
+    @unittest.skipIf(strategy_core is None, "pandas is not installed")
     def test_compute_allocation_budgets_matches_layer_targets(self):
         allocation = strategy_core.compute_allocation_budgets(
             total_equity=10_000.0,
