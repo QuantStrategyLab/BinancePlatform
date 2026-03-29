@@ -4,7 +4,7 @@ Language: English | [Simplified Chinese](README.zh-CN.md)
 
 Automated crypto quant for Binance spot: BTC DCA core plus altcoin trend rotation. Uses valuation (AHR999, Z-Score) and trend gates (MA200, slope). Compatible with Binance flexible earn (auto redeem/subscribe), USDT buffer, BNB fuel, Telegram alerts, and Firestore state.
 
-**Trend universe source:** Prefer the upstream published pool from CryptoLeaderRotation. This repo now validates upstream payload freshness and contract shape before using it, keeps a last known good upstream payload in state, and only reaches static fallback as an explicit degraded last resort.
+**Trend universe source:** Prefer the upstream published pool from CryptoLeaderRotation. This repository validates upstream payload freshness and contract shape before using it, keeps a last known good upstream payload in state, and only uses the static fallback in degraded mode.
 
 The current `crypto_leader_rotation` pure strategy modules are sourced from `CryptoStrategies`.
 
@@ -227,7 +227,7 @@ Optional:
 | `TREND_POOL_ACCEPTABLE_MODES` | Comma-separated allowed upstream modes (default `core_major`) |
 | `TREND_POOL_EXPECTED_SIZE` | Expected upstream live-pool size for contract checks (default `5`) |
 | `TREND_POOL_ALLOW_NEW_ENTRIES_ON_DEGRADED` | Allow trend buys when running on last-known-good or fallback pool sources (default `false`) |
-| `STRATEGY_PROFILE` | Strategy profile selector (default: `crypto_leader_rotation`, currently the only supported `crypto` value) |
+| `STRATEGY_PROFILE` | Strategy profile selector (default: `crypto_leader_rotation`; supported value: `crypto_leader_rotation`) |
 | `NOTIFY_LANG` | Log and notification language: `en` (English, default) or `zh` (Chinese) |
 
 ## Notification Format
@@ -275,7 +275,7 @@ Quantity: 0.00125 BTC
 
 The repo is intended to run on a **self-hosted GitHub Actions runner** (e.g. a VPS). The runtime workflow checks out code, installs dependencies, writes GCP credentials into a runner temp file inside the execution step, removes that file automatically on exit, then runs `main.py`. The runner is expected to receive `workflow_dispatch` requests from one external scheduler instead of relying on GitHub's built-in hourly scheduler.
 
-This strategy repo now depends on `QuantPlatformKit` for Binance client bootstrap, balance helpers, market-data snapshots, and quantity-format helpers. The runner still executes this strategy repo only; `QuantPlatformKit` is not deployed separately.
+This repository uses `QuantPlatformKit` for Binance client bootstrap, balance helpers, market-data snapshots, and quantity-format helpers. The runner executes this repository directly; `QuantPlatformKit` is not deployed separately.
 
 ### 1. Self-hosted runner
 

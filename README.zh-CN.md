@@ -255,7 +255,7 @@ AHR999: 0.45
 
 本仓库默认运行在 **self-hosted GitHub Actions runner** 上，例如 VPS。workflow 会拉代码、安装依赖、从 secret 写入 `gcp-key.json`，然后运行 `main.py`。不是“手动下载后本地 cron”那种流程。
 
-这个策略仓库现在通过 `QuantPlatformKit` 复用 Binance 客户端初始化、余额辅助、行情快照和下单数量格式化。runner 仍然只执行这个策略仓库本身，`QuantPlatformKit` 不单独部署。
+这个仓库通过 `QuantPlatformKit` 复用 Binance 客户端初始化、余额辅助、行情快照和下单数量格式化。runner 直接执行这个仓库，`QuantPlatformKit` 不单独部署。
 
 ### 1. Self-hosted runner
 
@@ -289,7 +289,7 @@ AHR999: 0.45
 
 也就是说，如果你在多个 quant 仓库之间保留一层很小的共享配置，这个仓库直接使用组织级 `GLOBAL_TELEGRAM_CHAT_ID` 和 `NOTIFY_LANG`。`TG_TOKEN`、Binance API key、`GCP_SA_KEY` 仍然应该留在这个仓库自己的 secrets 里。
 
-`STRATEGY_PROFILE` 现在也保留成了一层很薄的未来策略切换入口；当前这个仓库只支持 `crypto_leader_rotation`，它所属的策略大类是 `crypto`。
+`STRATEGY_PROFILE` 当前只支持 `crypto_leader_rotation`；对应的策略域是 `crypto`。
 
 ### 4. GCP / Firestore
 
