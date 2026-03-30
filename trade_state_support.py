@@ -70,6 +70,7 @@ def build_default_state(
         "trend_pool_source_project": "",
         "trend_pool_loaded_at": "",
         "trend_pool_messages": [],
+        "last_balance_snapshot": {},
         last_good_payload_key: {},
         action_history_key: {},
         retired_positions_key: {},

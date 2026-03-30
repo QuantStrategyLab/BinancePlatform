@@ -3,8 +3,10 @@ from types import SimpleNamespace
 
 from application.portfolio_service import (
     append_portfolio_report,
+    build_balance_snapshot,
     compute_daily_pnls,
     compute_portfolio_allocation,
+    maybe_rebase_daily_state_for_balance_change,
     maybe_reset_daily_state,
 )
 
@@ -98,6 +100,49 @@ class PortfolioServiceTests(unittest.TestCase):
         self.assertEqual(observed[0][0], "trend_pnl_basis_migrate")
         self.assertEqual(state["daily_trend_equity_base"], 450.0)
         self.assertEqual(state["daily_trend_pnl_basis"], "trend_val")
+
+    def test_build_balance_snapshot_tracks_total_balances_by_asset(self):
+        snapshot = build_balance_snapshot(
+            {"ETHUSDT": {"base_asset": "ETH"}, "SOLUSDT": {"base_asset": "SOL"}},
+            {"ETHUSDT": 1.25, "SOLUSDT": 3.5, "BTCUSDT": 0.2},
+            412.3456,
+        )
+
+        self.assertEqual(snapshot, {"USDT": 412.3456, "BTC": 0.2, "ETH": 1.25, "SOL": 3.5})
+
+    def test_maybe_rebase_daily_state_for_balance_change_resets_bases(self):
+        runtime = SimpleNamespace(name="runtime")
+        report = {"status": "ok"}
+        state = {
+            "last_balance_snapshot": {"USDT": 1000.0, "BTC": 0.1, "ETH": 2.0},
+            "daily_equity_base": 1200.0,
+            "daily_trend_equity_base": 400.0,
+            "daily_trend_pnl_basis": "trend_val",
+        }
+        observed = []
+        log_buffer = []
+
+        changed = maybe_rebase_daily_state_for_balance_change(
+            state,
+            runtime,
+            report,
+            950.0,
+            250.0,
+            {"USDT": 850.0, "BTC": 0.1, "ETH": 1.5},
+            log_buffer,
+            runtime_set_trade_state_fn=lambda _runtime, _report, current_state, reason: observed.append(
+                (reason, dict(current_state))
+            ),
+            append_log_fn=lambda buffer, message: buffer.append(message),
+            translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(observed[0][0], "external_balance_flow_rebase")
+        self.assertEqual(state["daily_equity_base"], 950.0)
+        self.assertEqual(state["daily_trend_equity_base"], 250.0)
+        self.assertEqual(state["last_balance_snapshot"], {"USDT": 850.0, "BTC": 0.1, "ETH": 1.5})
+        self.assertTrue(any("external_balance_flow_rebased" in line for line in log_buffer))
 
     def test_compute_daily_pnls_returns_zero_when_bases_missing(self):
         daily_pnl, trend_daily_pnl = compute_daily_pnls({}, 1000.0, 500.0)

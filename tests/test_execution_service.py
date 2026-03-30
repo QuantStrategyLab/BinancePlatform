@@ -25,6 +25,7 @@ class ExecutionServiceTests(unittest.TestCase):
             state,
             {"ETHUSDT": {"base_asset": "ETH"}},
             balances,
+            50.0,
             prices,
             -0.10,
             -0.05,
@@ -37,12 +38,14 @@ class ExecutionServiceTests(unittest.TestCase):
             ),
             set_symbol_trade_state_fn=lambda _state, symbol, symbol_state: observed["state_sets"].append((symbol, dict(symbol_state))),
             runtime_set_trade_state_fn=lambda _runtime, _report, _state, reason: observed["persist_reasons"].append(reason),
+            build_balance_snapshot_fn=lambda _universe, current_balances, u_total: {"USDT": u_total, "ETH": current_balances["ETHUSDT"]},
             translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
         )
 
         self.assertTrue(result)
         self.assertAlmostEqual(balances["ETHUSDT"], 0.5, places=6)
         self.assertTrue(state["is_circuit_broken"])
+        self.assertEqual(state["last_balance_snapshot"], {"USDT": 200.0, "ETH": 0.5})
         self.assertTrue(report["circuit_breaker_triggered"])
         self.assertEqual(report["buy_sell_intents"][0]["reason"], "daily_circuit_breaker")
         self.assertEqual(observed["asset_checks"][0][0], "ETH")

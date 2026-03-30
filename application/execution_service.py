@@ -9,6 +9,7 @@ def run_daily_circuit_breaker(
     state,
     runtime_trend_universe,
     balances,
+    u_total,
     prices,
     trend_daily_pnl,
     circuit_breaker_pct,
@@ -20,6 +21,7 @@ def run_daily_circuit_breaker(
     runtime_call_client_fn,
     set_symbol_trade_state_fn,
     runtime_set_trade_state_fn,
+    build_balance_snapshot_fn,
     translate_fn,
 ):
     if trend_daily_pnl > circuit_breaker_pct:
@@ -60,6 +62,7 @@ def run_daily_circuit_breaker(
                 effect_type="order_sell",
             )
             balances[symbol] = max(0.0, balances[symbol] - qty)
+            u_total += qty * prices[symbol]
             set_symbol_trade_state_fn(
                 state,
                 symbol,
@@ -74,6 +77,7 @@ def run_daily_circuit_breaker(
             )
 
     state.update({"is_circuit_broken": True})
+    state["last_balance_snapshot"] = build_balance_snapshot_fn(runtime_trend_universe, balances, u_total)
     report["circuit_breaker_triggered"] = True
     runtime_set_trade_state_fn(runtime, report, state, reason="daily_circuit_breaker")
     runtime_notify_fn(

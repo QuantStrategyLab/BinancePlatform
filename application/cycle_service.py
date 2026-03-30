@@ -16,7 +16,9 @@ def execute_strategy_cycle(
     append_trend_pool_source_logs,
     capture_market_snapshot,
     compute_portfolio_allocation,
+    build_balance_snapshot,
     maybe_reset_daily_state,
+    maybe_rebase_daily_state_for_balance_change,
     compute_daily_pnls,
     append_portfolio_report,
     run_daily_circuit_breaker,
@@ -81,8 +83,18 @@ def execute_strategy_cycle(
         now_utc = runtime.now_utc
         today_utc = now_utc.strftime("%Y-%m-%d")
         today_id_str = now_utc.strftime("%Y%m%d")
+        current_balance_snapshot = build_balance_snapshot(runtime_trend_universe, balances, u_total)
 
         maybe_reset_daily_state(state, runtime, report, today_utc, total_equity, trend_val_equity)
+        maybe_rebase_daily_state_for_balance_change(
+            state,
+            runtime,
+            report,
+            total_equity,
+            trend_val_equity,
+            current_balance_snapshot,
+            log_buffer,
+        )
         daily_pnl, trend_daily_pnl = compute_daily_pnls(state, total_equity, trend_val_equity)
         append_portfolio_report(log_buffer, allocation, fuel_val, daily_pnl, trend_daily_pnl, btc_snapshot)
 
@@ -96,6 +108,7 @@ def execute_strategy_cycle(
             state,
             runtime_trend_universe,
             balances,
+            u_total,
             prices,
             trend_daily_pnl,
             circuit_breaker_pct,
@@ -172,6 +185,7 @@ def execute_strategy_cycle(
             notifier_fn=lambda text: runtime_notify(runtime, report, text),
         )
 
+        state["last_balance_snapshot"] = build_balance_snapshot(runtime_trend_universe, balances, u_total)
         runtime_set_trade_state(runtime, report, state, reason="cycle_complete")
 
     except Exception as exc:

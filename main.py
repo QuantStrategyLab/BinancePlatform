@@ -62,8 +62,10 @@ from application.execution_service import (
 )
 from application.portfolio_service import (
     append_portfolio_report as app_append_portfolio_report,
+    build_balance_snapshot as app_build_balance_snapshot,
     compute_daily_pnls as app_compute_daily_pnls,
     compute_portfolio_allocation as app_compute_portfolio_allocation,
+    maybe_rebase_daily_state_for_balance_change as app_maybe_rebase_daily_state_for_balance_change,
     maybe_reset_daily_state as app_maybe_reset_daily_state,
 )
 from application.state_service import (
@@ -769,6 +771,10 @@ def _compute_portfolio_allocation(runtime_trend_universe, balances, prices, u_to
     )
 
 
+def _build_balance_snapshot(runtime_trend_universe, balances, u_total):
+    return app_build_balance_snapshot(runtime_trend_universe, balances, u_total)
+
+
 def _maybe_reset_daily_state(state, runtime, report, today_utc, total_equity, trend_val_equity):
     return app_maybe_reset_daily_state(
         state,
@@ -778,6 +784,29 @@ def _maybe_reset_daily_state(state, runtime, report, today_utc, total_equity, tr
         total_equity,
         trend_val_equity,
         runtime_set_trade_state_fn=runtime_set_trade_state,
+    )
+
+
+def _maybe_rebase_daily_state_for_balance_change(
+    state,
+    runtime,
+    report,
+    total_equity,
+    trend_val_equity,
+    current_balance_snapshot,
+    log_buffer,
+):
+    return app_maybe_rebase_daily_state_for_balance_change(
+        state,
+        runtime,
+        report,
+        total_equity,
+        trend_val_equity,
+        current_balance_snapshot,
+        log_buffer,
+        runtime_set_trade_state_fn=runtime_set_trade_state,
+        append_log_fn=append_log,
+        translate_fn=t,
     )
 
 
@@ -806,6 +835,7 @@ def _run_daily_circuit_breaker(
     state,
     runtime_trend_universe,
     balances,
+    u_total,
     prices,
     trend_daily_pnl,
     circuit_breaker_pct,
@@ -817,6 +847,7 @@ def _run_daily_circuit_breaker(
         state,
         runtime_trend_universe,
         balances,
+        u_total,
         prices,
         trend_daily_pnl,
         circuit_breaker_pct,
@@ -827,6 +858,7 @@ def _run_daily_circuit_breaker(
         runtime_call_client_fn=runtime_call_client,
         set_symbol_trade_state_fn=set_symbol_trade_state,
         runtime_set_trade_state_fn=runtime_set_trade_state,
+        build_balance_snapshot_fn=_build_balance_snapshot,
         translate_fn=t,
     )
 
@@ -1074,7 +1106,9 @@ def execute_cycle(runtime):
             append_trend_pool_source_logs=_append_trend_pool_source_logs,
             capture_market_snapshot=_capture_market_snapshot,
             compute_portfolio_allocation=_compute_portfolio_allocation,
+            build_balance_snapshot=_build_balance_snapshot,
             maybe_reset_daily_state=_maybe_reset_daily_state,
+            maybe_rebase_daily_state_for_balance_change=_maybe_rebase_daily_state_for_balance_change,
             compute_daily_pnls=_compute_daily_pnls,
             append_portfolio_report=_append_portfolio_report,
             run_daily_circuit_breaker=_run_daily_circuit_breaker,
