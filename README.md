@@ -13,6 +13,8 @@ Automated crypto quant for Binance spot: BTC DCA core plus altcoin trend rotatio
 
 The current `crypto_leader_rotation` pure strategy modules are sourced from `CryptoStrategies`.
 
+Full strategy documentation now lives in [`CryptoStrategies`](https://github.com/QuantStrategyLab/CryptoStrategies#crypto_leader_rotation). The sections below focus on downstream execution assumptions and runtime behavior.
+
 **Workspace assumption:** Local replay and monitoring helpers expect the upstream repo to be checked out at `../CryptoLeaderRotation` unless you override the relevant path flags/env vars.
 
 **Python runtime:** Prefer Python `3.11`. CI is pinned to 3.11, and local helper commands now prefer `python3.11` when available while still falling back to `python3`.
@@ -239,6 +241,8 @@ Optional:
 项目使用估值指标（`AHR999`、`Z-Score`）和趋势闸门（`MA200`、均线斜率），并兼容 Binance Flexible Earn、USDT 缓冲、BNB 手续费仓、Telegram 通知和 Firestore 状态存储。
 
 当前 `crypto_leader_rotation` 的纯策略模块来自 `CryptoStrategies`。
+
+完整策略说明现在放在 [`CryptoStrategies`](https://github.com/QuantStrategyLab/CryptoStrategies#crypto_leader_rotation)。下面这些章节主要保留下游执行侧的约束、运行时行为和运维说明。
 
 ### 执行边界
 

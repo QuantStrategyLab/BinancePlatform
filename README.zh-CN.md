@@ -13,6 +13,8 @@
 
 当前 `crypto_leader_rotation` 的纯策略模块来自 `CryptoStrategies`。
 
+完整策略说明现在放在 [`CryptoStrategies`](https://github.com/QuantStrategyLab/CryptoStrategies#crypto_leader_rotation)。下面这些章节主要保留下游执行侧的约束、运行时行为和运维说明。
+
 **工作区假设：** 本地 replay、monitor 和 review 工具默认假设上游仓库位于 `../CryptoLeaderRotation`。如果目录不同，可以通过参数或环境变量覆盖。
 
 **Python 版本：** 推荐 `Python 3.11`。CI 固定在 `3.11`，本地辅助命令会优先使用 `python3.11`，没有时回退到 `python3`。
