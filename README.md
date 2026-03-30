@@ -133,12 +133,14 @@ Runs hourly; signals are daily trend and risk, not high-frequency.
 
 - **BTC gate:** Trend layer only when `BTC price > MA200` and `MA200 slope > 0`.
 - **Circuit breaker:** If trend-layer daily PnL ≤ threshold, flatten trend book; BTC core unchanged. (Daily PnL is computed from real trend holdings value only, excluding the allocated USDT cash pool.)
+- **External USDT flows:** Manual USDT deposits or withdrawals reset the daily PnL bases instead of being treated as a loss event. Flexible Earn subscribe or redeem does not trigger this reset because the runtime tracks total USDT rather than spot-only USDT.
 - **BNB:** Auto top-up for fees; not in trend rotation.
 
 ## Earn Compatibility
 
 - Check spot before orders; redeem from flexible earn if needed.
 - Maintain USDT spot buffer (subscribe excess, redeem shortfall).
+- Flexible Earn subscribe or redeem moves USDT between spot and earn only; it does not count as an external balance shock and does not trigger the circuit breaker.
 
 ## State (Firestore)
 

@@ -74,9 +74,10 @@ def maybe_rebase_daily_state_for_balance_change(
         }
     )
     runtime_set_trade_state_fn(runtime, report, state, reason="external_balance_flow_rebase")
+    message_key = "external_usdt_flow_rebased" if changed_assets == ["USDT"] else "external_balance_flow_rebased"
     append_log_fn(
         log_buffer,
-        translate_fn("external_balance_flow_rebased", assets=", ".join(changed_assets)),
+        translate_fn(message_key, assets=", ".join(changed_assets)),
     )
     return True
 
