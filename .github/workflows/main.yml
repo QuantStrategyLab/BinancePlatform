@@ -2,17 +2,39 @@ name: Runtime
 
 on:
   workflow_dispatch:
+    inputs:
+      validate_only:
+        description: "Skip live trading and only validate GitHub OIDC + Firestore access"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  GCP_PROJECT_ID: binancequant
+  GCP_WORKLOAD_IDENTITY_PROVIDER: projects/677468735457/locations/global/workloadIdentityPools/github-actions/providers/github-main
+  GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: binance-platform-runtime@binancequant.iam.gserviceaccount.com
 
 jobs:
   deploy:
     runs-on: self-hosted
     permissions:
       contents: write
+      id-token: write
     steps:
       - name: 1. Checkout latest code
         uses: actions/checkout@v5
 
-      - name: 2. Prepare or update dependency environment
+      - name: 2. Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: 3. Prepare or update dependency environment
         run: |
           REQ_FILE="requirements-lock.txt"
           if [ ! -f "$REQ_FILE" ]; then REQ_FILE="requirements.txt"; fi
@@ -38,21 +60,26 @@ jobs:
             fi
           fi
 
-      - name: 3. Run trading strategy
+      - name: 4. Run trading strategy
         run: |
           set -euo pipefail
-          if [ -z "${GCP_SA_KEY:-}" ]; then
-            echo "Missing GCP_SA_KEY secret." >&2
-            exit 1
+          if [ "${VALIDATE_ONLY:-false}" = "true" ]; then
+            venv/bin/python - <<'PY'
+            from google.cloud import firestore
+
+            client = firestore.Client()
+            collections = []
+            for index, collection in enumerate(client.collections()):
+                if index >= 3:
+                    break
+                collections.append(collection.id)
+            print(
+                f"Validated Google Cloud auth and Firestore access. "
+                f"project={client.project} sample_collections={collections}"
+            )
+            PY
+            exit 0
           fi
-          CREDENTIALS_FILE="$(mktemp "${RUNNER_TEMP:-/tmp}/binancequant-gcp-key.XXXXXX.json")"
-          cleanup() {
-            rm -f "$CREDENTIALS_FILE"
-          }
-          trap cleanup EXIT
-          umask 077
-          printf '%s' "$GCP_SA_KEY" > "$CREDENTIALS_FILE"
-          export GOOGLE_APPLICATION_CREDENTIALS="$CREDENTIALS_FILE"
           venv/bin/python main.py
         env:
           BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
@@ -61,14 +88,15 @@ jobs:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
           NOTIFY_LANG: ${{ vars.NOTIFY_LANG }}
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          VALIDATE_ONLY: ${{ github.event.inputs.validate_only || 'false' }}
 
-      - name: 4. Capture execution timestamp
+      - name: 5. Capture execution timestamp
         id: ts
         run: echo "ts=$(date -u +%Y-%m-%dT%H%M)" >> "$GITHUB_OUTPUT"
 
-      - name: 5. Push execution log to logs branch
+      - name: 6. Push execution log to logs branch
         continue-on-error: true
+        if: ${{ github.event.inputs.validate_only != 'true' }}
         run: |
           LOGS_BRANCH="logs"
           TS="${{ steps.ts.outputs.ts }}"

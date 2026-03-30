@@ -107,7 +107,7 @@ Expected behavior:
 
 Operator action:
 
-- Validate `GOOGLE_APPLICATION_CREDENTIALS` or workflow secret `GCP_SA_KEY`
+- Validate `GOOGLE_APPLICATION_CREDENTIALS` for local runs, or validate the GitHub OIDC / Workload Identity binding for the runtime workflow
 - Check service account validity and Firestore API availability
 - Use `run_cycle_replay.py` for dry-run confirmation while Firestore is unavailable
 
@@ -160,11 +160,11 @@ Run unit tests:
 python3 -m unittest discover -s tests -v
 ```
 
-## Workflow Secret Hygiene
+## Workflow Runtime Auth
 
-- The GitHub Actions workflow now writes `GCP_SA_KEY` into a temp file inside the execution step only.
-- The temp credential path is exported as `GOOGLE_APPLICATION_CREDENTIALS` only for that step.
-- A shell `trap` removes the file on exit, including failure paths.
+- The runtime workflow now authenticates to Google Cloud with GitHub OIDC + Workload Identity Federation.
+- For safe runner-side verification, dispatch `main.yml` with `validate_only=true`; that checks Google Cloud + Firestore auth without running live trades.
+- Local manual runs can still use `GOOGLE_APPLICATION_CREDENTIALS=/path/to/gcp-sa.json` when needed.
 
 ## Escalation Guidelines
 

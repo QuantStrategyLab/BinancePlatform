@@ -68,7 +68,6 @@
 | `BINANCE_API_KEY` | 运行时 |
 | `BINANCE_API_SECRET` | 运行时 |
 | `TG_TOKEN` | 运行时 |
-| `GCP_SA_KEY` | 运行时 |
 | `ANTHROPIC_API_KEY` | AI 审阅 |
 
 ## 策略概览
@@ -257,7 +256,7 @@ AHR999: 0.45
 
 ## 部署
 
-本仓库默认运行在 **self-hosted GitHub Actions runner** 上，例如 VPS。workflow 会拉代码、安装依赖、从 secret 写入 `gcp-key.json`，然后运行 `main.py`。不是“手动下载后本地 cron”那种流程。
+本仓库默认运行在 **self-hosted GitHub Actions runner** 上，例如 VPS。workflow 会拉代码，通过 GitHub OIDC + Workload Identity Federation 登录 Google Cloud，安装依赖，然后运行 `main.py`。不是“手动下载后本地 cron”那种流程。
 
 这个仓库通过 `QuantPlatformKit` 复用 Binance 客户端初始化、余额辅助、行情快照和下单数量格式化。runner 直接执行这个仓库，`QuantPlatformKit` 不单独部署。
 
@@ -268,9 +267,9 @@ AHR999: 0.45
 
 ### 2. Workflow 和调度
 
-- [`.github/workflows/main.yml`](./.github/workflows/main.yml) 负责 checkout、写入 GCP key、准备 venv、执行 `main.py`
-- `push` 只触发 job；真正执行策略的步骤默认只在 `workflow_dispatch` 或 `schedule` 下运行
-- 如需定时运行，可在 workflow 中加入 `schedule`
+- [`.github/workflows/main.yml`](./.github/workflows/main.yml) 负责 checkout、通过 OIDC 登录 Google Cloud、准备 venv、执行 `main.py`
+- `push` 只触发校验类 job；真正执行策略的步骤默认只在 `workflow_dispatch` 下运行
+- 如需安全验证 self-hosted runner 上的 Google Cloud 登录，可用 `validate_only=true` 手动触发 `main.yml`；这不会下实盘单
 - VPS 侧推荐的运行单元名：`binance-quant`
 - Cloud Run / VPS 的统一部署规则和命名建议见 [`QuantPlatformKit/docs/deployment_model.md`](../QuantPlatformKit/docs/deployment_model.md)
 
@@ -282,7 +281,6 @@ AHR999: 0.45
 - `BINANCE_API_SECRET`
 - `TG_TOKEN`
 - `GLOBAL_TELEGRAM_CHAT_ID`
-- `GCP_SA_KEY`
 - `ANTHROPIC_API_KEY`
 
 现在 runtime workflow 要求这两个仓库/组织 Variables 已经提供：
@@ -291,14 +289,14 @@ AHR999: 0.45
 - `NOTIFY_LANG`
 - `STRATEGY_PROFILE`（建议设为 `crypto_leader_rotation`）
 
-也就是说，如果你在多个 quant 仓库之间保留一层很小的共享配置，这个仓库直接使用组织级 `GLOBAL_TELEGRAM_CHAT_ID` 和 `NOTIFY_LANG`。`TG_TOKEN`、Binance API key、`GCP_SA_KEY` 仍然应该留在这个仓库自己的 secrets 里。
+也就是说，如果你在多个 quant 仓库之间保留一层很小的共享配置，这个仓库直接使用组织级 `GLOBAL_TELEGRAM_CHAT_ID` 和 `NOTIFY_LANG`。`TG_TOKEN` 和 Binance API key 仍然应该留在这个仓库自己的 secrets 里。Google Cloud 登录现在走 GitHub OIDC，不再需要 `GCP_SA_KEY`。
 
 `STRATEGY_PROFILE` 当前只支持 `crypto_leader_rotation`；对应的策略域是 `crypto`。
 
 ### 4. GCP / Firestore
 
-- `GCP_SA_KEY` 对应的服务账号必须具备 Firestore 读写权限
-- 如果出现 invalid grant 或 account not found，通常说明 key 已失效、服务账号被删掉、或者项目不匹配
+- GitHub runtime workflow 现在通过 OIDC + Workload Identity Federation 代理 `binance-platform-runtime@binancequant.iam.gserviceaccount.com`
+- 这个 runtime 服务账号必须具备 Firestore 读写权限
 
 ## 本地运行
 

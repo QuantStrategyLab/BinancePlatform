@@ -95,7 +95,6 @@ An **AI Monthly Review** workflow triggers on that issue label and posts a bilin
 | `BINANCE_API_KEY` | Runtime |
 | `BINANCE_API_SECRET` | Runtime |
 | `TG_TOKEN` | Runtime |
-| `GCP_SA_KEY` | Runtime |
 | `ANTHROPIC_API_KEY` | AI Review |
 
 ## Strategy Overview
@@ -220,7 +219,7 @@ Required:
 | `BINANCE_API_SECRET` | Binance API secret |
 | `TG_TOKEN` | Telegram bot token |
 | `GLOBAL_TELEGRAM_CHAT_ID` | Telegram chat ID for alerts. |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Path to GCP service account JSON (or use `GCP_SA_KEY` and write to `gcp-key.json` before run) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to GCP credentials for local runs (the GitHub runtime workflow now gets credentials from OIDC automatically) |
 
 Across multiple quant repositories, `GLOBAL_TELEGRAM_CHAT_ID` and `NOTIFY_LANG` are reasonable shared settings. `TG_TOKEN`, Binance API keys, and GCP credential material should stay repository-specific.
 
@@ -331,7 +330,7 @@ Quantity: 0.00125 BTC
 
 ## Deploy (self-hosted runner + workflow)
 
-The repo is intended to run on a **self-hosted GitHub Actions runner** (e.g. a VPS). The runtime workflow checks out code, installs dependencies, writes GCP credentials into a runner temp file inside the execution step, removes that file automatically on exit, then runs `main.py`. The runner is expected to receive `workflow_dispatch` requests from one external scheduler instead of relying on GitHub's built-in hourly scheduler.
+The repo is intended to run on a **self-hosted GitHub Actions runner** (e.g. a VPS). The runtime workflow checks out code, authenticates to Google Cloud with GitHub OIDC + Workload Identity Federation, prepares dependencies, and then runs `main.py`. The runner is expected to receive `workflow_dispatch` requests from one external scheduler instead of relying on GitHub's built-in hourly scheduler.
 
 This repository uses `QuantPlatformKit` for Binance client bootstrap, balance helpers, market-data snapshots, and quantity-format helpers. The runner executes this repository directly; `QuantPlatformKit` is not deployed separately.
 
@@ -343,10 +342,11 @@ This repository uses `QuantPlatformKit` for Binance client bootstrap, balance he
 ### 2. Workflow and runtime trigger
 
 - **`.github/workflows/ci.yml`** is the push/manual validation workflow. It runs on GitHub-hosted runners and is limited to install/compile/test checks.
-- **`.github/workflows/main.yml`** is the runtime workflow. It runs on the self-hosted runner, prepares the local `venv`, writes a temporary GCP credential file inside the execution step, runs `venv/bin/python main.py`, and cleans the temp file via shell trap.
+- **`.github/workflows/main.yml`** is the runtime workflow. It runs on the self-hosted runner, authenticates to Google Cloud with OIDC, prepares the local `venv`, and runs `venv/bin/python main.py`.
 - **Triggers:** `ci.yml` runs on `push` to `main` and `workflow_dispatch`; `main.yml` runs on `workflow_dispatch` only.
 - **Runtime cadence:** GitHub Actions no longer schedules hourly runtime execution for this repo. The expected production model is one external scheduler, such as VPS cron + `curl`, calling the GitHub `workflow_dispatch` API for `main.yml`.
 - Use `Actions -> Runtime -> Run workflow` for one-off manual runs.
+- For a safe self-hosted auth smoke test, dispatch `main.yml` with `validate_only=true`. That validates GitHub OIDC + Firestore access without running live trades.
 - If you automate dispatch from a VPS, keep a single scheduler of record and avoid firing a new dispatch while the previous runtime job is still running.
 - Recommended runtime service name on the VPS side: `binance-quant`.
 - For the shared deployment model and naming rules across Cloud Run and VPS workloads, see [`QuantPlatformKit/docs/deployment_model.md`](../QuantPlatformKit/docs/deployment_model.md).
@@ -372,7 +372,6 @@ In **Settings → Secrets and variables → Actions**, add:
 | `BINANCE_API_SECRET` | Binance API secret |
 | `TG_TOKEN` | Telegram bot token |
 | `GLOBAL_TELEGRAM_CHAT_ID` | Telegram chat ID for alerts. |
-| `GCP_SA_KEY` | Full JSON content of the GCP service account key (written by the runtime workflow to a temp file and exported as `GOOGLE_APPLICATION_CREDENTIALS` only for the strategy step) |
 | `ANTHROPIC_API_KEY` | Anthropic API key (used by the AI Review workflow to post monthly bilingual analysis) |
 
 The runtime workflow passes these into the `Run trading strategy` step; it does not use a `.env` file on the runner.
@@ -382,12 +381,12 @@ It now also requires these repo or organization Variables:
 - `GLOBAL_TELEGRAM_CHAT_ID` from repo/org Variables
 - `NOTIFY_LANG` from repo/org Variables
 
-`TG_TOKEN`, Binance API keys, and `GCP_SA_KEY` should still remain repository-specific.
+`TG_TOKEN` and Binance API keys should still remain repository-specific. Google Cloud auth for the runtime workflow now uses GitHub OIDC instead of a repository JSON key.
 
 ### 4. GCP / Firestore
 
-- The service account in `GCP_SA_KEY` must have **Firestore** access (read/write) for the project that hosts the Firestore database used by this app.
-- **Invalid grant / account not found:** Usually means the key is for a deleted or wrong service account, or the key is from another project. Re-create a key for the correct account in the same project as Firestore and update the `GCP_SA_KEY` secret.
+- The GitHub runtime workflow now uses GitHub OIDC + Workload Identity Federation to impersonate `binance-platform-runtime@binancequant.iam.gserviceaccount.com`.
+- That runtime service account must have **Firestore** access (read/write) for the project that hosts the Firestore database used by this app.
 
 ### Local run (optional)
 
