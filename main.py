@@ -35,7 +35,7 @@ from market_snapshot_support import (
     capture_market_snapshot as ms_capture_market_snapshot,
 )
 from runtime_support import (
-    ExecutionRuntime,
+    ExecutionRuntime as _ExecutionRuntime,
     append_report_error,
     build_execution_report,
     next_order_id,
@@ -122,6 +122,8 @@ from trade_state_support import (
     set_symbol_trade_state as ts_set_symbol_trade_state,
     should_skip_duplicate_trend_action as ts_should_skip_duplicate_trend_action,
 )
+
+ExecutionRuntime = _ExecutionRuntime
 from trend_pool_support import (
     build_static_trend_pool_resolution as tp_build_static_trend_pool_resolution,
     build_trend_pool_resolution as tp_build_trend_pool_resolution,
