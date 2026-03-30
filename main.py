@@ -122,8 +122,6 @@ from trade_state_support import (
     set_symbol_trade_state as ts_set_symbol_trade_state,
     should_skip_duplicate_trend_action as ts_should_skip_duplicate_trend_action,
 )
-
-ExecutionRuntime = _ExecutionRuntime
 from trend_pool_support import (
     build_static_trend_pool_resolution as tp_build_static_trend_pool_resolution,
     build_trend_pool_resolution as tp_build_trend_pool_resolution,
@@ -137,6 +135,8 @@ from trend_pool_support import (
     parse_trend_universe_mapping as tp_parse_trend_universe_mapping,
     validate_trend_pool_payload as tp_validate_trend_pool_payload,
 )
+
+ExecutionRuntime = _ExecutionRuntime
 
 SEPARATOR = "━━━━━━━━━━━━━━━━━━"
 
