@@ -100,6 +100,15 @@ jobs:
       - name: Append task summary
         run: cat data/output/auto_optimization/task_summary.md >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Export selected task summary
+        id: selected_tasks
+        run: |
+          {
+            echo "task_summary<<EOF"
+            cat data/output/auto_optimization/task_summary.md
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Append skip reason
         if: steps.prereqs.outputs.has_anthropic_key != 'true' || steps.auto_payload.outputs.should_run != 'true'
         run: |
@@ -124,6 +133,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           use_bedrock: false
           use_vertex: false
+          claude_args: --max-turns 8
           prompt: |
             Do not ask for additional approval.
             Do not create a pull request yourself. The workflow will handle git, draft PR creation, and CI dispatch.
@@ -138,8 +148,8 @@ jobs:
             ## Issue Title
             ${{ steps.issue_context.outputs.issue_title }}
 
-            ## Issue Body
-            ${{ steps.issue_context.outputs.issue_body }}
+            ## Selected Low-Risk Tasks
+            ${{ steps.selected_tasks.outputs.task_summary }}
 
       - name: Detect changes
         id: changes
