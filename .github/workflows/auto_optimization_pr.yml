@@ -93,9 +93,7 @@ jobs:
       - name: Prepare auto optimization payload
         id: auto_payload
         run: |
-          python3 scripts/prepare_auto_optimization_pr.py \
-            --issue-context-file data/output/auto_optimization/issue_context.json \
-            --output-dir data/output/auto_optimization >> "$GITHUB_OUTPUT"
+          python3 scripts/prepare_auto_optimization_pr.py             --issue-context-file data/output/auto_optimization/issue_context.json             --output-dir data/output/auto_optimization >> "$GITHUB_OUTPUT"
 
       - name: Append task summary
         run: cat data/output/auto_optimization/task_summary.md >> "$GITHUB_STEP_SUMMARY"
@@ -115,7 +113,7 @@ jobs:
           if [ -f data/output/auto_optimization/skip_reason.txt ]; then
             cat data/output/auto_optimization/skip_reason.txt >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "No eligible low-risk auto-pr-safe tasks were found; skipping draft PR generation." >> "$GITHUB_STEP_SUMMARY"
+            echo "No eligible low-risk auto-pr-safe tasks were found; skipping automation." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Prepare automation branch
@@ -137,15 +135,17 @@ jobs:
           claude_args: --max-turns 8
           prompt: |
             Do not ask for additional approval.
-            Do not create a pull request yourself. The workflow will handle git, draft PR creation, and CI dispatch.
+            Do not create a pull request yourself. The workflow will handle git, PR creation, CI dispatch, and post-CI merge.
             Only implement the low-risk tasks explicitly marked `[auto-pr-safe]`.
             Ignore any medium-risk or high-risk tasks.
             You are working inside BinancePlatform, the downstream execution repository.
-            Prefer minimal changes in reporting, diagnostics, telemetry, tests, and safe operator-facing wording.
-            Do not change live trading thresholds, sizing logic, or execution behavior from this issue alone.
+            Prefer minimal changes in documentation, report wording, validation, shadow/challenger plumbing, instrumentation, and tests.
+            Do not change production selector logic or ranking behavior from this issue alone.
+            If an eligible task is marked `experiment-only`, keep the change non-production.
+            Never edit files under application/, infra/, strategy/, entrypoints/, or live runtime support files in this automation step.
             If the selected low-risk tasks already appear implemented on the current main branch, leave the working tree unchanged.
             Do not use Bash in this workflow. Limit yourself to file edits and repository-local reasoning.
-            The workflow will run CI after the draft PR is created.
+            The workflow will run CI after the PR is created.
 
             ## Issue Title
             ${{ steps.issue_context.outputs.issue_title }}
@@ -163,6 +163,60 @@ jobs:
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Evaluate merge guardrails
+        id: merge_guard
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git diff --name-only --relative > data/output/auto_optimization/changed_files.txt
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from scripts.prepare_auto_optimization_pr import evaluate_changed_files
+
+          output_dir = Path("data/output/auto_optimization")
+          payload = json.loads((output_dir / "payload.json").read_text(encoding="utf-8"))
+          changed_files = [
+              line.strip()
+              for line in (output_dir / "changed_files.txt").read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
+          guard = evaluate_changed_files(changed_files)
+          merge_ready = bool(payload.get("task_level_auto_merge_allowed")) and bool(guard["allowed"])
+          if not payload.get("task_level_auto_merge_allowed"):
+              reason = "task_level_guard"
+          elif not guard["allowed"]:
+              reason = "sensitive_changed_files"
+          else:
+              reason = "ready"
+
+          summary_lines = [
+              "## Merge Guardrails",
+              f"- Task-level auto-merge eligible: `{ 'yes' if payload.get('task_level_auto_merge_allowed') else 'no' }`",
+              f"- Changed files reviewed: `{len(changed_files)}`",
+              f"- Sensitive files touched: `{len(guard['blocked_files'])}`",
+          ]
+          if guard["blocked_files"]:
+              summary_lines.append("")
+              summary_lines.append("### Sensitive changed files")
+              summary_lines.extend(f"- `{path}`" for path in guard["blocked_files"])
+          if merge_ready:
+              summary_lines.extend(["", "Ready PR is allowed; the follow-up auto-merge workflow may merge after CI succeeds."])
+          else:
+              summary_lines.extend(["", f"PR will stay draft. Guard reason: `{reason}`"])
+
+          (output_dir / "guard_summary.md").write_text("\n".join(summary_lines).strip() + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"merge_ready={'true' if merge_ready else 'false'}", file=output)
+              print(f"guard_reason={reason}", file=output)
+              print(f"blocked_file_count={len(guard['blocked_files'])}", file=output)
+          PY
+
+      - name: Append merge guard summary
+        if: steps.changes.outputs.has_changes == 'true'
+        run: cat data/output/auto_optimization/guard_summary.md >> "$GITHUB_STEP_SUMMARY"
+
       - name: Commit and push automation branch
         if: steps.changes.outputs.has_changes == 'true'
         run: |
@@ -170,8 +224,8 @@ jobs:
           git commit -m "${{ steps.auto_payload.outputs.commit_message }}"
           git push --force-with-lease origin "${{ steps.auto_payload.outputs.branch_name }}"
 
-      - name: Create or update draft PR
-        id: draft_pr
+      - name: Create or update automation PR
+        id: automation_pr
         if: steps.changes.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -179,16 +233,37 @@ jobs:
           BRANCH_NAME="${{ steps.auto_payload.outputs.branch_name }}"
           PR_TITLE="${{ steps.auto_payload.outputs.pr_title }}"
           PR_BODY_FILE="${{ steps.auto_payload.outputs.pr_body_file }}"
+          MERGE_READY="${{ steps.merge_guard.outputs.merge_ready }}"
           EXISTING_PR_NUMBER=$(gh pr list --state open --head "${BRANCH_NAME}" --json number --jq '.[0].number // empty')
           if [ -n "${EXISTING_PR_NUMBER}" ]; then
             gh pr edit "${EXISTING_PR_NUMBER}" --title "${PR_TITLE}" --body-file "${PR_BODY_FILE}"
+            if [ "${MERGE_READY}" = "true" ]; then
+              gh pr ready "${EXISTING_PR_NUMBER}" || true
+              PR_STATE="ready_for_review"
+            else
+              gh pr ready "${EXISTING_PR_NUMBER}" --undo || true
+              PR_STATE="draft"
+            fi
             PR_URL=$(gh pr view "${EXISTING_PR_NUMBER}" --json url --jq '.url')
+            PR_NUMBER="${EXISTING_PR_NUMBER}"
             echo "pr_action=updated" >> "$GITHUB_OUTPUT"
           else
-            PR_URL=$(gh pr create --draft --base main --head "${BRANCH_NAME}" --title "${PR_TITLE}" --body-file "${PR_BODY_FILE}")
+            CREATE_ARGS=(--base main --head "${BRANCH_NAME}" --title "${PR_TITLE}" --body-file "${PR_BODY_FILE}")
+            if [ "${MERGE_READY}" != "true" ]; then
+              CREATE_ARGS=(--draft "${CREATE_ARGS[@]}")
+            fi
+            PR_URL=$(gh pr create "${CREATE_ARGS[@]}")
+            PR_NUMBER=$(gh pr view "${PR_URL}" --json number --jq '.number')
+            if [ "${MERGE_READY}" = "true" ]; then
+              PR_STATE="ready_for_review"
+            else
+              PR_STATE="draft"
+            fi
             echo "pr_action=created" >> "$GITHUB_OUTPUT"
           fi
           echo "pr_url=${PR_URL}" >> "$GITHUB_OUTPUT"
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "pr_state=${PR_STATE}" >> "$GITHUB_OUTPUT"
 
       - name: Dispatch CI workflow on automation branch
         if: steps.changes.outputs.has_changes == 'true'
@@ -202,10 +277,15 @@ jobs:
           if [ "${{ steps.changes.outputs.has_changes }}" = "true" ]; then
             {
               echo ""
-              echo "## Draft PR Result"
-              echo "- Draft PR ${{ steps.draft_pr.outputs.pr_action }}: ${{ steps.draft_pr.outputs.pr_url }}"
+              echo "## Automation PR Result"
+              echo "- PR ${{ steps.automation_pr.outputs.pr_action }}: ${{ steps.automation_pr.outputs.pr_url }}"
+              echo "- PR state: `${{ steps.automation_pr.outputs.pr_state }}`"
+              echo "- Guard reason: `${{ steps.merge_guard.outputs.guard_reason }}`"
               echo "- CI workflow dispatched on branch: `${{ steps.auto_payload.outputs.branch_name }}`"
             } >> "$GITHUB_STEP_SUMMARY"
+            if [ "${{ steps.merge_guard.outputs.merge_ready }}" = "true" ]; then
+              echo "Auto-merge will be handled only after a successful CI workflow run." >> "$GITHUB_STEP_SUMMARY"
+            fi
           else
             echo "No code changes were produced for the selected low-risk tasks." >> "$GITHUB_STEP_SUMMARY"
           fi

@@ -1,0 +1,94 @@
+name: Auto Merge Optimization PR
+
+"on":
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+jobs:
+  auto-merge:
+    if: github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.head_branch, 'automation/monthly-optimization-issue-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve automation PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p data/output/auto_merge
+          BRANCH_NAME="${{ github.event.workflow_run.head_branch }}"
+          PR_NUMBER=$(gh pr list --state open --head "${BRANCH_NAME}" --json number --jq '.[0].number // empty')
+          if [ -z "${PR_NUMBER}" ]; then
+            echo "No open automation PR found for ${BRANCH_NAME}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Evaluate merge eligibility
+        id: merge_guard
+        if: steps.pr.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr view "${{ steps.pr.outputs.pr_number }}" --json number,isDraft,body,url,files > data/output/auto_merge/pr.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          from scripts.prepare_auto_optimization_pr import evaluate_changed_files
+
+          pr = json.loads(Path("data/output/auto_merge/pr.json").read_text(encoding="utf-8"))
+          body = pr.get("body") or ""
+          changed_files = [item.get("path", "") for item in pr.get("files", [])]
+          guard = evaluate_changed_files(changed_files)
+          has_marker = "<!-- auto-optimization-pr:issue-" in body
+          task_level_allowed = "Task-level auto-merge eligible: `yes`" in body
+          should_merge = has_marker and task_level_allowed and not pr.get("isDraft") and guard["allowed"]
+          if not has_marker:
+              reason = "missing_marker"
+          elif not task_level_allowed:
+              reason = "task_level_guard"
+          elif pr.get("isDraft"):
+              reason = "draft_pr"
+          elif not guard["allowed"]:
+              reason = "sensitive_changed_files"
+          else:
+              reason = "ready"
+
+          summary_lines = [
+              "## Auto-Merge Gate",
+              f"- PR: {pr['url']}",
+              f"- Draft: `{ 'yes' if pr.get('isDraft') else 'no' }`",
+              f"- Task-level auto-merge eligible: `{ 'yes' if task_level_allowed else 'no' }`",
+              f"- Sensitive files touched: `{len(guard['blocked_files'])}`",
+              f"- Final merge decision: `{ 'merge' if should_merge else 'skip' }`",
+              f"- Reason: `{reason}`",
+          ]
+          if guard["blocked_files"]:
+              summary_lines.append("")
+              summary_lines.append("### Sensitive changed files")
+              summary_lines.extend(f"- `{path}`" for path in guard["blocked_files"])
+          Path("data/output/auto_merge/summary.md").write_text("\n".join(summary_lines).strip() + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              print(f"should_merge={'true' if should_merge else 'false'}", file=output)
+              print(f"reason={reason}", file=output)
+              print(f"pr_url={pr['url']}", file=output)
+          PY
+
+      - name: Append merge summary
+        if: steps.pr.outputs.pr_number != ''
+        run: cat data/output/auto_merge/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Merge automation PR
+        if: steps.merge_guard.outputs.should_merge == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge "${{ steps.pr.outputs.pr_number }}" --rebase --delete-branch
