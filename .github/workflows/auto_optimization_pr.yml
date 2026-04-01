@@ -127,6 +127,7 @@ jobs:
 
       - name: Run Claude auto optimization
         if: steps.prereqs.outputs.has_anthropic_key == 'true' && steps.auto_payload.outputs.should_run == 'true'
+        timeout-minutes: 15
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -143,7 +144,8 @@ jobs:
             Prefer minimal changes in reporting, diagnostics, telemetry, tests, and safe operator-facing wording.
             Do not change live trading thresholds, sizing logic, or execution behavior from this issue alone.
             If the selected low-risk tasks already appear implemented on the current main branch, leave the working tree unchanged.
-            Run the most relevant tests or ruff checks when you make a change.
+            Do not use Bash in this workflow. Limit yourself to file edits and repository-local reasoning.
+            The workflow will run CI after the draft PR is created.
 
             ## Issue Title
             ${{ steps.issue_context.outputs.issue_title }}
