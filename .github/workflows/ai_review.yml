@@ -23,16 +23,21 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Run Claude Code Review
+        id: claude_review
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           use_bedrock: false
           use_vertex: false
+          claude_args: |
+            --allowedTools "mcp__github__get_issue,mcp__github__get_issue_comments"
           prompt: |
-            Review GitHub issue #${{ inputs.issue_number || github.event.issue.number }} in this repository.
-            The issue body contains the full monthly execution review data.
-            Post your final bilingual review as a comment on that issue.
+            Use mcp__github__get_issue to read GitHub issue #${{ inputs.issue_number || github.event.issue.number }}.
+            Use mcp__github__get_issue_comments only if you need extra context from existing comments.
+            Do not use Bash or ask for additional approval.
+            Return only the final bilingual review in markdown.
+            The workflow will publish your final review as the issue comment.
 
             You are reviewing the monthly execution report for BinancePlatform,
             an automated crypto quantitative trading system for Binance Spot.
@@ -119,3 +124,14 @@ jobs:
             ...
             ### 操作员待办事项
             ...
+
+      - name: Post AI review issue comment
+        if: steps.claude_review.outcome == 'success'
+        run: |
+          python3 scripts/post_monthly_ai_review_comment.py \
+            --repo "${GITHUB_REPOSITORY}" \
+            --issue-number "${{ inputs.issue_number || github.event.issue.number }}" \
+            --execution-file "${{ steps.claude_review.outputs.execution_file }}" \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

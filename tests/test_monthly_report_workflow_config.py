@@ -25,9 +25,14 @@ class MonthlyReportWorkflowConfigTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", workflow)
         self.assertIn("issue_number:", workflow)
         self.assertIn("id-token: write", workflow)
+        self.assertIn("id: claude_review", workflow)
         self.assertIn("github_token: ${{ secrets.GITHUB_TOKEN }}", workflow)
+        self.assertIn('--allowedTools "mcp__github__get_issue,mcp__github__get_issue_comments"', workflow)
         self.assertIn("${{ inputs.issue_number || github.event.issue.number }}", workflow)
-        self.assertIn("Post your final bilingual review as a comment on that issue.", workflow)
+        self.assertIn("Do not use Bash or ask for additional approval.", workflow)
+        self.assertIn("The workflow will publish your final review as the issue comment.", workflow)
+        self.assertIn("post_monthly_ai_review_comment.py", workflow)
+        self.assertIn("steps.claude_review.outputs.execution_file", workflow)
 
 
 if __name__ == "__main__":
