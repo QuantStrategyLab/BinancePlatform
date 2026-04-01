@@ -83,6 +83,9 @@ jobs:
             the report contains explicit cash-flow evidence.
             Trade and earn sections in the report are based on recorded hourly
             execution intents/actions, not a separate exchange fill reconciliation.
+            Do not assume zero trades are automatically anomalous: when deployable
+            capital is small, manual withdrawals reduced balance, or threshold/cooldown
+            gates are active, a no-trade month may be legitimate.
 
             The issue title and body are provided below.
             Analyze it and provide your review in BOTH English and Chinese.
@@ -99,6 +102,7 @@ jobs:
                - Are buy/sell frequencies reasonable for the month?
                - Any abnormally dense trading periods suggesting misbehavior?
                - Is the BTC DCA pattern consistent with the expected valuation-based scaling?
+               - Treat a zero-trade month as context-dependent, not automatically a bug.
 
             2. **Circuit Breaker Events**
                - How many times was the circuit breaker triggered?
