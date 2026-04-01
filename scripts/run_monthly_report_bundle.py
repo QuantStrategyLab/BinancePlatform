@@ -59,6 +59,12 @@ def aggregate_hourly_reports(hourly_dir: str, report_month: str) -> dict[str, An
     total_runs = len(entries)
     successful_runs = 0
     failed_runs = 0
+    dry_run_runs = 0
+
+    # --- side effects / gating ---
+    executed_side_effects = 0
+    suppressed_side_effects = 0
+    gating_counts: dict[str, int] = {}
 
     # --- trade summary accumulators ---
     btc_buys = 0
@@ -91,6 +97,8 @@ def aggregate_hourly_reports(hourly_dir: str, report_month: str) -> dict[str, An
     for fname, report in entries:
         status = report.get("status", "ok")
         run_id = report.get("run_id", fname)
+        if report.get("dry_run"):
+            dry_run_runs += 1
 
         # Success / failure
         if status == "ok":
@@ -106,6 +114,14 @@ def aggregate_hourly_reports(hourly_dir: str, report_month: str) -> dict[str, An
             if start_equity is None:
                 start_equity = float(equity)
             end_equity = float(equity)
+
+        side_effect_summary = report.get("side_effect_summary") or {}
+        executed_side_effects += int(side_effect_summary.get("executed_call_count", 0) or 0)
+        suppressed_side_effects += int(side_effect_summary.get("suppressed_call_count", 0) or 0)
+
+        for gate, count in (report.get("gating_summary") or {}).items():
+            gate_name = str(gate)
+            gating_counts[gate_name] = gating_counts.get(gate_name, 0) + int(count or 0)
 
         # BTC DCA intents
         for intent in report.get("btc_dca_intents", []) or []:
@@ -172,6 +188,15 @@ def aggregate_hourly_reports(hourly_dir: str, report_month: str) -> dict[str, An
             "total_runs": total_runs,
             "successful_runs": successful_runs,
             "failed_runs": failed_runs,
+            "dry_run_runs": dry_run_runs,
+        },
+        "side_effect_summary": {
+            "executed_call_count": executed_side_effects,
+            "suppressed_call_count": suppressed_side_effects,
+        },
+        "execution_gating": {
+            "total_events": int(sum(gating_counts.values())),
+            "counts": dict(sorted(gating_counts.items())),
         },
         "trade_summary": {
             "btc_core": {
@@ -217,6 +242,8 @@ def format_review_markdown(bundle: dict[str, Any]) -> str:
     stats = bundle["run_statistics"]
     trade = bundle["trade_summary"]
     pnl = bundle["pnl_overview"]
+    side_effects = bundle["side_effect_summary"]
+    gating = bundle["execution_gating"]
     cb_events = bundle["circuit_breaker_events"]
     dg_events = bundle["degraded_mode_events"]
     pool_changes = bundle["upstream_pool_changes"]
@@ -234,10 +261,11 @@ def format_review_markdown(bundle: dict[str, Any]) -> str:
     lines.append("## Report Scope")
     lines.append("")
     lines.append("- This is BinancePlatform's downstream monthly execution review, not a pure upstream pool publication.")
-    lines.append("- It summarizes runtime health, recorded trade intents, earn buffer operations, circuit breaker activity, degraded mode, and upstream pool changes.")
+    lines.append("- It summarizes runtime health, recorded trade intents, no-trade / gating reasons, earn buffer operations, circuit breaker activity, degraded mode, and upstream pool changes.")
     lines.append("- Upstream pool changes are included as execution context from CryptoLeaderRotation, but they are only one input section of this report.")
     lines.append("- Equity deltas in this report are raw month-start vs month-end snapshots and may include manual deposits, withdrawals, or other external balance flows.")
     lines.append("- Trade and earn sections reflect execution intents/actions recorded in hourly reports, not a separate exchange fill reconciliation ledger.")
+    lines.append("- Side-effect counts indicate how many client / notification / state-write calls were actually executed versus suppressed (for example in dry-run or replay contexts).")
     lines.append("")
 
     # Run statistics
@@ -248,11 +276,33 @@ def format_review_markdown(bundle: dict[str, Any]) -> str:
     lines.append(f"| Total runs | {stats['total_runs']} |")
     lines.append(f"| Successful runs | {stats['successful_runs']} |")
     lines.append(f"| Failed runs | {stats['failed_runs']} |")
+    lines.append(f"| Dry-run runs | {stats['dry_run_runs']} |")
     success_rate = (
         round(stats["successful_runs"] / stats["total_runs"] * 100, 1)
         if stats["total_runs"] > 0 else 0
     )
     lines.append(f"| Success rate | {success_rate}% |")
+    lines.append("")
+
+    # Side effects
+    lines.append("## Side Effects")
+    lines.append("")
+    lines.append("| Metric | Value |")
+    lines.append("|--------|-------|")
+    lines.append(f"| Executed calls | {side_effects['executed_call_count']} |")
+    lines.append(f"| Suppressed calls | {side_effects['suppressed_call_count']} |")
+    lines.append("")
+
+    # Gating summary
+    lines.append("## Execution Gating / No-Trade Reasons")
+    lines.append("")
+    if gating["counts"]:
+        lines.append("| Gate | Count |")
+        lines.append("|------|-------|")
+        for gate_name, count in sorted(gating["counts"].items(), key=lambda item: (-item[1], item[0])):
+            lines.append(f"| {gate_name} | {count} |")
+    else:
+        lines.append("_No explicit gating or no-trade reasons were recorded this month._")
     lines.append("")
 
     # PnL overview
@@ -363,11 +413,12 @@ def format_review_markdown(bundle: dict[str, Any]) -> str:
     lines.append("## Review Questions")
     lines.append("")
     lines.append("1. Does the equity trend look explainable once possible external deposits/withdrawals are considered?")
-    lines.append("2. Were any circuit breaker events justified, or do thresholds need adjusting?")
-    lines.append("3. Did upstream pool changes have a noticeable impact on performance?")
-    lines.append("4. Are the failed runs isolated incidents or part of a pattern?")
-    lines.append("5. Do the recorded trade intents suggest BTC DCA cadence or trend sizing should be adjusted?")
-    lines.append("6. Were earn buffer subscribe/redeem operations executed at appropriate times?")
+    lines.append("2. Do the recorded gating / no-trade reasons look expected, or do any thresholds / cooldowns appear too restrictive?")
+    lines.append("3. Were any circuit breaker events justified, or do thresholds need adjusting?")
+    lines.append("4. Did upstream pool changes have a noticeable impact on performance?")
+    lines.append("5. Are the failed runs isolated incidents or part of a pattern?")
+    lines.append("6. Do the recorded trade intents suggest BTC DCA cadence or trend sizing should be adjusted?")
+    lines.append("7. Were earn buffer subscribe/redeem operations executed at appropriate times?")
     lines.append("")
 
     return "\n".join(lines)

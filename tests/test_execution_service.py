@@ -111,7 +111,7 @@ class ExecutionServiceTests(unittest.TestCase):
 
     def test_execute_trend_buys_executes_buy_and_updates_runtime_state(self):
         runtime = SimpleNamespace(client=object())
-        report = {"buy_sell_intents": []}
+        report = {"buy_sell_intents": [], "gating_summary": {}, "gating_events": []}
         state = {}
         balances = {"ETHUSDT": 0.0}
         prices = {"ETHUSDT": 100.0}
@@ -161,6 +161,40 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertEqual(observed["actions"], [("ETHUSDT", "buy", "20260329")])
         self.assertEqual(observed["persist_reasons"], ["trend_buy:ETHUSDT"])
         self.assertGreaterEqual(len(observed["notifications"]), 1)
+
+    def test_execute_trend_buys_records_gate_when_budget_below_threshold(self):
+        runtime = SimpleNamespace(client=object())
+        report = {"buy_sell_intents": [], "gating_summary": {}, "gating_events": []}
+
+        result = execute_trend_buys(
+            runtime,
+            report,
+            {},
+            {"ETHUSDT": {"weight": 0.6, "relative_score": 1.2}},
+            ["ETHUSDT"],
+            {"ETHUSDT": 12.0},
+            {"ETHUSDT": 100.0},
+            {"ETHUSDT": 0.0},
+            500.0,
+            [],
+            "20260329",
+            should_skip_duplicate_trend_action_fn=lambda *_args: False,
+            append_log_fn=lambda *_args: None,
+            translate_fn=lambda key, **_kwargs: key,
+            format_qty_fn=lambda *_args: 0.0,
+            ensure_asset_available_fn=lambda *_args: True,
+            runtime_call_client_fn=lambda *_args, **_kwargs: None,
+            next_order_id_fn=lambda *_args: "buy-order-id",
+            set_symbol_trade_state_fn=lambda *_args, **_kwargs: None,
+            record_trend_action_fn=lambda *_args, **_kwargs: None,
+            runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
+            runtime_notify_fn=lambda *_args, **_kwargs: None,
+        )
+
+        self.assertEqual(result, 500.0)
+        self.assertEqual(report["buy_sell_intents"], [])
+        self.assertEqual(report["gating_summary"]["trend_buy_below_min_budget"], 1)
+        self.assertEqual(report["gating_events"][0]["symbol"], "ETHUSDT")
 
     def test_execute_trend_rotation_delegates_sell_buy_and_status_flow(self):
         runtime = SimpleNamespace(now_utc="2026-03-29T00:00:00Z")
@@ -242,7 +276,7 @@ class ExecutionServiceTests(unittest.TestCase):
 
     def test_execute_btc_dca_cycle_executes_buy_branch(self):
         runtime = SimpleNamespace(client=object())
-        report = {"btc_dca_intents": []}
+        report = {"btc_dca_intents": [], "gating_summary": {}, "gating_events": []}
         state = {}
         balances = {"BTCUSDT": 0.1}
         prices = {"BTCUSDT": 50_000.0}
@@ -287,7 +321,7 @@ class ExecutionServiceTests(unittest.TestCase):
 
     def test_execute_btc_dca_cycle_executes_trim_branch(self):
         runtime = SimpleNamespace(client=object())
-        report = {"btc_dca_intents": []}
+        report = {"btc_dca_intents": [], "gating_summary": {}, "gating_events": []}
         state = {}
         balances = {"BTCUSDT": 1.0}
         prices = {"BTCUSDT": 10_000.0}
@@ -329,6 +363,39 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertEqual(observed["asset_checks"][0][0], "BTC")
         self.assertEqual(observed["client_calls"][0][0], "order_market_sell")
         self.assertEqual(observed["persist_reasons"], ["btc_dca_sell"])
+
+    def test_execute_btc_dca_cycle_records_gate_when_pool_too_small(self):
+        runtime = SimpleNamespace(client=object())
+        report = {"btc_dca_intents": [], "gating_summary": {}, "gating_events": []}
+
+        result = execute_btc_dca_cycle(
+            runtime,
+            report,
+            {},
+            {"BTCUSDT": 0.0},
+            {"BTCUSDT": 50_000.0},
+            100.0,
+            1_000.0,
+            8.0,
+            6.0,
+            {"ahr999": 0.7, "zscore": 0.0, "sell_trigger": 3.5},
+            0.25,
+            "20260329",
+            [],
+            append_log_fn=lambda *_args: None,
+            translate_fn=lambda key, **_kwargs: key,
+            get_dynamic_btc_base_order=lambda _total_equity: 50.0,
+            format_qty_fn=lambda *_args: 0.0,
+            ensure_asset_available_fn=lambda *_args: True,
+            runtime_call_client_fn=lambda *_args, **_kwargs: None,
+            next_order_id_fn=lambda *_args: "noop",
+            runtime_notify_fn=lambda *_args, **_kwargs: None,
+            runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
+        )
+
+        self.assertEqual(result, 100.0)
+        self.assertEqual(report["btc_dca_intents"], [])
+        self.assertEqual(report["gating_summary"]["btc_dca_pool_too_small"], 1)
 
 
 if __name__ == "__main__":

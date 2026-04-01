@@ -48,6 +48,8 @@ def build_execution_report(runtime):
             "executed_call_count": 0,
             "suppressed_call_count": 0,
         },
+        "gating_summary": {},
+        "gating_events": [],
         "error_summary": {
             "errors": [],
         },
@@ -62,6 +64,24 @@ def build_execution_report(runtime):
 
 def append_report_error(report, message, *, stage="runtime"):
     report["error_summary"]["errors"].append({"stage": str(stage), "message": str(message)})
+
+
+def record_gating_event(report, *, gate, category, symbol=None, detail=None):
+    gate_name = str(gate)
+    category_name = str(category)
+    summary = report.setdefault("gating_summary", {})
+    events = report.setdefault("gating_events", [])
+    summary[gate_name] = int(summary.get(gate_name, 0) or 0) + 1
+
+    event = {
+        "gate": gate_name,
+        "category": category_name,
+    }
+    if symbol:
+        event["symbol"] = str(symbol)
+    if detail is not None:
+        event["detail"] = detail
+    events.append(event)
 
 
 def record_side_effect(runtime, report, *, effect_type, target, payload, executed):

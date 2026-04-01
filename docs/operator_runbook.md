@@ -51,6 +51,7 @@ Runtime output should stay operational:
 - current upstream source and degraded status
 - upstream official pool and current local execution pool logged as separate concepts
 - current execution targets and intents
+- explicit gating / no-trade reasons and side-effect suppression counts
 - exceptions, circuit breakers, and alert-worthy failures
 
 The monthly execution pool is locked to the accepted upstream `version` / `as_of_date`. It is rebuilt when upstream release metadata changes and otherwise reused across cycles.

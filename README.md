@@ -77,7 +77,7 @@ Each hourly run pushes the full execution report JSON to an orphan `logs` branch
 
 On the 1st of each month (UTC 00:00), the **Monthly Execution Report** workflow aggregates all hourly logs from the previous month, creates a structured review bundle, and opens a GitHub Issue labeled `monthly-review`.
 
-An **AI Monthly Review** workflow triggers on that issue label and posts a bilingual (English + Chinese) analysis covering trade execution quality, circuit breaker events, degraded mode episodes, PnL breakdown, upstream pool impact, error patterns, and earn buffer efficiency.
+An **AI Monthly Review** workflow triggers on that issue label and posts a bilingual (English + Chinese) analysis covering trade execution quality, no-trade / gating reasons, circuit breaker events, degraded mode episodes, PnL breakdown, upstream pool impact, error patterns, and earn buffer efficiency.
 
 ### Workflows
 
@@ -425,6 +425,7 @@ This emits a structured JSON report with:
 - trend buy/sell intents
 - BTC DCA intents
 - earn subscribe/redeem intents
+- explicit gating / no-trade reason counts
 - suppressed vs executed side-effect counts
 
 ### Tests

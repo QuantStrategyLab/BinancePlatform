@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from runtime_support import record_gating_event
+
 
 def load_cycle_state(
     runtime,
@@ -36,6 +38,13 @@ def load_cycle_state(
 
     runtime_trend_universe = get_runtime_trend_universe(state)
     allow_new_trend_entries = (not trend_pool_resolution["degraded"]) or allow_new_trend_entries_on_degraded
+    if trend_pool_resolution["degraded"] and not allow_new_trend_entries:
+        record_gating_event(
+            report,
+            gate="trend_buy_paused_degraded_mode",
+            category="trend",
+            detail=str(trend_pool_resolution.get("source", "unknown")),
+        )
     return state, trend_pool_resolution, runtime_trend_universe, allow_new_trend_entries
 
 

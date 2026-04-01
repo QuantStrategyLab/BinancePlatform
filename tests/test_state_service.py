@@ -31,7 +31,7 @@ class StateServiceTests(unittest.TestCase):
 
     def test_load_cycle_state_refreshes_runtime_state_metadata(self):
         runtime = SimpleNamespace(name="runtime")
-        report = {"status": "ok"}
+        report = {"status": "ok", "gating_summary": {}, "gating_events": []}
         observed = {"trend_universe": None, "persist_reasons": []}
         raw_state = {"foo": "bar"}
         normalized_state = {"normalized": True}
@@ -61,6 +61,30 @@ class StateServiceTests(unittest.TestCase):
             result,
             (normalized_state, trend_pool_resolution, runtime_trend_universe, True),
         )
+
+    def test_load_cycle_state_records_degraded_buy_pause_gate(self):
+        report = {"status": "ok", "gating_summary": {}, "gating_events": []}
+
+        result = load_cycle_state(
+            SimpleNamespace(),
+            report,
+            allow_new_trend_entries_on_degraded=False,
+            state_loader=lambda *, normalize: {"ok": True},
+            resolve_runtime_trend_pool=lambda *_args, **_kwargs: (
+                {"ETHUSDT": {"base_asset": "ETH"}},
+                {"degraded": True, "source_kind": "last_known_good", "source": "last_known_good"},
+            ),
+            normalize_trade_state=lambda state: state,
+            update_trend_pool_state=lambda *_args, **_kwargs: None,
+            runtime_set_trade_state=lambda *_args, **_kwargs: None,
+            get_runtime_trend_universe=lambda state: {"ETHUSDT": {"base_asset": "ETH"}},
+            append_report_error=lambda *_args, **_kwargs: None,
+            trend_universe_setter=lambda _value: None,
+        )
+
+        self.assertFalse(result[3])
+        self.assertEqual(report["gating_summary"]["trend_buy_paused_degraded_mode"], 1)
+        self.assertEqual(report["gating_events"][0]["category"], "trend")
 
     def test_append_trend_pool_source_logs_appends_all_lines(self):
         log_buffer = []

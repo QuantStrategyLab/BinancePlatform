@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from runtime_support import record_gating_event
+
 
 def run_daily_circuit_breaker(
     runtime,
@@ -30,6 +32,13 @@ def run_daily_circuit_breaker(
     for symbol, config in runtime_trend_universe.items():
         tradable_qty = balances[symbol]
         if tradable_qty * prices[symbol] <= 10:
+            record_gating_event(
+                report,
+                gate="circuit_breaker_sell_below_min_position",
+                category="trend",
+                symbol=symbol,
+                detail={"position_value_usdt": round(tradable_qty * prices[symbol], 4)},
+            )
             continue
         qty = format_qty_fn(runtime.client, symbol, tradable_qty)
         report["buy_sell_intents"].append(
@@ -225,9 +234,22 @@ def execute_trend_buys(
         candidate_meta = selected_candidates[symbol]
         buy_u = planned_trend_buys.get(symbol, 0.0)
         if buy_u <= 15:
+            record_gating_event(
+                report,
+                gate="trend_buy_below_min_budget",
+                category="trend",
+                symbol=symbol,
+                detail={"budget_usdt": round(float(buy_u), 4)},
+            )
             continue
 
         if should_skip_duplicate_trend_action_fn(state, symbol, "buy", today_id_str):
+            record_gating_event(
+                report,
+                gate="trend_buy_duplicate_cooldown",
+                category="trend",
+                symbol=symbol,
+            )
             append_log_fn(log_buffer, translate_fn("duplicate_buy_skipped", symbol=symbol))
             continue
 
@@ -246,6 +268,13 @@ def execute_trend_buys(
         )
         try:
             if qty <= 0 or usdt_cost <= 0:
+                record_gating_event(
+                    report,
+                    gate="trend_buy_zero_order_size",
+                    category="trend",
+                    symbol=symbol,
+                    detail={"budget_usdt": round(float(buy_u), 4)},
+                )
                 runtime_notify_fn(
                     runtime,
                     report,
@@ -341,6 +370,13 @@ def execute_trend_rotation(
     )
     report["selected_symbols"]["active_trend_pool"] = list(active_trend_pool)
     report["selected_symbols"]["selected_candidates"] = list(selected_candidates.keys())
+    if not selected_candidates:
+        record_gating_event(
+            report,
+            gate="trend_no_selected_candidate",
+            category="trend",
+            detail={"active_trend_pool_size": len(active_trend_pool)},
+        )
 
     append_rotation_summary(
         log_buffer,
@@ -379,6 +415,16 @@ def execute_trend_rotation(
         current_allocation["trend_usdt_pool"],
         allow_new_trend_entries,
     )
+    if selected_candidates and not eligible_buy_symbols:
+        record_gating_event(
+            report,
+            gate="trend_no_eligible_buy",
+            category="trend",
+            detail={
+                "selected_candidate_count": len(selected_candidates),
+                "allow_new_trend_entries": bool(allow_new_trend_entries),
+            },
+        )
     u_total = execute_trend_buys(
         runtime,
         report,
@@ -448,6 +494,15 @@ def execute_btc_dca_cycle(
     runtime_set_trade_state_fn,
 ):
     if dca_usdt_pool <= 10 and dca_val <= 10:
+        record_gating_event(
+            report,
+            gate="btc_dca_pool_too_small",
+            category="btc_dca",
+            detail={
+                "dca_usdt_pool": round(float(dca_usdt_pool), 4),
+                "dca_val": round(float(dca_val), 4),
+            },
+        )
         return u_total
 
     btc_price = prices["BTCUSDT"]
@@ -466,6 +521,27 @@ def execute_btc_dca_cycle(
 
     base_order = get_dynamic_btc_base_order(total_equity)
     multiplier = _resolve_btc_buy_multiplier(ahr)
+
+    if multiplier <= 0:
+        record_gating_event(
+            report,
+            gate="btc_dca_buy_valuation_gate_off",
+            category="btc_dca",
+            detail={"ahr999": round(float(ahr), 4)},
+        )
+    elif dca_usdt_pool <= 15:
+        record_gating_event(
+            report,
+            gate="btc_dca_buy_below_min_budget",
+            category="btc_dca",
+            detail={"dca_usdt_pool": round(float(dca_usdt_pool), 4)},
+        )
+    elif state.get("dca_last_buy_date") == today_id_str:
+        record_gating_event(
+            report,
+            gate="btc_dca_buy_duplicate_cooldown",
+            category="btc_dca",
+        )
 
     if multiplier > 0 and dca_usdt_pool > 15 and state.get("dca_last_buy_date") != today_id_str:
         budget = min(dca_usdt_pool, base_order * multiplier)
@@ -521,6 +597,21 @@ def execute_btc_dca_cycle(
                 f"{translate_fn('btc_dca_buy_failed')} BTC\n"
                 f"{translate_fn('error_label')}: {exc}",
             )
+
+    if zscore > sell_trigger and dca_val <= 20:
+        record_gating_event(
+            report,
+            gate="btc_dca_sell_below_min_position",
+            category="btc_dca",
+            detail={"dca_val": round(float(dca_val), 4), "zscore": round(float(zscore), 4)},
+        )
+    elif zscore > sell_trigger and state.get("dca_last_sell_date") == today_id_str:
+        record_gating_event(
+            report,
+            gate="btc_dca_sell_duplicate_cooldown",
+            category="btc_dca",
+            detail={"zscore": round(float(zscore), 4)},
+        )
 
     if zscore > sell_trigger and dca_val > 20 and state.get("dca_last_sell_date") != today_id_str:
         sell_pct = _resolve_btc_trim_sell_pct(zscore)

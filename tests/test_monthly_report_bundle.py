@@ -9,11 +9,13 @@ class TestMonthlyReportBundle(unittest.TestCase):
                      trend_equity=200.0, circuit_breaker=False,
                      degraded_level=None, pool_symbols=None,
                      buy_sell_intents=None, btc_dca_intents=None,
-                     redemption_intents=None, errors=None):
+                     redemption_intents=None, errors=None,
+                     gating_summary=None, dry_run=False,
+                     executed_calls=0, suppressed_calls=0):
         return {
             "status": status,
             "run_id": run_id,
-            "dry_run": False,
+            "dry_run": dry_run,
             "total_equity_usdt": total_equity,
             "trend_equity_usdt": trend_equity,
             "circuit_breaker_triggered": circuit_breaker,
@@ -30,9 +32,11 @@ class TestMonthlyReportBundle(unittest.TestCase):
             },
             "notifications": [],
             "state_write_intents": [],
+            "gating_summary": gating_summary or {},
+            "gating_events": [],
             "side_effect_summary": {
-                "executed_call_count": 0,
-                "suppressed_call_count": 0,
+                "executed_call_count": executed_calls,
+                "suppressed_call_count": suppressed_calls,
             },
         }
 
@@ -57,6 +61,7 @@ class TestMonthlyReportBundle(unittest.TestCase):
         self.assertEqual(bundle["run_statistics"]["total_runs"], 3)
         self.assertEqual(bundle["run_statistics"]["successful_runs"], 3)
         self.assertEqual(bundle["run_statistics"]["failed_runs"], 0)
+        self.assertEqual(bundle["run_statistics"]["dry_run_runs"], 0)
         self.assertEqual(bundle["pnl_overview"]["start_equity_usdt"], 1000.0)
         self.assertEqual(bundle["pnl_overview"]["end_equity_usdt"], 1050.0)
 
@@ -141,3 +146,40 @@ class TestMonthlyReportBundle(unittest.TestCase):
         self.assertIn("not a pure upstream pool publication", md)
         self.assertIn("external balance flows", md)
         self.assertIn("recorded strategy intents", md)
+        self.assertIn("Execution Gating / No-Trade Reasons", md)
+
+    def test_aggregate_gating_and_side_effects(self):
+        from scripts.run_monthly_report_bundle import aggregate_hourly_reports, format_review_markdown
+
+        reports = {
+            "2026-03-01T0000.json": self._make_report(
+                "r1",
+                dry_run=True,
+                executed_calls=1,
+                suppressed_calls=3,
+                gating_summary={"trend_buy_below_min_budget": 2},
+            ),
+            "2026-03-01T0100.json": self._make_report(
+                "r2",
+                executed_calls=2,
+                suppressed_calls=0,
+                gating_summary={"btc_dca_pool_too_small": 1, "trend_buy_below_min_budget": 1},
+            ),
+        }
+        with tempfile.TemporaryDirectory() as td:
+            hourly_dir = os.path.join(td, "hourly", "2026-03")
+            os.makedirs(hourly_dir)
+            for fname, data in reports.items():
+                with open(os.path.join(hourly_dir, fname), "w") as f:
+                    json.dump(data, f)
+
+            bundle = aggregate_hourly_reports(hourly_dir, "2026-03")
+            md = format_review_markdown(bundle)
+
+        self.assertEqual(bundle["run_statistics"]["dry_run_runs"], 1)
+        self.assertEqual(bundle["side_effect_summary"]["executed_call_count"], 3)
+        self.assertEqual(bundle["side_effect_summary"]["suppressed_call_count"], 3)
+        self.assertEqual(bundle["execution_gating"]["counts"]["trend_buy_below_min_budget"], 3)
+        self.assertEqual(bundle["execution_gating"]["counts"]["btc_dca_pool_too_small"], 1)
+        self.assertIn("trend_buy_below_min_budget", md)
+        self.assertIn("Dry-run runs", md)
