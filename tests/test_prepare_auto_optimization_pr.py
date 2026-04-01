@@ -21,8 +21,8 @@ class PrepareAutoOptimizationPrTests(unittest.TestCase):
 - [ ] `high` Reconcile March cash flows and open-position state
   - Summary: Pull Binance transaction history for March.
   - Source: [QuantStrategyLab/BinancePlatform #9](https://github.com/QuantStrategyLab/BinancePlatform/issues/9)
-- [ ] `low` Add zero-trade diagnostics to the report [auto-pr-safe]
-  - Summary: Include the top failed gating reason counts.
+- [ ] `low` Add diagnostic reporting for no-trade months [auto-pr-safe]
+  - Summary: Emit explicit reason codes for skipped DCA and rotation attempts.
   - Source: [QuantStrategyLab/BinancePlatform #9](https://github.com/QuantStrategyLab/BinancePlatform/issues/9)
 - [ ] `low` Add a boundary tracker [auto-pr-safe, experiment-only]
   - Summary: Track near-cutoff symbols monthly.
@@ -45,7 +45,7 @@ class PrepareAutoOptimizationPrTests(unittest.TestCase):
         self.assertFalse(payload["should_run"])
         self.assertEqual(payload["safe_task_count"], 0)
         self.assertEqual(payload["skipped_task_count"], 1)
-        self.assertEqual(payload["skipped_actions"][0]["title"], "Add zero-trade diagnostics to the report")
+        self.assertEqual(payload["skipped_actions"][0]["title"], "Add diagnostic reporting for no-trade months")
 
     def test_render_pr_body_contains_marker_and_issue_reference(self) -> None:
         issue_context = {

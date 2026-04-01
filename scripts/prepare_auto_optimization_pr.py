@@ -68,10 +68,10 @@ def _is_completed_low_risk_task(action: dict[str, Any], repo_root: Path) -> bool
     repo_name = repo_root.name
 
     if repo_name == "CryptoLeaderRotation":
-        if "shadow/challenger build generation" in title:
+        if "shadow/challenger build generation" in title or "shadow build" in title:
             workflow = _read_text(repo_root / ".github" / "workflows" / "monthly_publish.yml")
             return "run_monthly_shadow_build.py" in workflow
-        if "deterministic tie-break behavior" in title:
+        if "tie-break" in title or "tie break" in title:
             readme = _read_text(repo_root / "README.md")
             runbook = _read_text(repo_root / "docs" / "operator_runbook.md")
             return (
@@ -79,7 +79,11 @@ def _is_completed_low_risk_task(action: dict[str, Any], repo_root: Path) -> bool
                 and "deterministic tie-break" in runbook
             )
 
-    if repo_name == "BinancePlatform" and "zero-trade diagnostics" in title:
+    if repo_name == "BinancePlatform" and (
+        "zero-trade diagnostics" in title
+        or "diagnostic reporting for no-trade months" in title
+        or "no-trade months" in title
+    ):
         monthly_report = _read_text(repo_root / "scripts" / "run_monthly_report_bundle.py")
         return (
             "No explicit gating or no-trade reasons were recorded this month." in monthly_report
