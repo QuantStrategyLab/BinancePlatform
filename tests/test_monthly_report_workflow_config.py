@@ -14,6 +14,7 @@ class MonthlyReportWorkflowConfigTests(unittest.TestCase):
         workflow = MONTHLY_REPORT_WORKFLOW.read_text(encoding="utf-8")
 
         self.assertIn("actions: write", workflow)
+        self.assertIn("actions/checkout@v6", workflow)
         self.assertIn('--hourly-dir "hourly/${{ steps.month.outputs.month }}"', workflow)
         self.assertIn("gh label create monthly-review", workflow)
         self.assertIn("gh workflow run ai_review.yml", workflow)
@@ -31,6 +32,7 @@ class MonthlyReportWorkflowConfigTests(unittest.TestCase):
         self.assertIn("steps.issue_context.outputs.issue_body", workflow)
         self.assertIn("id: claude_review", workflow)
         self.assertIn("github_token: ${{ secrets.GITHUB_TOKEN }}", workflow)
+        self.assertIn('FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"', workflow)
         self.assertIn("${{ inputs.issue_number || github.event.issue.number }}", workflow)
         self.assertIn("Do not use Bash or ask for additional approval.", workflow)
         self.assertIn("The workflow will publish your final review as the issue comment.", workflow)

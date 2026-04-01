@@ -18,9 +18,12 @@ jobs:
       id-token: write
       issues: write
 
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
 
       - name: Load review issue context
         id: issue_context
