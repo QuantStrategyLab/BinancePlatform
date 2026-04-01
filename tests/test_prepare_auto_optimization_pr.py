@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from scripts.prepare_auto_optimization_pr import build_payload, parse_actions, render_pr_body
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class PrepareAutoOptimizationPrTests(unittest.TestCase):
@@ -34,21 +39,33 @@ class PrepareAutoOptimizationPrTests(unittest.TestCase):
         self.assertEqual(actions[2]["flags"], ["auto-pr-safe", "experiment-only"])
         self.assertEqual(actions[2]["source_label"], "QuantStrategyLab/CryptoLeaderRotation #11")
 
-    def test_build_payload_selects_only_low_auto_pr_safe_actions(self) -> None:
-        payload = build_payload(self.issue_context)
+    def test_build_payload_skips_completed_bp_task_and_excludes_experiments(self) -> None:
+        payload = build_payload(self.issue_context, repo_root=PROJECT_ROOT)
 
-        self.assertTrue(payload["should_run"])
-        self.assertEqual(payload["safe_task_count"], 2)
-        self.assertEqual(payload["branch_name"], "automation/monthly-optimization-issue-15")
-        self.assertEqual(payload["safe_actions"][0]["title"], "Add zero-trade diagnostics to the report")
+        self.assertFalse(payload["should_run"])
+        self.assertEqual(payload["safe_task_count"], 0)
+        self.assertEqual(payload["skipped_task_count"], 1)
+        self.assertEqual(payload["skipped_actions"][0]["title"], "Add zero-trade diagnostics to the report")
 
     def test_render_pr_body_contains_marker_and_issue_reference(self) -> None:
-        payload = build_payload(self.issue_context)
+        issue_context = {
+            "number": 30,
+            "title": "Monthly Optimization Tasks · Sandbox",
+            "body": """# Monthly Optimization Tasks · Sandbox
+
+## Actions
+- [ ] `low` Add a short README note [auto-pr-safe]
+  - Summary: Document a small operator-facing behavior.
+  - Source: [Sandbox #1](https://example.com/issues/1)
+""",
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            payload = build_payload(issue_context, repo_root=Path(temp_dir))
         body = render_pr_body(payload)
 
-        self.assertIn("<!-- auto-optimization-pr:issue-15 -->", body)
-        self.assertIn("Add zero-trade diagnostics to the report", body)
-        self.assertIn("Refs #15", body)
+        self.assertIn("<!-- auto-optimization-pr:issue-30 -->", body)
+        self.assertIn("Add a short README note", body)
+        self.assertIn("Refs #30", body)
 
 
 if __name__ == "__main__":
