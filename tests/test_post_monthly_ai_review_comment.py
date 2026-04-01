@@ -41,7 +41,7 @@ class PostMonthlyAiReviewCommentTests(unittest.TestCase):
         body = build_comment_body("Review content", "https://github.com/example/repo/actions/runs/1")
 
         self.assertIn(COMMENT_MARKER, body)
-        self.assertIn("## Claude Monthly Review", body)
+        self.assertIn("## AI Monthly Review", body)
         self.assertIn("Review content", body)
         self.assertIn("actions/runs/1", body)
 

@@ -28,10 +28,12 @@ jobs:
       - name: Load review issue context
         id: issue_context
         run: |
+          mkdir -p data/output/ai_review
           python3 - <<'PY'
           import json
           import os
           import urllib.request
+          from pathlib import Path
 
           repo = os.environ["GITHUB_REPOSITORY"]
           issue_number = os.environ["ISSUE_NUMBER"]
@@ -48,6 +50,16 @@ jobs:
           )
           with urllib.request.urlopen(request) as response:
               issue = json.load(response)
+
+          issue_context = {
+              "number": issue["number"],
+              "title": issue["title"],
+              "body": issue["body"],
+          }
+          Path("data/output/ai_review/issue_context.json").write_text(
+              json.dumps(issue_context, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               print("issue_title<<EOF", file=output)
@@ -179,13 +191,50 @@ jobs:
             ### 操作员待办事项
             ...
 
+      - name: Render Claude primary review
+        if: steps.claude_review.outcome == 'success'
+        run: |
+          python3 scripts/render_monthly_ai_review.py \
+            --execution-file "${{ steps.claude_review.outputs.execution_file }}" \
+            --output-file data/output/ai_review/primary_review.md \
+            --primary-title "Claude Primary Review"
+
+      - name: Run GPT secondary review
+        if: steps.claude_review.outcome == 'success'
+        run: |
+          python3 scripts/run_openai_secondary_review.py \
+            --review-kind execution_runtime \
+            --issue-context-file data/output/ai_review/issue_context.json \
+            --primary-review-file data/output/ai_review/primary_review.md \
+            --output-file data/output/ai_review/secondary_review.json \
+            --model "${OPENAI_SECONDARY_MODEL}"
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_SECONDARY_MODEL: ${{ vars.OPENAI_SECONDARY_MODEL || 'gpt-5.4-mini' }}
+
+      - name: Render final AI review markdown
+        if: steps.claude_review.outcome == 'success'
+        run: |
+          python3 scripts/render_monthly_ai_review.py \
+            --primary-review-file data/output/ai_review/primary_review.md \
+            --secondary-review-file data/output/ai_review/secondary_review.json \
+            --output-file data/output/ai_review/final_review.md \
+            --primary-title "Claude Primary Review"
+
+      - name: Upload AI review artifact
+        if: steps.claude_review.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ai-monthly-review-${{ inputs.issue_number || github.event.issue.number }}
+          path: data/output/ai_review/
+
       - name: Post AI review issue comment
         if: steps.claude_review.outcome == 'success'
         run: |
           python3 scripts/post_monthly_ai_review_comment.py \
             --repo "${GITHUB_REPOSITORY}" \
             --issue-number "${{ inputs.issue_number || github.event.issue.number }}" \
-            --execution-file "${{ steps.claude_review.outputs.execution_file }}" \
+            --review-file data/output/ai_review/final_review.md \
             --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

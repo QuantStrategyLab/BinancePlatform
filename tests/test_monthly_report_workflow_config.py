@@ -42,7 +42,13 @@ class MonthlyReportWorkflowConfigTests(unittest.TestCase):
         self.assertIn("Do not assume zero trades are automatically anomalous", workflow)
         self.assertIn("Treat a zero-trade month as context-dependent", workflow)
         self.assertIn("post_monthly_ai_review_comment.py", workflow)
+        self.assertIn("render_monthly_ai_review.py", workflow)
+        self.assertIn("run_openai_secondary_review.py", workflow)
         self.assertIn("steps.claude_review.outputs.execution_file", workflow)
+        self.assertIn("OPENAI_API_KEY", workflow)
+        self.assertIn("OPENAI_SECONDARY_MODEL", workflow)
+        self.assertIn("secondary_review.json", workflow)
+        self.assertIn("actions/upload-artifact@v7", workflow)
 
 
 if __name__ == "__main__":
