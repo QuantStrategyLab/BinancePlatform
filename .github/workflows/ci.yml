@@ -13,6 +13,40 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Resolve QuantPlatformKit ref
+        id: quant-platform-kit-ref
+        run: |
+          set -euo pipefail
+          ref="main"
+          if [ -n "${GITHUB_HEAD_REF:-}" ] && git ls-remote --exit-code --heads https://github.com/QuantStrategyLab/QuantPlatformKit.git "${GITHUB_HEAD_REF}" >/dev/null 2>&1; then
+            ref="${GITHUB_HEAD_REF}"
+          fi
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve CryptoStrategies ref
+        id: crypto-strategies-ref
+        run: |
+          set -euo pipefail
+          ref="main"
+          if [ -n "${GITHUB_HEAD_REF:-}" ] && git ls-remote --exit-code --heads https://github.com/QuantStrategyLab/CryptoStrategies.git "${GITHUB_HEAD_REF}" >/dev/null 2>&1; then
+            ref="${GITHUB_HEAD_REF}"
+          fi
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout QuantPlatformKit
+        uses: actions/checkout@v6
+        with:
+          repository: QuantStrategyLab/QuantPlatformKit
+          ref: ${{ steps.quant-platform-kit-ref.outputs.ref }}
+          path: external/QuantPlatformKit
+
+      - name: Checkout CryptoStrategies
+        uses: actions/checkout@v6
+        with:
+          repository: QuantStrategyLab/CryptoStrategies
+          ref: ${{ steps.crypto-strategies-ref.outputs.ref }}
+          path: external/CryptoStrategies
+
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
@@ -22,9 +56,11 @@ jobs:
         run: |
           REQ_FILE="requirements-lock.txt"
           if [ ! -f "$REQ_FILE" ]; then REQ_FILE="requirements.txt"; fi
+          set -euo pipefail
           python -m pip install --upgrade pip
           pip install -r "$REQ_FILE"
           pip install ruff
+          python -m pip install -e external/QuantPlatformKit -e external/CryptoStrategies
 
       - name: Compile scripts
         run: |
@@ -43,7 +79,9 @@ jobs:
             runtime_config_support.py \
             runtime_support.py \
             scripts/run_monthly_report_bundle.py \
-            strategy_core.py \
+            strategy_loader.py \
+            strategy_runtime.py \
+            decision_mapper.py \
             live_services.py \
             trend_pool_support.py \
             trade_state_support.py
