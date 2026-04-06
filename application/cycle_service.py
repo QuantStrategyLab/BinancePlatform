@@ -32,7 +32,6 @@ def execute_strategy_cycle(
     translate_fn,
     traceback_module,
 ):
-    atr_multiplier = 2.5
     circuit_breaker_pct = -0.05
     min_bnb_value, buy_bnb_amount = 10.0, 15.0
     cycle_settings = load_cycle_execution_settings()
@@ -73,7 +72,17 @@ def execute_strategy_cycle(
         btc_snapshot = market_snapshot["btc_snapshot"]
         trend_indicators = market_snapshot["trend_indicators"]
 
-        allocation = compute_portfolio_allocation(runtime_trend_universe, balances, prices, u_total, fuel_val)
+        allocation = compute_portfolio_allocation(
+            runtime,
+            runtime_trend_universe,
+            balances,
+            prices,
+            u_total,
+            fuel_val,
+            state,
+            trend_indicators,
+            btc_snapshot,
+        )
         total_equity = allocation["total_equity"]
         trend_val_equity = allocation["trend_val"]
 
@@ -131,10 +140,19 @@ def execute_strategy_cycle(
             today_id_str,
             allow_new_trend_entries,
             allow_pool_refresh=not trend_pool_resolution["degraded"],
-            atr_multiplier=atr_multiplier,
         )
 
-        post_trade_allocation = compute_portfolio_allocation(runtime_trend_universe, balances, prices, u_total, fuel_val)
+        post_trade_allocation = compute_portfolio_allocation(
+            runtime,
+            runtime_trend_universe,
+            balances,
+            prices,
+            u_total,
+            fuel_val,
+            state,
+            trend_indicators,
+            btc_snapshot,
+        )
         total_equity = post_trade_allocation["total_equity"]
         trend_val_equity = post_trade_allocation["trend_val"]
 
@@ -144,6 +162,7 @@ def execute_strategy_cycle(
         btc_target_ratio = post_trade_allocation["btc_target_ratio"]
         dca_usdt_pool = post_trade_allocation["dca_usdt_pool"]
         dca_val = post_trade_allocation["dca_val"]
+        btc_base_order_usdt = post_trade_allocation["btc_base_order_usdt"]
         _, trend_daily_pnl = compute_daily_pnls(state, total_equity, trend_val_equity)
 
         u_total = execute_btc_dca_cycle(
@@ -158,6 +177,7 @@ def execute_strategy_cycle(
             dca_val,
             btc_snapshot,
             btc_target_ratio,
+            btc_base_order_usdt,
             today_id_str,
             log_buffer,
         )

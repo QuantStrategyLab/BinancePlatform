@@ -7,10 +7,12 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 QPK_SRC = ROOT.parent / "QuantPlatformKit" / "src"
+CRYPTO_STRATEGIES_SRC = ROOT.parent / "CryptoStrategies" / "src"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-if str(QPK_SRC) not in sys.path:
-    sys.path.insert(0, str(QPK_SRC))
+for path in (QPK_SRC, CRYPTO_STRATEGIES_SRC):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 from runtime_config_support import build_live_runtime, load_cycle_execution_settings
 from strategy_registry import BINANCE_PLATFORM, CRYPTO_DOMAIN, DEFAULT_STRATEGY_PROFILE, get_supported_profiles_for_platform

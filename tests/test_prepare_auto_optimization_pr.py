@@ -80,10 +80,19 @@ class PrepareAutoOptimizationPrTests(unittest.TestCase):
     def test_evaluate_changed_files_blocks_live_runtime_paths(self) -> None:
         allowed = evaluate_changed_files(["reporting/status_reports.py", "tests/test_status_reports.py"], repo_root=PROJECT_ROOT)
         blocked = evaluate_changed_files(["application/execution_service.py", "README.md"], repo_root=PROJECT_ROOT)
+        blocked_runtime_boundary = evaluate_changed_files(
+            ["strategy_runtime.py", "decision_mapper.py", "README.md"],
+            repo_root=PROJECT_ROOT,
+        )
 
         self.assertTrue(allowed["allowed"])
         self.assertFalse(blocked["allowed"])
         self.assertEqual(blocked["blocked_files"], ["application/execution_service.py"])
+        self.assertFalse(blocked_runtime_boundary["allowed"])
+        self.assertEqual(
+            blocked_runtime_boundary["blocked_files"],
+            ["strategy_runtime.py", "decision_mapper.py"],
+        )
 
     def test_render_pr_body_contains_merge_policy_and_issue_reference(self) -> None:
         issue_context = {

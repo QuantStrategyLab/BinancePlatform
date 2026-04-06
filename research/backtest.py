@@ -7,10 +7,13 @@ import pandas as pd
 from binance.client import Client
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+CRYPTO_STRATEGIES_SRC = PROJECT_ROOT.parent / "CryptoStrategies" / "src"
+QPK_SRC = PROJECT_ROOT.parent / "QuantPlatformKit" / "src"
+for path in (PROJECT_ROOT, CRYPTO_STRATEGIES_SRC, QPK_SRC):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
-from strategy_core import (
+from crypto_strategies.strategies.crypto_leader_rotation.core import (
     allocate_trend_buy_budget,
     build_rotation_pool_ranking,
     compute_allocation_budgets,

@@ -75,15 +75,12 @@ class ExecutionServiceTests(unittest.TestCase):
             report,
             state,
             {"ETHUSDT": {"base_asset": "ETH"}},
-            {"SOLUSDT": {"weight": 1.0}},
-            {"ETHUSDT": {"atr14": 4.0, "sma60": 90.0}},
+            {"ETHUSDT": "rotated_out"},
             prices,
             balances,
             50.0,
             [],
             "20260329",
-            2.5,
-            get_trend_sell_reason_fn=lambda *_args: "rotated_out",
             should_skip_duplicate_trend_action_fn=lambda *_args: False,
             append_log_fn=lambda _buffer, message: observed["logs"].append(message),
             translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
@@ -198,7 +195,7 @@ class ExecutionServiceTests(unittest.TestCase):
 
     def test_execute_trend_rotation_delegates_sell_buy_and_status_flow(self):
         runtime = SimpleNamespace(now_utc="2026-03-29T00:00:00Z")
-        report = {"selected_symbols": {"active_trend_pool": [], "selected_candidates": []}}
+        report = {"selected_symbols": {"active_trend_pool": [], "selected_candidates": []}, "gating_summary": {}, "gating_events": []}
         state = {}
         runtime_trend_universe = {"ETHUSDT": {"base_asset": "ETH"}}
         trend_indicators = {"ETHUSDT": {"sma20": 1.0}}
@@ -206,23 +203,32 @@ class ExecutionServiceTests(unittest.TestCase):
         prices = {"ETHUSDT": 2000.0}
         balances = {"ETHUSDT": 0.5}
         log_buffer = []
-        observed = {}
+        observed = {"plan_calls": []}
 
-        def fake_refresh_rotation_pool(*_args, **kwargs):
-            observed["refresh"] = kwargs
-            return ["ETHUSDT"], []
+        plans = [
+            {
+                "active_trend_pool": ["ETHUSDT"],
+                "selected_candidates": {"ETHUSDT": {"weight": 1.0, "relative_score": 1.5}},
+                "eligible_buy_symbols": [],
+                "planned_trend_buys": {},
+                "sell_reasons": {"ETHUSDT": "rotated_out"},
+            },
+            {
+                "active_trend_pool": ["ETHUSDT"],
+                "selected_candidates": {"ETHUSDT": {"weight": 1.0, "relative_score": 1.5}},
+                "eligible_buy_symbols": ["ETHUSDT"],
+                "planned_trend_buys": {"ETHUSDT": 320.0},
+                "sell_reasons": {},
+            },
+        ]
 
-        def fake_compute_portfolio_allocation(*_args):
-            observed["post_sell_budget"] = 320.0
-            return {"trend_usdt_pool": 320.0}
+        def fake_resolve_strategy_plan(*args, **kwargs):
+            observed["plan_calls"].append((args, kwargs))
+            return plans[len(observed["plan_calls"]) - 1]
 
         def fake_execute_trend_sells(*_args):
             observed["sell_called"] = True
             return 1150.0
-
-        def fake_plan_trend_buys(*_args):
-            observed["buy_budget"] = _args[5]
-            return ["ETHUSDT"], {"ETHUSDT": 320.0}
 
         def fake_execute_trend_buys(*_args):
             observed["buy_plan"] = dict(_args[5])
@@ -243,16 +249,11 @@ class ExecutionServiceTests(unittest.TestCase):
             "20260329",
             True,
             False,
-            2.5,
-            refresh_rotation_pool=fake_refresh_rotation_pool,
-            select_rotation_weights=lambda *_args: {"ETHUSDT": {"weight": 1.0, "relative_score": 1.5}},
+            resolve_strategy_plan=fake_resolve_strategy_plan,
             append_rotation_summary=lambda *_args: observed.__setitem__("summary_called", True),
-            compute_portfolio_allocation=fake_compute_portfolio_allocation,
             execute_trend_sells=fake_execute_trend_sells,
-            plan_trend_buys=fake_plan_trend_buys,
             execute_trend_buys=fake_execute_trend_buys,
             append_trend_symbol_status=lambda *_args: observed.__setitem__("status_called", True),
-            rotation_top_n=2,
             official_trend_pool_symbols=["ETHUSDT", "SOLUSDT"],
         )
 
@@ -264,15 +265,11 @@ class ExecutionServiceTests(unittest.TestCase):
                 "selected_candidates": ["ETHUSDT"],
             },
         )
-        self.assertEqual(
-            observed["refresh"],
-            {"allow_refresh": False, "now_utc": "2026-03-29T00:00:00Z"},
-        )
-        self.assertEqual(observed["buy_budget"], 320.0)
-        self.assertEqual(observed["buy_plan"], {"ETHUSDT": 320.0})
+        self.assertEqual(len(observed["plan_calls"]), 2)
         self.assertTrue(observed["summary_called"])
         self.assertTrue(observed["sell_called"])
         self.assertTrue(observed["status_called"])
+        self.assertEqual(observed["buy_plan"], {"ETHUSDT": 320.0})
 
     def test_execute_btc_dca_cycle_executes_buy_branch(self):
         runtime = SimpleNamespace(client=object())
@@ -295,11 +292,11 @@ class ExecutionServiceTests(unittest.TestCase):
             5000.0,
             {"ahr999": 0.4, "zscore": 0.0, "sell_trigger": 3.5},
             0.25,
+            50.0,
             "20260329",
             log_buffer,
             append_log_fn=lambda buffer, message: buffer.append(message),
             translate_fn=lambda key, **_kwargs: key,
-            get_dynamic_btc_base_order=lambda _total_equity: 50.0,
             format_qty_fn=lambda _client, _symbol, qty: round(qty, 6),
             ensure_asset_available_fn=lambda _runtime, _report, asset, amount, _log_buffer: observed["asset_checks"].append((asset, amount)) or True,
             runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: observed["client_calls"].append(
@@ -340,11 +337,11 @@ class ExecutionServiceTests(unittest.TestCase):
             10_000.0,
             {"ahr999": 2.0, "zscore": 4.5, "sell_trigger": 3.5},
             0.25,
+            50.0,
             "20260329",
             log_buffer,
             append_log_fn=lambda buffer, message: buffer.append(message),
             translate_fn=lambda key, **_kwargs: key,
-            get_dynamic_btc_base_order=lambda _total_equity: 50.0,
             format_qty_fn=lambda _client, _symbol, qty: round(qty, 6),
             ensure_asset_available_fn=lambda _runtime, _report, asset, amount, _log_buffer: observed["asset_checks"].append((asset, amount)) or True,
             runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: observed["client_calls"].append(
@@ -380,11 +377,11 @@ class ExecutionServiceTests(unittest.TestCase):
             6.0,
             {"ahr999": 0.7, "zscore": 0.0, "sell_trigger": 3.5},
             0.25,
+            50.0,
             "20260329",
             [],
             append_log_fn=lambda *_args: None,
             translate_fn=lambda key, **_kwargs: key,
-            get_dynamic_btc_base_order=lambda _total_equity: 50.0,
             format_qty_fn=lambda *_args: 0.0,
             ensure_asset_available_fn=lambda *_args: True,
             runtime_call_client_fn=lambda *_args, **_kwargs: None,

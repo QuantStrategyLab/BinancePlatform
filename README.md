@@ -15,7 +15,7 @@ The current `crypto_leader_rotation` pure strategy modules are sourced from `Cry
 
 Full strategy documentation now lives in [`CryptoStrategies`](https://github.com/QuantStrategyLab/CryptoStrategies#crypto_leader_rotation). The sections below focus on downstream execution assumptions and runtime behavior.
 
-**Workspace assumption:** Local replay and monitoring helpers expect the upstream repo to be checked out at `../CryptoLeaderRotation` unless you override the relevant path flags/env vars.
+**Artifact contract:** Local replay and monitoring helpers now follow an explicit live-pool artifact contract: runtime payload, Firestore payload, `TREND_POOL_FILE`, repo-local `artifacts/live_pool_legacy.json`, then compatible fallback candidates. A sibling `../CryptoLeaderRotation` checkout is only one fallback candidate, not the sole default source.
 
 **Python runtime:** Prefer Python `3.11`. CI is pinned to 3.11, and local helper commands now prefer `python3.11` when available while still falling back to `python3`.
 
@@ -46,7 +46,7 @@ Non-goals:
 ## Repo Shape
 
 - `main.py` is the live orchestration entrypoint.
-- `strategy_core.py` contains shared pure strategy logic.
+- `strategy_runtime.py` loads the unified strategy entrypoint and explicit artifact contract.
 - `research/` contains optional audit-only backtest tools and is not part of the hourly execution path.
 - `run_*` scripts are local operators' helpers for fixed-input replay and maintenance.
 - `tests/fixtures/` contains fixed inputs used by the replay regression tests.
@@ -54,7 +54,8 @@ Non-goals:
 ## Layout
 
 - **main.py** — Live script (run hourly).
-- **strategy_core.py** — Shared pure strategy math used by live execution and research backtests.
+- **strategy_runtime.py** — Unified strategy entrypoint loader and artifact-contract runtime surface.
+- **decision_mapper.py** — Maps shared `StrategyDecision` objects into execution-side allocation and rotation plans.
 - **runtime_support.py** — Runtime/report helpers shared by live execution and dry-run replay.
 - **runtime_config_support.py** — Environment parsing and live-runtime bootstrap helpers so `main.py` can stay orchestration-focused.
 - **market_snapshot_support.py** — Market snapshot assembly helpers used by the live cycle and replay regression tests.
@@ -259,7 +260,7 @@ Optional:
 ### 仓库结构
 
 - `main.py`：小时级 live 编排入口
-- `strategy_core.py`：共享纯策略逻辑
+- `strategy_runtime.py`：加载统一策略入口，并暴露显式 artifact contract 运行时信息
 - `research/`：研究和审计工具，不参与 live 执行
 - `run_*`：本地固定输入回放和维护脚本
 - `tests/fixtures/`：回放回归的固定输入

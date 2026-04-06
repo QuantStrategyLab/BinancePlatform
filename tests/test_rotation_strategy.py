@@ -1,7 +1,22 @@
+import sys
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 
-from strategy.rotation import get_trend_sell_reason, plan_trend_buys, refresh_rotation_pool
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+QPK_SRC = PROJECT_ROOT.parent / "QuantPlatformKit" / "src"
+CRYPTO_STRATEGIES_SRC = PROJECT_ROOT.parent / "CryptoStrategies" / "src"
+for path in (PROJECT_ROOT, QPK_SRC, CRYPTO_STRATEGIES_SRC):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
+from crypto_strategies.strategies.crypto_leader_rotation.rotation import (  # noqa: E402
+    get_trend_sell_reason,
+    plan_trend_buys,
+    refresh_rotation_pool,
+)
+from crypto_strategies.strategies.crypto_leader_rotation.core import allocate_trend_buy_budget  # noqa: E402
 
 
 class RotationStrategyTests(unittest.TestCase):
@@ -71,11 +86,11 @@ class RotationStrategyTests(unittest.TestCase):
         def get_symbol_trade_state(current_state, symbol):
             return current_state[symbol]
 
-        def allocate_trend_buy_budget(selected_candidates, buyable_symbols, total_budget):
+        def allocate_budget(selected_candidates, buyable_symbols, total_budget):
             observed["selected_candidates"] = dict(selected_candidates)
             observed["buyable_symbols"] = list(buyable_symbols)
             observed["total_budget"] = total_budget
-            return {symbol: total_budget for symbol in buyable_symbols}
+            return allocate_trend_buy_budget(selected_candidates, buyable_symbols, total_budget)
 
         eligible_buy_symbols, planned_trend_buys = plan_trend_buys(
             state,
@@ -100,11 +115,11 @@ class RotationStrategyTests(unittest.TestCase):
             available_trend_buy_budget=250.0,
             allow_new_trend_entries=True,
             get_symbol_trade_state_fn=get_symbol_trade_state,
-            allocate_trend_buy_budget_fn=allocate_trend_buy_budget,
+            allocate_trend_buy_budget_fn=allocate_budget,
         )
 
         self.assertEqual(eligible_buy_symbols, ["SOLUSDT"])
-        self.assertEqual(planned_trend_buys, {"SOLUSDT": 250.0})
+        self.assertAlmostEqual(planned_trend_buys["SOLUSDT"], 250.0)
         self.assertEqual(observed["buyable_symbols"], ["SOLUSDT"])
         self.assertEqual(observed["total_budget"], 250.0)
 

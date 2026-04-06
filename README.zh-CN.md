@@ -15,14 +15,14 @@
 
 完整策略说明现在放在 [`CryptoStrategies`](https://github.com/QuantStrategyLab/CryptoStrategies#crypto_leader_rotation)。下面这些章节主要保留下游执行侧的约束、运行时行为和运维说明。
 
-**工作区假设：** 本地 replay、monitor 和 review 工具默认假设上游仓库位于 `../CryptoLeaderRotation`。如果目录不同，可以通过参数或环境变量覆盖。
+**artifact contract：** 本地 replay、monitor 和 review 工具现在按显式 live-pool artifact contract 取数：runtime 注入 payload、Firestore payload、`TREND_POOL_FILE`、仓库内 `artifacts/live_pool_legacy.json`，最后才是兼容 fallback 候选。`../CryptoLeaderRotation` 只是不保证存在的候选之一，不再是默认唯一来源。
 
 **Python 版本：** 推荐 `Python 3.11`。CI 固定在 `3.11`，本地辅助命令会优先使用 `python3.11`，没有时回退到 `python3`。
 
 ## 仓库形态
 
 - `main.py` 是 live 交易编排入口。
-- `strategy_core.py` 放共享的纯策略逻辑。
+- `strategy_runtime.py` 负责加载统一策略入口，并暴露显式 artifact contract 运行时信息。
 - `research/` 放研究、审计和历史分析工具。
 - 各种 `run_*` 脚本用于本地固定输入回放和维护辅助。
 - `tests/fixtures/` 放固定输入，用于 dry-run replay 回归测试。
@@ -30,7 +30,8 @@
 ## 文件说明
 
 - **main.py** — live 主脚本，按小时运行。
-- **strategy_core.py** — live 和 research 共用的纯策略计算。
+- **strategy_runtime.py** — 统一策略入口加载器，并暴露 artifact contract 相关运行时接口。
+- **decision_mapper.py** — 把共享 `StrategyDecision` 映射成执行侧需要的 allocation / rotation plan。
 - **runtime_support.py** — live / dry-run 共用的运行时和执行报告辅助。
 - **live_services.py** — Firestore 状态和 Telegram 通知适配层。
 - **QuantPlatformKit.binance** — 复用 Binance 客户端初始化、余额辅助、行情快照和下单数量格式化。

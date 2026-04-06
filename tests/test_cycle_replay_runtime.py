@@ -33,6 +33,11 @@ def install_test_stubs():
         sys.modules["binance.client"] = client_module
         sys.modules["binance.exceptions"] = exceptions_module
 
+    if "requests" not in sys.modules:
+        requests_module = types.ModuleType("requests")
+        requests_module.post = lambda *args, **kwargs: None
+        sys.modules["requests"] = requests_module
+
     if "google" not in sys.modules:
         sys.modules["google"] = types.ModuleType("google")
     if "google.cloud" not in sys.modules:
@@ -66,8 +71,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 PLATFORM_KIT_SRC = PROJECT_ROOT.parent / "QuantPlatformKit" / "src"
-if str(PLATFORM_KIT_SRC) not in sys.path:
-    sys.path.insert(0, str(PLATFORM_KIT_SRC))
+CRYPTO_STRATEGIES_SRC = PROJECT_ROOT.parent / "CryptoStrategies" / "src"
+for path in (PLATFORM_KIT_SRC, CRYPTO_STRATEGIES_SRC):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 import main
 import run_cycle_replay

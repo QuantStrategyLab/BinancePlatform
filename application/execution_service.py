@@ -103,16 +103,13 @@ def execute_trend_sells(
     report,
     state,
     runtime_trend_universe,
-    selected_candidates,
-    trend_indicators,
+    sell_reasons,
     prices,
     balances,
     u_total,
     log_buffer,
     today_id_str,
-    atr_multiplier,
     *,
-    get_trend_sell_reason_fn,
     should_skip_duplicate_trend_action_fn,
     append_log_fn,
     translate_fn,
@@ -127,14 +124,7 @@ def execute_trend_sells(
 ):
     for symbol, config in runtime_trend_universe.items():
         curr_price = prices[symbol]
-        sell_reason = get_trend_sell_reason_fn(
-            state,
-            symbol,
-            curr_price,
-            trend_indicators.get(symbol),
-            selected_candidates,
-            atr_multiplier,
-        )
+        sell_reason = str(sell_reasons.get(symbol, "")).strip()
         if not sell_reason:
             continue
 
@@ -341,33 +331,29 @@ def execute_trend_rotation(
     today_id_str,
     allow_new_trend_entries,
     allow_pool_refresh,
-    atr_multiplier,
     *,
-    refresh_rotation_pool,
-    select_rotation_weights,
+    resolve_strategy_plan,
     append_rotation_summary,
-    compute_portfolio_allocation,
     execute_trend_sells,
-    plan_trend_buys,
     execute_trend_buys,
     append_trend_symbol_status,
-    rotation_top_n,
     official_trend_pool_symbols,
 ):
-    active_trend_pool, _ = refresh_rotation_pool(
+    strategy_plan = resolve_strategy_plan(
         state,
+        runtime_trend_universe,
         trend_indicators,
         btc_snapshot,
-        allow_refresh=allow_pool_refresh,
-        now_utc=runtime.now_utc,
-    )
-    selected_candidates = select_rotation_weights(
-        trend_indicators,
         prices,
-        btc_snapshot,
-        active_trend_pool,
-        rotation_top_n,
+        balances,
+        u_total,
+        fuel_val,
+        allow_new_trend_entries=allow_new_trend_entries,
+        allow_pool_refresh=allow_pool_refresh,
     )
+    active_trend_pool = list(strategy_plan["active_trend_pool"])
+    selected_candidates = dict(strategy_plan["selected_candidates"])
+    sell_reasons = dict(strategy_plan["sell_reasons"])
     report["selected_symbols"]["active_trend_pool"] = list(active_trend_pool)
     report["selected_symbols"]["selected_candidates"] = list(selected_candidates.keys())
     if not selected_candidates:
@@ -389,32 +375,29 @@ def execute_trend_rotation(
         report,
         state,
         runtime_trend_universe,
-        selected_candidates,
-        trend_indicators,
+        sell_reasons,
         prices,
         balances,
         u_total,
         log_buffer,
         today_id_str,
-        atr_multiplier,
     )
 
-    current_allocation = compute_portfolio_allocation(
-        runtime_trend_universe,
-        balances,
-        prices,
-        u_total,
-        fuel_val,
-    )
-    eligible_buy_symbols, planned_trend_buys = plan_trend_buys(
+    post_sell_plan = resolve_strategy_plan(
         state,
         runtime_trend_universe,
-        selected_candidates,
         trend_indicators,
+        btc_snapshot,
         prices,
-        current_allocation["trend_usdt_pool"],
-        allow_new_trend_entries,
+        balances,
+        u_total,
+        fuel_val,
+        allow_new_trend_entries=allow_new_trend_entries,
+        allow_pool_refresh=allow_pool_refresh,
     )
+    selected_candidates = dict(post_sell_plan["selected_candidates"])
+    eligible_buy_symbols = list(post_sell_plan["eligible_buy_symbols"])
+    planned_trend_buys = dict(post_sell_plan["planned_trend_buys"])
     if selected_candidates and not eligible_buy_symbols:
         record_gating_event(
             report,
@@ -480,12 +463,12 @@ def execute_btc_dca_cycle(
     dca_val,
     btc_snapshot,
     btc_target_ratio,
+    btc_base_order_usdt,
     today_id_str,
     log_buffer,
     *,
     append_log_fn,
     translate_fn,
-    get_dynamic_btc_base_order,
     format_qty_fn,
     ensure_asset_available_fn,
     runtime_call_client_fn,
@@ -519,7 +502,7 @@ def execute_btc_dca_cycle(
         ),
     )
 
-    base_order = get_dynamic_btc_base_order(total_equity)
+    base_order = float(btc_base_order_usdt)
     multiplier = _resolve_btc_buy_multiplier(ahr)
 
     if multiplier <= 0:

@@ -5,9 +5,9 @@ Pure strategy math, state normalization, upstream contract handling, exchange
 helpers, and live service adapters live in dedicated modules.
 """
 
+import os
 import time
 import sys
-from pathlib import Path
 import traceback
 from entrypoints.cli import run_cli_entrypoint
 from notify_i18n_support import translate as t
@@ -62,7 +62,6 @@ from application.portfolio_service import (
     append_portfolio_report as app_append_portfolio_report,
     build_balance_snapshot as app_build_balance_snapshot,
     compute_daily_pnls as app_compute_daily_pnls,
-    compute_portfolio_allocation as app_compute_portfolio_allocation,
     maybe_rebase_daily_state_for_balance_change as app_maybe_rebase_daily_state_for_balance_change,
     maybe_reset_daily_state as app_maybe_reset_daily_state,
 )
@@ -92,21 +91,11 @@ from reporting.status_reports import (
     get_periodic_report_bucket as report_get_periodic_report_bucket,
     maybe_send_periodic_btc_status_report as report_maybe_send_periodic_btc_status_report,
 )
-from strategy_core import (
-    DEFAULT_POOL_SCORE_WEIGHTS,
-    allocate_trend_buy_budget as shared_allocate_trend_buy_budget,
-    build_stable_quality_pool as shared_build_stable_quality_pool,
-    compute_allocation_budgets,
-    get_dynamic_btc_base_order as shared_get_dynamic_btc_base_order,
-    get_dynamic_btc_target_ratio as shared_get_dynamic_btc_target_ratio,
-    rank_normalize as shared_rank_normalize,
-    select_rotation_weights as shared_select_rotation_weights,
+from decision_mapper import (
+    map_strategy_decision_to_allocation as map_decision_to_allocation,
+    map_strategy_decision_to_rotation_plan as map_decision_to_rotation_plan,
 )
-from strategy.rotation import (
-    get_trend_sell_reason as strategy_get_trend_sell_reason,
-    plan_trend_buys as strategy_plan_trend_buys,
-    refresh_rotation_pool as strategy_refresh_rotation_pool,
-)
+from strategy_runtime import load_strategy_runtime
 from trade_state_support import (
     build_default_state as ts_build_default_state,
     default_trend_symbol_state as ts_default_trend_symbol_state,
@@ -137,6 +126,7 @@ from trend_pool_support import (
 )
 
 ExecutionRuntime = _ExecutionRuntime
+STRATEGY_RUNTIME = load_strategy_runtime(os.getenv("STRATEGY_PROFILE"))
 
 SEPARATOR = "━━━━━━━━━━━━━━━━━━"
 
@@ -156,29 +146,19 @@ STATIC_TREND_UNIVERSE = {
 }
 TREND_UNIVERSE = STATIC_TREND_UNIVERSE.copy()
 
-TREND_POOL_SIZE = 5
-ROTATION_TOP_N = 2
-MIN_HISTORY_DAYS = 365
-MIN_AVG_QUOTE_VOL_180 = 8_000_000
-POOL_MEMBERSHIP_BONUS = 0.10
+TREND_POOL_SIZE = STRATEGY_RUNTIME.trend_pool_size
 
 BNB_FUEL_SYMBOL = "BNBUSDT"
 BNB_FUEL_ASSET = "BNB"
 
-DEFAULT_LIVE_POOL_LEGACY_PATH = (
-    Path(__file__).resolve().parents[1]
-    / "CryptoLeaderRotation"
-    / "data"
-    / "output"
-    / "live_pool_legacy.json"
-)
+DEFAULT_LIVE_POOL_LEGACY_PATH = STRATEGY_RUNTIME.default_local_artifact_path
 DEFAULT_TREND_POOL_FIRESTORE_COLLECTION = "strategy"
 DEFAULT_TREND_POOL_FIRESTORE_DOCUMENT = "CRYPTO_LEADER_ROTATION_LIVE_POOL"
 RETIRED_TREND_POSITIONS_KEY = "retired_trend_positions"
 TREND_POOL_LAST_GOOD_PAYLOAD_KEY = "trend_pool_last_good_payload"
 TREND_POOL_ACTION_HISTORY_KEY = "trend_action_history"
-DEFAULT_TREND_POOL_MAX_AGE_DAYS = 45
-DEFAULT_TREND_POOL_ACCEPTABLE_MODES = ("core_major",)
+DEFAULT_TREND_POOL_MAX_AGE_DAYS = int(STRATEGY_RUNTIME.artifact_contract["max_age_days"])
+DEFAULT_TREND_POOL_ACCEPTABLE_MODES = tuple(STRATEGY_RUNTIME.artifact_contract["acceptable_modes"])
 
 
 class BalanceFetchError(RuntimeError):
@@ -263,7 +243,9 @@ def validate_trend_pool_payload(
 
 
 def get_default_live_pool_candidates():
-    return tp_get_default_live_pool_candidates(DEFAULT_LIVE_POOL_LEGACY_PATH)
+    return list(STRATEGY_RUNTIME.local_artifact_candidates) or tp_get_default_live_pool_candidates(
+        DEFAULT_LIVE_POOL_LEGACY_PATH
+    )
 
 
 def get_firestore_client():
@@ -498,15 +480,6 @@ def format_qty(client, symbol, qty):
     """Round quantity to exchange LOT_SIZE to avoid filter errors."""
     return qpk_format_qty(client, symbol, qty)
 
-def get_dynamic_btc_target_ratio(total_equity):
-    """BTC target weight increases with equity; no hard minimum."""
-    return shared_get_dynamic_btc_target_ratio(total_equity)
-
-
-def get_dynamic_btc_base_order(total_equity):
-    """Daily DCA base order scales with total equity."""
-    return shared_get_dynamic_btc_base_order(total_equity)
-
 
 def get_periodic_report_bucket(now_utc, interval_hours):
     return report_get_periodic_report_bucket(now_utc, interval_hours)
@@ -568,52 +541,6 @@ def fetch_btc_market_snapshot(client, btc_price, lookback_days=700, log_buffer=N
         if log_buffer is not None
         else None,
     )
-
-
-def rank_normalize(values):
-    return shared_rank_normalize(values)
-
-
-def build_stable_quality_pool(indicators_map, btc_snapshot, previous_pool):
-    return shared_build_stable_quality_pool(
-        indicators_map,
-        btc_snapshot,
-        previous_pool,
-        pool_size=TREND_POOL_SIZE,
-        min_history_days=MIN_HISTORY_DAYS,
-        min_avg_quote_vol_180=MIN_AVG_QUOTE_VOL_180,
-        membership_bonus=POOL_MEMBERSHIP_BONUS,
-        score_weights=DEFAULT_POOL_SCORE_WEIGHTS,
-    )
-
-
-def refresh_rotation_pool(state, indicators_map, btc_snapshot, allow_refresh=True, now_utc=None):
-    return strategy_refresh_rotation_pool(
-        state,
-        indicators_map,
-        btc_snapshot,
-        trend_universe_symbols=TREND_UNIVERSE.keys(),
-        trend_pool_size=TREND_POOL_SIZE,
-        build_stable_quality_pool_fn=build_stable_quality_pool,
-        allow_refresh=allow_refresh,
-        now_utc=now_utc,
-    )
-
-
-def select_rotation_weights(indicators_map, prices, btc_snapshot, candidate_pool, top_n):
-    """Pick final trend holdings from monthly pool by relative BTC strength."""
-    return shared_select_rotation_weights(
-        indicators_map,
-        prices,
-        btc_snapshot,
-        candidate_pool,
-        top_n,
-        weight_mode="inverse_vol",
-    )
-
-
-def allocate_trend_buy_budget(selected_candidates, buyable_symbols, total_budget):
-    return shared_allocate_trend_buy_budget(selected_candidates, buyable_symbols, total_budget)
 
 
 def resolve_runtime_trend_pool(runtime, raw_state):
@@ -760,14 +687,94 @@ def _capture_market_snapshot(runtime, report, runtime_trend_universe, log_buffer
     )
 
 
-def _compute_portfolio_allocation(runtime_trend_universe, balances, prices, u_total, fuel_val):
-    return app_compute_portfolio_allocation(
+def _resolve_strategy_evaluation(
+    runtime,
+    state,
+    runtime_trend_universe,
+    trend_indicators,
+    btc_snapshot,
+    prices,
+    balances,
+    u_total,
+    fuel_val,
+    *,
+    allow_new_trend_entries=True,
+    allow_pool_refresh=True,
+):
+    account_metrics = STRATEGY_RUNTIME.compute_account_metrics(
         runtime_trend_universe,
         balances,
         prices,
         u_total,
         fuel_val,
-        compute_allocation_budgets_fn=compute_allocation_budgets,
+    )
+    return STRATEGY_RUNTIME.evaluate(
+        prices=prices,
+        trend_indicators=trend_indicators,
+        btc_snapshot=btc_snapshot,
+        account_metrics=account_metrics,
+        trend_universe_symbols=tuple(runtime_trend_universe.keys()),
+        state=state,
+        translator=t,
+        now_utc=runtime.now_utc,
+        allow_new_trend_entries=allow_new_trend_entries,
+        allow_rotation_refresh=allow_pool_refresh,
+        get_symbol_trade_state_fn=get_symbol_trade_state,
+        set_symbol_trade_state_fn=set_symbol_trade_state,
+    )
+
+
+def _resolve_strategy_plan(
+    runtime,
+    state,
+    runtime_trend_universe,
+    trend_indicators,
+    btc_snapshot,
+    prices,
+    balances,
+    u_total,
+    fuel_val,
+    *,
+    allow_new_trend_entries,
+    allow_pool_refresh,
+):
+    evaluation = _resolve_strategy_evaluation(
+        runtime,
+        state,
+        runtime_trend_universe,
+        trend_indicators,
+        btc_snapshot,
+        prices,
+        balances,
+        u_total,
+        fuel_val,
+        allow_new_trend_entries=allow_new_trend_entries,
+        allow_pool_refresh=allow_pool_refresh,
+    )
+    strategy_plan = map_decision_to_rotation_plan(evaluation.decision)
+    strategy_plan["allocation"] = map_decision_to_allocation(
+        evaluation.decision,
+        account_metrics=evaluation.account_metrics,
+    )
+    strategy_plan["decision"] = evaluation.decision
+    return strategy_plan
+
+
+def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, prices, u_total, fuel_val, state, trend_indicators, btc_snapshot):
+    evaluation = _resolve_strategy_evaluation(
+        runtime,
+        state,
+        runtime_trend_universe,
+        trend_indicators,
+        btc_snapshot,
+        prices,
+        balances,
+        u_total,
+        fuel_val,
+    )
+    return map_decision_to_allocation(
+        evaluation.decision,
+        account_metrics=evaluation.account_metrics,
     )
 
 
@@ -874,48 +881,29 @@ def _append_rotation_summary(log_buffer, official_trend_pool, active_trend_pool,
     )
 
 
-def _get_trend_sell_reason(state, symbol, curr_price, indicators, selected_candidates, atr_multiplier):
-    return strategy_get_trend_sell_reason(
-        state,
-        symbol,
-        curr_price,
-        indicators,
-        selected_candidates,
-        atr_multiplier,
-        get_symbol_trade_state_fn=get_symbol_trade_state,
-        set_symbol_trade_state_fn=set_symbol_trade_state,
-        translate_fn=t,
-    )
-
-
 def _execute_trend_sells(
     runtime,
     report,
     state,
     runtime_trend_universe,
-    selected_candidates,
-    trend_indicators,
+    sell_reasons,
     prices,
     balances,
     u_total,
     log_buffer,
     today_id_str,
-    atr_multiplier,
 ):
     return app_execute_trend_sells(
         runtime,
         report,
         state,
         runtime_trend_universe,
-        selected_candidates,
-        trend_indicators,
+        sell_reasons,
         prices,
         balances,
         u_total,
         log_buffer,
         today_id_str,
-        atr_multiplier,
-        get_trend_sell_reason_fn=_get_trend_sell_reason,
         should_skip_duplicate_trend_action_fn=should_skip_duplicate_trend_action,
         append_log_fn=append_log,
         translate_fn=t,
@@ -927,28 +915,6 @@ def _execute_trend_sells(
         record_trend_action_fn=record_trend_action,
         runtime_set_trade_state_fn=runtime_set_trade_state,
         runtime_notify_fn=runtime_notify,
-    )
-
-
-def _plan_trend_buys(
-    state,
-    runtime_trend_universe,
-    selected_candidates,
-    trend_indicators,
-    prices,
-    available_trend_buy_budget,
-    allow_new_trend_entries,
-):
-    return strategy_plan_trend_buys(
-        state,
-        runtime_trend_universe,
-        selected_candidates,
-        trend_indicators,
-        prices,
-        available_trend_buy_budget,
-        allow_new_trend_entries,
-        get_symbol_trade_state_fn=get_symbol_trade_state,
-        allocate_trend_buy_budget_fn=allocate_trend_buy_budget,
     )
 
 
@@ -1020,7 +986,6 @@ def _execute_trend_rotation(
     today_id_str,
     allow_new_trend_entries,
     allow_pool_refresh,
-    atr_multiplier,
 ):
     return app_execute_trend_rotation(
         runtime,
@@ -1037,16 +1002,11 @@ def _execute_trend_rotation(
         today_id_str,
         allow_new_trend_entries,
         allow_pool_refresh,
-        atr_multiplier,
-        refresh_rotation_pool=refresh_rotation_pool,
-        select_rotation_weights=select_rotation_weights,
+        resolve_strategy_plan=lambda *args, **kwargs: _resolve_strategy_plan(runtime, *args, **kwargs),
         append_rotation_summary=_append_rotation_summary,
-        compute_portfolio_allocation=_compute_portfolio_allocation,
         execute_trend_sells=_execute_trend_sells,
-        plan_trend_buys=_plan_trend_buys,
         execute_trend_buys=_execute_trend_buys,
         append_trend_symbol_status=_append_trend_symbol_status,
-        rotation_top_n=ROTATION_TOP_N,
         official_trend_pool_symbols=list(TREND_UNIVERSE.keys()),
     )
 
@@ -1063,6 +1023,7 @@ def _execute_btc_dca_cycle(
     dca_val,
     btc_snapshot,
     btc_target_ratio,
+    btc_base_order_usdt,
     today_id_str,
     log_buffer,
 ):
@@ -1078,11 +1039,11 @@ def _execute_btc_dca_cycle(
         dca_val,
         btc_snapshot,
         btc_target_ratio,
+        btc_base_order_usdt,
         today_id_str,
         log_buffer,
         append_log_fn=append_log,
         translate_fn=t,
-        get_dynamic_btc_base_order=get_dynamic_btc_base_order,
         format_qty_fn=format_qty,
         ensure_asset_available_fn=ensure_asset_available_runtime,
         runtime_call_client_fn=runtime_call_client,

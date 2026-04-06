@@ -3,7 +3,7 @@ import types
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 def install_test_stubs():
@@ -31,6 +31,11 @@ def install_test_stubs():
         sys.modules["binance"] = binance_module
         sys.modules["binance.client"] = client_module
         sys.modules["binance.exceptions"] = exceptions_module
+
+    if "requests" not in sys.modules:
+        requests_module = types.ModuleType("requests")
+        requests_module.post = lambda *args, **kwargs: None
+        sys.modules["requests"] = requests_module
 
     if "google" not in sys.modules:
         sys.modules["google"] = types.ModuleType("google")
@@ -65,12 +70,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 PLATFORM_KIT_SRC = PROJECT_ROOT.parent / "QuantPlatformKit" / "src"
-if str(PLATFORM_KIT_SRC) not in sys.path:
-    sys.path.insert(0, str(PLATFORM_KIT_SRC))
+CRYPTO_STRATEGIES_SRC = PROJECT_ROOT.parent / "CryptoStrategies" / "src"
+for path in (PLATFORM_KIT_SRC, CRYPTO_STRATEGIES_SRC):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 import main
 from degraded_mode_support import format_trend_pool_source_logs
 import degraded_mode_support
+from crypto_strategies.strategies.crypto_leader_rotation.core import allocate_trend_buy_budget
+from crypto_strategies.strategies.crypto_leader_rotation.rotation import refresh_rotation_pool
 
 
 def build_payload(as_of_date="2026-03-10", *, mode="core_major"):
@@ -200,13 +209,16 @@ class TrendPoolLoadingTests(unittest.TestCase):
         state["trend_pool_version"] = "2026-03-10-core_major"
         state["trend_pool_as_of_date"] = "2026-03-10"
 
-        with patch.object(main, "build_stable_quality_pool") as mock_builder:
-            selected_pool, ranking = main.refresh_rotation_pool(
-                state,
-                indicators_map={},
-                btc_snapshot={},
-                now_utc=datetime(2026, 3, 15, tzinfo=timezone.utc),
-            )
+        mock_builder = Mock()
+        selected_pool, ranking = refresh_rotation_pool(
+            state,
+            indicators_map={},
+            btc_snapshot={},
+            trend_universe_symbols=main.TREND_UNIVERSE.keys(),
+            trend_pool_size=main.TREND_POOL_SIZE,
+            build_stable_quality_pool_fn=mock_builder,
+            now_utc=datetime(2026, 3, 15, tzinfo=timezone.utc),
+        )
 
         self.assertEqual(selected_pool, ["ETHUSDT", "SOLUSDT", "XRPUSDT", "LTCUSDT", "BCHUSDT"])
         self.assertEqual(ranking, [])
@@ -220,17 +232,16 @@ class TrendPoolLoadingTests(unittest.TestCase):
         state["trend_pool_version"] = "2026-03-15-core_major"
         state["trend_pool_as_of_date"] = "2026-03-15"
 
-        with patch.object(
-            main,
-            "build_stable_quality_pool",
-            return_value=(["TRXUSDT", "ETHUSDT", "BCHUSDT"], [{"symbol": "TRXUSDT", "score": 1.0}]),
-        ) as mock_builder:
-            selected_pool, ranking = main.refresh_rotation_pool(
-                state,
-                indicators_map={},
-                btc_snapshot={},
-                now_utc=datetime(2026, 3, 15, tzinfo=timezone.utc),
-            )
+        mock_builder = Mock(return_value=(["TRXUSDT", "ETHUSDT", "BCHUSDT"], [{"symbol": "TRXUSDT", "score": 1.0}]))
+        selected_pool, ranking = refresh_rotation_pool(
+            state,
+            indicators_map={},
+            btc_snapshot={},
+            trend_universe_symbols=main.TREND_UNIVERSE.keys(),
+            trend_pool_size=main.TREND_POOL_SIZE,
+            build_stable_quality_pool_fn=mock_builder,
+            now_utc=datetime(2026, 3, 15, tzinfo=timezone.utc),
+        )
 
         self.assertEqual(selected_pool, ["TRXUSDT", "ETHUSDT", "BCHUSDT"])
         self.assertEqual(ranking, [{"symbol": "TRXUSDT", "score": 1.0}])
@@ -245,13 +256,16 @@ class TrendPoolLoadingTests(unittest.TestCase):
         state["trend_pool_version"] = "2026-03-15-core_major"
         state["trend_pool_as_of_date"] = "2026-03-15"
 
-        with patch.object(main, "build_stable_quality_pool") as mock_builder:
-            selected_pool, ranking = main.refresh_rotation_pool(
-                state,
-                indicators_map={},
-                btc_snapshot={},
-                now_utc=datetime(2026, 3, 15, tzinfo=timezone.utc),
-            )
+        mock_builder = Mock()
+        selected_pool, ranking = refresh_rotation_pool(
+            state,
+            indicators_map={},
+            btc_snapshot={},
+            trend_universe_symbols=main.TREND_UNIVERSE.keys(),
+            trend_pool_size=main.TREND_POOL_SIZE,
+            build_stable_quality_pool_fn=mock_builder,
+            now_utc=datetime(2026, 3, 15, tzinfo=timezone.utc),
+        )
 
         self.assertEqual(selected_pool, ["ETHUSDT", "SOLUSDT", "XRPUSDT", "LTCUSDT", "BCHUSDT"])
         self.assertEqual(ranking, [])
@@ -324,8 +338,8 @@ class TrendPoolLoadingTests(unittest.TestCase):
             "XRPUSDT": {"weight": 0.2},
         }
 
-        full_alloc = main.allocate_trend_buy_budget(selected_candidates, ["ETHUSDT", "SOLUSDT"], 1000.0)
-        single_alloc = main.allocate_trend_buy_budget(selected_candidates, ["SOLUSDT"], 1000.0)
+        full_alloc = allocate_trend_buy_budget(selected_candidates, ["ETHUSDT", "SOLUSDT"], 1000.0)
+        single_alloc = allocate_trend_buy_budget(selected_candidates, ["SOLUSDT"], 1000.0)
 
         self.assertAlmostEqual(sum(full_alloc.values()), 1000.0)
         self.assertAlmostEqual(full_alloc["ETHUSDT"], 625.0)
