@@ -1,0 +1,86 @@
+{
+  "status": "ok",
+  "run_id": "20260406T070210Z",
+  "dry_run": false,
+  "selected_symbols": {
+    "active_trend_pool": [
+      "TRXUSDT",
+      "TAOUSDT",
+      "ETHUSDT",
+      "NEARUSDT",
+      "LINKUSDT"
+    ],
+    "selected_candidates": []
+  },
+  "buy_sell_intents": [],
+  "btc_dca_intents": [],
+  "redemption_subscription_intents": [],
+  "notifications": [],
+  "state_write_intents": [
+    {
+      "reason": "trend_pool_metadata_refresh"
+    },
+    {
+      "reason": "cycle_complete"
+    }
+  ],
+  "side_effect_summary": {
+    "executed_call_count": 2,
+    "suppressed_call_count": 0
+  },
+  "gating_summary": {
+    "trend_no_selected_candidate": 1,
+    "btc_dca_buy_below_min_budget": 1
+  },
+  "gating_events": [
+    {
+      "gate": "trend_no_selected_candidate",
+      "category": "trend",
+      "detail": {
+        "active_trend_pool_size": 5
+      }
+    },
+    {
+      "gate": "btc_dca_buy_below_min_budget",
+      "category": "btc_dca",
+      "detail": {
+        "dca_usdt_pool": 0.0
+      }
+    }
+  ],
+  "error_summary": {
+    "errors": []
+  },
+  "log_lines": [
+    "\ud83d\udce1 \u8d8b\u52bf\u6c60\u6765\u6e90: fresh_upstream | mode=core_major | version=2026-04-01-core_major | as_of=2026-04-01 | project=crypto-leader-rotation",
+    "   \u00b7 \u5df2\u4ece firestore:strategy/CRYPTO_LEADER_ROTATION_LIVE_POOL \u8f7d\u5165\u6700\u65b0\u4e0a\u6e38\u8d8b\u52bf\u6c60\u3002",
+    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501 \ud83d\udce6 \u7ec4\u5408\u5feb\u7167 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501",
+    "\ud83d\udcb0 \u603b\u51c0\u503c: $110.35\uff08\u7ec4\u5408\u5f53\u65e5: -0.56%\uff09",
+    "\ud83e\ude99 BTC \u6838\u5fc3\u4ed3\u76ee\u6807: 14.2% | \u5f53\u524d $78.61 | \u53ef\u7528 $0.00",
+    "\ud83d\udd25 \u8d8b\u52bf\u5c42\u76ee\u6807: 85.8% | \u5f53\u524d $0.00 | \u53ef\u7528 $6.54 | \u8d8b\u52bf\u5c42\u5f53\u65e5: 0.00%",
+    "\u26fd BNB \u71c3\u6599\u4ed3: $25.20",
+    "\ud83d\udea6 BTC \u95f8\u95e8: \u5173\u95ed | AHR999=0.788 | Z-Score=-1.19",
+    "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501",
+    "\ud83d\uddd3\ufe0f \u4e0a\u6e38\u5b98\u65b9\u6708\u5ea6\u6c60: TRXUSDT, ETHUSDT, LINKUSDT, TAOUSDT, NEARUSDT",
+    "\ud83e\udded \u5f53\u524d\u6708\u5ea6\u6267\u884c\u6c60: TRXUSDT, TAOUSDT, ETHUSDT, NEARUSDT, LINKUSDT",
+    "\ud83d\udccc \u5f53\u524d\u6708\u5ea6\u6267\u884c\u6c60\u6570\u91cf: 5",
+    "\ud83c\udfaf \u5f53\u524d\u6267\u884c\u76ee\u6807: \u5f53\u524d\u6ca1\u6709\u5019\u9009\uff0c\u4fdd\u6301\u9632\u5b88",
+    " \u2514 TRXUSDT: \ud83d\udca4\u7a7a\u4ed3 | \u4ef7\u683c: $0.3177 | \u76f8\u5bf9 BTC: 12.27 | \u52a8\u91cf: 9.28%",
+    " \u2514 ETHUSDT: \ud83d\udca4\u7a7a\u4ed3 | \u4ef7\u683c: $2127.7666 | \u76f8\u5bf9 BTC: -0.03 | \u52a8\u91cf: -5.32%",
+    " \u2514 LINKUSDT: \ud83d\udca4\u7a7a\u4ed3 | \u4ef7\u683c: $8.9264 | \u76f8\u5bf9 BTC: -0.84 | \u52a8\u91cf: -7.59%",
+    " \u2514 TAOUSDT: \ud83d\udca4\u7a7a\u4ed3 | \u4ef7\u683c: $316.4690 | \u76f8\u5bf9 BTC: 8.79 | \u52a8\u91cf: 39.12%",
+    " \u2514 NEARUSDT: \ud83d\udca4\u7a7a\u4ed3 | \u4ef7\u683c: $1.2750 | \u76f8\u5bf9 BTC: 1.23 | \u52a8\u91cf: -2.08%",
+    "\ud83e\udded BTC \u7d2f\u79ef\u96f7\u8fbe: AHR999=0.788 | Z-Score=-1.19 (\u9608\u503c:2.50)"
+  ],
+  "total_equity_usdt": 110.34533763788353,
+  "trend_equity_usdt": 0.0,
+  "circuit_breaker_triggered": false,
+  "degraded_mode_level": null,
+  "upstream_pool_symbols": [
+    "TRXUSDT",
+    "ETHUSDT",
+    "LINKUSDT",
+    "TAOUSDT",
+    "NEARUSDT"
+  ]
+}
