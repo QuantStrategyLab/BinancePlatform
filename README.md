@@ -43,6 +43,14 @@ Non-goals:
 - upstream release review packages or artifact change narratives
 - deep strategy-analysis commentary beyond the execution decision needed for this cycle
 
+The live mainline now stays on one unified path:
+
+- `strategy_runtime.py` loads the manifest-backed strategy entrypoint
+- `entrypoint.evaluate(ctx)` returns a shared `StrategyDecision`
+- `decision_mapper.py` turns that decision into execution-side BTC and trend plans
+
+Repo-local `strategy_core.py` and `strategy/rotation.py` shims are no longer part of the runtime boundary.
+
 ## Repo Shape
 
 - `main.py` is the live orchestration entrypoint.

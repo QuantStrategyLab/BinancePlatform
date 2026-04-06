@@ -19,6 +19,8 @@
 
 **Python 版本：** 推荐 `Python 3.11`。CI 固定在 `3.11`，本地辅助命令会优先使用 `python3.11`，没有时回退到 `python3`。
 
+**执行边界：** 当前 live 主线已经统一为 `strategy_runtime.py -> entrypoint.evaluate(ctx) -> decision_mapper.py`。仓库内原先的 `strategy_core.py` 和 `strategy/rotation.py` shim 已不再属于运行时边界。
+
 ## 仓库形态
 
 - `main.py` 是 live 交易编排入口。
