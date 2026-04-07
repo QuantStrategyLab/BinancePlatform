@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 
+from runtime_logging import RuntimeLogContext, emit_runtime_log
+
 
 def execute_strategy_cycle(
     runtime,
@@ -240,9 +242,42 @@ def run_live_cycle(
     exit_fn=None,
 ):
     runtime = runtime_builder()
+    log_context = RuntimeLogContext(
+        platform="binance",
+        deploy_target=os.getenv("LOG_DEPLOY_TARGET", "vps"),
+        service_name=os.getenv("SERVICE_NAME", "binance-platform"),
+        strategy_profile=os.getenv("STRATEGY_PROFILE", "crypto_leader_rotation"),
+        run_id=str(getattr(runtime, "run_id", "") or ""),
+        extra_fields={"dry_run": bool(getattr(runtime, "dry_run", False))},
+    )
+    emit_runtime_log(
+        log_context,
+        "strategy_cycle_started",
+        message="Starting strategy execution",
+        printer=output_printer,
+    )
     report = execute_cycle(runtime)
     output_printer("\n".join(report.get("log_lines", [])))
     report_path = report_writer(report)
+    report_status = str(report.get("status", "unknown"))
+    status_event = {
+        "ok": "strategy_cycle_completed",
+        "aborted": "strategy_cycle_aborted",
+    }.get(report_status, "strategy_cycle_failed")
+    emit_runtime_log(
+        log_context,
+        status_event,
+        message="Strategy execution finished",
+        severity="INFO" if report_status in {"ok", "aborted"} else "ERROR",
+        printer=output_printer,
+        status=report_status,
+        report_path=report_path,
+        total_equity_usdt=report.get("total_equity_usdt"),
+        trend_equity_usdt=report.get("trend_equity_usdt"),
+        degraded_mode_level=report.get("degraded_mode_level"),
+        circuit_breaker_triggered=report.get("circuit_breaker_triggered"),
+        error_count=len(report.get("error_summary", {}).get("errors", [])),
+    )
 
     if report.get("status") != "ok" and exit_fn is not None:
         exit_fn(1)

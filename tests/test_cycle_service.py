@@ -1,7 +1,9 @@
 import json
+import os
 import tempfile
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from application.cycle_service import execute_strategy_cycle, run_live_cycle, write_execution_report
 
@@ -29,23 +31,74 @@ class CycleServiceTests(unittest.TestCase):
             return {"status": "ok", "log_lines": ["line-1", "line-2"]}
 
         with tempfile.TemporaryDirectory() as tmp_dir:
-            report, output_path = run_live_cycle(
-                runtime_builder=fake_runtime_builder,
-                execute_cycle=fake_execute_cycle,
-                output_printer=lambda text: observed["printed"].append(text),
-                report_writer=lambda report: write_execution_report(
-                    report,
-                    reports_dir=tmp_dir,
-                    filename="execution_report.json",
-                ),
-            )
-            with open(output_path, "r") as handle:
-                payload = json.load(handle)
+            with patch.dict(
+                os.environ,
+                {
+                    "STRATEGY_PROFILE": "crypto_leader_rotation",
+                    "SERVICE_NAME": "binance-quant",
+                },
+                clear=False,
+            ):
+                report, output_path = run_live_cycle(
+                    runtime_builder=fake_runtime_builder,
+                    execute_cycle=fake_execute_cycle,
+                    output_printer=lambda text: observed["printed"].append(text),
+                    report_writer=lambda report: write_execution_report(
+                        report,
+                        reports_dir=tmp_dir,
+                        filename="execution_report.json",
+                    ),
+                )
+                with open(output_path, "r") as handle:
+                    payload = json.load(handle)
 
         self.assertEqual(observed["built"], 1)
-        self.assertEqual(observed["printed"], ["line-1\nline-2"])
+        self.assertEqual(len(observed["printed"]), 3)
+        self.assertEqual(observed["printed"][1], "line-1\nline-2")
         self.assertEqual(report["status"], "ok")
         self.assertEqual(payload["log_lines"], ["line-1", "line-2"])
+
+    def test_run_live_cycle_emits_structured_runtime_events(self):
+        observed = {"printed": []}
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            with patch.dict(
+                os.environ,
+                {
+                    "STRATEGY_PROFILE": "crypto_leader_rotation",
+                    "SERVICE_NAME": "binance-quant",
+                    "LOG_DEPLOY_TARGET": "vps",
+                },
+                clear=False,
+            ):
+                report, _output_path = run_live_cycle(
+                    runtime_builder=lambda: SimpleNamespace(run_id="run-001", dry_run=True),
+                    execute_cycle=lambda _runtime: {
+                        "status": "ok",
+                        "log_lines": ["line-1", "line-2"],
+                        "error_summary": {"errors": []},
+                        "total_equity_usdt": 1000.0,
+                        "trend_equity_usdt": 250.0,
+                        "degraded_mode_level": None,
+                        "circuit_breaker_triggered": False,
+                    },
+                    output_printer=lambda text: observed["printed"].append(text),
+                    report_writer=lambda current_report: write_execution_report(
+                        current_report,
+                        reports_dir=tmp_dir,
+                        filename="execution_report.json",
+                    ),
+                )
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(len(observed["printed"]), 3)
+        start_log = json.loads(observed["printed"][0])
+        end_log = json.loads(observed["printed"][2])
+        self.assertEqual(start_log["event"], "strategy_cycle_started")
+        self.assertEqual(start_log["strategy_profile"], "crypto_leader_rotation")
+        self.assertEqual(start_log["run_id"], "run-001")
+        self.assertEqual(end_log["event"], "strategy_cycle_completed")
+        self.assertEqual(end_log["status"], "ok")
 
     def test_run_live_cycle_calls_exit_on_error(self):
         observed = {"exit_code": None}
