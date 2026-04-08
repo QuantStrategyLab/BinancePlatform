@@ -1,0 +1,102 @@
+{
+  "account_group": null,
+  "account_region": null,
+  "account_scope": null,
+  "artifacts": {
+    "runtime_report_gcs_uri": "gs://qsl-runtime-logs-interactivebrokersquant/execution-reports/binance/crypto_leader_rotation/2026-04/20260408T170212Z.json",
+    "runtime_report_local_path": "reports/execution_report.json"
+  },
+  "btc_dca_intents": [],
+  "buy_sell_intents": [],
+  "circuit_breaker_triggered": false,
+  "degraded_mode_level": null,
+  "deploy_target": "vps",
+  "diagnostics": {},
+  "dry_run": false,
+  "error_summary": {},
+  "errors": [],
+  "finished_at": null,
+  "gating_events": [
+    {
+      "category": "trend",
+      "detail": {
+        "active_trend_pool_size": 5
+      },
+      "gate": "trend_no_selected_candidate"
+    },
+    {
+      "category": "btc_dca",
+      "detail": {
+        "dca_usdt_pool": 0.0
+      },
+      "gate": "btc_dca_buy_below_min_budget"
+    }
+  ],
+  "gating_summary": {
+    "btc_dca_buy_below_min_budget": 1,
+    "trend_no_selected_candidate": 1
+  },
+  "log_lines": [
+    "📡 趋势池来源: fresh_upstream | mode=core_major | version=2026-04-01-core_major | as_of=2026-04-01 | project=crypto-leader-rotation",
+    "   · 已从 firestore:strategy/CRYPTO_LEADER_ROTATION_LIVE_POOL 载入最新上游趋势池。",
+    "━━━━━━━━━ 📦 组合快照 ━━━━━━━━━",
+    "💰 总净值: $113.52（组合当日: -0.90%）",
+    "🪙 BTC 核心仓目标: 14.2% | 当前 $81.62 | 可用 $0.00",
+    "🔥 趋势层目标: 85.8% | 当前 $0.00 | 可用 $6.54 | 趋势层当日: 0.00%",
+    "⛽ BNB 燃料仓: $25.37",
+    "🚦 BTC 闸门: 关闭 | AHR999=0.822 | Z-Score=-1.01",
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    "🗓️ 上游官方月度池: LINKUSDT, NEARUSDT, ETHUSDT, TRXUSDT, TAOUSDT",
+    "🧭 当前月度执行池: TRXUSDT, TAOUSDT, ETHUSDT, NEARUSDT, LINKUSDT",
+    "📌 当前月度执行池数量: 5",
+    "🎯 当前执行目标: 当前没有候选，保持防守",
+    " └ LINKUSDT: 💤空仓 | 价格: $9.0702 | 相对 BTC: -1.59 | 动量: -6.71%",
+    " └ NEARUSDT: 💤空仓 | 价格: $1.3535 | 相对 BTC: 2.18 | 动量: 3.45%",
+    " └ ETHUSDT: 💤空仓 | 价格: $2222.2426 | 相对 BTC: -0.13 | 动量: -2.67%",
+    " └ TRXUSDT: 💤空仓 | 价格: $0.3180 | 相对 BTC: 9.71 | 动量: 9.20%",
+    " └ TAOUSDT: 💤空仓 | 价格: $334.3385 | 相对 BTC: 8.40 | 动量: 41.36%",
+    "🧭 BTC 累积雷达: AHR999=0.822 | Z-Score=-1.01 (阈值:2.50)"
+  ],
+  "notifications": [],
+  "platform": "binance",
+  "redemption_subscription_intents": [],
+  "run_id": "20260408T170212Z",
+  "run_source": "github_actions",
+  "schema_version": "runtime_report.v1",
+  "selected_symbols": {
+    "active_trend_pool": [
+      "TRXUSDT",
+      "TAOUSDT",
+      "ETHUSDT",
+      "NEARUSDT",
+      "LINKUSDT"
+    ]
+  },
+  "service_name": "binance-platform",
+  "side_effect_summary": {
+    "executed_call_count": 2,
+    "suppressed_call_count": 0
+  },
+  "started_at": "2026-04-08T17:02:12.288684Z",
+  "state_write_intents": [
+    {
+      "reason": "trend_pool_metadata_refresh"
+    },
+    {
+      "reason": "cycle_complete"
+    }
+  ],
+  "status": "ok",
+  "strategy_domain": "crypto",
+  "strategy_profile": "crypto_leader_rotation",
+  "summary": {},
+  "total_equity_usdt": 113.52260312555558,
+  "trend_equity_usdt": 0.0,
+  "upstream_pool_symbols": [
+    "LINKUSDT",
+    "NEARUSDT",
+    "ETHUSDT",
+    "TRXUSDT",
+    "TAOUSDT"
+  ]
+}
