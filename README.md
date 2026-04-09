@@ -57,6 +57,8 @@ Profile status quick check:
 ```bash
 python3 scripts/print_strategy_profile_status.py
 python3 scripts/print_strategy_profile_status.py --json
+python3 scripts/print_strategy_switch_env_plan.py --profile crypto_leader_rotation
+python3 scripts/print_strategy_switch_env_plan.py --profile crypto_leader_rotation --json
 ```
 
 ## Repo Shape

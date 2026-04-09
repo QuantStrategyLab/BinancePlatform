@@ -145,6 +145,44 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         self.assertIn("canonical_profile", result.stdout)
         self.assertIn(DEFAULT_STRATEGY_PROFILE, result.stdout)
 
+    def test_switch_env_plan_script_json_matches_binance_runtime_shape(self):
+        script = ROOT / "scripts" / "print_strategy_switch_env_plan.py"
+        result = subprocess.run(
+            [sys.executable, str(script), "--profile", DEFAULT_STRATEGY_PROFILE, "--json"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        plan = json.loads(result.stdout)
+        self.assertEqual(plan["platform"], BINANCE_PLATFORM)
+        self.assertEqual(plan["canonical_profile"], DEFAULT_STRATEGY_PROFILE)
+        self.assertTrue(plan["eligible"])
+        self.assertTrue(plan["enabled"])
+        self.assertEqual(plan["set_env"]["STRATEGY_PROFILE"], DEFAULT_STRATEGY_PROFILE)
+        self.assertIn("BINANCE_API_KEY", plan["keep_env"])
+        self.assertIn("BINANCE_API_SECRET", plan["keep_env"])
+        self.assertIn("TG_TOKEN", plan["keep_env"])
+        self.assertIn("TREND_POOL_FILE", plan["optional_env"])
+        self.assertEqual(plan["remove_if_present"], [])
+
+    def test_switch_env_plan_script_table_contains_expected_sections(self):
+        script = ROOT / "scripts" / "print_strategy_switch_env_plan.py"
+        result = subprocess.run(
+            [sys.executable, str(script), "--profile", DEFAULT_STRATEGY_PROFILE],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        self.assertIn("platform: binance", result.stdout)
+        self.assertIn("profile: crypto_leader_rotation", result.stdout)
+        self.assertIn("set_env:", result.stdout)
+        self.assertIn("keep_env:", result.stdout)
+        self.assertIn("optional_env:", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
