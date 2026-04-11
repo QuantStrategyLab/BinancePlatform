@@ -1,4 +1,6 @@
+import json
 import os
+import subprocess
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,7 +17,13 @@ for path in (QPK_SRC, CRYPTO_STRATEGIES_SRC):
         sys.path.insert(0, str(path))
 
 from runtime_config_support import build_live_runtime, load_cycle_execution_settings
-from strategy_registry import BINANCE_PLATFORM, CRYPTO_DOMAIN, DEFAULT_STRATEGY_PROFILE, get_supported_profiles_for_platform
+from strategy_registry import (
+    BINANCE_PLATFORM,
+    CRYPTO_DOMAIN,
+    DEFAULT_STRATEGY_PROFILE,
+    get_platform_profile_status_matrix,
+    get_supported_profiles_for_platform,
+)
 
 
 class RuntimeConfigSupportTests(unittest.TestCase):
@@ -33,6 +41,8 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         self.assertEqual(settings.btc_status_report_interval_hours, 24)
         self.assertTrue(settings.allow_new_trend_entries_on_degraded)
         self.assertEqual(settings.strategy_profile, DEFAULT_STRATEGY_PROFILE)
+        self.assertEqual(settings.strategy_display_name, "Crypto Leader Rotation")
+        self.assertEqual(settings.strategy_display_name_localized, "Crypto Leader Rotation")
         self.assertEqual(settings.strategy_domain, CRYPTO_DOMAIN)
 
     def test_load_cycle_execution_settings_rejects_unknown_strategy_profile(self):
@@ -44,6 +54,24 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         self.assertEqual(
             get_supported_profiles_for_platform(BINANCE_PLATFORM),
             frozenset({DEFAULT_STRATEGY_PROFILE}),
+        )
+
+    def test_platform_profile_status_matrix_marks_default_profile_eligible_and_enabled(self):
+        rows = get_platform_profile_status_matrix()
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "platform": BINANCE_PLATFORM,
+                    "canonical_profile": DEFAULT_STRATEGY_PROFILE,
+                    "display_name": "Crypto Leader Rotation",
+                    "eligible": True,
+                    "enabled": True,
+                    "is_default": True,
+                    "is_rollback": True,
+                    "domain": CRYPTO_DOMAIN,
+                }
+            ],
         )
 
     def test_build_live_runtime_reads_env_and_preserves_injected_hooks(self):
@@ -73,6 +101,8 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         self.assertEqual(runtime.api_secret, "api-secret")
         self.assertEqual(runtime.tg_token, "tg-token")
         self.assertEqual(runtime.tg_chat_id, "chat-id")
+        self.assertEqual(runtime.strategy_profile, DEFAULT_STRATEGY_PROFILE)
+        self.assertEqual(runtime.strategy_display_name, "Crypto Leader Rotation")
         self.assertIs(runtime.state_loader, state_loader)
         self.assertIs(runtime.state_writer, state_writer)
         self.assertIs(runtime.notifier, notifier)
@@ -91,6 +121,67 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             runtime = build_live_runtime()
 
         self.assertEqual(runtime.tg_chat_id, "shared-chat-id")
+
+    def test_status_script_json_matches_registry(self):
+        script = ROOT / "scripts" / "print_strategy_profile_status.py"
+        result = subprocess.run(
+            [sys.executable, str(script), "--json"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertEqual(json.loads(result.stdout), get_platform_profile_status_matrix())
+
+    def test_status_script_table_contains_expected_headers_and_profile(self):
+        script = ROOT / "scripts" / "print_strategy_profile_status.py"
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertIn("canonical_profile", result.stdout)
+        self.assertIn(DEFAULT_STRATEGY_PROFILE, result.stdout)
+
+    def test_switch_env_plan_script_json_matches_binance_runtime_shape(self):
+        script = ROOT / "scripts" / "print_strategy_switch_env_plan.py"
+        result = subprocess.run(
+            [sys.executable, str(script), "--profile", DEFAULT_STRATEGY_PROFILE, "--json"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        plan = json.loads(result.stdout)
+        self.assertEqual(plan["platform"], BINANCE_PLATFORM)
+        self.assertEqual(plan["canonical_profile"], DEFAULT_STRATEGY_PROFILE)
+        self.assertTrue(plan["eligible"])
+        self.assertTrue(plan["enabled"])
+        self.assertEqual(plan["set_env"]["STRATEGY_PROFILE"], DEFAULT_STRATEGY_PROFILE)
+        self.assertIn("BINANCE_API_KEY", plan["keep_env"])
+        self.assertIn("BINANCE_API_SECRET", plan["keep_env"])
+        self.assertIn("TG_TOKEN", plan["keep_env"])
+        self.assertIn("TREND_POOL_FILE", plan["optional_env"])
+        self.assertEqual(plan["remove_if_present"], [])
+
+    def test_switch_env_plan_script_table_contains_expected_sections(self):
+        script = ROOT / "scripts" / "print_strategy_switch_env_plan.py"
+        result = subprocess.run(
+            [sys.executable, str(script), "--profile", DEFAULT_STRATEGY_PROFILE],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        self.assertIn("platform: binance", result.stdout)
+        self.assertIn("profile: crypto_leader_rotation", result.stdout)
+        self.assertIn("set_env:", result.stdout)
+        self.assertIn("keep_env:", result.stdout)
+        self.assertIn("optional_env:", result.stdout)
 
 
 if __name__ == "__main__":

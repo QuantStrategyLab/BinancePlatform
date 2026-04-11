@@ -205,6 +205,7 @@ def execute_strategy_cycle(
             prices["BTCUSDT"],
             btc_snapshot,
             btc_target_ratio,
+            getattr(runtime, "strategy_display_name_localized", "") or getattr(runtime, "strategy_display_name", ""),
             notifier_fn=lambda text: runtime_notify(runtime, report, text),
         )
 
@@ -247,9 +248,13 @@ def run_live_cycle(
         platform="binance",
         deploy_target=os.getenv("LOG_DEPLOY_TARGET", "vps"),
         service_name=os.getenv("SERVICE_NAME", "binance-platform"),
-        strategy_profile=os.getenv("STRATEGY_PROFILE", "crypto_leader_rotation"),
+        strategy_profile=str(getattr(runtime, "strategy_profile", "") or os.getenv("STRATEGY_PROFILE", "crypto_leader_rotation")),
         run_id=str(getattr(runtime, "run_id", "") or ""),
-        extra_fields={"dry_run": bool(getattr(runtime, "dry_run", False))},
+        extra_fields={
+            "dry_run": bool(getattr(runtime, "dry_run", False)),
+            "strategy_display_name": str(getattr(runtime, "strategy_display_name", "") or ""),
+            "strategy_display_name_localized": str(getattr(runtime, "strategy_display_name_localized", "") or ""),
+        },
     )
     emit_runtime_log(
         log_context,

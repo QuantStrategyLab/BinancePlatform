@@ -72,7 +72,13 @@ class CycleServiceTests(unittest.TestCase):
                 clear=False,
             ):
                 report, _output_path = run_live_cycle(
-                    runtime_builder=lambda: SimpleNamespace(run_id="run-001", dry_run=True),
+                    runtime_builder=lambda: SimpleNamespace(
+                        run_id="run-001",
+                        dry_run=True,
+                        strategy_profile="crypto_leader_rotation",
+                        strategy_display_name="Crypto Leader Rotation",
+                        strategy_display_name_localized="加密领涨轮动",
+                    ),
                     execute_cycle=lambda _runtime: {
                         "status": "ok",
                         "log_lines": ["line-1", "line-2"],
@@ -96,6 +102,8 @@ class CycleServiceTests(unittest.TestCase):
         end_log = json.loads(observed["printed"][2])
         self.assertEqual(start_log["event"], "strategy_cycle_started")
         self.assertEqual(start_log["strategy_profile"], "crypto_leader_rotation")
+        self.assertEqual(start_log["strategy_display_name"], "Crypto Leader Rotation")
+        self.assertEqual(start_log["strategy_display_name_localized"], "加密领涨轮动")
         self.assertEqual(start_log["run_id"], "run-001")
         self.assertEqual(end_log["event"], "strategy_cycle_completed")
         self.assertEqual(end_log["status"], "ok")

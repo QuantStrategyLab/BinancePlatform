@@ -13,6 +13,7 @@ _TEXTS = {
         "firestore_write_failed": "Firestore write failed: {error}",
         "telegram_send_failed": "Telegram send failed",
         "heartbeat_title": "💓 【Strategy Heartbeat】",
+        "strategy_label": "🧭 Strategy: {name}",
         "time_utc": "🕐 UTC Time",
         "total_equity": "💰 Total Equity",
         "trend_equity": "📈 Trend Holdings",
@@ -128,6 +129,7 @@ _TEXTS = {
         "usdt_unavailable_for_trend_buy": "USDT unavailable for trend buy",
         "usdt_unavailable_for_btc_dca_buy": "USDT unavailable for BTC DCA buy",
         "btc_unavailable_for_dca_sell": "BTC unavailable for DCA sell",
+        "strategy_name_crypto_leader_rotation": "Crypto Leader Rotation",
     },
     "zh": {
         "telegram_prefix": "🤖 加密量化助手",
@@ -135,6 +137,7 @@ _TEXTS = {
         "firestore_write_failed": "Firestore 写入状态失败: {error}",
         "telegram_send_failed": "Telegram 发送失败",
         "heartbeat_title": "💓 【策略心跳】",
+        "strategy_label": "🧭 策略: {name}",
         "time_utc": "🕐 UTC 时间",
         "total_equity": "💰 总净值",
         "trend_equity": "📈 趋势层持仓",
@@ -250,6 +253,7 @@ _TEXTS = {
         "usdt_unavailable_for_trend_buy": "USDT 不足，无法执行趋势买入",
         "usdt_unavailable_for_btc_dca_buy": "USDT 不足，无法执行 BTC 定投买入",
         "btc_unavailable_for_dca_sell": "BTC 不足，无法执行定投止盈卖出",
+        "strategy_name_crypto_leader_rotation": "加密领涨轮动",
     },
 }
 
@@ -261,12 +265,33 @@ def get_notify_lang() -> str:
     return DEFAULT_NOTIFY_LANG
 
 
+def build_translator(lang: str):
+    def translator(key: str, **kwargs) -> str:
+        active_lang = lang if lang in SUPPORTED_NOTIFY_LANGS else DEFAULT_NOTIFY_LANG
+        template = _TEXTS.get(active_lang, _TEXTS[DEFAULT_NOTIFY_LANG]).get(key)
+        if template is None:
+            template = _TEXTS[DEFAULT_NOTIFY_LANG].get(key, key)
+        return template.format(**kwargs) if kwargs else template
+
+    return translator
+
+
 def translate(key: str, **kwargs) -> str:
-    lang = get_notify_lang()
-    template = _TEXTS.get(lang, _TEXTS[DEFAULT_NOTIFY_LANG]).get(key)
-    if template is None:
-        template = _TEXTS[DEFAULT_NOTIFY_LANG].get(key, key)
-    return template.format(**kwargs) if kwargs else template
+    return build_translator(get_notify_lang())(key, **kwargs)
+
+
+def build_strategy_display_name(translate_fn):
+    def strategy_display_name(profile: str, *, fallback_name: str | None = None) -> str:
+        key = f"strategy_name_{str(profile or '').strip()}"
+        translated = translate_fn(key)
+        if translated != key:
+            return translated
+        fallback = str(fallback_name or "").strip()
+        if fallback:
+            return fallback
+        return str(profile or "").strip()
+
+    return strategy_display_name
 
 
 def build_telegram_message(text: str) -> str:

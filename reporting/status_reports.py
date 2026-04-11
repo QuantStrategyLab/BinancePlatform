@@ -38,6 +38,7 @@ def maybe_send_periodic_btc_status_report(
     btc_price,
     btc_snapshot,
     btc_target_ratio,
+    strategy_display_name,
     *,
     translate_fn,
     separator,
@@ -51,6 +52,7 @@ def maybe_send_periodic_btc_status_report(
     gate_text = translate_fn("gate_on") if btc_snapshot["regime_on"] else translate_fn("gate_off")
     text = (
         f"{translate_fn('heartbeat_title')}\n"
+        f"{translate_fn('strategy_label', name=strategy_display_name)}\n"
         f"{translate_fn('time_utc')}: {now_utc.strftime('%Y-%m-%d %H:%M')}\n"
         f"{separator}\n"
         f"{translate_fn('total_equity')}: ${total_equity:.2f}\n"

@@ -5,10 +5,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from notify_i18n_support import build_strategy_display_name, build_translator, get_notify_lang
 from runtime_support import ExecutionRuntime
 from strategy_registry import (
     BINANCE_PLATFORM,
     resolve_strategy_definition,
+    resolve_strategy_metadata,
 )
 
 
@@ -38,13 +40,24 @@ class CycleExecutionSettings:
     btc_status_report_interval_hours: int
     allow_new_trend_entries_on_degraded: bool
     strategy_profile: str
+    strategy_display_name: str
+    strategy_display_name_localized: str
     strategy_domain: str
 
 
 def load_cycle_execution_settings() -> CycleExecutionSettings:
+    notify_lang = get_notify_lang()
     strategy_definition = resolve_strategy_definition(
         os.getenv("STRATEGY_PROFILE"),
         platform_id=BINANCE_PLATFORM,
+    )
+    strategy_metadata = resolve_strategy_metadata(
+        strategy_definition.profile,
+        platform_id=BINANCE_PLATFORM,
+    )
+    strategy_display_name_localized = build_strategy_display_name(build_translator(notify_lang))(
+        strategy_definition.profile,
+        fallback_name=strategy_metadata.display_name,
     )
     return CycleExecutionSettings(
         btc_status_report_interval_hours=max(1, min(24, get_env_int("BTC_STATUS_REPORT_INTERVAL_HOURS", 24))),
@@ -53,6 +66,8 @@ def load_cycle_execution_settings() -> CycleExecutionSettings:
             False,
         ),
         strategy_profile=strategy_definition.profile,
+        strategy_display_name=strategy_metadata.display_name,
+        strategy_display_name_localized=strategy_display_name_localized,
         strategy_domain=strategy_definition.domain,
     )
 
@@ -65,9 +80,14 @@ def build_live_runtime(
     notifier: Callable[..., Any] | None = None,
 ) -> ExecutionRuntime:
     runtime_now = now_utc or datetime.now(timezone.utc)
+    cycle_settings = load_cycle_execution_settings()
     return ExecutionRuntime(
         dry_run=False,
         now_utc=runtime_now,
+        strategy_profile=cycle_settings.strategy_profile,
+        strategy_domain=cycle_settings.strategy_domain,
+        strategy_display_name=cycle_settings.strategy_display_name,
+        strategy_display_name_localized=cycle_settings.strategy_display_name_localized,
         api_key=os.getenv("BINANCE_API_KEY", ""),
         api_secret=os.getenv("BINANCE_API_SECRET", ""),
         tg_token=os.getenv("TG_TOKEN", ""),

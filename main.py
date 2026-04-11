@@ -10,7 +10,7 @@ import time
 import sys
 import traceback
 from entrypoints.cli import run_cli_entrypoint
-from notify_i18n_support import translate as t
+from notify_i18n_support import build_strategy_display_name, translate as t
 from degraded_mode_support import (
     format_trend_pool_source_logs as dm_format_trend_pool_source_logs,
     load_trend_universe_from_live_pool as dm_load_trend_universe_from_live_pool,
@@ -501,8 +501,13 @@ def maybe_send_periodic_btc_status_report(
     btc_price,
     btc_snapshot,
     btc_target_ratio,
+    strategy_display_name=None,
     notifier_fn=None,
 ):
+    resolved_strategy_display_name = strategy_display_name or build_strategy_display_name(t)(
+        getattr(STRATEGY_RUNTIME, "profile", "crypto_leader_rotation"),
+        fallback_name="Crypto Leader Rotation",
+    )
     return report_maybe_send_periodic_btc_status_report(
         state,
         tg_token,
@@ -515,6 +520,7 @@ def maybe_send_periodic_btc_status_report(
         btc_price,
         btc_snapshot,
         btc_target_ratio,
+        resolved_strategy_display_name,
         translate_fn=t,
         separator=SEPARATOR,
         notifier_fn=notifier_fn,
@@ -716,6 +722,7 @@ def _resolve_strategy_evaluation(
         trend_universe_symbols=tuple(runtime_trend_universe.keys()),
         state=state,
         translator=t,
+        balances=balances,
         now_utc=runtime.now_utc,
         allow_new_trend_entries=allow_new_trend_entries,
         allow_rotation_refresh=allow_pool_refresh,

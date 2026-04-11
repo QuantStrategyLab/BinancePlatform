@@ -6,6 +6,7 @@ from quant_platform_kit.common.strategies import (
 )
 from quant_platform_kit.strategy_contracts import StrategyEntrypoint
 
+from crypto_strategies import get_platform_runtime_adapter
 from strategy_registry import BINANCE_PLATFORM, resolve_strategy_definition
 
 
@@ -18,14 +19,13 @@ def load_strategy_definition(raw_profile: str | None) -> StrategyDefinition:
 
 def load_strategy_entrypoint_for_profile(raw_profile: str | None) -> StrategyEntrypoint:
     definition = load_strategy_definition(raw_profile)
+    runtime_adapter = get_platform_runtime_adapter(
+        definition.profile,
+        platform_id=BINANCE_PLATFORM,
+    )
     return load_strategy_entrypoint(
         definition,
         platform_id=BINANCE_PLATFORM,
-        available_inputs=(
-            "prices",
-            "trend_indicators",
-            "btc_snapshot",
-            "account_metrics",
-            "trend_universe_symbols",
-        ),
+        available_inputs=runtime_adapter.available_inputs,
+        available_capabilities=runtime_adapter.available_capabilities,
     )

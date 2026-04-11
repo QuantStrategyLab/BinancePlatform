@@ -46,10 +46,20 @@ Non-goals:
 The live mainline now stays on one unified path:
 
 - `strategy_runtime.py` loads the manifest-backed strategy entrypoint
+- `strategy_runtime.py` now builds canonical crypto inputs through the strategy runtime adapter
 - `entrypoint.evaluate(ctx)` returns a shared `StrategyDecision`
 - `decision_mapper.py` turns that decision into execution-side BTC and trend plans
 
 Repo-local `strategy_core.py` and `strategy/rotation.py` shims are no longer part of the runtime boundary.
+
+Profile status quick check:
+
+```bash
+python3 scripts/print_strategy_profile_status.py
+python3 scripts/print_strategy_profile_status.py --json
+python3 scripts/print_strategy_switch_env_plan.py --profile crypto_leader_rotation
+python3 scripts/print_strategy_switch_env_plan.py --profile crypto_leader_rotation --json
+```
 
 ## Repo Shape
 

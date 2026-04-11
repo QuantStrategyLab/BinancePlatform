@@ -5,6 +5,7 @@ from reporting.status_reports import (
     append_rotation_summary,
     build_btc_manual_hint,
     get_periodic_report_bucket,
+    maybe_send_periodic_btc_status_report,
 )
 
 
@@ -84,6 +85,53 @@ class StatusReportTests(unittest.TestCase):
                 "targets=no candidates",
             ],
         )
+
+
+    def test_periodic_status_report_includes_strategy_display_name(self):
+        state = {}
+        observed = []
+
+        def translate_strategy(key, **kwargs):
+            mapping = {
+                "heartbeat_title": "heartbeat",
+                "strategy_label": "strategy={name}",
+                "time_utc": "time",
+                "total_equity": "equity",
+                "trend_equity": "trend",
+                "btc_price": "btc",
+                "ahr999": "ahr",
+                "zscore": "z",
+                "zscore_threshold": "threshold",
+                "btc_target": "target",
+                "btc_gate": "gate",
+                "gate_on": "on",
+                "gate_off": "off",
+                "manual_hint": "hint",
+                "manual_hint_low_value": "low",
+            }
+            template = mapping[key]
+            return template.format(**kwargs) if kwargs else template
+
+        maybe_send_periodic_btc_status_report(
+            state,
+            "token",
+            "chat-id",
+            SimpleNamespace(hour=8, strftime=lambda fmt: "2026-03-29 08:00" if "%H:%M" in fmt else "20260329"),
+            4,
+            1000.0,
+            250.0,
+            0.01,
+            65000.0,
+            {"ahr999": 0.7, "zscore": 1.2, "sell_trigger": 3.0, "regime_on": True},
+            0.3,
+            "加密领涨轮动",
+            translate_fn=translate_strategy,
+            separator="---",
+            notifier_fn=observed.append,
+        )
+
+        self.assertTrue(observed)
+        self.assertIn("strategy=加密领涨轮动", observed[0])
 
 
 if __name__ == "__main__":

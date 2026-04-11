@@ -24,7 +24,8 @@ class StrategyLoaderTests(unittest.TestCase):
 
         self.assertEqual(entrypoint.manifest.profile, "crypto_leader_rotation")
         self.assertEqual(entrypoint.manifest.domain, "crypto")
-        self.assertIn("prices", entrypoint.manifest.required_inputs)
+        self.assertIn("market_prices", entrypoint.manifest.required_inputs)
+        self.assertIn("portfolio_snapshot", entrypoint.manifest.required_inputs)
 
 
 if __name__ == "__main__":
