@@ -9,13 +9,13 @@
 
 项目使用估值指标（`AHR999`、`Z-Score`）和趋势闸门（`MA200`、均线斜率），并兼容 Binance Flexible Earn、USDT 现货缓冲、BNB 手续费燃料仓、Telegram 通知和 Firestore 状态存储。
 
-**趋势池来源：** 优先消费上游 `CryptoLeaderRotation` 发布的月度 live pool。本仓库会先校验上游 payload 的新鲜度和契约字段，再决定是否采用；同时会把成功接受过的上游 payload 作为 last known good 保存在状态中；只有前面几层都不可用时才会退化到本地静态 fallback。
+**趋势池来源：** 优先消费上游 `CryptoSnapshotPipelines` 发布的月度 live pool。本仓库会先校验上游 payload 的新鲜度和契约字段，再决定是否采用；同时会把成功接受过的上游 payload 作为 last known good 保存在状态中；只有前面几层都不可用时才会退化到本地静态 fallback。
 
 当前 `crypto_leader_rotation` 的纯策略模块来自 `CryptoStrategies`。
 
 完整策略说明现在放在 [`CryptoStrategies`](https://github.com/QuantStrategyLab/CryptoStrategies#crypto_leader_rotation)。下面这些章节主要保留下游执行侧的约束、运行时行为和运维说明。
 
-**artifact contract：** 本地 replay、monitor 和 review 工具现在按显式 strategy artifact contract 取数：runtime 注入 payload、Firestore payload、`STRATEGY_ARTIFACT_FILE`、仓库内 `artifacts/live_pool_legacy.json`，最后才是兼容 fallback 候选。旧的 `TREND_POOL_*` 仍作为 `crypto_leader_rotation` 的兼容别名。`../CryptoLeaderRotation` 只是不保证存在的候选之一，不再是默认唯一来源。
+**artifact contract：** 本地 replay、monitor 和 review 工具现在按显式 strategy artifact contract 取数：runtime 注入 payload、Firestore payload、`STRATEGY_ARTIFACT_FILE`、仓库内 `artifacts/live_pool_legacy.json`，最后才是兼容 fallback 候选。旧的 `TREND_POOL_*` 仍作为 `crypto_leader_rotation` 的兼容别名。`../CryptoSnapshotPipelines` 只是不保证存在的候选之一，不再是默认唯一来源；旧的 `../CryptoLeaderRotation` checkout 名称仍保留兼容。
 
 **Python 版本：** 推荐 `Python 3.11`。CI 固定在 `3.11`，本地辅助命令会优先使用 `python3.11`，没有时回退到 `python3`。
 
@@ -163,7 +163,7 @@
 
 ## 上游趋势池契约
 
-**默认来源：** `CryptoLeaderRotation` 的月度输出。
+**默认来源：** `CryptoSnapshotPipelines` 的月度输出。
 
 读取顺序：
 
@@ -351,7 +351,7 @@ python3 -m unittest \
 - 忽略 `reports/`、`venv/`、`.venv/`、`gcp-key.json`、`.venv_requirements_hash` 等本地产物
 - 保留 `tests/fixtures/`，确保 replay 回归测试可复现
 
-上游 `CryptoLeaderRotation` 负责月度发布、shadow candidate 评估和月度研究报告；本仓库只保留交易执行与必要的固定输入回放工具。
+上游 `CryptoSnapshotPipelines` 负责月度发布、shadow candidate 评估和月度研究报告；本仓库只保留交易执行与必要的固定输入回放工具。
 
 ## Telegram
 

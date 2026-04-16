@@ -26,7 +26,7 @@ class PrepareAutoOptimizationPrTests(unittest.TestCase):
   - Source: [QuantStrategyLab/BinancePlatform #9](https://github.com/QuantStrategyLab/BinancePlatform/issues/9)
 - [ ] `low` Add a boundary tracker [auto-pr-safe, experiment-only]
   - Summary: Track near-cutoff symbols monthly.
-  - Source: [QuantStrategyLab/CryptoLeaderRotation #11](https://github.com/QuantStrategyLab/CryptoLeaderRotation/issues/11)
+  - Source: [QuantStrategyLab/CryptoSnapshotPipelines #11](https://github.com/QuantStrategyLab/CryptoSnapshotPipelines/issues/11)
 """,
         }
 
@@ -37,7 +37,7 @@ class PrepareAutoOptimizationPrTests(unittest.TestCase):
         self.assertEqual(actions[0]["risk_level"], "high")
         self.assertEqual(actions[1]["flags"], ["auto-pr-safe"])
         self.assertEqual(actions[2]["flags"], ["auto-pr-safe", "experiment-only"])
-        self.assertEqual(actions[2]["source_label"], "QuantStrategyLab/CryptoLeaderRotation #11")
+        self.assertEqual(actions[2]["source_label"], "QuantStrategyLab/CryptoSnapshotPipelines #11")
 
     def test_build_payload_skips_completed_bp_task_and_excludes_experiments(self) -> None:
         payload = build_payload(self.issue_context, repo_root=PROJECT_ROOT)

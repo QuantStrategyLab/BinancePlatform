@@ -262,7 +262,7 @@ def format_review_markdown(bundle: dict[str, Any]) -> str:
     lines.append("")
     lines.append("- This is BinancePlatform's downstream monthly execution review, not a pure upstream pool publication.")
     lines.append("- It summarizes runtime health, recorded trade intents, no-trade / gating reasons, earn buffer operations, circuit breaker activity, degraded mode, and upstream pool changes.")
-    lines.append("- Upstream pool changes are included as execution context from CryptoLeaderRotation, but they are only one input section of this report.")
+    lines.append("- Upstream pool changes are included as execution context from CryptoSnapshotPipelines, but they are only one input section of this report.")
     lines.append("- Equity deltas in this report are raw month-start vs month-end snapshots and may include manual deposits, withdrawals, or other external balance flows.")
     lines.append("- Trade and earn sections reflect execution intents/actions recorded in hourly reports, not a separate exchange fill reconciliation ledger.")
     lines.append("- Side-effect counts indicate how many client / notification / state-write calls were actually executed versus suppressed (for example in dry-run or replay contexts).")

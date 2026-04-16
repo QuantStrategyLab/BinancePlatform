@@ -43,7 +43,7 @@ SECONDARY_REVIEW_SCHEMA: dict[str, Any] = {
                     "title": {"type": "string"},
                     "owner_repo": {
                         "type": "string",
-                        "enum": ["CryptoLeaderRotation", "CryptoStrategies", "BinancePlatform"],
+                        "enum": ["CryptoSnapshotPipelines", "CryptoStrategies", "BinancePlatform"],
                     },
                     "risk_level": {"type": "string", "enum": ["low", "medium", "high"]},
                     "auto_pr_safe": {"type": "boolean"},
@@ -86,7 +86,7 @@ SECONDARY_REVIEW_SCHEMA: dict[str, Any] = {
 def build_system_prompt(review_kind: str) -> str:
     if review_kind == "upstream_selector":
         return (
-            "You are the independent secondary reviewer for CryptoLeaderRotation, an upstream selector "
+            "You are the independent secondary reviewer for CryptoSnapshotPipelines, an upstream selector "
             "repository that publishes a monthly 5-symbol Binance Spot leader pool. Review the issue body "
             "and the Claude primary review, then return only valid JSON matching the provided schema. "
             "Do not simply echo Claude. Re-check whether release consistency, selector quality, "

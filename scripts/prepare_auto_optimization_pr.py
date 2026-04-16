@@ -32,7 +32,7 @@ AUTO_MERGE_SAFE_TERMS = (
     "test coverage",
 )
 AUTO_MERGE_BLOCK_TERMS = {
-    "CryptoLeaderRotation": (
+    "CryptoSnapshotPipelines": (
         "tie-break",
         "tie break",
         "ranking",
@@ -81,7 +81,7 @@ AUTO_MERGE_BLOCK_TERMS = {
     ),
 }
 SENSITIVE_PATH_PATTERNS = {
-    "CryptoLeaderRotation": (
+    "CryptoSnapshotPipelines": (
         r"^src/",
         r"^config/",
     ),
@@ -161,7 +161,7 @@ def _is_completed_low_risk_task(action: dict[str, Any], repo_root: Path) -> bool
     title = str(action.get("title", "")).lower()
     repo_name = repo_root.name
 
-    if repo_name == "CryptoLeaderRotation":
+    if repo_name == "CryptoSnapshotPipelines":
         if "shadow/challenger build generation" in title or "shadow build" in title:
             workflow = _read_text(repo_root / ".github" / "workflows" / "monthly_publish.yml")
             return "run_monthly_shadow_build.py" in workflow

@@ -18,7 +18,7 @@ class PrepareExperimentValidationTests(unittest.TestCase):
   - Source: [QuantStrategyLab/BinancePlatform #9](https://example.com/9)
 - [ ] `medium` Add downstream liquidity validation for TAOUSDT-class assets [experiment-only]
   - Summary: Ensure BinancePlatform applies its own ADV/spread checks before trading low-liquidity pool members.
-  - Source: [QuantStrategyLab/CryptoLeaderRotation #11](https://example.com/11)
+  - Source: [QuantStrategyLab/CryptoSnapshotPipelines #11](https://example.com/11)
 """,
         }
 

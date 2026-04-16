@@ -80,7 +80,7 @@ Degraded mode:
 Interpretation:
 
 - `last_known_good` means fresh upstream validation failed, but a previously accepted upstream payload is still available in state
-- `local_file` means upstream live access failed and the runtime fell back to a validated local file from the configured `STRATEGY_ARTIFACT_FILE`, the repo-local artifact, or a compatible `CryptoLeaderRotation` checkout
+- `local_file` means upstream live access failed and the runtime fell back to a validated local file from the configured `STRATEGY_ARTIFACT_FILE`, the repo-local artifact, or a compatible `CryptoSnapshotPipelines` checkout
 - `static` is emergency-only and should be treated as lowest-confidence operation
 
 ## Strategy Artifact Settings

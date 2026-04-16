@@ -240,7 +240,12 @@ def get_default_live_pool_candidates(default_live_pool_legacy_path):
         Path.home(),
         Path("/home/ubuntu"),
     }
-    repo_names = ("CryptoLeaderRotation", "crypto-leader-rotation")
+    repo_names = (
+        "CryptoSnapshotPipelines",
+        "crypto-snapshot-pipelines",
+        "CryptoLeaderRotation",
+        "crypto-leader-rotation",
+    )
 
     for root in search_roots:
         for repo_name in repo_names:

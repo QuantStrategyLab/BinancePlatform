@@ -9,13 +9,13 @@ Language: [English](#english) | [简体中文](#中文) | [中文详版](README.
 
 Automated crypto quant for Binance spot: BTC DCA core plus altcoin trend rotation. Uses valuation (AHR999, Z-Score) and trend gates (MA200, slope). Compatible with Binance flexible earn (auto redeem/subscribe), USDT buffer, BNB fuel, Telegram alerts, and Firestore state.
 
-**Trend universe source:** Prefer the upstream published pool from CryptoLeaderRotation. This repository validates upstream payload freshness and contract shape before using it, keeps a last known good upstream payload in state, and only uses the static fallback in degraded mode.
+**Trend universe source:** Prefer the upstream published pool from CryptoSnapshotPipelines. This repository validates upstream payload freshness and contract shape before using it, keeps a last known good upstream payload in state, and only uses the static fallback in degraded mode.
 
 The current `crypto_leader_rotation` pure strategy modules are sourced from `CryptoStrategies`.
 
 Full strategy documentation now lives in [`CryptoStrategies`](https://github.com/QuantStrategyLab/CryptoStrategies#crypto_leader_rotation). The sections below focus on downstream execution assumptions and runtime behavior.
 
-**Artifact contract:** Local replay and monitoring helpers now follow an explicit strategy artifact contract: runtime payload, Firestore payload, `STRATEGY_ARTIFACT_FILE`, repo-local `artifacts/live_pool_legacy.json`, then compatible fallback candidates. The old `TREND_POOL_*` settings remain compatibility aliases for `crypto_leader_rotation`. A sibling `../CryptoLeaderRotation` checkout is only one fallback candidate, not the sole default source.
+**Artifact contract:** Local replay and monitoring helpers now follow an explicit strategy artifact contract: runtime payload, Firestore payload, `STRATEGY_ARTIFACT_FILE`, repo-local `artifacts/live_pool_legacy.json`, then compatible fallback candidates. The old `TREND_POOL_*` settings remain compatibility aliases for `crypto_leader_rotation`. A sibling `../CryptoSnapshotPipelines` checkout is only one fallback candidate, not the sole default source; the old `../CryptoLeaderRotation` checkout name remains accepted for compatibility.
 
 **Python runtime:** Prefer Python `3.11`. CI is pinned to 3.11, and local helper commands now prefer `python3.11` when available while still falling back to `python3`.
 
@@ -23,7 +23,7 @@ Full strategy documentation now lives in [`CryptoStrategies`](https://github.com
 
 `BinancePlatform` is the downstream execution engine in this two-repo setup.
 
-Upstream inputs it expects from `CryptoLeaderRotation`:
+Upstream inputs it expects from `CryptoSnapshotPipelines`:
 
 - validated monthly `live_pool.json` / `live_pool_legacy.json`
 - publish metadata such as `as_of_date`, `version`, `mode`, `pool_size`, and `source_project`
@@ -168,7 +168,7 @@ Runs hourly; signals are daily trend and risk, not high-frequency.
 
 ## Upstream Pool
 
-**Default:** CryptoLeaderRotation monthly output.
+**Default:** CryptoSnapshotPipelines monthly output.
 
 1. Firestore `strategy` / `CRYPTO_LEADER_ROTATION_LIVE_POOL` (override: `STRATEGY_ARTIFACT_FIRESTORE_COLLECTION`, `STRATEGY_ARTIFACT_FIRESTORE_DOCUMENT`; legacy aliases: `TREND_POOL_FIRESTORE_COLLECTION`, `TREND_POOL_FIRESTORE_DOCUMENT`).
 2. Last known good upstream payload persisted in Firestore state after a successful accepted upstream read.
@@ -470,9 +470,9 @@ Operational behavior for degraded mode, Firestore failures, Binance API failures
 
 ## Notes
 
-- The upstream CryptoLeaderRotation project is the primary selector and contract owner for the monthly live pool.
+- The upstream CryptoSnapshotPipelines project is the primary selector and contract owner for the monthly live pool.
 - Local stable-quality pool ranking logic in this repo remains as a runtime fallback and execution convenience, not the preferred healthy input.
-- Monthly research reporting, shadow candidate evaluation, and monthly release review should live in the upstream CryptoLeaderRotation project, not in this downstream execution repo.
+- Monthly research reporting, shadow candidate evaluation, and monthly release review should live in the upstream CryptoSnapshotPipelines project, not in this downstream execution repo.
 
 ## Telegram
 
