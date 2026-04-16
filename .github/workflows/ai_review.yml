@@ -89,10 +89,10 @@ jobs:
             You are reviewing the monthly execution report for BinancePlatform,
             an automated crypto quantitative trading system for Binance Spot.
             It runs hourly, executing a BTC DCA core strategy plus altcoin trend
-            rotation using symbols from an upstream CryptoLeaderRotation pool.
+            rotation using symbols from an upstream CryptoSnapshotPipelines pool.
 
             This is a downstream execution review, not a pure upstream pool review.
-            Upstream pool changes are only one input section from CryptoLeaderRotation.
+            Upstream pool changes are only one input section from CryptoSnapshotPipelines.
             Equity changes may include manual deposits, withdrawals, or other external
             balance flows, so do not treat equity delta as pure strategy PnL unless
             the report contains explicit cash-flow evidence.
