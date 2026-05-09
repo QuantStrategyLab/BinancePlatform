@@ -77,7 +77,12 @@ def build_full_review_markdown(
     primary_title: str,
     secondary_review_payload: dict[str, Any] | None = None,
 ) -> str:
-    lines = [f"## {primary_title}", "", primary_review_text.strip()]
+    normalized_primary_review = primary_review_text.strip()
+    duplicate_title = f"## {primary_title}"
+    if normalized_primary_review.startswith(duplicate_title):
+        normalized_primary_review = normalized_primary_review[len(duplicate_title) :].lstrip()
+
+    lines = [f"## {primary_title}", "", normalized_primary_review]
     if secondary_review_payload is not None:
         lines.extend(["", "---", "", render_secondary_review_markdown(secondary_review_payload)])
     return "\n".join(lines).strip() + "\n"

@@ -36,7 +36,7 @@ class RenderMonthlyAiReviewTests(unittest.TestCase):
 
     def test_build_full_review_markdown_includes_primary_and_secondary_sections(self) -> None:
         markdown = build_full_review_markdown(
-            "## English\nPrimary review",
+            "## Claude Primary Review\n\n## English\nPrimary review",
             primary_title="Claude Primary Review",
             secondary_review_payload={
                 "provider_display_name": "GPT Secondary Review",
@@ -53,6 +53,7 @@ class RenderMonthlyAiReviewTests(unittest.TestCase):
         self.assertIn("## Claude Primary Review", markdown)
         self.assertIn("## Secondary Review (GPT Secondary Review)", markdown)
         self.assertIn("## English", markdown)
+        self.assertEqual(markdown.count("## Claude Primary Review"), 1)
 
 
 if __name__ == "__main__":

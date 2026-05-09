@@ -65,6 +65,8 @@ def aggregate_hourly_reports(hourly_dir: str, report_month: str) -> dict[str, An
     executed_side_effects = 0
     suppressed_side_effects = 0
     gating_counts: dict[str, int] = {}
+    gating_counts_by_category: dict[str, int] = {}
+    gating_counts_by_category_and_gate: dict[str, dict[str, int]] = {}
 
     # --- trade summary accumulators ---
     btc_buys = 0
@@ -122,6 +124,13 @@ def aggregate_hourly_reports(hourly_dir: str, report_month: str) -> dict[str, An
         for gate, count in (report.get("gating_summary") or {}).items():
             gate_name = str(gate)
             gating_counts[gate_name] = gating_counts.get(gate_name, 0) + int(count or 0)
+
+        for event in report.get("gating_events", []) or []:
+            gate_name = str((event or {}).get("gate", "")).strip() or "unknown_gate"
+            category_name = str((event or {}).get("category", "")).strip() or "uncategorized"
+            gating_counts_by_category[category_name] = gating_counts_by_category.get(category_name, 0) + 1
+            category_bucket = gating_counts_by_category_and_gate.setdefault(category_name, {})
+            category_bucket[gate_name] = category_bucket.get(gate_name, 0) + 1
 
         # BTC DCA intents
         for intent in report.get("btc_dca_intents", []) or []:
@@ -197,6 +206,14 @@ def aggregate_hourly_reports(hourly_dir: str, report_month: str) -> dict[str, An
         "execution_gating": {
             "total_events": int(sum(gating_counts.values())),
             "counts": dict(sorted(gating_counts.items())),
+            "by_category": {
+                category: int(count)
+                for category, count in sorted(gating_counts_by_category.items())
+            },
+            "by_category_and_gate": {
+                category: dict(sorted(gates.items(), key=lambda item: (-item[1], item[0])))
+                for category, gates in sorted(gating_counts_by_category_and_gate.items())
+            },
         },
         "trade_summary": {
             "btc_core": {
@@ -304,6 +321,32 @@ def format_review_markdown(bundle: dict[str, Any]) -> str:
     else:
         lines.append("_No explicit gating or no-trade reasons were recorded this month._")
     lines.append("")
+
+    lines.append("## Zero-Trade Diagnostics")
+    lines.append("")
+    zero_trade_sections = [
+        ("btc_dca", "BTC Core (DCA)", trade["btc_core"]),
+        ("trend", "Trend Rotation", trade["trend_rotation"]),
+    ]
+    for category_name, heading, trade_bucket in zero_trade_sections:
+        lines.append(f"### {heading}")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("|--------|-------|")
+        lines.append(f"| Recorded buys | {trade_bucket['buys']} |")
+        lines.append(f"| Recorded sells | {trade_bucket['sells']} |")
+        lines.append(f"| Recorded USDT | {trade_bucket['total_usdt']} |")
+        lines.append("")
+
+        gate_counts = dict(gating.get("by_category_and_gate", {}).get(category_name, {}))
+        if gate_counts:
+            lines.append("| Gate | Count |")
+            lines.append("|------|-------|")
+            for gate_name, count in sorted(gate_counts.items(), key=lambda item: (-item[1], item[0])):
+                lines.append(f"| {gate_name} | {count} |")
+        else:
+            lines.append("_No explicit no-trade reasons were recorded for this sleeve this month._")
+        lines.append("")
 
     # PnL overview
     lines.append("## PnL Overview")

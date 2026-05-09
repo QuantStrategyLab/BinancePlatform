@@ -10,7 +10,7 @@ class TestMonthlyReportBundle(unittest.TestCase):
                      degraded_level=None, pool_symbols=None,
                      buy_sell_intents=None, btc_dca_intents=None,
                      redemption_intents=None, errors=None,
-                     gating_summary=None, dry_run=False,
+                     gating_summary=None, gating_events=None, dry_run=False,
                      executed_calls=0, suppressed_calls=0):
         return {
             "status": status,
@@ -33,7 +33,7 @@ class TestMonthlyReportBundle(unittest.TestCase):
             "notifications": [],
             "state_write_intents": [],
             "gating_summary": gating_summary or {},
-            "gating_events": [],
+            "gating_events": gating_events or [],
             "side_effect_summary": {
                 "executed_call_count": executed_calls,
                 "suppressed_call_count": suppressed_calls,
@@ -128,7 +128,13 @@ class TestMonthlyReportBundle(unittest.TestCase):
         from scripts.run_monthly_report_bundle import aggregate_hourly_reports, format_review_markdown
 
         reports = {
-            "2026-03-01T0000.json": self._make_report("r1"),
+            "2026-03-01T0000.json": self._make_report(
+                "r1",
+                gating_events=[
+                    {"gate": "btc_dca_pool_too_small", "category": "btc_dca"},
+                    {"gate": "trend_no_selected_candidate", "category": "trend"},
+                ],
+            ),
         }
         with tempfile.TemporaryDirectory() as td:
             hourly_dir = os.path.join(td, "hourly", "2026-03")
@@ -147,6 +153,9 @@ class TestMonthlyReportBundle(unittest.TestCase):
         self.assertIn("external balance flows", md)
         self.assertIn("recorded strategy intents", md)
         self.assertIn("Execution Gating / No-Trade Reasons", md)
+        self.assertIn("Zero-Trade Diagnostics", md)
+        self.assertIn("btc_dca_pool_too_small", md)
+        self.assertIn("trend_no_selected_candidate", md)
 
     def test_aggregate_gating_and_side_effects(self):
         from scripts.run_monthly_report_bundle import aggregate_hourly_reports, format_review_markdown
@@ -158,12 +167,20 @@ class TestMonthlyReportBundle(unittest.TestCase):
                 executed_calls=1,
                 suppressed_calls=3,
                 gating_summary={"trend_buy_below_min_budget": 2},
+                gating_events=[
+                    {"gate": "trend_buy_below_min_budget", "category": "trend"},
+                    {"gate": "trend_buy_below_min_budget", "category": "trend"},
+                ],
             ),
             "2026-03-01T0100.json": self._make_report(
                 "r2",
                 executed_calls=2,
                 suppressed_calls=0,
                 gating_summary={"btc_dca_pool_too_small": 1, "trend_buy_below_min_budget": 1},
+                gating_events=[
+                    {"gate": "btc_dca_pool_too_small", "category": "btc_dca"},
+                    {"gate": "trend_buy_below_min_budget", "category": "trend"},
+                ],
             ),
         }
         with tempfile.TemporaryDirectory() as td:
@@ -181,5 +198,8 @@ class TestMonthlyReportBundle(unittest.TestCase):
         self.assertEqual(bundle["side_effect_summary"]["suppressed_call_count"], 3)
         self.assertEqual(bundle["execution_gating"]["counts"]["trend_buy_below_min_budget"], 3)
         self.assertEqual(bundle["execution_gating"]["counts"]["btc_dca_pool_too_small"], 1)
+        self.assertEqual(bundle["execution_gating"]["by_category"]["trend"], 3)
+        self.assertEqual(bundle["execution_gating"]["by_category"]["btc_dca"], 1)
         self.assertIn("trend_buy_below_min_budget", md)
+        self.assertIn("Zero-Trade Diagnostics", md)
         self.assertIn("Dry-run runs", md)
