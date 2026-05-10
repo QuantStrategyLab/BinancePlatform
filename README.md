@@ -84,21 +84,16 @@ python3 scripts/print_strategy_switch_env_plan.py --profile crypto_leader_rotati
 - **trade_state_support.py** — Trade-state normalization and retired-position tracking helpers.
 - **research/backtest.py** — Optional audit-only backtest / strategy-comparison runner; not part of the live execution contract.
 - **run_cycle_replay.py** — Fixed-input dry-run executor for one full strategy cycle using local fixtures.
-- **scripts/run_monthly_report_bundle.py** — Monthly aggregation script: hourly execution JSONs to review bundle and markdown.
 - **requirements.txt** — Human-maintained top-level Python deps.
 - **requirements-lock.txt** — Pinned dependency set used by CI/deploy when present.
 
 Generated local outputs under `reports/` are intentionally not committed. Fixed-input fixtures under `tests/fixtures/` are committed because they are part of the dry-run regression harness.
 
-## Execution Logging & Monthly Review
+## Execution Logging
 
 Each hourly run pushes the full execution report JSON to an orphan `logs` branch under `hourly/{YYYY-MM}/{YYYY-MM-DDTHHMM}.json`.
 
-On the 1st of each month (UTC 00:00), the **Monthly Execution Report** workflow aggregates all hourly logs from the previous month, creates a structured review bundle, and opens a GitHub Issue labeled `monthly-review`.
-
-An **AI Monthly Review** workflow triggers on that issue label and posts a bilingual (English + Chinese) analysis covering trade execution quality, no-trade / gating reasons, circuit breaker events, degraded mode episodes, PnL breakdown, upstream pool impact, error patterns, and earn buffer efficiency.
-
-Structured review output can feed monthly optimization task issues. The auto optimization workflow only edits low-risk `auto-pr-safe` tasks, opens a PR, and leaves production execution changes behind manual review guardrails. Ready automation PRs are auto-merged only after CI succeeds and the merge guard confirms no sensitive runtime files were changed.
+Recurring monthly execution audits are intentionally not part of this downstream execution repo. Runtime problems should be handled incident-first from failed Runtime / CI checks, Telegram alerts, or operator-observed symptoms. Strategy and snapshot review remains upstream in `CryptoSnapshotPipelines`.
 
 ### Workflows
 
@@ -106,10 +101,6 @@ Structured review output can feed monthly optimization task issues. The auto opt
 |----------|------|---------|--------|
 | Runtime | `main.yml` | `workflow_dispatch` | self-hosted |
 | CI | `ci.yml` | push to main | ubuntu-latest |
-| Monthly Report | `monthly_report.yml` | 1st of month + manual | ubuntu-latest |
-| AI Review | `ai_review.yml` | issue labeled `monthly-review` | ubuntu-latest |
-| Auto Optimization PR | `auto_optimization_pr.yml` | issue labeled `monthly-optimization-task` + manual | ubuntu-latest |
-| Auto Merge Optimization PR | `auto_merge_optimization_pr.yml` | successful CI workflow run | ubuntu-latest |
 
 ### Required Secrets
 
@@ -118,8 +109,6 @@ Structured review output can feed monthly optimization task issues. The auto opt
 | `BINANCE_API_KEY` | Runtime |
 | `BINANCE_API_SECRET` | Runtime |
 | `TG_TOKEN` | Runtime |
-| `ANTHROPIC_API_KEY` | AI Review |
-| `OPENAI_API_KEY` | AI Review secondary pass |
 
 ## Strategy Overview
 
@@ -397,7 +386,6 @@ In **Settings → Secrets and variables → Actions**, add:
 | `BINANCE_API_SECRET` | Binance API secret |
 | `TG_TOKEN` | Telegram bot token |
 | `GLOBAL_TELEGRAM_CHAT_ID` | Telegram chat ID for alerts. |
-| `ANTHROPIC_API_KEY` | Anthropic API key (used by the AI Review workflow to post monthly bilingual analysis) |
 
 The runtime workflow passes these into the `Run trading strategy` step; it does not use a `.env` file on the runner.
 
