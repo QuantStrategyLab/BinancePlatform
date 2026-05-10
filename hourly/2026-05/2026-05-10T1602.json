@@ -1,0 +1,105 @@
+{
+  "account_group": null,
+  "account_region": null,
+  "account_scope": null,
+  "artifacts": {
+    "runtime_report_gcs_uri": "gs://qsl-runtime-logs-interactivebrokersquant/execution-reports/binance/crypto_leader_rotation/2026-05/20260510T160218Z.json",
+    "runtime_report_local_path": "reports/execution_report.json"
+  },
+  "btc_dca_intents": [],
+  "buy_sell_intents": [],
+  "circuit_breaker_triggered": false,
+  "degraded_mode_level": null,
+  "deploy_target": "vps",
+  "diagnostics": {},
+  "dry_run": false,
+  "error_summary": {},
+  "errors": [],
+  "finished_at": null,
+  "gating_events": [
+    {
+      "category": "trend",
+      "detail": {
+        "active_trend_pool_size": 5
+      },
+      "gate": "trend_no_selected_candidate"
+    },
+    {
+      "category": "btc_dca",
+      "detail": {
+        "dca_usdt_pool": 0.0
+      },
+      "gate": "btc_dca_buy_below_min_budget"
+    }
+  ],
+  "gating_summary": {
+    "btc_dca_buy_below_min_budget": 1,
+    "trend_no_selected_candidate": 1
+  },
+  "log_lines": [
+    "📡 趋势池来源: fresh_upstream | 模式=core_major | 版本=2026-05-01-core_major | 日期=2026-05-01 | 项目=crypto-leader-rotation",
+    "   · 已从 firestore:strategy/CRYPTO_LEADER_ROTATION_LIVE_POOL 载入最新上游趋势池。",
+    "━━━━━━━━━ 📦 组合快照 ━━━━━━━━━",
+    "💰 总净值: $126.83（组合当日: 0.88%）",
+    "🪙 BTC 核心仓目标: 14.2% | 当前 $92.82 | 可用 $0.00",
+    "🔥 趋势层目标: 85.8% | 当前 $0.00 | 可用 $6.54 | 趋势层当日: 0.00%",
+    "⛽ BNB 燃料仓: $27.48",
+    "🚦 BTC 闸门: 关闭 | AHR999=0.996 | Z-Score=-0.10",
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    "🗓️ 上游官方月度池: AVAXUSDT, TAOUSDT, TRXUSDT, DOGEUSDT, LINKUSDT",
+    "🧭 当前月度执行池: TRXUSDT, TAOUSDT, LINKUSDT, DOGEUSDT, AVAXUSDT",
+    "📌 当前月度执行池数量: 5",
+    "🎯 当前执行目标: 当前没有候选，保持防守",
+    " └ AVAXUSDT: 💤空仓 | 价格: $10.1701 | 相对 BTC: -3.34 | 动量: 1.51%",
+    " └ TAOUSDT: 💤空仓 | 价格: $318.4538 | 相对 BTC: 8.76 | 动量: 34.89%",
+    " └ TRXUSDT: 💤空仓 | 价格: $0.3507 | 相对 BTC: 6.73 | 动量: 12.66%",
+    " └ DOGEUSDT: 💤空仓 | 价格: $0.1091 | 相对 BTC: 0.87 | 动量: 8.23%",
+    " └ LINKUSDT: 💤空仓 | 价格: $10.6072 | 相对 BTC: 1.12 | 动量: 8.57%",
+    "🧭 BTC 累积雷达: AHR999=0.996 | Z-Score=-0.10 (阈值:2.50)"
+  ],
+  "notifications": [],
+  "platform": "binance",
+  "redemption_subscription_intents": [],
+  "run_id": "20260510T160218Z",
+  "run_source": "github_actions",
+  "schema_version": "runtime_report.v1",
+  "selected_symbols": {
+    "active_trend_pool": [
+      "TRXUSDT",
+      "TAOUSDT",
+      "LINKUSDT",
+      "DOGEUSDT",
+      "AVAXUSDT"
+    ]
+  },
+  "service_name": "binance-platform",
+  "side_effect_summary": {
+    "executed_call_count": 2,
+    "suppressed_call_count": 0
+  },
+  "started_at": "2026-05-10T16:02:18.685920Z",
+  "state_write_intents": [
+    {
+      "reason": "trend_pool_metadata_refresh"
+    },
+    {
+      "reason": "cycle_complete"
+    }
+  ],
+  "status": "ok",
+  "strategy_domain": "crypto",
+  "strategy_profile": "crypto_leader_rotation",
+  "summary": {
+    "strategy_display_name": "Crypto Leader Rotation",
+    "strategy_display_name_localized": "加密领涨轮动"
+  },
+  "total_equity_usdt": 126.83124434916871,
+  "trend_equity_usdt": 0.0,
+  "upstream_pool_symbols": [
+    "AVAXUSDT",
+    "TAOUSDT",
+    "TRXUSDT",
+    "DOGEUSDT",
+    "LINKUSDT"
+  ]
+}
