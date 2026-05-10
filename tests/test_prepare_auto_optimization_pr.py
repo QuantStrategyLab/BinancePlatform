@@ -60,6 +60,23 @@ class PrepareAutoOptimizationPrTests(unittest.TestCase):
         self.assertFalse(payload["task_level_auto_merge_allowed"])
         self.assertIn("guarded_keyword:dca", payload["draft_only_actions"][0]["auto_merge_blocker"])
 
+    def test_completion_check_does_not_treat_old_gating_summary_as_zero_trade_diagnostics(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo_root = Path(temp_dir) / "BinancePlatform"
+            scripts_dir = repo_root / "scripts"
+            scripts_dir.mkdir(parents=True)
+            (scripts_dir / "run_monthly_report_bundle.py").write_text(
+                "gating_summary = {}\n"
+                "message = 'No explicit gating or no-trade reasons were recorded this month.'\n",
+                encoding="utf-8",
+            )
+
+            payload = build_payload(self.issue_context, repo_root=repo_root)
+
+        self.assertTrue(payload["should_run"])
+        self.assertEqual(payload["safe_task_count"], 1)
+        self.assertEqual(payload["skipped_task_count"], 0)
+
     def test_build_payload_marks_readme_note_as_auto_merge_candidate(self) -> None:
         issue_context = {
             "number": 30,

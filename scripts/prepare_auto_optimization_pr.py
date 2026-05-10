@@ -180,8 +180,8 @@ def _is_completed_low_risk_task(action: dict[str, Any], repo_root: Path) -> bool
     ):
         monthly_report = _read_text(repo_root / "scripts" / "run_monthly_report_bundle.py")
         return (
-            "No explicit gating or no-trade reasons were recorded this month." in monthly_report
-            and "gating_summary" in monthly_report
+            "## Zero-Trade Diagnostics" in monthly_report
+            and "by_category_and_gate" in monthly_report
         )
 
     return False

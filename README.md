@@ -98,6 +98,8 @@ On the 1st of each month (UTC 00:00), the **Monthly Execution Report** workflow 
 
 An **AI Monthly Review** workflow triggers on that issue label and posts a bilingual (English + Chinese) analysis covering trade execution quality, no-trade / gating reasons, circuit breaker events, degraded mode episodes, PnL breakdown, upstream pool impact, error patterns, and earn buffer efficiency.
 
+Structured review output can feed monthly optimization task issues. The auto optimization workflow only edits low-risk `auto-pr-safe` tasks, opens a PR, and leaves production execution changes behind manual review guardrails. Ready automation PRs are auto-merged only after CI succeeds and the merge guard confirms no sensitive runtime files were changed.
+
 ### Workflows
 
 | Workflow | File | Trigger | Runner |
@@ -106,6 +108,8 @@ An **AI Monthly Review** workflow triggers on that issue label and posts a bilin
 | CI | `ci.yml` | push to main | ubuntu-latest |
 | Monthly Report | `monthly_report.yml` | 1st of month + manual | ubuntu-latest |
 | AI Review | `ai_review.yml` | issue labeled `monthly-review` | ubuntu-latest |
+| Auto Optimization PR | `auto_optimization_pr.yml` | issue labeled `monthly-optimization-task` + manual | ubuntu-latest |
+| Auto Merge Optimization PR | `auto_merge_optimization_pr.yml` | successful CI workflow run | ubuntu-latest |
 
 ### Required Secrets
 
@@ -115,6 +119,7 @@ An **AI Monthly Review** workflow triggers on that issue label and posts a bilin
 | `BINANCE_API_SECRET` | Runtime |
 | `TG_TOKEN` | Runtime |
 | `ANTHROPIC_API_KEY` | AI Review |
+| `OPENAI_API_KEY` | AI Review secondary pass |
 
 ## Strategy Overview
 
@@ -446,6 +451,7 @@ This emits a structured JSON report with:
 - BTC DCA intents
 - earn subscribe/redeem intents
 - explicit gating / no-trade reason counts
+- zero-trade diagnostics grouped by strategy sleeve and gate
 - suppressed vs executed side-effect counts
 
 ### Tests
