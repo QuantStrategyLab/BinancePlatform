@@ -78,7 +78,6 @@ jobs:
             run_cycle_replay.py \
             runtime_config_support.py \
             runtime_support.py \
-            scripts/run_monthly_report_bundle.py \
             strategy_loader.py \
             strategy_runtime.py \
             decision_mapper.py \
