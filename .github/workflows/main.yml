@@ -36,38 +36,73 @@ jobs:
 
       - name: 3. Prepare or update dependency environment
         run: |
+          set -euo pipefail
           REQ_FILE="requirements-lock.txt"
           if [ ! -f "$REQ_FILE" ]; then REQ_FILE="requirements.txt"; fi
           PYTHON_BIN="python3"
           if command -v python3.11 >/dev/null 2>&1; then PYTHON_BIN="python3.11"; fi
           echo "Using interpreter: $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))"
 
-          # Create the virtual environment on first run, then reuse it when possible.
-          if [ ! -d "venv" ]; then
-            "$PYTHON_BIN" -m venv venv
-            venv/bin/pip install -U pip
-            venv/bin/pip install -r "$REQ_FILE"
-            sha256sum "$REQ_FILE" | cut -d' ' -f1 > .venv_requirements_hash
+          CACHE_ROOT="${RUNNER_WORKSPACE}/.runtime-cache/binance-platform"
+          VENV_PATH="${CACHE_ROOT}/venv"
+          HASH_FILE="${CACHE_ROOT}/requirements.sha256"
+          PYTHON_VERSION_FILE="${CACHE_ROOT}/python.version"
+          CURR_HASH=$(sha256sum "$REQ_FILE" | cut -d' ' -f1)
+          CURR_PYTHON_VERSION="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')"
+
+          mkdir -p "$CACHE_ROOT"
+          echo "VENV_PATH=$VENV_PATH" >> "$GITHUB_ENV"
+          VENV_RECREATED=false
+
+          install_with_retry() {
+            local description="$1"
+            shift
+            local attempt
+            for attempt in 1 2 3; do
+              echo "${description} (attempt ${attempt}/3)"
+              if "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                sleep $((attempt * 15))
+              fi
+            done
+            return 1
+          }
+
+          if [ ! -x "$VENV_PATH/bin/python" ]; then
+            echo "Creating dependency venv at $VENV_PATH."
+            rm -rf "$VENV_PATH"
+            "$PYTHON_BIN" -m venv "$VENV_PATH"
+            VENV_RECREATED=true
+          elif [ ! -f "$PYTHON_VERSION_FILE" ] || [ "$CURR_PYTHON_VERSION" != "$(cat "$PYTHON_VERSION_FILE")" ]; then
+            echo "Python version changed; recreating dependency venv."
+            rm -rf "$VENV_PATH"
+            "$PYTHON_BIN" -m venv "$VENV_PATH"
+            VENV_RECREATED=true
+          fi
+          if [ "$VENV_RECREATED" = "true" ]; then
+            rm -f "$HASH_FILE" "$PYTHON_VERSION_FILE"
+          fi
+
+          if [ "$VENV_RECREATED" = "false" ] && [ -f "$HASH_FILE" ] && [ "$CURR_HASH" = "$(cat "$HASH_FILE")" ]; then
+            echo "$REQ_FILE unchanged; reusing cached venv."
           else
-            CURR_HASH=$(sha256sum "$REQ_FILE" | cut -d' ' -f1)
-            if [ -f ".venv_requirements_hash" ] && [ "$CURR_HASH" = "$(cat .venv_requirements_hash)" ]; then
-              echo "$REQ_FILE unchanged; reusing the existing venv."
-            else
-              echo "$REQ_FILE changed; updating the dependency environment."
-              venv/bin/pip install -U pip
-              venv/bin/pip install -r "$REQ_FILE"
-              echo "$CURR_HASH" > .venv_requirements_hash
-            fi
+            echo "$REQ_FILE changed or cache is cold; updating dependency venv."
+            install_with_retry "Upgrade pip" "$VENV_PATH/bin/pip" install -U pip
+            install_with_retry "Install runtime dependencies" "$VENV_PATH/bin/pip" install -r "$REQ_FILE"
+            echo "$CURR_HASH" > "$HASH_FILE"
+            echo "$CURR_PYTHON_VERSION" > "$PYTHON_VERSION_FILE"
           fi
 
       - name: 4. Run trading strategy
         run: |
           set -euo pipefail
           if [ "${VALIDATE_ONLY:-false}" = "true" ]; then
-            venv/bin/python -c "from google.cloud import firestore; client = firestore.Client(); collections = [collection.id for _, collection in zip(range(3), client.collections())]; print(f'Validated Google Cloud auth and Firestore access. project={client.project} sample_collections={collections}')"
+            "$VENV_PATH/bin/python" -c "from google.cloud import firestore; client = firestore.Client(); collections = [collection.id for _, collection in zip(range(3), client.collections())]; print(f'Validated Google Cloud auth and Firestore access. project={client.project} sample_collections={collections}')"
             exit 0
           fi
-          venv/bin/python main.py
+          "$VENV_PATH/bin/python" main.py
         env:
           BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
           BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
