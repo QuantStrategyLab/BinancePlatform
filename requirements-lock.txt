@@ -1,7 +1,7 @@
 quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@v0.7.17
 crypto-strategies @ git+https://github.com/QuantStrategyLab/CryptoStrategies.git@v0.4.6
 python-binance==1.0.36
-pandas==3.0.2
+pandas==3.0.3
 numpy==2.4.4
 requests==2.34.0
 google-cloud-firestore==2.27.0
