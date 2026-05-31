@@ -1,5 +1,7 @@
 # BinancePlatform
 
+> ⚠️ 投资有风险，不构成投资建议，仅供学习交流用途。
+
 语言: [English](README.md) | 简体中文
 
 这是一个运行在 Binance 现货上的自动化量化项目，核心由两部分组成：
