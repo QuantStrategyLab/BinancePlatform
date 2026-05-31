@@ -2,6 +2,16 @@
 
 > ⚠️ 投资有风险，不构成投资建议，仅供学习交流用途。
 
+
+## English summary
+
+- Full English version: [`README.md`](README.md). This summary keeps an English entry point in the Chinese file.
+- Purpose: this document covers `BinancePlatform` for `BinancePlatform`.
+- Main topics: `仓库形态`, `文件说明`, `执行日志`, `工作流`, `所需 Secrets`.
+- Read the boundaries, inputs, outputs, and permission requirements before running commands, CI jobs, dry-runs, releases, or runtime switches.
+- For live trading, secrets, Cloud Run, exchange, or broker API changes, validate in test or dry-run mode first and do not change production only from examples.
+- If this summary differs from the detailed Chinese body, follow the concrete commands, configuration keys, and constraints in the body.
+
 语言: [English](README.md) | 简体中文
 
 这是一个运行在 Binance 现货上的自动化量化项目，核心由两部分组成：
