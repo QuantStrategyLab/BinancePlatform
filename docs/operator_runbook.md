@@ -71,6 +71,7 @@ The monthly execution pool is locked to the accepted upstream `version` / `as_of
 - `main.yml` is `workflow_dispatch` only.
 - GitHub Actions no longer owns the hourly cadence for runtime execution in this repo.
 - Production cadence should come from one external scheduler, for example VPS cron calling the GitHub Actions dispatch API.
+- The VPS dispatch guard retries bounded transient failures such as network errors and GitHub `500`/`502`/`503`/`504`, but still alerts immediately for configuration and permission failures.
 - Avoid overlapping dispatches from multiple schedulers or from a second manual run while the current runtime job is still in progress.
 
 ## Degraded Mode Ladder
