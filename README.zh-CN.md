@@ -64,6 +64,12 @@
 
 下游执行仓库不再保留周期性月度执行审计。运行问题按 incident-first 方式处理：Runtime / CI 失败、Telegram 告警或操作员观察到异常后再主动修复。策略和 snapshot 审阅留在上游 `CryptoSnapshotPipelines`。
 
+`Runtime Heartbeat`（`.github/workflows/runtime-heartbeat.yml`）是 VPS /
+self-hosted 执行链路的漏跑保护。它跑在 GitHub-hosted runner 上，不连接 Binance，
+只检查 `Runtime` workflow（`main.yml`）在最近窗口内是否成功完成。如果 VPS cron 不再
+dispatch、self-hosted runner 离线，或最新 Runtime run 失败，它会通过 `TG_TOKEN` 和
+`GLOBAL_TELEGRAM_CHAT_ID` 发 Telegram。
+
 ### 工作流
 
 | 工作流 | 文件 | 触发方式 | 运行器 |
@@ -280,6 +286,8 @@ AHR999: 0.45
 
 - [`.github/workflows/main.yml`](./.github/workflows/main.yml) 负责 checkout、通过 OIDC 登录 Google Cloud、准备 venv、执行 `main.py`
 - `push` 只触发校验类 job；真正执行策略的步骤默认只在 `workflow_dispatch` 下运行
+- `.github/workflows/runtime-heartbeat.yml` 跑在 GitHub-hosted runner 上，检查最近的
+  `main.yml` 是否成功完成，并对漏跑或失败 Runtime run 发 Telegram
 - 如需安全验证 self-hosted runner 上的 Google Cloud 登录，可用 `validate_only=true` 手动触发 `main.yml`；这不会下实盘单
 - VPS 侧推荐的运行单元名：`binance-quant`
 - Cloud Run / VPS 的统一部署规则和命名建议见 [`QuantPlatformKit/docs/deployment_model.md`](../QuantPlatformKit/docs/deployment_model.md)

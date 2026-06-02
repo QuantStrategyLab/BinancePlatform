@@ -97,6 +97,14 @@ Each hourly run pushes the full execution report JSON to an orphan `logs` branch
 
 Recurring monthly execution audits are intentionally not part of this downstream execution repo. Runtime problems should be handled incident-first from failed Runtime / CI checks, Telegram alerts, or operator-observed symptoms. Strategy and snapshot review remains upstream in `CryptoSnapshotPipelines`.
 
+`Runtime Heartbeat` (`.github/workflows/runtime-heartbeat.yml`) is the missed-run
+guard for the VPS/self-hosted execution path. It runs on GitHub-hosted runners,
+does not touch Binance, and checks whether the `Runtime` workflow (`main.yml`)
+has completed successfully within the recent lookback window. If the external
+VPS cron stops dispatching `main.yml`, the self-hosted runner is offline, or the
+latest Runtime run failed, it sends Telegram through `TG_TOKEN` and
+`GLOBAL_TELEGRAM_CHAT_ID`.
+
 ### Workflows
 
 | Workflow | File | Trigger | Runner |
@@ -359,6 +367,7 @@ This repository uses `QuantPlatformKit` for Binance client bootstrap, balance he
 
 - **`.github/workflows/ci.yml`** is the push/manual validation workflow. It runs on GitHub-hosted runners and is limited to install/compile/test checks.
 - **`.github/workflows/main.yml`** is the runtime workflow. It runs on the self-hosted runner, authenticates to Google Cloud with OIDC, prepares the local `venv`, and runs `venv/bin/python main.py`.
+- **`.github/workflows/runtime-heartbeat.yml`** is the GitHub-hosted heartbeat. It checks recent `main.yml` success and alerts on missed or failed Runtime runs.
 - **Triggers:** `ci.yml` runs on `push` to `main` and `workflow_dispatch`; `main.yml` runs on `workflow_dispatch` only.
 - **Runtime cadence:** GitHub Actions no longer schedules hourly runtime execution for this repo. The expected production model is one external scheduler, such as VPS cron + `curl`, calling the GitHub `workflow_dispatch` API for `main.yml`.
 - Use `Actions -> Runtime -> Run workflow` for one-off manual runs.
