@@ -64,6 +64,8 @@ jobs:
 
           ENV_FILE="${BINANCE_PLATFORM_DISPATCH_ENV:-$HOME/.config/binance-platform/dispatch.env}"
           LOG_FILE="${BINANCE_PLATFORM_DISPATCH_LOG:-$HOME/binance-quant/ops/dispatch-runtime.log}"
+          DISPATCH_MAX_ATTEMPTS="${DISPATCH_MAX_ATTEMPTS:-4}"
+          DISPATCH_RETRY_BASE_SECONDS="${DISPATCH_RETRY_BASE_SECONDS:-15}"
 
           notify_telegram() {
             local message="$1"
@@ -96,6 +98,13 @@ jobs:
             exit 1
           }
 
+          is_retryable_http_status() {
+            case "$1" in
+              000|500|502|503|504) return 0 ;;
+              *) return 1 ;;
+            esac
+          }
+
           mkdir -p "$(dirname "$LOG_FILE")"
 
           [ -f "$ENV_FILE" ] || fail_dispatch "missing env file" "$ENV_FILE"
@@ -108,32 +117,64 @@ jobs:
             fi
           done
 
+          if ! [[ "$DISPATCH_MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+            fail_dispatch "invalid DISPATCH_MAX_ATTEMPTS" "$DISPATCH_MAX_ATTEMPTS"
+          fi
+          if ! [[ "$DISPATCH_RETRY_BASE_SECONDS" =~ ^[0-9]+$ ]]; then
+            fail_dispatch "invalid DISPATCH_RETRY_BASE_SECONDS" "$DISPATCH_RETRY_BASE_SECONDS"
+          fi
+
           response_file=$(mktemp)
           stderr_file=$(mktemp)
           trap 'rm -f "$response_file" "$stderr_file"' EXIT
 
-          set +e
-          http_status=$(curl --silent --show-error \
-            --output "$response_file" \
-            --write-out "%{http_code}" \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            "https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/dispatches" \
-            -d "{\"ref\":\"${REF}\"}" 2>"$stderr_file")
-          curl_exit=$?
-          set -e
+          attempt=1
+          while [ "$attempt" -le "$DISPATCH_MAX_ATTEMPTS" ]; do
+            : > "$response_file"
+            : > "$stderr_file"
 
-          if [ "$curl_exit" -ne 0 ]; then
-            fail_dispatch "curl exited ${curl_exit}" "$(head -c 800 "$stderr_file")"
-          fi
+            set +e
+            http_status=$(curl --silent --show-error \
+              --connect-timeout 20 \
+              --max-time 60 \
+              --output "$response_file" \
+              --write-out "%{http_code}" \
+              -X POST \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/dispatches" \
+              -d "{\"ref\":\"${REF}\"}" 2>"$stderr_file")
+            curl_exit=$?
+            set -e
 
-          if [ "$http_status" != "204" ]; then
-            fail_dispatch "GitHub dispatch returned HTTP ${http_status}" "$(head -c 800 "$response_file")"
-          fi
+            if [ "$curl_exit" -eq 0 ] && [ "$http_status" = "204" ]; then
+              echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) dispatched ${REPO}/${WORKFLOW} ref=${REF} attempt=${attempt}/${DISPATCH_MAX_ATTEMPTS}" >> "$LOG_FILE"
+              exit 0
+            fi
 
-          echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) dispatched ${REPO}/${WORKFLOW} ref=${REF}" >> "$LOG_FILE"
+            retryable=false
+            if [ "$curl_exit" -ne 0 ]; then
+              reason="curl exited ${curl_exit}"
+              details="$(head -c 800 "$stderr_file")"
+              retryable=true
+            else
+              reason="GitHub dispatch returned HTTP ${http_status}"
+              details="$(head -c 800 "$response_file")"
+              if is_retryable_http_status "$http_status"; then
+                retryable=true
+              fi
+            fi
+
+            if [ "$attempt" -ge "$DISPATCH_MAX_ATTEMPTS" ] || [ "$retryable" != "true" ]; then
+              fail_dispatch "$reason" "$details"
+            fi
+
+            delay=$((DISPATCH_RETRY_BASE_SECONDS * attempt))
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) dispatch retry ${attempt}/${DISPATCH_MAX_ATTEMPTS}: ${reason} ${details}" >> "$LOG_FILE"
+            sleep "$delay"
+            attempt=$((attempt + 1))
+          done
           EOF
 
           chmod 700 "$SCRIPT_PATH"
