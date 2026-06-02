@@ -80,3 +80,18 @@ jobs:
             | sort \
             | head -200 \
             | redact || true
+
+          section "dispatch script redacted"
+          if [ -f /home/ubuntu/binance-quant/ops/dispatch-runtime.sh ]; then
+            sed -n '1,240p' /home/ubuntu/binance-quant/ops/dispatch-runtime.sh | redact
+          else
+            echo "dispatch-runtime.sh not found"
+          fi
+
+          section "dispatch env keys"
+          if [ -f /home/ubuntu/.config/binance-platform/dispatch.env ]; then
+            sed -E 's/(^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=).*/\1[REDACTED]/' \
+              /home/ubuntu/.config/binance-platform/dispatch.env | redact
+          else
+            echo "dispatch.env not found"
+          fi
