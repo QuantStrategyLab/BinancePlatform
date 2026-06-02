@@ -154,3 +154,35 @@ jobs:
           git push origin "HEAD:${LOGS_BRANCH}"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 7. Notify Telegram on runtime workflow failure
+        if: ${{ failure() && github.event.inputs.validate_only != 'true' }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if [ -z "${TG_TOKEN:-}" ] || [ -z "${GLOBAL_TELEGRAM_CHAT_ID:-}" ]; then
+            echo "Telegram workflow failure notification skipped: target is not configured."
+            exit 0
+          fi
+
+          REPORT_FILE="${GITHUB_WORKSPACE}/reports/execution_report.json"
+          if [ -f "$REPORT_FILE" ]; then
+            echo "Execution report exists; strategy-level runtime handling should already have recorded this failure."
+            exit 0
+          fi
+
+          MESSAGE=$(printf '%s\n' \
+            "Binance Runtime workflow failed before execution report was written" \
+            "repo: ${GITHUB_REPOSITORY}" \
+            "workflow: ${GITHUB_WORKFLOW}" \
+            "run: #${GITHUB_RUN_NUMBER} attempt ${GITHUB_RUN_ATTEMPT}" \
+            "ref: ${GITHUB_REF_NAME}" \
+            "sha: ${GITHUB_SHA}" \
+            "actor: ${GITHUB_ACTOR}" \
+            "url: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")
+          curl -fsS -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${GLOBAL_TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=${MESSAGE}" >/dev/null
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
