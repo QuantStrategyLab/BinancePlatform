@@ -1,0 +1,42 @@
+name: Runtime Heartbeat
+
+on:
+  workflow_dispatch:
+    inputs:
+      lookback_hours:
+        description: "Runtime workflow lookback window in hours."
+        required: false
+        type: string
+        default: "2.5"
+      fail_workflow_on_alert:
+        description: "Fail this workflow when an alert is emitted."
+        required: false
+        type: choice
+        default: "true"
+        options:
+          - "true"
+          - "false"
+  schedule:
+    - cron: "35 * * * *"
+
+jobs:
+  heartbeat:
+    name: Check Runtime workflow heartbeat
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    env:
+      RUNTIME_HEARTBEAT_NAME: BinancePlatform Runtime
+      RUNTIME_HEARTBEAT_WORKFLOW: main.yml
+      RUNTIME_HEARTBEAT_LOOKBACK_HOURS: ${{ inputs.lookback_hours || vars.RUNTIME_HEARTBEAT_LOOKBACK_HOURS || '2.5' }}
+      RUNTIME_HEARTBEAT_FAIL_WORKFLOW_ON_ALERT: ${{ inputs.fail_workflow_on_alert || vars.RUNTIME_HEARTBEAT_FAIL_WORKFLOW_ON_ALERT || 'true' }}
+      GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
+      TG_TOKEN: ${{ secrets.TG_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Check recent Runtime workflow success
+        run: python scripts/runtime_workflow_heartbeat.py
