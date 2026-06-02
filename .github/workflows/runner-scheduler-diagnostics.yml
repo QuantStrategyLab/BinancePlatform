@@ -1,0 +1,76 @@
+name: Runner Scheduler Diagnostics
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Inspect scheduler configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          redact() {
+            sed -E \
+              -e 's/github_pat_[A-Za-z0-9_]+/[REDACTED_GITHUB_TOKEN]/g' \
+              -e 's/gh[pousr]_[A-Za-z0-9_]+/[REDACTED_GITHUB_TOKEN]/g' \
+              -e 's/(Authorization:[[:space:]]*Bearer[[:space:]]+)[A-Za-z0-9_.-]+/\1[REDACTED]/g' \
+              -e 's/(x-access-token:)[^@[:space:]]+/\1[REDACTED]/g' \
+              -e 's/((TOKEN|SECRET|KEY|PASSWORD)[A-Z0-9_]*[[:space:]]*=[[:space:]]*)[^[:space:]]+/\1[REDACTED]/g'
+          }
+
+          section() {
+            printf '\n===== %s =====\n' "$1"
+          }
+
+          section "host"
+          {
+            date -u
+            hostname
+            id
+            pwd
+            uname -a
+          } | redact
+
+          section "ubuntu crontab"
+          crontab -l 2>&1 | redact || true
+
+          section "root crontab"
+          sudo -n crontab -l 2>&1 | redact || true
+
+          section "systemd timers"
+          systemctl list-timers --all 2>&1 | redact || true
+
+          section "matching systemd units"
+          systemctl list-units --all 2>&1 | grep -Ei 'binance|quant|github|dispatch|runtime' | redact || true
+
+          section "cron and systemd files"
+          find /etc/cron.d /etc/cron.hourly /etc/cron.daily /etc/systemd/system -maxdepth 2 -type f -print 2>/dev/null \
+            | sort \
+            | grep -Ei 'binance|quant|github|dispatch|runtime|cron|timer|service' \
+            | redact || true
+
+          section "candidate dispatch files"
+          find /home/ubuntu /usr/local/bin /opt -maxdepth 6 -type f \
+            \( -name '*.sh' -o -name '*.py' -o -name '*.service' -o -name '*.timer' -o -name '*.env' -o -name 'crontab' \) \
+            -not -path '*/.git/*' \
+            -not -path '*/_work/*' \
+            -not -path '*/node_modules/*' \
+            -print 2>/dev/null \
+            | sort \
+            | grep -Ei 'binance|quant|github|dispatch|runtime|cron' \
+            | redact || true
+
+          section "dispatch content matches"
+          grep -RIlE 'actions/workflows/main\.yml/dispatches|workflow_dispatch|QuantStrategyLab/BinancePlatform|binance-quant|binancequant' \
+            /home/ubuntu /usr/local/bin /opt /etc/cron.d /etc/systemd/system 2>/dev/null \
+            | grep -Ev '/(_work|\.git|node_modules)/' \
+            | sort \
+            | head -200 \
+            | redact || true
