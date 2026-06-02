@@ -429,6 +429,33 @@ def append_log(log_buffer, message):
 def send_tg_msg(token, chat_id, text):
     live_send_tg_msg(token, chat_id, text)
 
+
+def _runtime_error_notification_message(exc):
+    error_text = f"{type(exc).__name__}: {exc}"
+    if len(error_text) > 1200:
+        error_text = error_text[:1197] + "..."
+    return "\n".join(
+        (
+            "Binance strategy run failed",
+            f"service: {os.getenv('SERVICE_NAME', 'binance-platform')}",
+            f"strategy: {os.getenv('STRATEGY_PROFILE', '<unset>')}",
+            f"error: {error_text}",
+        )
+    )
+
+
+def _notify_runtime_error(exc):
+    token = os.getenv("TG_TOKEN", "")
+    chat_id = os.getenv("GLOBAL_TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        print("Binance runtime error notification skipped: no Telegram target configured.")
+        return False
+    try:
+        send_tg_msg(token, chat_id, _runtime_error_notification_message(exc))
+    except Exception as send_exc:
+        print(f"Binance runtime error Telegram send failed: {send_exc}")
+    return True
+
 # ==========================================
 # 2. Earn and balance helpers
 # ==========================================
@@ -1095,12 +1122,18 @@ def execute_cycle(runtime):
 
 
 def main():
-    return run_cli_entrypoint(
-        runtime_builder=build_live_runtime,
-        execute_cycle=execute_cycle,
-        output_printer=print,
-        exit_fn=sys.exit,
-    )
+    try:
+        return run_cli_entrypoint(
+            runtime_builder=build_live_runtime,
+            execute_cycle=execute_cycle,
+            output_printer=print,
+            exit_fn=sys.exit,
+        )
+    except Exception as exc:
+        print(f"Binance strategy run failed before cycle handling: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        _notify_runtime_error(exc)
+        raise
 
 
 if __name__ == "__main__":
