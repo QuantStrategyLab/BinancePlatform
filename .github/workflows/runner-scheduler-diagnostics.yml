@@ -57,20 +57,26 @@ jobs:
             | redact || true
 
           section "candidate dispatch files"
-          find /home/ubuntu /usr/local/bin /opt -maxdepth 6 -type f \
+          find /home/ubuntu /usr/local/bin /opt -maxdepth 6 \
+            \( -path '*/.git' -o -path '*/_work' -o -path '*/node_modules' \) -prune -o \
+            -type f \
             \( -name '*.sh' -o -name '*.py' -o -name '*.service' -o -name '*.timer' -o -name '*.env' -o -name 'crontab' \) \
-            -not -path '*/.git/*' \
-            -not -path '*/_work/*' \
-            -not -path '*/node_modules/*' \
             -print 2>/dev/null \
             | sort \
             | grep -Ei 'binance|quant|github|dispatch|runtime|cron' \
             | redact || true
 
           section "dispatch content matches"
-          grep -RIlE 'actions/workflows/main\.yml/dispatches|workflow_dispatch|QuantStrategyLab/BinancePlatform|binance-quant|binancequant' \
-            /home/ubuntu /usr/local/bin /opt /etc/cron.d /etc/systemd/system 2>/dev/null \
-            | grep -Ev '/(_work|\.git|node_modules)/' \
+          find /home/ubuntu /usr/local/bin /opt /etc/cron.d /etc/systemd/system -maxdepth 8 \
+            \( -path '*/.git' -o -path '*/_work' -o -path '*/node_modules' \) -prune -o \
+            -type f \
+            \( -name '*.sh' -o -name '*.py' -o -name '*.service' -o -name '*.timer' -o -name '*.env' -o -name '*.conf' -o -name 'crontab' \) \
+            -print 2>/dev/null \
+            | while IFS= read -r file; do
+                if grep -IlE 'actions/workflows/main\.yml/dispatches|workflow_dispatch|QuantStrategyLab/BinancePlatform|binance-quant|binancequant' "$file" >/dev/null 2>&1; then
+                  printf '%s\n' "$file"
+                fi
+              done \
             | sort \
             | head -200 \
             | redact || true
