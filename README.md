@@ -1,517 +1,64 @@
 # BinancePlatform
 
-<!-- qsl-doc-overview:start -->
+[Chinese README](README.zh-CN.md)
 
-> ⚠️ 投资有风险，不构成投资建议，仅供学习交流用途。
 > ⚠️ Investing involves risk. This project does not provide investment advice and is for educational and research purposes only.
 
-## Open-source overview / 开源项目入口
+## What this project does
 
-| Item | Description |
-| --- | --- |
-| Project type | execution platform |
-| What it does | Binance execution platform for crypto strategies, with self-hosted workflow orchestration and external strategy loading. |
-| 中文说明 | Binance 加密资产执行平台，负责交易所连接、VPS/工作流编排和策略加载。 |
-| Current status | Execution platform. Exchange API keys and order paths are production-sensitive. |
+BinancePlatform is an **Execution platform** in the QuantStrategyLab ecosystem. It runs QuantStrategyLab crypto strategies against Binance-facing execution workflows, with external strategy loading, broker/runtime adapters, and CI-operated orchestration.
 
-### Quick start
+## Who this is for
 
-- `python -m pip install -e '.[test]'`
-- `python -m pytest -q`
+- Engineers and researchers who want to inspect, reproduce, or extend this part of the QuantStrategyLab stack.
+- Operators who need a clear entry point before reading the deeper runbooks or workflow files.
+- Reviewers who need to understand the repository purpose, safety boundary, and evidence requirements before enabling automation.
 
-### Deploy / operate safely
+## Current status
 
-Use dry-run and self-hosted runner checks first; verify API permissions, symbol filters and order sizing before enabling live.
+Production-oriented platform code; run in dry-run or paper mode before enabling real orders.
 
-### Strategy performance / evidence boundary
+## Repository layout
 
-Crypto strategy performance is owned by CryptoStrategies/CryptoSnapshotPipelines, not the exchange adapter.
+- `application/`, `entrypoints/`, `infra/`, `reporting/`: Python package code.
+- `tests/`: unit and contract tests.
+- `docs/`: detailed design notes, runbooks, and evidence docs.
+- `.github/workflows/`: CI, scheduled jobs, and deployment workflows.
+- `scripts/`: operator scripts and local helpers.
 
-> Detailed runbooks, migration notes, workflow internals, and historical decisions are kept below. Start with this overview before using the lower-level operational sections.
+## Quick start
 
-<!-- qsl-doc-overview:end -->
-
-> ⚠️ 投资有风险，不构成投资建议，仅供学习交流用途。
-
-Language: [English](#english) | [简体中文](#中文) | [中文详版](README.zh-CN.md)
-
----
-
-<a id="english"></a>
-## English
-
-Automated crypto quant for Binance spot: BTC DCA core plus altcoin trend rotation. Uses valuation (AHR999, Z-Score) and trend gates (MA200, slope). Compatible with Binance flexible earn (auto redeem/subscribe), USDT buffer, BNB fuel, Telegram alerts, and Firestore state.
-
-**Trend universe source:** Prefer the upstream published pool from CryptoSnapshotPipelines. This repository validates upstream payload freshness and contract shape before using it, keeps a last known good upstream payload in state, and only uses the static fallback in degraded mode.
-
-The current `crypto_leader_rotation` pure strategy modules are sourced from `CryptoStrategies`.
-
-Full strategy documentation now lives in [`CryptoStrategies`](https://github.com/QuantStrategyLab/CryptoStrategies#crypto_leader_rotation). The sections below focus on downstream execution assumptions and runtime behavior.
-
-**Artifact contract:** Local replay and monitoring helpers now follow an explicit strategy artifact contract: runtime payload, Firestore payload, `STRATEGY_ARTIFACT_FILE`, repo-local `artifacts/live_pool_legacy.json`, then compatible fallback candidates. The old `TREND_POOL_*` settings remain compatibility aliases for `crypto_leader_rotation`. A sibling `../CryptoSnapshotPipelines` checkout is only one fallback candidate, not the sole default source; the old `../CryptoLeaderRotation` checkout name remains accepted for compatibility.
-
-**Python runtime:** Prefer Python `3.11`. CI is pinned to 3.11, and local helper commands now prefer `python3.11` when available while still falling back to `python3`.
-
-## Execution Engine Boundary
-
-`BinancePlatform` is the downstream execution engine in this two-repo setup.
-
-Upstream inputs it expects from `CryptoSnapshotPipelines`:
-
-- validated monthly `live_pool.json` / `live_pool_legacy.json`
-- publish metadata such as `as_of_date`, `version`, `mode`, `pool_size`, and `source_project`
-- Firestore summary payloads that carry the same stable contract
-
-Responsibilities owned here:
-
-- upstream artifact freshness, schema, and contract validation
-- degraded-mode fallback ladder and state persistence
-- exchange execution, order safety checks, and balance handling
-- circuit-breaker logic, runtime error handling, and minimal Telegram alerts
-- fixed-input replay and operator smoke checks for the execution path
-
-Non-goals:
-
-- monthly research reporting
-- upstream release review packages or artifact change narratives
-- deep strategy-analysis commentary beyond the execution decision needed for this cycle
-
-The live mainline now stays on one unified path:
-
-- `strategy_runtime.py` loads the manifest-backed strategy entrypoint
-- `strategy_runtime.py` now builds canonical crypto inputs through the strategy runtime adapter
-- `entrypoint.evaluate(ctx)` returns a shared `StrategyDecision`
-- `decision_mapper.py` turns that decision into execution-side BTC and trend plans
-
-Repo-local `strategy_core.py` and `strategy/rotation.py` shims are no longer part of the runtime boundary.
-
-Profile status quick check:
+From a fresh clone:
 
 ```bash
-python3 scripts/print_strategy_profile_status.py
-python3 scripts/print_strategy_profile_status.py --json
-python3 scripts/print_strategy_switch_env_plan.py --profile crypto_leader_rotation
-python3 scripts/print_strategy_switch_env_plan.py --profile crypto_leader_rotation --json
+python -m pip install -r requirements.txt
+python -m pytest -q
 ```
 
-## Repo Shape
+If a command requires credentials, run it only after reading the relevant workflow or runbook and configuring secrets outside Git.
 
-- `main.py` is the live orchestration entrypoint.
-- `strategy_runtime.py` loads the unified strategy entrypoint and explicit artifact contract.
-- `research/` contains optional audit-only backtest tools and is not part of the hourly execution path.
-- `run_*` scripts are local operators' helpers for fixed-input replay and maintenance.
-- `tests/fixtures/` contains fixed inputs used by the replay regression tests.
+## Deployment and operation
 
-## Layout
+Configure GitHub Actions secrets/variables for Binance credentials, runtime settings, notifications, and strategy source. Run the workflow manually in dry-run mode first, review logs/artifacts, then enable the scheduled workflow only after credentials and risk controls are verified.
 
-- **main.py** — Live script (run hourly).
-- **strategy_runtime.py** — Unified strategy entrypoint loader and artifact-contract runtime surface.
-- **decision_mapper.py** — Maps shared `StrategyDecision` objects into execution-side allocation and rotation plans.
-- **runtime_support.py** — Runtime/report helpers shared by live execution and dry-run replay.
-- **runtime_config_support.py** — Environment parsing and live-runtime bootstrap helpers so `main.py` can stay orchestration-focused.
-- **market_snapshot_support.py** — Market snapshot assembly helpers used by the live cycle and replay regression tests.
-- **degraded_mode_support.py** — Degraded-mode fallback ladder and trend-pool source state helpers.
-- **live_services.py** — Firestore state and Telegram notification adapters for live operation.
-- **QuantPlatformKit.binance** — Shared Binance client bootstrap, balance helpers, market-data snapshots, and quantity-format helpers.
-- **trend_pool_support.py** — Upstream trend-pool contract parsing, validation, and fallback helpers.
-- **trade_state_support.py** — Trade-state normalization and retired-position tracking helpers.
-- **research/backtest.py** — Optional audit-only backtest / strategy-comparison runner; not part of the live execution contract.
-- **run_cycle_replay.py** — Fixed-input dry-run executor for one full strategy cycle using local fixtures.
-- **requirements.txt** — Human-maintained top-level Python deps.
-- **requirements-lock.txt** — Pinned dependency set used by CI/deploy when present.
+Prefer manual or dry-run execution first. Enable schedules or live execution only after logs, artifacts, permissions, and rollback steps are reviewed.
 
-Generated local outputs under `reports/` are intentionally not committed. Fixed-input fixtures under `tests/fixtures/` are committed because they are part of the dry-run regression harness.
+## Strategy performance and evidence
 
-## Execution Logging
+This repository does not rank strategies. Strategy return, drawdown, and live eligibility must come from the strategy repositories and their snapshot/backtest artifacts before this platform is allowed to place orders.
 
-Each hourly run pushes the full execution report JSON to an orphan `logs` branch under `hourly/{YYYY-MM}/{YYYY-MM-DDTHHMM}.json`.
+README files are intentionally not a source of dated performance promises. Re-run the relevant tests, backtests, or pipeline jobs before relying on any result.
 
-Recurring monthly execution audits are intentionally not part of this downstream execution repo. Runtime problems should be handled incident-first from failed Runtime / CI checks, Telegram alerts, or operator-observed symptoms. Strategy and snapshot review remains upstream in `CryptoSnapshotPipelines`.
+## Safety notes
 
-`Runtime Heartbeat` (`.github/workflows/runtime-heartbeat.yml`) is the missed-run
-guard for the VPS/self-hosted execution path. It runs on GitHub-hosted runners,
-does not touch Binance, and checks whether the `Runtime` workflow (`main.yml`)
-has completed successfully within the recent lookback window. If the external
-VPS cron stops dispatching `main.yml`, the self-hosted runner is offline, or the
-latest Runtime run failed, it sends Telegram through `TG_TOKEN` and
-`GLOBAL_TELEGRAM_CHAT_ID`.
+- Never commit API keys, broker credentials, OAuth tokens, cookies, or account identifiers.
+- Run new strategies and platform changes in dry-run or paper mode before any live execution.
+- Review generated orders, artifacts, and logs manually before enabling schedules.
 
-### Workflows
+## Contributing
 
-| Workflow | File | Trigger | Runner |
-|----------|------|---------|--------|
-| Runtime | `main.yml` | `workflow_dispatch` | self-hosted |
-| CI | `ci.yml` | push to main | ubuntu-latest |
+Keep changes small, reproducible, and covered by the narrowest useful tests. For strategy-facing changes, include the evidence artifact or command used to validate behavior.
 
-### Required Secrets
+## License
 
-| Secret | Used by |
-|--------|---------|
-| `BINANCE_API_KEY` | Runtime |
-| `BINANCE_API_SECRET` | Runtime |
-| `TG_TOKEN` | Runtime |
-
-## Strategy Overview
-
-- **BTC core:** Valuation-based DCA (AHR999) and scaled take-profit (Z-Score vs dynamic threshold). Target weight grows with equity.
-- **Trend layer:** Monthly refreshed pool (upstream or internal fallback logic), then Top 2 by relative-BTC strength, inverse-vol weighted. Only active when BTC gate is on.
-
-Runs hourly; signals are daily trend and risk, not high-frequency.
-
-## BTC Core
-
-**Indicators:** MA200, MA200 slope, AHR999, Z-Score, dynamic Z-Score sell threshold.
-
-**Logic:** Stronger DCA when AHR999 low; normal when neutral; scaled sells when Z-Score above threshold. Higher Z-Score → larger sell fraction.
-
-**Target weight:** `btc_target_ratio = 0.14 + 0.16 * ln(1 + total_equity / 10000)`, capped. Larger equity → more BTC, less trend.
-
-**DCA size:** Daily base order scales with total equity.
-
-## Trend Rotation
-
-**Universe:** Prefer the upstream live pool. Source hierarchy is: fresh upstream Firestore payload → last known good upstream payload from state → validated local upstream file fallback → static universe emergency fallback.
-
-**Official input pool:** Upstream publishes a 5-coin production pool; this repo consumes that pool as the monthly official input set.
-
-**Actual rotation target:** The live trend sleeve still acts only on the final top-2 rotation decision, or on a defensive "no candidate / keep current stance" outcome when no symbol qualifies.
-
-**Factors:** SMA20/60/200, 20/60/120d returns, 20d vol, ATR14, 30/90/180d avg quote volume, trend persistence, relative BTC strength, risk-adjusted momentum.
-
-**Holdings:** Top 2 from pool by relative-BTC score; inverse-vol weights.
-
-**Entry:** BTC gate on; price above SMA20/60/200; positive relative-BTC score; positive absolute momentum.
-
-**Exit:** Below SMA60; ATR trailing stop; rotated out of Top 2.
-
-## Risk
-
-- **BTC gate:** Trend layer only when `BTC price > MA200` and `MA200 slope > 0`.
-- **Circuit breaker:** If trend-layer daily PnL ≤ threshold, flatten trend book; BTC core unchanged. (Daily PnL is computed from real trend holdings value only, excluding the allocated USDT cash pool.)
-- **External USDT flows:** Manual USDT deposits or withdrawals reset the daily PnL bases instead of being treated as a loss event. Flexible Earn subscribe or redeem does not trigger this reset because the runtime tracks total USDT rather than spot-only USDT.
-- **BNB:** Auto top-up for fees; not in trend rotation.
-
-## Earn Compatibility
-
-- Check spot before orders; redeem from flexible earn if needed.
-- Maintain USDT spot buffer (subscribe excess, redeem shortfall).
-- Flexible Earn subscribe or redeem moves USDT between spot and earn only; it does not count as an external balance shock and does not trigger the circuit breaker.
-
-## State (Firestore)
-
-- Trend positions, high-water prices, circuit state, DCA last buy/sell date, monthly pool id, pool symbols. Retired symbols (dropped from pool but still held) tracked until closed.
-
-## Upstream Pool
-
-**Default:** CryptoSnapshotPipelines monthly output.
-
-1. Firestore `strategy` / `CRYPTO_LEADER_ROTATION_LIVE_POOL` (override: `STRATEGY_ARTIFACT_FIRESTORE_COLLECTION`, `STRATEGY_ARTIFACT_FIRESTORE_DOCUMENT`; legacy aliases: `TREND_POOL_FIRESTORE_COLLECTION`, `TREND_POOL_FIRESTORE_DOCUMENT`).
-2. Last known good upstream payload persisted in Firestore state after a successful accepted upstream read.
-3. Local `live_pool_legacy.json` or `live_pool.json` style file (override: `STRATEGY_ARTIFACT_FILE`; legacy alias: `TREND_POOL_FILE`).
-4. Static `TREND_UNIVERSE` as emergency fallback only.
-
-**Stable upstream contract fields:**
-
-- `as_of_date`
-- `version`
-- `mode`
-- `pool_size`
-- `symbols`
-- `symbol_map`
-- `source_project`
-
-**Accepted legacy-compatible format (`live_pool_legacy.json`):**
-
-```json
-{
-  "as_of_date": "2026-03-13",
-  "version": "2026-03-13-core_major",
-  "mode": "core_major",
-  "pool_size": 5,
-  "symbols": {
-    "TRXUSDT": {"base_asset": "TRX"},
-    "ETHUSDT": {"base_asset": "ETH"},
-    "BCHUSDT": {"base_asset": "BCH"},
-    "NEARUSDT": {"base_asset": "NEAR"},
-    "LTCUSDT": {"base_asset": "LTC"}
-  },
-  "symbol_map": {
-    "TRXUSDT": {"base_asset": "TRX"},
-    "ETHUSDT": {"base_asset": "ETH"},
-    "BCHUSDT": {"base_asset": "BCH"},
-    "NEARUSDT": {"base_asset": "NEAR"},
-    "LTCUSDT": {"base_asset": "LTC"}
-  },
-  "source_project": "crypto-leader-rotation"
-}
-```
-
-In runtime output, keep these layers separate:
-
-- upstream official pool: the monthly symbols accepted from the upstream contract
-- current monthly execution pool: the local pool retained for this upstream release before final buy gating
-- current execution targets: the symbols that actually qualify for this cycle
-- degraded source status: whether the cycle is using fresh upstream, last-known-good, local-file, or static fallback
-
-The monthly execution pool is rebuilt when the accepted upstream `version` / `as_of_date` changes, then reused across cycles until the next accepted upstream release.
-
-**Validation and degraded mode:**
-
-- Upstream payloads must have a non-empty symbol set, a parseable `as_of_date`, and an acceptable `mode`.
-- Freshness is validated with `STRATEGY_ARTIFACT_MAX_AGE_DAYS` against the upstream `as_of_date`; `TREND_POOL_MAX_AGE_DAYS` remains a compatibility alias.
-- If the fresh upstream payload is stale or malformed, the runtime does not silently treat weaker fallbacks as equivalent.
-- In degraded mode, the script prefers the last known good upstream payload, then a validated local file fallback, and pauses new trend buys by default unless `STRATEGY_ARTIFACT_ALLOW_NEW_ENTRIES_ON_DEGRADED=1` or the legacy alias `TREND_POOL_ALLOW_NEW_ENTRIES_ON_DEGRADED=1`.
-- Retired symbols stay in state until sold; active pool changes are source-tagged in state for auditability.
-
-## Environment
-
-Required:
-
-| Variable | Description |
-|----------|-------------|
-| `BINANCE_API_KEY` | Binance API key |
-| `BINANCE_API_SECRET` | Binance API secret |
-| `TG_TOKEN` | Telegram bot token |
-| `GLOBAL_TELEGRAM_CHAT_ID` | Telegram chat ID for alerts. |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Path to GCP credentials for local runs (the GitHub runtime workflow now gets credentials from OIDC automatically) |
-
-Across multiple quant repositories, `GLOBAL_TELEGRAM_CHAT_ID` and `NOTIFY_LANG` are reasonable shared settings. `TG_TOKEN`, Binance API keys, and GCP credential material should stay repository-specific.
-
-Optional:
-
-| Variable | Description |
-|----------|-------------|
-| `STRATEGY_PROFILE` | Strategy profile selector (default: `crypto_leader_rotation`; supported value: `crypto_leader_rotation`) |
-| `STRATEGY_ARTIFACT_FILE` | Local live-pool artifact path; legacy alias: `TREND_POOL_FILE` |
-| `STRATEGY_ARTIFACT_MANIFEST_FILE` | Optional local artifact manifest path for operator tooling |
-| `STRATEGY_ARTIFACT_FIRESTORE_COLLECTION` | Firestore collection for the live artifact (default `strategy`; legacy alias: `TREND_POOL_FIRESTORE_COLLECTION`) |
-| `STRATEGY_ARTIFACT_FIRESTORE_DOCUMENT` | Firestore document for the live artifact (default `CRYPTO_LEADER_ROTATION_LIVE_POOL`; legacy alias: `TREND_POOL_FIRESTORE_DOCUMENT`) |
-| `STRATEGY_ARTIFACT_MAX_AGE_DAYS` | Max allowed upstream `as_of_date` age before payload is stale (default `45`; legacy alias: `TREND_POOL_MAX_AGE_DAYS`) |
-| `STRATEGY_ARTIFACT_ACCEPTABLE_MODES` | Comma-separated acceptable upstream modes (default `core_major`; legacy alias: `TREND_POOL_ACCEPTABLE_MODES`) |
-| `STRATEGY_ARTIFACT_EXPECTED_SIZE` | Expected live-pool size for contract checks (default `5`; legacy alias: `TREND_POOL_EXPECTED_SIZE`) |
-| `STRATEGY_ARTIFACT_ALLOW_NEW_ENTRIES_ON_DEGRADED` | Allow trend buys while using last-known-good or fallback sources (default `false`; legacy alias: `TREND_POOL_ALLOW_NEW_ENTRIES_ON_DEGRADED`) |
-| `BTC_STATUS_REPORT_INTERVAL_HOURS` | Interval for BTC status report (default `24`) |
-| `NOTIFY_LANG` | Log and notification language: `en` (English, default) or `zh` (Chinese) |
-
----
-
-<a id="中文"></a>
-## 中文
-
-这是一个运行在 Binance 现货上的自动化量化仓库，核心由两部分组成：
-
-- BTC 核心仓定投与分档止盈
-- 山寨币趋势轮动层
-
-项目使用估值指标（`AHR999`、`Z-Score`）和趋势闸门（`MA200`、均线斜率），并兼容 Binance Flexible Earn、USDT 缓冲、BNB 手续费仓、Telegram 通知和 Firestore 状态存储。
-
-当前 `crypto_leader_rotation` 的纯策略模块来自 `CryptoStrategies`。
-
-完整策略说明现在放在 [`CryptoStrategies`](https://github.com/QuantStrategyLab/CryptoStrategies#crypto_leader_rotation)。下面这些章节主要保留下游执行侧的约束、运行时行为和运维说明。
-
-### 执行边界
-
-`BinancePlatform` 负责：
-
-- 上游月池 payload 校验和降级逻辑
-- 交易执行、安全检查和余额处理
-- 运行时状态、Telegram 通知和回放工具
-
-它不负责：
-
-- 上游月度研究和发布说明
-- 超出执行所需范围的深度策略分析
-
-### 仓库结构
-
-- `main.py`：小时级 live 编排入口
-- `strategy_runtime.py`：加载统一策略入口，并暴露显式 artifact contract 运行时信息
-- `research/`：研究和审计工具，不参与 live 执行
-- `run_*`：本地固定输入回放和维护脚本
-- `tests/fixtures/`：回放回归的固定输入
-
-### 运行环境
-
-必需环境变量：
-
-- `BINANCE_API_KEY`
-- `BINANCE_API_SECRET`
-- `TG_TOKEN`
-- `GLOBAL_TELEGRAM_CHAT_ID`
-- `GOOGLE_APPLICATION_CREDENTIALS`
-
-可选环境变量、趋势池契约、日志和月度审阅的完整中文说明，见 [README.zh-CN.md](README.zh-CN.md)。
-
-## Notification Format
-
-Runtime logs and Telegram notifications use the same language switch. Set `NOTIFY_LANG=zh` for Chinese or leave default for English.
-
-`STRATEGY_PROFILE` is now kept as a thin future strategy-switch entry. Today this repo only supports `crypto_leader_rotation`, and its current strategy domain is `crypto`.
-
-**Strategy heartbeat:**
-```
-💓 【Strategy Heartbeat】
-🕐 UTC Time: 2026-03-24 00:00
-━━━━━━━━━━━━━━━━━━
-💰 Total Equity: $12,500.00
-📈 Trend Holdings: $3,200.00 (1.25%)
-₿ BTC Price: $87,000.00
-━━━━━━━━━━━━━━━━━━
-AHR999: 0.850
-Z-Score: 1.20 / Threshold 3.00
-🎯 BTC Target Allocation: 28.5%
-🚦 BTC Gate: ON
-━━━━━━━━━━━━━━━━━━
-💡 Note: BTC valuation is neutral; follow the system cadence.
-```
-
-**Trade notifications:**
-```
-✅ 【Trend Buy】 ETHUSDT
-Price: $3,450.00
-Budget: $800.00
-Rotation Weight: 60%
-Relative BTC Score: 0.85
-
-📉 【Trend Sell】 SOLUSDT
-Reason: ATR trailing stop ($142.50)
-Price: $138.20
-
-🛡️ 【BTC DCA Buy】 BTC
-AHR999: 0.45
-Target Allocation: 28.5%
-Quantity: 0.00125 BTC
-```
-
-## Deploy (self-hosted runner + workflow)
-
-The repo is intended to run on a **self-hosted GitHub Actions runner** (e.g. a VPS). The runtime workflow checks out code, authenticates to Google Cloud with GitHub OIDC + Workload Identity Federation, prepares dependencies, and then runs `main.py`. The runner is expected to receive `workflow_dispatch` requests from one external scheduler instead of relying on GitHub's built-in hourly scheduler.
-
-This repository uses `QuantPlatformKit` for Binance client bootstrap, balance helpers, market-data snapshots, and quantity-format helpers. The runner executes this repository directly; `QuantPlatformKit` is not deployed separately.
-
-### 1. Self-hosted runner
-
-- In the repo: **Settings → Actions → Runners**, add a new self-hosted runner (Linux recommended).
-- On the machine (e.g. Oracle Cloud VPS): install the runner, register it, and keep it running so it can pick up jobs.
-
-### 2. Workflow and runtime trigger
-
-- **`.github/workflows/ci.yml`** is the push/manual validation workflow. It runs on GitHub-hosted runners and is limited to install/compile/test checks.
-- **`.github/workflows/main.yml`** is the runtime workflow. It runs on the self-hosted runner, authenticates to Google Cloud with OIDC, prepares the local `venv`, and runs `venv/bin/python main.py`.
-- **`.github/workflows/runtime-heartbeat.yml`** is the GitHub-hosted heartbeat. It checks recent `main.yml` success and alerts on missed or failed Runtime runs.
-- **Triggers:** `ci.yml` runs on `push` to `main` and `workflow_dispatch`; `main.yml` runs on `workflow_dispatch` only.
-- **Runtime cadence:** GitHub Actions no longer schedules hourly runtime execution for this repo. The expected production model is one external scheduler, such as VPS cron + `curl`, calling the GitHub `workflow_dispatch` API for `main.yml`.
-- Use `Actions -> Runtime -> Run workflow` for one-off manual runs.
-- For a safe self-hosted auth smoke test, dispatch `main.yml` with `validate_only=true`. That validates GitHub OIDC + Firestore access without running live trades.
-- If you automate dispatch from a VPS, keep a single scheduler of record and avoid firing a new dispatch while the previous runtime job is still running.
-- Recommended runtime service name on the VPS side: `binance-quant`.
-- For the shared deployment model and naming rules across Cloud Run and VPS workloads, see [`QuantPlatformKit/docs/deployment_model.md`](../QuantPlatformKit/docs/deployment_model.md).
-
-Example API dispatch:
-
-```bash
-curl -L \
-  -X POST \
-  -H "Accept: application/vnd.github+json" \
-  -H "Authorization: Bearer $GITHUB_TOKEN" \
-  https://api.github.com/repos/<owner>/<repo>/actions/workflows/main.yml/dispatches \
-  -d '{"ref":"main"}'
-```
-
-### 3. Repository secrets
-
-In **Settings → Secrets and variables → Actions**, add:
-
-| Secret | Description |
-|--------|-------------|
-| `BINANCE_API_KEY` | Binance API key |
-| `BINANCE_API_SECRET` | Binance API secret |
-| `TG_TOKEN` | Telegram bot token |
-| `GLOBAL_TELEGRAM_CHAT_ID` | Telegram chat ID for alerts. |
-
-The runtime workflow passes these into the `Run trading strategy` step; it does not use a `.env` file on the runner.
-
-It now also requires these repo or organization Variables:
-
-- `GLOBAL_TELEGRAM_CHAT_ID` from repo/org Variables
-- `NOTIFY_LANG` from repo/org Variables
-
-`TG_TOKEN` and Binance API keys should still remain repository-specific. Google Cloud auth for the runtime workflow now uses GitHub OIDC instead of a repository JSON key.
-
-### 4. GCP / Firestore
-
-- The GitHub runtime workflow now uses GitHub OIDC + Workload Identity Federation to impersonate `binance-platform-runtime@binancequant.iam.gserviceaccount.com`.
-- That runtime service account must have **Firestore** access (read/write) for the project that hosts the Firestore database used by this app.
-
-### Local run (optional)
-
-For local testing only:
-
-```bash
-cd /path/to/BinancePlatform
-python3 -m venv venv && source venv/bin/activate
-REQ_FILE="requirements-lock.txt"
-if [ ! -f "$REQ_FILE" ]; then REQ_FILE="requirements.txt"; fi
-pip install -r "$REQ_FILE"
-export BINANCE_API_KEY=... BINANCE_API_SECRET=... TG_TOKEN=... GLOBAL_TELEGRAM_CHAT_ID=...
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/gcp-sa.json
-python main.py
-```
-
-### Local research backtest
-
-For audit-only local research work outside the live execution path:
-
-```bash
-python3 -m research.backtest
-```
-
-### Fixed-input cycle replay
-
-To execute one fully dry-run strategy cycle from local fixtures, without live Binance or Firestore writes:
-
-```bash
-python3 run_cycle_replay.py --run-id local-check
-```
-
-This emits a structured JSON report with:
-
-- selected upstream pool and execution candidates
-- trend buy/sell intents
-- BTC DCA intents
-- earn subscribe/redeem intents
-- explicit gating / no-trade reason counts
-- zero-trade diagnostics grouped by strategy sleeve and gate
-- suppressed vs executed side-effect counts
-
-### Tests
-
-Committed unit tests can be run with:
-
-```bash
-python3 -m unittest \
-  tests.test_strategy_core \
-  tests.test_cycle_replay_runtime \
-  tests.test_market_snapshot_support \
-  tests.test_trend_pool_loading \
-  -v
-```
-
-Repository hygiene:
-
-- ignore local/runtime artifacts such as `reports/`, `venv/`, `.venv/`, `gcp-key.json`, and `.venv_requirements_hash`
-- keep `tests/fixtures/` tracked so the cycle replay stays reproducible across machines
-
-Operational behavior for degraded mode, Firestore failures, Binance API failures, Telegram failures, and workflow secret handling is documented in `docs/operator_runbook.md`.
-
-## Notes
-
-- The upstream CryptoSnapshotPipelines project is the primary selector and contract owner for the monthly live pool.
-- Local stable-quality pool ranking logic in this repo remains as a runtime fallback and execution convenience, not the preferred healthy input.
-- Monthly research reporting, shadow candidate evaluation, and monthly release review should live in the upstream CryptoSnapshotPipelines project, not in this downstream execution repo.
-
-## Telegram
-
-Alerts: trend buys/sells, BTC DCA, earn redeems, circuit breaker, errors. Optional periodic BTC status (AHR999, Z-Score, gate, trend PnL). Default once per day at UTC 00:00; set `BTC_STATUS_REPORT_INTERVAL_HOURS` to change.
-
-All notifications support `NOTIFY_LANG` (`en` default, `zh` for Chinese). See [Notification Format](#notification-format) for examples.
+See [LICENSE](LICENSE) if present in this repository.
