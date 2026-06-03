@@ -8,7 +8,7 @@
 
 BinancePlatform is a QuantStrategyLab Binance crypto execution platform. It executes runtime-enabled crypto strategies through Binance-facing workflows and self-hosted orchestration.
 
-It is an execution layer, not a strategy research repository. Strategy logic comes from `CryptoStrategies`; snapshot and validation artifacts come from `CryptoSnapshotPipelines` when a profile requires them.
+It is an execution layer, not a strategy research repository. Strategy logic comes from `CryptoStrategies`; live-pool and validation artifacts come from `CryptoLivePoolPipelines` when a profile requires them.
 
 ## Runtime boundary
 
@@ -19,7 +19,7 @@ It is an execution layer, not a strategy research repository. Strategy logic com
 
 ## Direct vs snapshot-backed profiles
 
-Direct runtime profiles can usually run from market history or portfolio state. Snapshot-backed profiles need a current artifact bundle from the matching snapshot pipeline before this platform should execute them. The platform should not invent strategy eligibility; it should consume the status and artifacts published by the strategy and snapshot repositories.
+Direct runtime profiles can usually run from market history or portfolio state. Snapshot-backed profiles need a current artifact bundle from the matching live-pool pipeline before this platform should execute them. The platform should not invent strategy eligibility; it should consume the status and artifacts published by the strategy and live-pool repositories.
 
 ## Deploy safely
 

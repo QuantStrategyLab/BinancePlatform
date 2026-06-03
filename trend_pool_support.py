@@ -247,8 +247,8 @@ def get_default_live_pool_candidates(default_live_pool_legacy_path):
         Path("/home/ubuntu"),
     }
     repo_names = (
-        "CryptoSnapshotPipelines",
-        "crypto-snapshot-pipelines",
+        "CryptoLivePoolPipelines",
+        "crypto-live-pool-pipelines",
         "CryptoLeaderRotation",
         "crypto-leader-rotation",
     )
