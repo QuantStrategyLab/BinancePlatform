@@ -32,7 +32,7 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             os.environ,
             {
                 "BTC_STATUS_REPORT_INTERVAL_HOURS": "48",
-                "TREND_POOL_ALLOW_NEW_ENTRIES_ON_DEGRADED": "1",
+                "STRATEGY_ARTIFACT_ALLOW_NEW_ENTRIES_ON_DEGRADED": "1",
             },
             clear=False,
         ):
@@ -41,22 +41,21 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         self.assertEqual(settings.btc_status_report_interval_hours, 24)
         self.assertTrue(settings.allow_new_trend_entries_on_degraded)
         self.assertEqual(settings.strategy_profile, DEFAULT_STRATEGY_PROFILE)
-        self.assertEqual(settings.strategy_display_name, "Crypto Leader Rotation")
-        self.assertEqual(settings.strategy_display_name_localized, "Crypto Leader Rotation")
+        self.assertEqual(settings.strategy_display_name, "Crypto Live Pool Rotation")
+        self.assertEqual(settings.strategy_display_name_localized, "Crypto Live Pool Rotation")
         self.assertEqual(settings.strategy_domain, CRYPTO_DOMAIN)
 
-    def test_load_cycle_execution_settings_accepts_strategy_artifact_degraded_alias(self):
+    def test_load_cycle_execution_settings_ignores_legacy_trend_pool_degraded_alias(self):
         with patch.dict(
             os.environ,
             {
-                "STRATEGY_ARTIFACT_ALLOW_NEW_ENTRIES_ON_DEGRADED": "1",
-                "TREND_POOL_ALLOW_NEW_ENTRIES_ON_DEGRADED": "0",
+                "TREND_POOL_ALLOW_NEW_ENTRIES_ON_DEGRADED": "1",
             },
-            clear=False,
+            clear=True,
         ):
             settings = load_cycle_execution_settings()
 
-        self.assertTrue(settings.allow_new_trend_entries_on_degraded)
+        self.assertFalse(settings.allow_new_trend_entries_on_degraded)
 
     def test_load_cycle_execution_settings_rejects_unknown_strategy_profile(self):
         with patch.dict(os.environ, {"STRATEGY_PROFILE": "global_etf_rotation"}, clear=False):
@@ -77,7 +76,7 @@ class RuntimeConfigSupportTests(unittest.TestCase):
                 {
                     "platform": BINANCE_PLATFORM,
                     "canonical_profile": DEFAULT_STRATEGY_PROFILE,
-                    "display_name": "Crypto Leader Rotation",
+                    "display_name": "Crypto Live Pool Rotation",
                     "eligible": True,
                     "enabled": True,
                     "is_default": True,
@@ -115,7 +114,7 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         self.assertEqual(runtime.tg_token, "tg-token")
         self.assertEqual(runtime.tg_chat_id, "chat-id")
         self.assertEqual(runtime.strategy_profile, DEFAULT_STRATEGY_PROFILE)
-        self.assertEqual(runtime.strategy_display_name, "Crypto Leader Rotation")
+        self.assertEqual(runtime.strategy_display_name, "Crypto Live Pool Rotation")
         self.assertIs(runtime.state_loader, state_loader)
         self.assertIs(runtime.state_writer, state_writer)
         self.assertIs(runtime.notifier, notifier)
@@ -179,10 +178,10 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         self.assertIn("TG_TOKEN", plan["keep_env"])
         self.assertIn("STRATEGY_ARTIFACT_FILE", plan["optional_env"])
         self.assertIn("STRATEGY_ARTIFACT_MANIFEST_FILE", plan["optional_env"])
-        self.assertIn("TREND_POOL_FILE", plan["optional_env"])
+        self.assertNotIn("TREND_POOL_FILE", plan["optional_env"])
         self.assertEqual(
             plan["hints"]["strategy_artifact_default_firestore_document"],
-            "CRYPTO_LEADER_ROTATION_LIVE_POOL",
+            "CRYPTO_LIVE_POOL_ROTATION_LIVE_POOL",
         )
         self.assertEqual(plan["remove_if_present"], [])
 
@@ -197,7 +196,7 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         )
 
         self.assertIn("platform: binance", result.stdout)
-        self.assertIn("profile: crypto_leader_rotation", result.stdout)
+        self.assertIn("profile: crypto_live_pool_rotation", result.stdout)
         self.assertIn("set_env:", result.stdout)
         self.assertIn("keep_env:", result.stdout)
         self.assertIn("optional_env:", result.stdout)

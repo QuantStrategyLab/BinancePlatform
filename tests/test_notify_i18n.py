@@ -132,7 +132,7 @@ class NotifyI18nTests(unittest.TestCase):
                     "mode": "core_major",
                     "version": "2026-03-10-core_major",
                     "as_of_date": "2026-03-10",
-                    "source_project": "crypto-leader-rotation",
+                    "source_project": "crypto-live-pool-pipelines",
                     "messages": ["payload stale", "using cached pool"],
                     "degraded": True,
                 },

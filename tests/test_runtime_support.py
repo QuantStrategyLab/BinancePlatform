@@ -32,7 +32,7 @@ class TestBuildExecutionReport(unittest.TestCase):
         with patch.dict(
             os.environ,
             {
-                "STRATEGY_PROFILE": "crypto_leader_rotation",
+                "STRATEGY_PROFILE": "crypto_live_pool_rotation",
                 "SERVICE_NAME": "binance-runtime",
                 "LOG_DEPLOY_TARGET": "vps",
             },
@@ -44,7 +44,7 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertFalse(report["dry_run"])
         self.assertEqual(report["schema_version"], "runtime_report.v1")
         self.assertEqual(report["platform"], "binance")
-        self.assertEqual(report["strategy_profile"], "crypto_leader_rotation")
+        self.assertEqual(report["strategy_profile"], "crypto_live_pool_rotation")
         self.assertIn("buy_sell_intents", report)
         self.assertIn("log_lines", report)
 

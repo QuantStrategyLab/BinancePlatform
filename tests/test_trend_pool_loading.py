@@ -91,8 +91,8 @@ for path in (PLATFORM_KIT_SRC, CRYPTO_STRATEGIES_SRC):
 import main
 from degraded_mode_support import format_trend_pool_source_logs
 import degraded_mode_support
-from crypto_strategies.strategies.crypto_leader_rotation.core import allocate_trend_buy_budget
-from crypto_strategies.strategies.crypto_leader_rotation.rotation import refresh_rotation_pool
+from crypto_strategies.strategies.crypto_live_pool_rotation.core import allocate_trend_buy_budget
+from crypto_strategies.strategies.crypto_live_pool_rotation.rotation import refresh_rotation_pool
 
 
 def build_payload(as_of_date="2026-03-10", *, mode="core_major"):
@@ -110,7 +110,7 @@ def build_payload(as_of_date="2026-03-10", *, mode="core_major"):
         "pool_size": len(symbol_map),
         "symbols": list(symbol_map.keys()),
         "symbol_map": symbol_map,
-        "source_project": "crypto-leader-rotation",
+        "source_project": "crypto-live-pool-pipelines",
     }
 
 
@@ -158,24 +158,21 @@ class TrendPoolLoadingTests(unittest.TestCase):
         self.assertEqual(candidates[0], default_path)
         self.assertTrue(any("CryptoLivePoolPipelines" in value for value in candidate_text))
 
-    def test_strategy_artifact_env_aliases_override_legacy_trend_pool_settings(self):
+    def test_strategy_artifact_settings_ignore_legacy_trend_pool_env_names(self):
         with patch.dict(
             os.environ,
             {
-                "STRATEGY_ARTIFACT_MAX_AGE_DAYS": "12",
-                "STRATEGY_ARTIFACT_ACCEPTABLE_MODES": "core_major,shadow",
-                "STRATEGY_ARTIFACT_EXPECTED_SIZE": "3",
                 "TREND_POOL_MAX_AGE_DAYS": "45",
                 "TREND_POOL_ACCEPTABLE_MODES": "legacy",
                 "TREND_POOL_EXPECTED_SIZE": "5",
             },
-            clear=False,
+            clear=True,
         ):
             settings = main.get_trend_pool_contract_settings()
 
-        self.assertEqual(settings["max_age_days"], 12)
-        self.assertEqual(settings["acceptable_modes"], ["core_major", "shadow"])
-        self.assertEqual(settings["expected_pool_size"], 3)
+        self.assertEqual(settings["max_age_days"], main.DEFAULT_TREND_POOL_MAX_AGE_DAYS)
+        self.assertEqual(settings["acceptable_modes"], list(main.DEFAULT_TREND_POOL_ACCEPTABLE_MODES))
+        self.assertEqual(settings["expected_pool_size"], main.TREND_POOL_SIZE)
 
     def test_resolve_trend_pool_source_prefers_last_known_good_before_local_file(self):
         last_good_payload = build_payload(as_of_date="2026-02-15")
@@ -209,7 +206,7 @@ class TrendPoolLoadingTests(unittest.TestCase):
     def test_update_trend_pool_state_persists_metadata_and_last_good_payload(self):
         validated = main.validate_trend_pool_payload(
             build_payload(),
-            source_label="firestore:strategy/CRYPTO_LEADER_ROTATION_LIVE_POOL",
+            source_label="firestore:strategy/CRYPTO_LIVE_POOL_ROTATION_LIVE_POOL",
             now_utc=datetime(2026, 3, 14, tzinfo=timezone.utc),
             acceptable_modes=["core_major"],
             expected_pool_size=5,
@@ -228,7 +225,7 @@ class TrendPoolLoadingTests(unittest.TestCase):
         self.assertEqual(state["trend_pool_source"], "fresh_upstream")
         self.assertEqual(state["trend_pool_version"], "2026-03-10-core_major")
         self.assertEqual(state["trend_pool_mode"], "core_major")
-        self.assertEqual(state["trend_pool_source_project"], "crypto-leader-rotation")
+        self.assertEqual(state["trend_pool_source_project"], "crypto-live-pool-pipelines")
         self.assertEqual(
             state[main.TREND_POOL_LAST_GOOD_PAYLOAD_KEY]["version"],
             "2026-03-10-core_major",
@@ -364,7 +361,7 @@ class TrendPoolLoadingTests(unittest.TestCase):
                 "mode": "core_major",
                 "version": "2026-03-10-core_major",
                 "as_of_date": "2026-03-10",
-                "source_project": "crypto-leader-rotation",
+                "source_project": "crypto-live-pool-pipelines",
                 "messages": ["payload stale", "using cached pool"],
                 "degraded": True,
             },

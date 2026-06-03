@@ -11,12 +11,12 @@ for path in (PROJECT_ROOT, QPK_SRC, CRYPTO_STRATEGIES_SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from crypto_strategies.strategies.crypto_leader_rotation.rotation import (  # noqa: E402
+from crypto_strategies.strategies.crypto_live_pool_rotation.rotation import (  # noqa: E402
     get_trend_sell_reason,
     plan_trend_buys,
     refresh_rotation_pool,
 )
-from crypto_strategies.strategies.crypto_leader_rotation.core import allocate_trend_buy_budget  # noqa: E402
+from crypto_strategies.strategies.crypto_live_pool_rotation.core import allocate_trend_buy_budget  # noqa: E402
 
 
 class RotationStrategyTests(unittest.TestCase):

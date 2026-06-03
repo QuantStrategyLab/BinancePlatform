@@ -32,12 +32,12 @@ class StrategyRuntimeTests(unittest.TestCase):
                 self.skipTest("pandas is not installed")
             raise
 
-        runtime = load_strategy_runtime("crypto_leader_rotation")
+        runtime = load_strategy_runtime("crypto_live_pool_rotation")
 
-        self.assertEqual(runtime.profile, "crypto_leader_rotation")
+        self.assertEqual(runtime.profile, "crypto_live_pool_rotation")
         self.assertEqual(runtime.runtime_adapter.portfolio_input_name, "portfolio_snapshot")
         self.assertTrue(str(runtime.default_local_artifact_path).endswith("BinancePlatform/artifacts/live_pool_legacy.json"))
-        self.assertEqual(runtime.artifact_contract["version"], "crypto_leader_rotation.live_pool.v1")
+        self.assertEqual(runtime.artifact_contract["version"], "crypto_live_pool_rotation.live_pool.v1")
         self.assertTrue(runtime.artifact_contract["requires_artifacts"])
         self.assertTrue(runtime.artifact_contract["requires_manifest"])
         self.assertEqual(runtime.artifact_contract["config_source_policy"], "none")
@@ -52,7 +52,7 @@ class StrategyRuntimeTests(unittest.TestCase):
                 self.skipTest("pandas is not installed")
             raise
 
-        runtime = load_strategy_runtime("crypto_leader_rotation")
+        runtime = load_strategy_runtime("crypto_live_pool_rotation")
         account_metrics = {
             "total_equity": 10000.0,
             "cash_usdt": 2500.0,
@@ -115,7 +115,7 @@ class StrategyRuntimeTests(unittest.TestCase):
             raise
 
         diagnostics = evaluation.decision.diagnostics
-        self.assertEqual(evaluation.metadata["strategy_display_name"], "Crypto Leader Rotation")
+        self.assertEqual(evaluation.metadata["strategy_display_name"], "Crypto Live Pool Rotation")
         self.assertIn("planned_trend_buys", diagnostics)
         self.assertIn("eligible_buy_symbols", diagnostics)
         self.assertIn("sell_reasons", diagnostics)
@@ -132,10 +132,10 @@ class StrategyRuntimeTests(unittest.TestCase):
 
         fake_entrypoint = types.SimpleNamespace(
             manifest=types.SimpleNamespace(
-                profile="crypto_leader_rotation",
+                profile="crypto_live_pool_rotation",
                 default_config={
                     "trend_pool_size": 4,
-                    "artifact_contract_version": "crypto_leader_rotation.live_pool.v1",
+                    "artifact_contract_version": "crypto_live_pool_rotation.live_pool.v1",
                 },
             )
         )
@@ -161,9 +161,9 @@ class StrategyRuntimeTests(unittest.TestCase):
             "tp_get_default_live_pool_candidates",
             side_effect=lambda default_path: [str(default_path), "/tmp/live_pool_fallback.json"],
         ):
-            runtime = strategy_runtime_module.load_strategy_runtime("crypto_leader_rotation")
+            runtime = strategy_runtime_module.load_strategy_runtime("crypto_live_pool_rotation")
 
-        mock_entrypoint_loader.assert_called_once_with("crypto_leader_rotation")
+        mock_entrypoint_loader.assert_called_once_with("crypto_live_pool_rotation")
         self.assertIs(runtime.entrypoint, fake_entrypoint)
         self.assertIs(runtime.runtime_adapter, fake_runtime_adapter)
         self.assertEqual(runtime.merged_runtime_config["trend_pool_size"], 4)
@@ -184,9 +184,9 @@ class StrategyRuntimeTests(unittest.TestCase):
 
         class FakeEntrypoint:
             manifest = StrategyManifest(
-                profile="crypto_leader_rotation",
+                profile="crypto_live_pool_rotation",
                 domain="crypto",
-                display_name="Crypto Leader Rotation",
+                display_name="Crypto Live Pool Rotation",
                 description="test",
                 required_inputs=frozenset(
                     {
@@ -197,7 +197,7 @@ class StrategyRuntimeTests(unittest.TestCase):
                         "universe_snapshot",
                     }
                 ),
-                default_config={"trend_pool_size": 4, "artifact_contract_version": "crypto_leader_rotation.live_pool.v1"},
+                default_config={"trend_pool_size": 4, "artifact_contract_version": "crypto_live_pool_rotation.live_pool.v1"},
             )
 
             def evaluate(self, ctx):
@@ -213,7 +213,7 @@ class StrategyRuntimeTests(unittest.TestCase):
             merged_runtime_config=FakeEntrypoint.manifest.default_config,
         )
 
-        with patch.object(strategy_runtime_module, "resolve_strategy_metadata", return_value=SimpleNamespace(display_name="Crypto Leader Rotation")):
+        with patch.object(strategy_runtime_module, "resolve_strategy_metadata", return_value=SimpleNamespace(display_name="Crypto Live Pool Rotation")):
             evaluation = runtime.evaluate(
                 prices={"BTCUSDT": 60000.0, "ETHUSDT": 3000.0},
                 trend_indicators={"ETHUSDT": {"close": 3000.0}},
@@ -232,7 +232,7 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertEqual(ctx.market_data["market_prices"]["ETHUSDT"], 3000.0)
         self.assertEqual(ctx.market_data["universe_snapshot"], ("ETHUSDT",))
         self.assertEqual(ctx.portfolio.metadata["account_metrics"]["cash_usdt"], 2000.0)
-        self.assertEqual(evaluation.metadata["strategy_display_name"], "Crypto Leader Rotation")
+        self.assertEqual(evaluation.metadata["strategy_display_name"], "Crypto Live Pool Rotation")
 
 
 if __name__ == "__main__":

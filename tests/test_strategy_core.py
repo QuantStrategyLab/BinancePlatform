@@ -11,7 +11,7 @@ for path in (PROJECT_ROOT, QPK_SRC, CRYPTO_STRATEGIES_SRC):
         sys.path.insert(0, str(path))
 
 try:
-    from crypto_strategies.strategies.crypto_leader_rotation import core as strategy_core
+    from crypto_strategies.strategies.crypto_live_pool_rotation import core as strategy_core
 except ModuleNotFoundError as exc:
     if exc.name != "pandas":
         raise

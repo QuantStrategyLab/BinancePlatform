@@ -106,7 +106,7 @@ jobs:
         env:
           BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
           BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
-          STRATEGY_PROFILE: ${{ vars.STRATEGY_PROFILE || 'crypto_leader_rotation' }}
+          STRATEGY_PROFILE: ${{ vars.STRATEGY_PROFILE || 'crypto_live_pool_rotation' }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
           NOTIFY_LANG: ${{ vars.NOTIFY_LANG }}

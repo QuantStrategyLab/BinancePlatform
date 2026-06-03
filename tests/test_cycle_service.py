@@ -34,7 +34,7 @@ class CycleServiceTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "STRATEGY_PROFILE": "crypto_leader_rotation",
+                    "STRATEGY_PROFILE": "crypto_live_pool_rotation",
                     "SERVICE_NAME": "binance-quant",
                 },
                 clear=False,
@@ -65,7 +65,7 @@ class CycleServiceTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "STRATEGY_PROFILE": "crypto_leader_rotation",
+                    "STRATEGY_PROFILE": "crypto_live_pool_rotation",
                     "SERVICE_NAME": "binance-quant",
                     "LOG_DEPLOY_TARGET": "vps",
                 },
@@ -75,8 +75,8 @@ class CycleServiceTests(unittest.TestCase):
                     runtime_builder=lambda: SimpleNamespace(
                         run_id="run-001",
                         dry_run=True,
-                        strategy_profile="crypto_leader_rotation",
-                        strategy_display_name="Crypto Leader Rotation",
+                        strategy_profile="crypto_live_pool_rotation",
+                        strategy_display_name="Crypto Live Pool Rotation",
                         strategy_display_name_localized="加密领涨轮动",
                     ),
                     execute_cycle=lambda _runtime: {
@@ -101,8 +101,8 @@ class CycleServiceTests(unittest.TestCase):
         start_log = json.loads(observed["printed"][0])
         end_log = json.loads(observed["printed"][2])
         self.assertEqual(start_log["event"], "strategy_cycle_started")
-        self.assertEqual(start_log["strategy_profile"], "crypto_leader_rotation")
-        self.assertEqual(start_log["strategy_display_name"], "Crypto Leader Rotation")
+        self.assertEqual(start_log["strategy_profile"], "crypto_live_pool_rotation")
+        self.assertEqual(start_log["strategy_display_name"], "Crypto Live Pool Rotation")
         self.assertEqual(start_log["strategy_display_name_localized"], "加密领涨轮动")
         self.assertEqual(start_log["run_id"], "run-001")
         self.assertEqual(end_log["event"], "strategy_cycle_completed")
@@ -116,7 +116,7 @@ class CycleServiceTests(unittest.TestCase):
             with patch.dict(
                 os.environ,
                 {
-                    "STRATEGY_PROFILE": "crypto_leader_rotation",
+                    "STRATEGY_PROFILE": "crypto_live_pool_rotation",
                     "SERVICE_NAME": "binance-quant",
                     "EXECUTION_REPORT_GCS_URI": "gs://demo-bucket/runtime-reports",
                     "GCP_PROJECT_ID": "demo-project",
@@ -133,7 +133,7 @@ class CycleServiceTests(unittest.TestCase):
                     )
                     or SimpleNamespace(
                         local_path=kwargs.get("output_path"),
-                        gcs_uri="gs://demo-bucket/runtime-reports/binance/crypto_leader_rotation/2026-04/run-001.json",
+                        gcs_uri="gs://demo-bucket/runtime-reports/binance/crypto_live_pool_rotation/2026-04/run-001.json",
                     ),
                 ):
                     report, persisted_path = run_live_cycle(

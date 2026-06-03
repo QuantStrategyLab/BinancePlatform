@@ -153,7 +153,7 @@ BNB_FUEL_ASSET = "BNB"
 
 DEFAULT_LIVE_POOL_LEGACY_PATH = STRATEGY_RUNTIME.default_local_artifact_path
 DEFAULT_TREND_POOL_FIRESTORE_COLLECTION = "strategy"
-DEFAULT_TREND_POOL_FIRESTORE_DOCUMENT = "CRYPTO_LEADER_ROTATION_LIVE_POOL"
+DEFAULT_TREND_POOL_FIRESTORE_DOCUMENT = "CRYPTO_LIVE_POOL_ROTATION_LIVE_POOL"
 RETIRED_TREND_POSITIONS_KEY = "retired_trend_positions"
 TREND_POOL_LAST_GOOD_PAYLOAD_KEY = "trend_pool_last_good_payload"
 TREND_POOL_ACTION_HISTORY_KEY = "trend_action_history"
@@ -532,8 +532,8 @@ def maybe_send_periodic_btc_status_report(
     notifier_fn=None,
 ):
     resolved_strategy_display_name = strategy_display_name or build_strategy_display_name(t)(
-        getattr(STRATEGY_RUNTIME, "profile", "crypto_leader_rotation"),
-        fallback_name="Crypto Leader Rotation",
+        getattr(STRATEGY_RUNTIME, "profile", "crypto_live_pool_rotation"),
+        fallback_name="Crypto Live Pool Rotation",
     )
     return report_maybe_send_periodic_btc_status_report(
         state,

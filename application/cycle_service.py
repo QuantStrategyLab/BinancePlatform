@@ -248,7 +248,7 @@ def run_live_cycle(
         platform="binance",
         deploy_target=os.getenv("LOG_DEPLOY_TARGET", "vps"),
         service_name=os.getenv("SERVICE_NAME", "binance-platform"),
-        strategy_profile=str(getattr(runtime, "strategy_profile", "") or os.getenv("STRATEGY_PROFILE", "crypto_leader_rotation")),
+        strategy_profile=str(getattr(runtime, "strategy_profile", "") or os.getenv("STRATEGY_PROFILE", "crypto_live_pool_rotation")),
         run_id=str(getattr(runtime, "run_id", "") or ""),
         extra_fields={
             "dry_run": bool(getattr(runtime, "dry_run", False)),

@@ -7,7 +7,6 @@ from typing import Any, Callable
 
 from notify_i18n_support import build_strategy_display_name, build_translator, get_notify_lang
 from runtime_support import ExecutionRuntime
-from strategy_artifact_support import get_strategy_artifact_env
 from strategy_registry import (
     BINANCE_PLATFORM,
     resolve_strategy_definition,
@@ -25,13 +24,6 @@ def get_env_int(name: str, default: int) -> int:
 def get_env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
-        return bool(default)
-    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def get_env_bool_alias(name: str, legacy_name: str, default: bool = False) -> bool:
-    value = get_strategy_artifact_env(name, legacy_name)
-    if not value:
         return bool(default)
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
@@ -69,9 +61,8 @@ def load_cycle_execution_settings() -> CycleExecutionSettings:
     )
     return CycleExecutionSettings(
         btc_status_report_interval_hours=max(1, min(24, get_env_int("BTC_STATUS_REPORT_INTERVAL_HOURS", 24))),
-        allow_new_trend_entries_on_degraded=get_env_bool_alias(
+        allow_new_trend_entries_on_degraded=get_env_bool(
             "STRATEGY_ARTIFACT_ALLOW_NEW_ENTRIES_ON_DEGRADED",
-            "TREND_POOL_ALLOW_NEW_ENTRIES_ON_DEGRADED",
             False,
         ),
         strategy_profile=strategy_definition.profile,
