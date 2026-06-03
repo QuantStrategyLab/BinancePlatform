@@ -72,7 +72,7 @@ def resolve_trend_pool_source(
         )
     messages.extend(last_good_result.get("errors", []))
 
-    configured_path = get_strategy_artifact_env("STRATEGY_ARTIFACT_FILE", "TREND_POOL_FILE")
+    configured_path = get_strategy_artifact_env("STRATEGY_ARTIFACT_FILE")
     file_candidates = build_strategy_artifact_file_candidates(
         configured_path=configured_path,
         default_candidates=get_default_live_pool_candidates(default_live_pool_legacy_path),

@@ -88,7 +88,7 @@ Degraded mode:
 
 - Source is `last_known_good`, `local_file`, or `static`
 - New trend buys are paused by default
-- Set `STRATEGY_ARTIFACT_ALLOW_NEW_ENTRIES_ON_DEGRADED=1` only if you intentionally want degraded-mode entries; `TREND_POOL_ALLOW_NEW_ENTRIES_ON_DEGRADED=1` remains a compatibility alias for the current live profile
+- Set `STRATEGY_ARTIFACT_ALLOW_NEW_ENTRIES_ON_DEGRADED=1` only if you intentionally want degraded-mode entries
 
 Interpretation:
 
@@ -98,13 +98,13 @@ Interpretation:
 
 ## Strategy Artifact Settings
 
-Use the generic `STRATEGY_ARTIFACT_*` names for new crypto strategies. The older `TREND_POOL_*` names are accepted only as compatibility aliases for `crypto_leader_rotation`.
+Use the generic `STRATEGY_ARTIFACT_*` names for crypto strategy artifacts.
 
 Primary settings:
 
-- `STRATEGY_PROFILE`: live profile selector; current supported value is `crypto_leader_rotation`
+- `STRATEGY_PROFILE`: live profile selector; current supported value is `crypto_live_pool_rotation`
 - `STRATEGY_ARTIFACT_FIRESTORE_COLLECTION`: upstream artifact collection, default `strategy`
-- `STRATEGY_ARTIFACT_FIRESTORE_DOCUMENT`: upstream artifact document, default `CRYPTO_LEADER_ROTATION_LIVE_POOL`
+- `STRATEGY_ARTIFACT_FIRESTORE_DOCUMENT`: upstream artifact document, default `CRYPTO_LIVE_POOL_ROTATION_LIVE_POOL`
 - `STRATEGY_ARTIFACT_FILE`: local fallback artifact path
 - `STRATEGY_ARTIFACT_MAX_AGE_DAYS`: freshness window for upstream `as_of_date`
 - `STRATEGY_ARTIFACT_ACCEPTABLE_MODES`: comma-separated accepted upstream modes

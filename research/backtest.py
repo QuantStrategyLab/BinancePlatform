@@ -13,7 +13,7 @@ for path in (PROJECT_ROOT, CRYPTO_STRATEGIES_SRC, QPK_SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from crypto_strategies.strategies.crypto_leader_rotation.core import (
+from crypto_strategies.strategies.crypto_live_pool_rotation.core import (
     allocate_trend_buy_budget,
     build_rotation_pool_ranking,
     compute_allocation_budgets,

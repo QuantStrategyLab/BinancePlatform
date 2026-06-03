@@ -42,7 +42,7 @@ def build_execution_report(runtime):
         platform="binance",
         deploy_target=os.getenv("LOG_DEPLOY_TARGET", "vps"),
         service_name=os.getenv("SERVICE_NAME", "binance-platform"),
-        strategy_profile=str(runtime.strategy_profile or os.getenv("STRATEGY_PROFILE", "crypto_leader_rotation")),
+        strategy_profile=str(runtime.strategy_profile or os.getenv("STRATEGY_PROFILE", "crypto_live_pool_rotation")),
         strategy_domain=str(runtime.strategy_domain or os.getenv("STRATEGY_DOMAIN", "crypto")),
         run_id=str(runtime.run_id),
         run_source="github_actions" if os.getenv("GITHUB_RUN_ID") or os.getenv("GITHUB_ACTIONS") else "runtime",

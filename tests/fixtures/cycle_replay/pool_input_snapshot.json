@@ -11,5 +11,5 @@
     "LTCUSDT": {"base_asset": "LTC"},
     "BCHUSDT": {"base_asset": "BCH"}
   },
-  "source_project": "crypto-leader-rotation"
+  "source_project": "crypto-live-pool-pipelines"
 }

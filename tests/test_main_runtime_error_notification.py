@@ -61,11 +61,11 @@ def install_test_stubs():
         strategy_registry_module = types.ModuleType("strategy_registry")
         strategy_registry_module.BINANCE_PLATFORM = "binance"
         strategy_registry_module.resolve_strategy_definition = lambda *_args, **_kwargs: types.SimpleNamespace(
-            profile="crypto_leader_rotation",
+            profile="crypto_live_pool_rotation",
             domain="crypto",
         )
         strategy_registry_module.resolve_strategy_metadata = lambda *_args, **_kwargs: types.SimpleNamespace(
-            display_name="Crypto Leader Rotation",
+            display_name="Crypto Live Pool Rotation",
         )
         sys.modules["strategy_registry"] = strategy_registry_module
 
@@ -112,7 +112,7 @@ class MainRuntimeErrorNotificationTests(unittest.TestCase):
             {
                 "TG_TOKEN": "token-1",
                 "GLOBAL_TELEGRAM_CHAT_ID": "chat-1",
-                "STRATEGY_PROFILE": "crypto_leader_rotation",
+                "STRATEGY_PROFILE": "crypto_live_pool_rotation",
             },
             clear=False,
         ):

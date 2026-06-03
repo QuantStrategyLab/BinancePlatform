@@ -19,7 +19,7 @@ from quant_platform_kit.common.strategies import (
 BINANCE_PLATFORM = "binance"
 
 
-DEFAULT_STRATEGY_PROFILE = "crypto_leader_rotation"
+DEFAULT_STRATEGY_PROFILE = "crypto_live_pool_rotation"
 ROLLBACK_STRATEGY_PROFILE = DEFAULT_STRATEGY_PROFILE
 
 STRATEGY_CATALOG = get_strategy_catalog()

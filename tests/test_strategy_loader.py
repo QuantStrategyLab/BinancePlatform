@@ -20,9 +20,9 @@ class StrategyLoaderTests(unittest.TestCase):
                 self.skipTest("pandas is not installed")
             raise
 
-        entrypoint = load_strategy_entrypoint_for_profile("crypto_leader_rotation")
+        entrypoint = load_strategy_entrypoint_for_profile("crypto_live_pool_rotation")
 
-        self.assertEqual(entrypoint.manifest.profile, "crypto_leader_rotation")
+        self.assertEqual(entrypoint.manifest.profile, "crypto_live_pool_rotation")
         self.assertEqual(entrypoint.manifest.domain, "crypto")
         self.assertIn("market_prices", entrypoint.manifest.required_inputs)
         self.assertIn("portfolio_snapshot", entrypoint.manifest.required_inputs)

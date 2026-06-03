@@ -19,7 +19,7 @@ This checklist records the completed runtime repository rename from `BinanceQuan
 - Current runtime model: Oracle Cloud / VPS hosted self-hosted runner
 - Current runtime trigger: external scheduler calling GitHub `workflow_dispatch`
 - Current strategy domain: `crypto`
-- Current live profile: `crypto_leader_rotation`
+- Current live profile: `crypto_live_pool_rotation`
 
 ## Why this rename is different from Cloud Run repos
 
@@ -88,7 +88,7 @@ These can be updated in the repo during the rename change:
 - GCP project id `binancequant`
 - Firestore database name / location
 - strategy domain `crypto`
-- current profile `crypto_leader_rotation`
+- current profile `crypto_live_pool_rotation`
 
 ## Blocking condition
 
