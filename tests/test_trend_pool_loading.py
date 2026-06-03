@@ -149,6 +149,15 @@ class TrendPoolLoadingTests(unittest.TestCase):
         self.assertEqual(list(result["symbol_map"]), payload["symbols"])
         self.assertEqual(list(result["payload"]["symbol_map"]), payload["symbols"])
 
+    def test_default_live_pool_candidates_include_renamed_repo_checkout(self):
+        default_path = Path("/tmp/live_pool_legacy.json")
+
+        candidates = main.tp_get_default_live_pool_candidates(default_path)
+        candidate_text = [str(path) for path in candidates]
+
+        self.assertEqual(candidates[0], default_path)
+        self.assertTrue(any("CryptoLivePoolPipelines" in value for value in candidate_text))
+
     def test_strategy_artifact_env_aliases_override_legacy_trend_pool_settings(self):
         with patch.dict(
             os.environ,
