@@ -8,6 +8,18 @@ from unittest.mock import Mock, patch
 
 
 def install_test_stubs():
+    if "numpy" not in sys.modules:
+        numpy_module = types.ModuleType("numpy")
+        numpy_module.arange = lambda *args, **kwargs: []
+        numpy_module.exp = lambda value: value
+        numpy_module.log = lambda value: value
+        sys.modules["numpy"] = numpy_module
+
+    if "pandas" not in sys.modules:
+        pandas_module = types.ModuleType("pandas")
+        pandas_module.isna = lambda value: value is None
+        sys.modules["pandas"] = pandas_module
+
     if "binance" not in sys.modules:
         binance_module = types.ModuleType("binance")
         client_module = types.ModuleType("binance.client")
@@ -118,6 +130,24 @@ class TrendPoolLoadingTests(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertIn("stale", " ".join(result["errors"]))
+
+    def test_validate_trend_pool_payload_preserves_ordered_symbols_in_symbol_map(self):
+        payload = build_payload()
+        payload["symbols"] = ["BCHUSDT", "ETHUSDT", "LTCUSDT", "SOLUSDT", "XRPUSDT"]
+
+        result = main.validate_trend_pool_payload(
+            payload,
+            source_label="test",
+            now_utc=datetime(2026, 3, 14, tzinfo=timezone.utc),
+            max_age_days=30,
+            acceptable_modes=["core_major"],
+            expected_pool_size=5,
+            enforce_freshness=True,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(list(result["symbol_map"]), payload["symbols"])
+        self.assertEqual(list(result["payload"]["symbol_map"]), payload["symbols"])
 
     def test_strategy_artifact_env_aliases_override_legacy_trend_pool_settings(self):
         with patch.dict(

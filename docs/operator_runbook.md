@@ -34,18 +34,20 @@ It is responsible for:
 
 - consuming upstream live-pool artifacts and Firestore summary payloads
 - validating freshness, contract shape, and fallback eligibility
+- preserving the accepted upstream `symbols` order when passing the pool into strategy code
 - executing orders, persisting runtime state, and emitting minimal operator alerts
 
 It is not responsible for:
 
 - monthly research reporting
+- monthly live-pool selection, ranking, or local reranking
 - upstream release summaries or review packages
 - maintaining a second copy of the upstream publish narrative
 
 ## Normal Live Flow
 
 1. Load runtime credentials and Firestore state.
-2. Resolve the upstream strategy artifact in this order:
+2. Resolve the upstream ordered strategy artifact in this order:
    - fresh upstream Firestore payload
    - last known good upstream payload from state
    - validated local upstream file fallback
@@ -58,13 +60,13 @@ It is not responsible for:
 Runtime output should stay operational:
 
 - current upstream source and degraded status
-- upstream official pool and current local execution pool logged as separate concepts
+- upstream official pool order and current local execution pool logged as separate concepts
 - current execution targets and intents
 - explicit gating / no-trade reasons and side-effect suppression counts
 - zero-trade diagnostics grouped by BTC core / trend sleeve and gate
 - exceptions, circuit breakers, and alert-worthy failures
 
-The monthly execution pool is locked to the accepted upstream `version` / `as_of_date`. It is rebuilt when upstream release metadata changes and otherwise reused across cycles.
+The monthly execution pool is locked to the accepted upstream `version` / `as_of_date`. It refreshes when upstream release metadata changes and otherwise reuses the accepted ordered artifact pool; BinancePlatform should not rebuild the monthly pool with local ranking logic.
 
 ## Runtime Trigger Model
 

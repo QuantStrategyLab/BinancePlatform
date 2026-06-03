@@ -204,13 +204,19 @@ def validate_trend_pool_payload(
         source_project = "unknown"
         warnings.append(t("source_project_missing_unknown"))
 
+    ordered_symbol_map = {
+        symbol: symbol_map[symbol]
+        for symbol in symbols
+        if symbol in symbol_map
+    }
+
     normalized_payload = {
         "as_of_date": as_of_date.isoformat() if as_of_date is not None else "",
         "version": version,
         "mode": mode,
         "pool_size": len(symbols),
         "symbols": symbols,
-        "symbol_map": symbol_map,
+        "symbol_map": ordered_symbol_map,
         "source_project": source_project,
     }
 
@@ -220,7 +226,7 @@ def validate_trend_pool_payload(
         "warnings": warnings,
         "source_label": str(source_label),
         "payload": normalized_payload,
-        "symbol_map": symbol_map,
+        "symbol_map": ordered_symbol_map,
         "symbols": symbols,
         "pool_size": len(symbols),
         "as_of_date": normalized_payload["as_of_date"],
