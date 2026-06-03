@@ -1,5 +1,36 @@
 # BinancePlatform
 
+<!-- qsl-doc-overview:start -->
+
+> ⚠️ 投资有风险，不构成投资建议，仅供学习交流用途。
+> ⚠️ Investing involves risk. This project does not provide investment advice and is for educational and research purposes only.
+
+## Open-source overview / 开源项目入口
+
+| Item | Description |
+| --- | --- |
+| Project type | execution platform |
+| What it does | Binance execution platform for crypto strategies, with self-hosted workflow orchestration and external strategy loading. |
+| 中文说明 | Binance 加密资产执行平台，负责交易所连接、VPS/工作流编排和策略加载。 |
+| Current status | Execution platform. Exchange API keys and order paths are production-sensitive. |
+
+### Quick start
+
+- `python -m pip install -e '.[test]'`
+- `python -m pytest -q`
+
+### Deploy / operate safely
+
+Use dry-run and self-hosted runner checks first; verify API permissions, symbol filters and order sizing before enabling live.
+
+### Strategy performance / evidence boundary
+
+Crypto strategy performance is owned by CryptoStrategies/CryptoSnapshotPipelines, not the exchange adapter.
+
+> Detailed runbooks, migration notes, workflow internals, and historical decisions are kept below. Start with this overview before using the lower-level operational sections.
+
+<!-- qsl-doc-overview:end -->
+
 > ⚠️ 投资有风险，不构成投资建议，仅供学习交流用途。
 
 Language: [English](#english) | [简体中文](#中文) | [中文详版](README.zh-CN.md)
