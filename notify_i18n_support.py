@@ -129,6 +129,7 @@ _TEXTS = {
         "usdt_unavailable_for_trend_buy": "USDT unavailable for trend buy",
         "usdt_unavailable_for_btc_dca_buy": "USDT unavailable for BTC DCA buy",
         "btc_unavailable_for_dca_sell": "BTC unavailable for DCA sell",
+        "strategy_name_crypto_leader_rotation": "Crypto Leader Rotation",
         "strategy_name_crypto_live_pool_rotation": "Crypto Live Pool Rotation",
     },
     "zh": {
@@ -253,6 +254,7 @@ _TEXTS = {
         "usdt_unavailable_for_trend_buy": "USDT 不足，无法执行趋势买入",
         "usdt_unavailable_for_btc_dca_buy": "USDT 不足，无法执行 BTC 定投买入",
         "btc_unavailable_for_dca_sell": "BTC 不足，无法执行定投止盈卖出",
+        "strategy_name_crypto_leader_rotation": "加密领涨轮动",
         "strategy_name_crypto_live_pool_rotation": "加密领涨轮动",
     },
 }

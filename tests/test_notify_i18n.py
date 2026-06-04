@@ -79,6 +79,7 @@ for path in (PLATFORM_KIT_SRC, CRYPTO_STRATEGIES_SRC):
 import main
 from degraded_mode_support import format_trend_pool_source_logs
 from market_snapshot_support import capture_market_snapshot
+from notify_i18n_support import build_strategy_display_name, build_translator
 
 
 class FakeClient:
@@ -90,6 +91,14 @@ class FakeClient:
 
 
 class NotifyI18nTests(unittest.TestCase):
+    def test_legacy_strategy_profile_uses_chinese_display_name(self):
+        display_name = build_strategy_display_name(build_translator("zh"))(
+            "crypto_leader_rotation",
+            fallback_name="Crypto Leader Rotation",
+        )
+
+        self.assertEqual(display_name, "加密领涨轮动")
+
     def test_periodic_btc_status_report_uses_chinese_when_notify_lang_is_zh(self):
         state = {}
         messages = []
