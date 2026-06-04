@@ -62,6 +62,21 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE"):
                 load_cycle_execution_settings()
 
+    def test_load_cycle_execution_settings_accepts_legacy_profile_alias(self):
+        with patch.dict(
+            os.environ,
+            {
+                "STRATEGY_PROFILE": "crypto_leader_rotation",
+                "NOTIFY_LANG": "zh",
+            },
+            clear=False,
+        ):
+            settings = load_cycle_execution_settings()
+
+        self.assertEqual(settings.strategy_profile, DEFAULT_STRATEGY_PROFILE)
+        self.assertEqual(settings.strategy_display_name, "Crypto Live Pool Rotation")
+        self.assertEqual(settings.strategy_display_name_localized, "加密领涨轮动")
+
     def test_platform_supported_profiles_are_filtered_by_registry(self):
         self.assertEqual(
             get_supported_profiles_for_platform(BINANCE_PLATFORM),
