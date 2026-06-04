@@ -1,0 +1,113 @@
+{
+  "account_group": null,
+  "account_region": null,
+  "account_scope": null,
+  "artifacts": {
+    "runtime_report_gcs_uri": "gs://qsl-runtime-logs-interactivebrokersquant/execution-reports/binance/crypto_live_pool_rotation/2026-06/20260604T140029Z.json",
+    "runtime_report_local_path": "reports/execution_report.json"
+  },
+  "btc_dca_intents": [],
+  "buy_sell_intents": [],
+  "circuit_breaker_triggered": false,
+  "degraded_mode_level": "unknown",
+  "deploy_target": "vps",
+  "diagnostics": {},
+  "dry_run": false,
+  "error_summary": {},
+  "errors": [],
+  "finished_at": null,
+  "gating_events": [
+    {
+      "category": "trend",
+      "detail": "unknown",
+      "gate": "trend_buy_paused_degraded_mode"
+    },
+    {
+      "category": "trend",
+      "detail": {
+        "active_trend_pool_size": 2
+      },
+      "gate": "trend_no_selected_candidate"
+    },
+    {
+      "category": "btc_dca",
+      "detail": {
+        "dca_usdt_pool": 0.0
+      },
+      "gate": "btc_dca_buy_below_min_budget"
+    }
+  ],
+  "gating_summary": {
+    "btc_dca_buy_below_min_budget": 1,
+    "trend_buy_paused_degraded_mode": 1,
+    "trend_no_selected_candidate": 1
+  },
+  "instance_name": null,
+  "log_lines": [
+    "📡 趋势池来源: last_known_good | 模式=core_major | 版本=2026-06-01-core_major | 日期=2026-06-01 | 项目=crypto-leader-rotation",
+    "   · Firestore 文档不存在: strategy/CRYPTO_LIVE_POOL_ROTATION_LIVE_POOL",
+    "   · 最新上游趋势池校验失败，改用上次可用的上游趋势池。",
+    "⚠️ 上游趋势池处于降级状态；当前暂停新的趋势买入，并继续沿用现有月度执行池。",
+    "━━━━━━━━━ 📦 组合快照 ━━━━━━━━━",
+    "💰 总净值: $104.90（组合当日: -0.74%）",
+    "🪙 BTC 核心仓目标: 14.2% | 当前 $73.06 | 可用 $0.00",
+    "🔥 趋势层目标: 85.8% | 当前 $0.00 | 可用 $6.54 | 趋势层当日: 0.00%",
+    "⛽ BNB 燃料仓: $25.31",
+    "🚦 BTC 闸门: 关闭 | AHR999=0.817 | Z-Score=-1.57",
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    "🗓️ 上游官方月度池: TRXUSDT, DOGEUSDT, XRPUSDT, LTCUSDT, LINKUSDT",
+    "🧭 当前月度执行池: TRXUSDT, LINKUSDT",
+    "📌 当前月度执行池数量: 2",
+    "🎯 当前执行目标: 当前没有候选，保持防守",
+    " └ TRXUSDT: 💤空仓 | 价格: $0.3288 | 相对 BTC: 8.83 | 动量: 0.83%",
+    " └ DOGEUSDT: 💤空仓 | 价格: $0.0893 | 相对 BTC: -0.15 | 动量: -14.28%",
+    " └ XRPUSDT: 💤空仓 | 价格: $1.1776 | 相对 BTC: -1.42 | 动量: -16.54%",
+    " └ LTCUSDT: 💤空仓 | 价格: $46.7720 | 相对 BTC: -1.68 | 动量: -17.30%",
+    " └ LINKUSDT: 💤空仓 | 价格: $8.0716 | 相对 BTC: -0.33 | 动量: -14.67%",
+    "🧭 BTC 累积雷达: AHR999=0.817 | Z-Score=-1.57 (阈值:2.50)"
+  ],
+  "notifications": [],
+  "platform": "binance",
+  "project_id": null,
+  "redemption_subscription_intents": [],
+  "run_id": "20260604T140029Z",
+  "run_source": "github_actions",
+  "runtime_target": {},
+  "schema_version": "runtime_report.v1",
+  "selected_symbols": {
+    "active_trend_pool": [
+      "TRXUSDT",
+      "LINKUSDT"
+    ]
+  },
+  "service_name": "binance-platform",
+  "side_effect_summary": {
+    "executed_call_count": 2,
+    "suppressed_call_count": 0
+  },
+  "started_at": "2026-06-04T14:00:29.362287Z",
+  "state_write_intents": [
+    {
+      "reason": "trend_pool_metadata_refresh"
+    },
+    {
+      "reason": "cycle_complete"
+    }
+  ],
+  "status": "ok",
+  "strategy_domain": "crypto",
+  "strategy_profile": "crypto_live_pool_rotation",
+  "summary": {
+    "strategy_display_name": "Crypto Live Pool Rotation",
+    "strategy_display_name_localized": "加密领涨轮动"
+  },
+  "total_equity_usdt": 104.90252331047293,
+  "trend_equity_usdt": 0.0,
+  "upstream_pool_symbols": [
+    "TRXUSDT",
+    "DOGEUSDT",
+    "XRPUSDT",
+    "LTCUSDT",
+    "LINKUSDT"
+  ]
+}
