@@ -3,10 +3,39 @@
 from __future__ import annotations
 
 
-def resolve_runtime_btc_snapshot(runtime, btc_price, log_buffer, *, fetch_btc_market_snapshot_fn):
+def resolve_runtime_btc_snapshot(
+    runtime,
+    btc_price,
+    log_buffer,
+    *,
+    fetch_btc_market_snapshot_fn,
+    max_attempts=1,
+    retry_delays=(),
+    sleep_fn=None,
+    append_log_fn=None,
+    retry_log_message_fn=None,
+):
     if runtime.btc_market_snapshot is not None:
         return dict(runtime.btc_market_snapshot)
-    return fetch_btc_market_snapshot_fn(runtime.client, btc_price, log_buffer=log_buffer)
+
+    attempts = max(1, int(max_attempts))
+    delays = tuple(retry_delays or ())
+    for attempt in range(1, attempts + 1):
+        snapshot = fetch_btc_market_snapshot_fn(runtime.client, btc_price, log_buffer=log_buffer)
+        if snapshot is not None:
+            return snapshot
+        if attempt >= attempts:
+            return None
+
+        delay_seconds = 0
+        if delays:
+            delay_seconds = max(0, delays[min(attempt - 1, len(delays) - 1)])
+        if append_log_fn is not None and retry_log_message_fn is not None:
+            append_log_fn(log_buffer, retry_log_message_fn(attempt + 1, attempts, delay_seconds))
+        if sleep_fn is not None and delay_seconds > 0:
+            sleep_fn(delay_seconds)
+
+    return None
 
 
 def resolve_runtime_trend_indicators(runtime, trend_universe_symbols, *, fetch_daily_indicators_fn):

@@ -24,6 +24,58 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
         self.assertEqual(snapshot, {"ahr999": 0.8})
         self.assertIsNot(snapshot, runtime.btc_market_snapshot)
 
+    def test_resolve_runtime_btc_snapshot_retries_before_success(self):
+        runtime = SimpleNamespace(client=object(), btc_market_snapshot=None)
+        log_buffer = []
+        observed = {"calls": 0, "sleeps": []}
+
+        def fetch_snapshot(_client, _btc_price, log_buffer=None):
+            observed["calls"] += 1
+            if observed["calls"] < 3:
+                return None
+            return {"ahr999": 0.8}
+
+        snapshot = resolve_runtime_btc_snapshot(
+            runtime,
+            50_000.0,
+            log_buffer,
+            fetch_btc_market_snapshot_fn=fetch_snapshot,
+            max_attempts=3,
+            retry_delays=(1, 2),
+            sleep_fn=lambda seconds: observed["sleeps"].append(seconds),
+            append_log_fn=lambda buffer, message: buffer.append(message),
+            retry_log_message_fn=lambda attempt, max_attempts, delay_seconds: (
+                f"retry {attempt}/{max_attempts} after {delay_seconds}s"
+            ),
+        )
+
+        self.assertEqual(snapshot, {"ahr999": 0.8})
+        self.assertEqual(observed["calls"], 3)
+        self.assertEqual(observed["sleeps"], [1, 2])
+        self.assertEqual(log_buffer, ["retry 2/3 after 1s", "retry 3/3 after 2s"])
+
+    def test_resolve_runtime_btc_snapshot_returns_none_after_retries(self):
+        runtime = SimpleNamespace(client=object(), btc_market_snapshot=None)
+        observed = {"calls": 0, "sleeps": []}
+
+        def fetch_missing_snapshot(*_args, **_kwargs):
+            observed["calls"] += 1
+            return None
+
+        snapshot = resolve_runtime_btc_snapshot(
+            runtime,
+            50_000.0,
+            [],
+            fetch_btc_market_snapshot_fn=fetch_missing_snapshot,
+            max_attempts=2,
+            retry_delays=(1,),
+            sleep_fn=lambda seconds: observed["sleeps"].append(seconds),
+        )
+
+        self.assertIsNone(snapshot)
+        self.assertEqual(observed["calls"], 2)
+        self.assertEqual(observed["sleeps"], [1])
+
     def test_resolve_runtime_trend_indicators_fetches_when_not_injected(self):
         runtime = SimpleNamespace(client=object(), trend_indicator_snapshots=None)
         observed_symbols = []

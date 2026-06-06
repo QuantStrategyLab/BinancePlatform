@@ -159,6 +159,7 @@ TREND_POOL_LAST_GOOD_PAYLOAD_KEY = "trend_pool_last_good_payload"
 TREND_POOL_ACTION_HISTORY_KEY = "trend_action_history"
 DEFAULT_TREND_POOL_MAX_AGE_DAYS = int(STRATEGY_RUNTIME.artifact_contract["max_age_days"])
 DEFAULT_TREND_POOL_ACCEPTABLE_MODES = tuple(STRATEGY_RUNTIME.artifact_contract["acceptable_modes"])
+BTC_MARKET_SNAPSHOT_RETRY_DELAYS = (5, 15)
 
 
 class BalanceFetchError(RuntimeError):
@@ -594,6 +595,16 @@ def resolve_runtime_btc_snapshot(runtime, btc_price, log_buffer):
         btc_price,
         log_buffer,
         fetch_btc_market_snapshot_fn=fetch_btc_market_snapshot,
+        max_attempts=max(1, min(5, get_env_int("BTC_MARKET_SNAPSHOT_MAX_ATTEMPTS", 3))),
+        retry_delays=BTC_MARKET_SNAPSHOT_RETRY_DELAYS,
+        sleep_fn=time.sleep,
+        append_log_fn=append_log,
+        retry_log_message_fn=lambda attempt, max_attempts, delay_seconds: t(
+            "btc_daily_retrying",
+            attempt=attempt,
+            max_attempts=max_attempts,
+            delay_seconds=delay_seconds,
+        ),
     )
 
 
