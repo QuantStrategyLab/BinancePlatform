@@ -98,6 +98,23 @@ import main
 
 
 class MainRuntimeErrorNotificationTests(unittest.TestCase):
+    def test_main_wires_cli_entrypoint_with_runtime_builder_and_cycle_runner(self):
+        observed = {}
+
+        def fake_run_cli_entrypoint(**kwargs):
+            observed.update(kwargs)
+            return {"ok": True}
+
+        with patch.object(main, "run_cli_entrypoint", fake_run_cli_entrypoint):
+            result = main.main()
+
+        self.assertEqual(result, {"ok": True})
+        self.assertIs(observed["runtime_builder"], main.build_live_runtime)
+        self.assertIs(observed["execute_cycle"], main.execute_cycle)
+        self.assertIs(observed["output_printer"], print)
+        self.assertIs(observed["exit_fn"], sys.exit)
+        self.assertFalse(hasattr(main, "app"))
+
     def test_main_notifies_telegram_when_cli_entrypoint_fails_before_cycle(self):
         observed = {"messages": []}
 
