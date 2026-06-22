@@ -6,4 +6,4 @@ numpy==2.4.6
 requests==2.34.2
 google-cloud-firestore==2.27.0
 google-cloud-storage
-functions-framework==3.10.1
+functions-framework==3.10.2
