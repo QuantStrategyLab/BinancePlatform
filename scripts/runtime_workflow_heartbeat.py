@@ -50,7 +50,34 @@ def _github_request(url: str, token: str) -> dict[str, Any]:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _list_runtime_runs(
+def _workflow_paths(workflow: str) -> set[str]:
+    workflow = workflow.strip()
+    paths = {workflow}
+    if "/" not in workflow:
+        paths.add(f".github/workflows/{workflow}")
+    if workflow.startswith(".github/workflows/"):
+        paths.add(workflow.rsplit("/", 1)[-1])
+    return paths
+
+
+def _dedupe_and_sort_runs(runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: dict[str, dict[str, Any]] = {}
+    for run in runs:
+        key = str(run.get("id") or run.get("run_number") or run.get("html_url") or len(unique))
+        unique[key] = run
+
+    def created_at(run: dict[str, Any]) -> dt.datetime:
+        minimum = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+        return _parse_timestamp(run.get("created_at")) or minimum
+
+    return sorted(
+        unique.values(),
+        key=created_at,
+        reverse=True,
+    )
+
+
+def _list_workflow_runs(
     *,
     repository: str,
     workflow: str,
@@ -69,6 +96,59 @@ def _list_runtime_runs(
     payload = _github_request(url, token)
     runs = payload.get("workflow_runs")
     return runs if isinstance(runs, list) else []
+
+
+def _list_repository_workflow_runs(
+    *,
+    repository: str,
+    workflow: str,
+    token: str,
+    branch: str,
+    per_page: int,
+) -> list[dict[str, Any]]:
+    query = urllib.parse.urlencode(
+        {
+            "branch": branch,
+            "event": "workflow_dispatch",
+            "per_page": str(per_page),
+        }
+    )
+    url = f"https://api.github.com/repos/{repository}/actions/runs?{query}"
+    payload = _github_request(url, token)
+    runs = payload.get("workflow_runs")
+    if not isinstance(runs, list):
+        return []
+    expected_paths = _workflow_paths(workflow)
+    return [run for run in runs if str(run.get("path") or "") in expected_paths]
+
+
+def _list_runtime_runs(
+    *,
+    repository: str,
+    workflow: str,
+    token: str,
+    branch: str,
+    per_page: int,
+) -> list[dict[str, Any]]:
+    workflow_runs = _list_workflow_runs(
+        repository=repository,
+        workflow=workflow,
+        token=token,
+        branch=branch,
+        per_page=per_page,
+    )
+    try:
+        repository_runs = _list_repository_workflow_runs(
+            repository=repository,
+            workflow=workflow,
+            token=token,
+            branch=branch,
+            per_page=per_page,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"Repository-level workflow run lookup skipped: {exc}", file=sys.stderr)
+        repository_runs = []
+    return _dedupe_and_sort_runs([*workflow_runs, *repository_runs])
 
 
 def _send_telegram(message: str) -> bool:
