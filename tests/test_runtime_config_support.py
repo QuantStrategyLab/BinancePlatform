@@ -130,6 +130,7 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         self.assertEqual(runtime.tg_chat_id, "chat-id")
         self.assertEqual(runtime.strategy_profile, DEFAULT_STRATEGY_PROFILE)
         self.assertEqual(runtime.strategy_display_name, "Crypto Live Pool Rotation")
+        self.assertTrue(runtime.dry_run)
         self.assertIs(runtime.state_loader, state_loader)
         self.assertIs(runtime.state_writer, state_writer)
         self.assertIs(runtime.notifier, notifier)

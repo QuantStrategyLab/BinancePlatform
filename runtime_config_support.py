@@ -82,7 +82,7 @@ def build_live_runtime(
     runtime_now = now_utc or datetime.now(timezone.utc)
     cycle_settings = load_cycle_execution_settings()
     return ExecutionRuntime(
-        dry_run=False,
+        dry_run=get_env_bool("BINANCE_DRY_RUN", default=True),
         now_utc=runtime_now,
         strategy_profile=cycle_settings.strategy_profile,
         strategy_domain=cycle_settings.strategy_domain,
