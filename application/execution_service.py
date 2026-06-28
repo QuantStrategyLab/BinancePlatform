@@ -489,9 +489,9 @@ def execute_btc_dca_cycle(
         return u_total
 
     btc_price = prices["BTCUSDT"]
-    ahr = btc_snapshot["ahr999"]
-    zscore = btc_snapshot["zscore"]
-    sell_trigger = btc_snapshot["sell_trigger"]
+    ahr = btc_snapshot.get("ahr999", 0.0)
+    zscore = btc_snapshot.get("zscore", 0.0)
+    sell_trigger = btc_snapshot.get("sell_trigger", False)
     append_log_fn(
         log_buffer,
         translate_fn(
