@@ -271,11 +271,11 @@ def run_live_cycle(
         persisted = persist_runtime_report(
             report,
             output_path=report_path,
-            gcs_prefix_uri=os.getenv("EXECUTION_REPORT_GCS_URI"),
-            gcp_project_id=os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT"),
+            cloud_prefix_uri=os.getenv("EXECUTION_REPORT_CLOUD_URI") or os.getenv("EXECUTION_REPORT_GCS_URI"),
+            project_id=os.getenv("CLOUD_PROJECT_ID") or os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT"),
         )
         persisted_local_path = persisted.local_path or report_path
-        persisted_gcs_uri = persisted.gcs_uri
+        persisted_cloud_uri = persisted.cloud_uri
     except Exception as persist_exc:
         output_printer(f"failed to persist archived execution report: {persist_exc}")
     report_status = str(report.get("status", "unknown"))

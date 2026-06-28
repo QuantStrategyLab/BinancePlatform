@@ -3,27 +3,17 @@ import requests
 from notify_i18n_support import build_telegram_message, translate as t
 
 
-_FIRESTORE_CLIENT = None
+def _get_document_store():
+    """Lazy-init the cloud-agnostic document store."""
+    from quant_platform_kit.cloud import get_document_store
 
-
-def get_firestore_client():
-    global _FIRESTORE_CLIENT
-    if _FIRESTORE_CLIENT is None:
-        from google.cloud import firestore
-
-        _FIRESTORE_CLIENT = firestore.Client()
-    return _FIRESTORE_CLIENT
-
-
-def get_state_doc_ref(*, collection="strategy", document="MULTI_ASSET_STATE"):
-    return get_firestore_client().collection(collection).document(document)
+    return get_document_store()
 
 
 def load_trade_state(*, normalize_fn, default_state_factory, normalize=True, collection="strategy", document="MULTI_ASSET_STATE"):
     try:
-        doc = get_state_doc_ref(collection=collection, document=document).get()
-        if doc.exists:
-            payload = doc.to_dict()
+        payload = _get_document_store().get(collection=collection, document_id=document)
+        if payload is not None:
             return normalize_fn(payload) if normalize else payload
         return default_state_factory() if normalize else {}
     except Exception as exc:
@@ -34,7 +24,7 @@ def load_trade_state(*, normalize_fn, default_state_factory, normalize=True, col
 def save_trade_state(data, *, normalize_fn, collection="strategy", document="MULTI_ASSET_STATE"):
     try:
         persisted_state = normalize_fn(data)
-        get_state_doc_ref(collection=collection, document=document).set(persisted_state)
+        _get_document_store().set(collection=collection, document_id=document, data=persisted_state)
         return True
     except Exception as exc:
         print(t("firestore_write_failed", error=exc))
