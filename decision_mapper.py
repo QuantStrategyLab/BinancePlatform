@@ -52,8 +52,8 @@ def map_strategy_decision_to_rotation_plan(decision: StrategyDecision) -> dict[s
     diagnostics = dict(decision.diagnostics)
     selected_candidates = {
         str(symbol): {
-            "weight": float(payload["weight"]),
-            "relative_score": float(payload["relative_score"]),
+            "weight": float(payload.get("weight", 0.0)),
+            "relative_score": float(payload.get("relative_score", 0.0)),
             "abs_momentum": float(payload.get("abs_momentum", 0.0)),
         }
         for symbol, payload in dict(diagnostics.get("rotation_candidates", {})).items()
