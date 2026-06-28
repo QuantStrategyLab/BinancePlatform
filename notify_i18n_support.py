@@ -246,7 +246,7 @@ _TEXTS = {
         "btc_accumulation_radar_line": "🧭 BTC 累积雷达: AHR999={ahr:.3f} | Z-Score={zscore:.2f} (阈值:{sell_trigger:.2f})",
         "circuit_breaker_latched_line": "🔒 熔断已锁定。净值: ${total_equity:.2f}",
         "external_balance_flow_rebased": "🧾 检测到外部余额变动（{assets}），已重置当日收益基准，避免误触发熔断。",
-        "external_usdt_flow_rebased": "🧾 检测到外部 USDT 划转，已重置当日收益基准；充值或提现不会被当成熔断。由于统计的是总 USDT，Flexible Earn 的申购和赎回会被忽略。",
+        "external_usdt_flow_rebased": "🧾 检测到外部 USDT 划转，已重置当日收益基准；充值或提现不会触发熔断。由于统计的是总 USDT，Flexible Earn 的申购和赎回会被忽略。",
         "btc_daily_fetch_failed": "⚠️ 拉取 BTC 日线失败: {error}",
         "btc_daily_data_empty": "⚠️ BTC 日线数据为空。",
         "btc_data_insufficient": "⚠️ BTC 数据不足，无法计算 MA200/Z-Score。len={length}, last_time={last_time}",
@@ -257,7 +257,7 @@ _TEXTS = {
         "usdt_unavailable_for_btc_dca_buy": "USDT 不足，无法执行 BTC 定投买入",
         "btc_unavailable_for_dca_sell": "BTC 不足，无法执行定投止盈卖出",
         "strategy_name_crypto_leader_rotation": "加密领涨轮动",
-        "strategy_name_crypto_live_pool_rotation": "加密领涨轮动",
+        "strategy_name_crypto_live_pool_rotation": "加密实时池轮动",
     },
 }
 
