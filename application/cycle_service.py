@@ -266,7 +266,7 @@ def run_live_cycle(
     output_printer("\n".join(report.get("log_lines", [])))
     report_path = report_writer(report)
     persisted_local_path = report_path
-    persisted_gcs_uri = None
+    persisted_cloud_uri = None
     try:
         persisted = persist_runtime_report(
             report,
@@ -291,7 +291,7 @@ def run_live_cycle(
         printer=output_printer,
         status=report_status,
         report_path=persisted_local_path,
-        report_gcs_uri=persisted_gcs_uri,
+        report_cloud_uri=persisted_cloud_uri,
         total_equity_usdt=report.get("total_equity_usdt"),
         trend_equity_usdt=report.get("trend_equity_usdt"),
         degraded_mode_level=report.get("degraded_mode_level"),
