@@ -35,8 +35,10 @@ def save_trade_state(data, *, normalize_fn, collection="strategy", document="MUL
     try:
         persisted_state = normalize_fn(data)
         get_state_doc_ref(collection=collection, document=document).set(persisted_state)
+        return True
     except Exception as exc:
         print(t("firestore_write_failed", error=exc))
+        return False
 
 
 def send_tg_msg(token, chat_id, text):

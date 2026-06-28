@@ -455,6 +455,7 @@ def _notify_runtime_error(exc):
         send_tg_msg(token, chat_id, _runtime_error_notification_message(exc))
     except Exception as send_exc:
         print(f"Binance runtime error Telegram send failed: {send_exc}")
+        return False
     return True
 
 # ==========================================
