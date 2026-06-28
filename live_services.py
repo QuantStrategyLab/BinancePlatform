@@ -10,6 +10,16 @@ def _get_document_store():
     return get_document_store()
 
 
+def get_firestore_client():
+    """Return the cloud-agnostic document store (backward-compat alias)."""
+    return _get_document_store()
+
+
+def get_state_doc_ref(collection: str = "strategy", document: str = "MULTI_ASSET_STATE"):
+    """Return a (collection, document_id) tuple for state storage."""
+    return collection, document
+
+
 def load_trade_state(*, normalize_fn, default_state_factory, normalize=True, collection="strategy", document="MULTI_ASSET_STATE"):
     try:
         payload = _get_document_store().get(collection=collection, document_id=document)

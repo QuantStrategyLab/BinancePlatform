@@ -57,7 +57,7 @@ def execute_strategy_cycle(
 
         report["upstream_pool_symbols"] = list(runtime_trend_universe.keys())
         if trend_pool_resolution["degraded"]:
-            report["degraded_mode_level"] = trend_pool_resolution.get("source", "unknown")
+            report["degraded_mode_level"] = trend_pool_resolution.get("source_kind", "unknown")
 
         market_snapshot = capture_market_snapshot(
             runtime,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from crypto_strategies import get_platform_runtime_adapter, get_strategy_catalog
+from crypto_strategies import get_platform_runtime_adapter, get_strategy_catalog, get_runtime_enabled_profiles
 
 from quant_platform_kit.common.strategies import (
     CRYPTO_DOMAIN,
@@ -24,7 +24,7 @@ ROLLBACK_STRATEGY_PROFILE = DEFAULT_STRATEGY_PROFILE
 
 STRATEGY_CATALOG = get_strategy_catalog()
 STRATEGY_DEFINITIONS = dict(STRATEGY_CATALOG.definitions)
-BINANCE_ROLLOUT_ALLOWLIST = frozenset(STRATEGY_DEFINITIONS)
+BINANCE_ROLLOUT_ALLOWLIST = get_runtime_enabled_profiles()
 
 PLATFORM_SUPPORTED_DOMAINS: dict[str, frozenset[str]] = {
     BINANCE_PLATFORM: frozenset({CRYPTO_DOMAIN}),
