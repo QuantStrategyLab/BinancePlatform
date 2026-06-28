@@ -1,9 +1,23 @@
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from quant_platform_kit.common.runtime_reports import build_runtime_report_base
+
+# Binance rate limits (public API: 1200 weight/min, order placement: 50 orders/10s)
+_BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC = 0.25  # max ~4 orders/sec
+_LAST_API_CALL_TS: float = 0.0
+
+
+def _rate_limit_pause():
+    """Enforce minimum interval between Binance API calls."""
+    global _LAST_API_CALL_TS
+    elapsed = time.monotonic() - _LAST_API_CALL_TS
+    if elapsed < _BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC:
+        time.sleep(_BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC - elapsed)
+    _LAST_API_CALL_TS = time.monotonic()
 
 
 @dataclass
@@ -156,26 +170,40 @@ def runtime_set_trade_state(runtime, report, state, *, reason):
     record_side_effect(runtime, report, effect_type="state_write", target="firestore", payload=payload, executed=True)
 
 
-def runtime_call_client(runtime, report, *, method_name, payload, effect_type):
+def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
+                        max_retries: int = 3, retry_base_sec: float = 1.0):
     if runtime.dry_run:
         record_side_effect(
-            runtime,
-            report,
-            effect_type=effect_type,
-            target=method_name,
-            payload=dict(payload),
-            executed=False,
+            runtime, report, effect_type=effect_type,
+            target=method_name, payload=dict(payload), executed=False,
         )
         return {"status": "suppressed", "method": method_name, "payload": dict(payload)}
     if runtime.client is None:
         raise RuntimeError("runtime.client is not configured")
-    response = getattr(runtime.client, method_name)(**payload)
+
+    _rate_limit_pause()
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            response = getattr(runtime.client, method_name)(**payload)
+            record_side_effect(
+                runtime, report, effect_type=effect_type,
+                target=method_name, payload=dict(payload), executed=True,
+            )
+            return response
+        except Exception as exc:
+            last_error = exc
+            if attempt < max_retries:
+                delay = retry_base_sec * (2 ** attempt)
+                time.sleep(delay)
+    # All retries exhausted — log and raise
     record_side_effect(
-        runtime,
-        report,
-        effect_type=effect_type,
+        runtime, report,
+        effect_type=f"{effect_type}_failed",
         target=method_name,
-        payload=dict(payload),
-        executed=True,
+        payload={"payload": dict(payload), "error": str(last_error), "retries": max_retries},
+        executed=False,
     )
-    return response
+    raise RuntimeError(
+        f"Binance API call {method_name} failed after {max_retries} retries"
+    ) from last_error

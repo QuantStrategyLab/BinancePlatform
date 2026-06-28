@@ -591,7 +591,7 @@ def resolve_runtime_trend_pool(runtime, raw_state):
 
 
 def resolve_runtime_btc_snapshot(runtime, btc_price, log_buffer):
-    return infra_resolve_runtime_btc_snapshot(
+    snapshot = infra_resolve_runtime_btc_snapshot(
         runtime,
         btc_price,
         log_buffer,
@@ -607,6 +607,57 @@ def resolve_runtime_btc_snapshot(runtime, btc_price, log_buffer):
             delay_seconds=delay_seconds,
         ),
     )
+    # Enrich with pipeline-produced cycle indicators (AHR999, MVRV, Mayer)
+    return enrich_btc_snapshot_with_cycle_indicators(snapshot, log_buffer)
+
+
+def enrich_btc_snapshot_with_cycle_indicators(btc_snapshot: dict, log_buffer: list | None = None):
+    """Merge BTC cycle indicators from the pipeline's btc_cycle_indicators.json.
+
+    Looks for the file at paths configured via env, GCS, or local fallback.
+    Fields merged: ahr999, ahr999_gma, mayer_multiple, mvrv_zscore,
+    ahr999_estimate_price, drawdown_252d, sma200_gap.
+
+    If the file is unavailable, the snapshot is returned unmodified (graceful
+    degradation to platform-computed indicators).
+    """
+    cycle_path = os.getenv("BTC_CYCLE_INDICATORS_PATH", "")
+    if not cycle_path:
+        # Try default local path
+        candidates = [
+            Path("data/output/latest/btc_cycle_indicators.json"),
+            Path("data/output/btc_cycle_indicators.json"),
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                cycle_path = str(candidate)
+                break
+    if not cycle_path:
+        return btc_snapshot  # no cycle data available — use platform-computed indicators
+
+    try:
+        if cycle_path.startswith("gs://"):
+            from quant_platform_kit.cloud import get_object_store
+            raw = get_object_store().read_text(cycle_path)
+            cycle_data = json.loads(raw)
+        else:
+            cycle_data = json.loads(Path(cycle_path).read_text(encoding="utf-8"))
+    except Exception as exc:
+        if log_buffer is not None:
+            log_buffer.append(t("btc_cycle_indicators_load_failed", error=exc))
+        return btc_snapshot
+
+    # Merge cycle fields into snapshot (pipeline data takes precedence)
+    for field in ("ahr999", "ahr999_gma", "mayer_multiple", "mvrv_zscore",
+                   "ahr999_estimate_price", "drawdown_252d", "sma200_gap"):
+        value = cycle_data.get(field)
+        if value is not None:
+            btc_snapshot[field] = value
+    if log_buffer is not None:
+        log_buffer.append(t("btc_cycle_indicators_loaded",
+                           ahr999=btc_snapshot.get("ahr999", "n/a"),
+                           mayer=btc_snapshot.get("mayer_multiple", "n/a")))
+    return btc_snapshot
 
 
 def resolve_runtime_trend_indicators(runtime):
