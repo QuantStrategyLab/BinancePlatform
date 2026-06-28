@@ -1,0 +1,5 @@
+[project]
+name = "binance-platform"
+version = "0.1.0"
+description = "QuantStrategyLab platform layer for Binance exchange."
+requires-python = ">=3.11"
