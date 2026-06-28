@@ -11,13 +11,17 @@ def _get_document_store():
 
 
 def get_firestore_client():
-    """Return the cloud-agnostic document store (backward-compat alias)."""
-    return _get_document_store()
+    """Return the underlying Firestore client for direct collection/document access.
+
+    NOTE: this relies on the GCP provider's ``.client`` property and will
+    raise AttributeError when the active provider is not GCP.
+    """
+    return _get_document_store().client
 
 
-def get_state_doc_ref(collection: str = "strategy", document: str = "MULTI_ASSET_STATE"):
-    """Return a (collection, document_id) tuple for state storage."""
-    return collection, document
+def get_state_doc_ref(*, collection="strategy", document="MULTI_ASSET_STATE"):
+    """Return a Firestore document reference for the given collection/document."""
+    return get_firestore_client().collection(collection).document(document)
 
 
 def load_trade_state(*, normalize_fn, default_state_factory, normalize=True, collection="strategy", document="MULTI_ASSET_STATE"):
