@@ -49,7 +49,7 @@ def maybe_send_periodic_btc_status_report(
     if not report_bucket or state.get("last_btc_status_report_bucket") == report_bucket:
         return
 
-    gate_text = translate_fn("gate_on") if btc_snapshot["regime_on"] else translate_fn("gate_off")
+    gate_text = translate_fn("gate_on") if btc_snapshot.get("regime_on", False) else translate_fn("gate_off")
     text = (
         f"{translate_fn('heartbeat_title')}\n"
         f"{translate_fn('strategy_label', name=strategy_display_name)}\n"
@@ -114,7 +114,7 @@ def append_portfolio_report(
         log_buffer,
         translate_fn(
             "portfolio_btc_gate_line",
-            gate_text=translate_fn("gate_on") if btc_snapshot["regime_on"] else translate_fn("gate_off"),
+            gate_text=translate_fn("gate_on") if btc_snapshot.get("regime_on", False) else translate_fn("gate_off"),
             ahr=btc_snapshot["ahr999"],
             zscore=btc_snapshot["zscore"],
         ),
