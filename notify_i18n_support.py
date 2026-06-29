@@ -285,7 +285,22 @@ def translate(key: str, **kwargs) -> str:
 
 
 def build_strategy_display_name(translate_fn):
-    def strategy_display_name(profile: str, *, fallback_name: str | None = None) -> str:
+    def strategy_display_name(
+        profile: str,
+        *,
+        fallback_name: str | None = None,
+        metadata=None,
+    ) -> str:
+        # If StrategyMetadata is provided, use the canonical catalog resolver
+        if metadata is not None:
+            from quant_platform_kit.common.notification_localization import (
+                resolve_strategy_display_name,
+            )
+            return resolve_strategy_display_name(
+                get_notify_lang(), metadata, translator=translate_fn
+            )
+
+        # Legacy path (backward compat for callers without metadata)
         key = f"strategy_name_{str(profile or '').strip()}"
         translated = translate_fn(key)
         if translated != key:

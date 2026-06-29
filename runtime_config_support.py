@@ -58,6 +58,7 @@ def load_cycle_execution_settings() -> CycleExecutionSettings:
     strategy_display_name_localized = build_strategy_display_name(build_translator(notify_lang))(
         strategy_definition.profile,
         fallback_name=strategy_metadata.display_name,
+        metadata=strategy_metadata,
     )
     return CycleExecutionSettings(
         btc_status_report_interval_hours=max(1, min(24, get_env_int("BTC_STATUS_REPORT_INTERVAL_HOURS", 24))),

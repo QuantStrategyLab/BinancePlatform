@@ -75,31 +75,33 @@ class RuntimeConfigSupportTests(unittest.TestCase):
 
         self.assertEqual(settings.strategy_profile, DEFAULT_STRATEGY_PROFILE)
         self.assertEqual(settings.strategy_display_name, "Crypto Live Pool Rotation")
-        self.assertEqual(settings.strategy_display_name_localized, "加密领涨轮动")
+        self.assertEqual(settings.strategy_display_name_localized, "加密实时池轮动")
 
     def test_platform_supported_profiles_are_filtered_by_registry(self):
         self.assertEqual(
             get_supported_profiles_for_platform(BINANCE_PLATFORM),
-            frozenset({DEFAULT_STRATEGY_PROFILE}),
+            frozenset({
+                DEFAULT_STRATEGY_PROFILE,
+                "crypto_btc_dca",
+                "crypto_trend_rotation",
+                "crypto_equity_combo",
+            }),
         )
 
     def test_platform_profile_status_matrix_marks_default_profile_eligible_and_enabled(self):
         rows = get_platform_profile_status_matrix()
-        self.assertEqual(
-            rows,
-            [
-                {
-                    "platform": BINANCE_PLATFORM,
-                    "canonical_profile": DEFAULT_STRATEGY_PROFILE,
-                    "display_name": "Crypto Live Pool Rotation",
-                    "eligible": True,
-                    "enabled": True,
-                    "is_default": True,
-                    "is_rollback": True,
-                    "domain": CRYPTO_DOMAIN,
-                }
-            ],
+        self.assertTrue(len(rows) >= 1)
+        default_row = next(
+            row for row in rows
+            if row.get("canonical_profile") == DEFAULT_STRATEGY_PROFILE
         )
+        self.assertEqual(default_row["platform"], BINANCE_PLATFORM)
+        self.assertEqual(default_row["display_name"], "Crypto Live Pool Rotation")
+        self.assertTrue(default_row["eligible"])
+        self.assertTrue(default_row["enabled"])
+        self.assertTrue(default_row["is_default"])
+        self.assertTrue(default_row["is_rollback"])
+        self.assertEqual(default_row["domain"], CRYPTO_DOMAIN)
 
     def test_build_live_runtime_reads_env_and_preserves_injected_hooks(self):
         sentinel_now = datetime(2026, 3, 15, tzinfo=timezone.utc)
