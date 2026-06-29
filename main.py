@@ -5,6 +5,7 @@ Pure strategy math, state normalization, upstream contract handling, exchange
 helpers, and live service adapters live in dedicated modules.
 """
 
+import json
 import os
 import sys
 import time
