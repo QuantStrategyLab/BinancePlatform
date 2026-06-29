@@ -88,7 +88,6 @@ def _list_workflow_runs(
     query = urllib.parse.urlencode(
         {
             "branch": branch,
-            "event": "workflow_dispatch",
             "per_page": str(per_page),
         }
     )
@@ -109,7 +108,6 @@ def _list_repository_workflow_runs(
     query = urllib.parse.urlencode(
         {
             "branch": branch,
-            "event": "workflow_dispatch",
             "per_page": str(per_page),
         }
     )
