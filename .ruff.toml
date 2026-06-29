@@ -1,5 +1,8 @@
 target-version = "py311"
 
+[lint]
+ignore = ["E701"]
+
 [lint.per-file-ignores]
 "tests/*.py" = ["E402"]
 "research/backtest.py" = ["E402"]

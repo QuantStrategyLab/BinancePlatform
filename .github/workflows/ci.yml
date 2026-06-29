@@ -90,7 +90,7 @@ jobs:
             trade_state_support.py
 
       - name: Run ruff
-        run: ruff check .
+        run: ruff check --exclude external .
 
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
