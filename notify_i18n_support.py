@@ -293,12 +293,16 @@ def build_strategy_display_name(translate_fn):
     ) -> str:
         # If StrategyMetadata is provided, use the canonical catalog resolver
         if metadata is not None:
-            from quant_platform_kit.common.notification_localization import (
-                resolve_strategy_display_name,
-            )
-            return resolve_strategy_display_name(
-                get_notify_lang(), metadata, translator=translate_fn
-            )
+            try:
+                from quant_platform_kit.common.notification_localization import (
+                    resolve_strategy_display_name,
+                )
+            except ImportError:
+                pass  # fall through to legacy path
+            else:
+                return resolve_strategy_display_name(
+                    get_notify_lang(), metadata, translator=translate_fn
+                )
 
         # Legacy path (backward compat for callers without metadata)
         key = f"strategy_name_{str(profile or '').strip()}"
