@@ -45,6 +45,8 @@ def maybe_send_periodic_btc_status_report(
     notifier_fn=None,
     send_tg_msg_fn=None,
 ):
+    if interval_hours <= 0:
+        return  # heartbeat disabled
     report_bucket = get_periodic_report_bucket(now_utc, interval_hours)
     if not report_bucket or state.get("last_btc_status_report_bucket") == report_bucket:
         return
