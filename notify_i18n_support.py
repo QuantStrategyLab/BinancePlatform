@@ -8,7 +8,9 @@ SUPPORTED_NOTIFY_LANGS = {"en", "zh"}
 
 _TEXTS = {
     "en": {
-        "telegram_prefix": "🤖 Crypto Quant Bot",
+        "rebalance_title": "🔔 Crypto Trade",
+        "heartbeat_title": "💓 Crypto Status",
+        "telegram_prefix": "🤖 Binance Quant",
         "firestore_get_state_failed": "Firestore get state failed: {error}",
         "firestore_write_failed": "Firestore write failed: {error}",
         "telegram_send_failed": "Telegram send failed",
@@ -134,6 +136,8 @@ _TEXTS = {
         "strategy_name_crypto_live_pool_rotation": "Crypto Live Pool Rotation",
     },
     "zh": {
+        "rebalance_title": "🔔 加密调仓",
+        "heartbeat_title": "💓 加密状态",
         "telegram_prefix": "🤖 加密量化助手",
         "firestore_get_state_failed": "Firestore 读取状态失败: {error}",
         "firestore_write_failed": "Firestore 写入状态失败: {error}",
