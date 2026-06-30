@@ -227,14 +227,12 @@ def execute_strategy_cycle(
     # Heartbeat beat — every cycle completion
     try:
         import builtins
-        hb = builtins.__dict__.get("_qsl_heartbeat")
-        if hb is not None:
-            from quant_platform_kit.common.health import Heartbeat
-            hb.write(Heartbeat(
+        monitor = builtins.__dict__.get("_qsl_health_monitor")
+        if monitor is not None:
+            monitor.beat(
                 status=report.get("status", "ok"),
-                last_error=report.get("error", ""),
-                cycle_count=report.get("cycle_count", 0),
-            ))
+                error=report.get("error", ""),
+            )
     except Exception:
         pass
 

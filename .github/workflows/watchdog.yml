@@ -22,33 +22,14 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       - name: Install deps
-        run: pip install google-cloud-firestore quant-platform-kit
-      - name: Check Firestore heartbeat
+        run: pip install quant-platform-kit google-cloud-firestore
+      - name: Run watchdog
         id: check
         run: |
           python -c "
-          from quant_platform_kit.common.health import FirestoreHeartbeat, is_heartbeat_fresh
-          reader = FirestoreHeartbeat(collection='health', document='alive')
-          hb = reader.read()
-          if is_heartbeat_fresh(hb, max_age_seconds=600):
-              print('✅ Alive')
-              exit(0)
-          else:
-              print('❌ Dead or stale')
-              exit(1)
+          from quant_platform_kit.common.health import HealthMonitor
+          alive, detail = HealthMonitor().check_alive()
+          print(f'{alive and \"✅\" or \"❌\"} {detail}')
+          exit(0 if alive else 1)
           "
-      - name: Alert on failure
-        if: failure()
-        run: |
-          TOKEN="${{ secrets.TELEGRAM_TOKEN }}"
-          CHAT="${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}"
-          if [ -n "$TOKEN" ] && [ -n "$CHAT" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
-              -d "chat_id=${CHAT}" \
-              -d "text=🚨 Binance VPS health check FAILED — no recent heartbeat in Firestore"
-          fi
