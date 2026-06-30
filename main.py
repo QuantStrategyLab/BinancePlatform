@@ -1187,6 +1187,25 @@ def execute_cycle(runtime):
 
 
 def main():
+    # Start health server and heartbeat
+    _health_server = None
+    _heartbeat = None
+    try:
+        from quant_platform_kit.common.health import start_health_server, FirestoreHeartbeat, Heartbeat
+        _health_server = start_health_server(port=int(os.environ.get("HEALTH_PORT", "8080")))
+        print("Health server started on port 8080", flush=True)
+    except Exception:
+        pass
+    try:
+        from quant_platform_kit.common.health import FirestoreHeartbeat
+        _heartbeat = FirestoreHeartbeat(collection="health", document="alive")
+    except Exception:
+        pass
+    # Store heartbeat on runtime for cycle-level updates
+    if _heartbeat is not None:
+        import builtins
+        builtins.__dict__["_qsl_heartbeat"] = _heartbeat
+
     try:
         return run_cli_entrypoint(
             runtime_builder=build_live_runtime,
