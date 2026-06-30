@@ -129,8 +129,8 @@ class NotifyI18nTests(unittest.TestCase):
 
         self.assertEqual(len(messages), 1)
         self.assertIn("💓 【策略心跳】", messages[0])
-        self.assertIn("🕐 UTC 时间", messages[0])
-        self.assertIn("💡 建议", messages[0])
+        self.assertIn("💰 总净值", messages[0])
+        self.assertIn("₿ BTC 价格", messages[0])
         self.assertIn("AHR999 偏低", messages[0])
 
     def test_trend_pool_source_logs_use_chinese_when_notify_lang_is_zh(self):

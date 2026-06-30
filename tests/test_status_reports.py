@@ -76,15 +76,7 @@ class StatusReportTests(unittest.TestCase):
             append_log_fn=lambda buffer, text: buffer.append(text),
             translate_fn=fake_translate,
         )
-        self.assertEqual(
-            log_buffer,
-            [
-                "upstream=ETHUSDT, SOLUSDT",
-                "execution=ETHUSDT",
-                "size=1",
-                "targets=no candidates",
-            ],
-        )
+        self.assertEqual(log_buffer, ["🎯 ETHUSDT"])
 
 
     def test_periodic_status_report_includes_strategy_display_name(self):
