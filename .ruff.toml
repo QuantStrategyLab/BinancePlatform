@@ -7,3 +7,4 @@ ignore = ["E701", "E702", "E401", "F541"]
 "tests/*.py" = ["E402"]
 "research/backtest.py" = ["E402"]
 "run_cycle_replay.py" = ["E402"]
+extend = "https://raw.githubusercontent.com/QuantStrategyLab/QuantPlatformKit/main/ruff-shared.toml"
