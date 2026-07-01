@@ -155,8 +155,8 @@ class CycleServiceTests(unittest.TestCase):
         self.assertEqual(persisted_path, output_path)
         self.assertEqual(observed["status"], "ok")
         self.assertEqual(observed["kwargs"]["output_path"], output_path)
-        self.assertEqual(observed["kwargs"]["gcs_prefix_uri"], "gs://demo-bucket/runtime-reports")
-        self.assertEqual(observed["kwargs"]["gcp_project_id"], "demo-project")
+        self.assertEqual(observed["kwargs"]["cloud_prefix_uri"], "gs://demo-bucket/runtime-reports")
+        self.assertEqual(observed["kwargs"]["project_id"], "demo-project")
 
     def test_run_live_cycle_calls_exit_on_error(self):
         observed = {"exit_code": None}
