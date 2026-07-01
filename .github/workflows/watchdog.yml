@@ -6,24 +6,40 @@ on:
   workflow_dispatch:
 
 permissions:
+  id-token: write
   contents: read
 
 env:
   GCP_PROJECT_ID: binancequant
-  GCP_WORKLOAD_IDENTITY_PROVIDER: projects/401309731911/locations/global/workloadIdentityPools/github-actions/providers/github-main
-  GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: codex-gcp-operator@binancequant.iam.gserviceaccount.com
+  GCP_WORKLOAD_IDENTITY_PROVIDER: projects/677468735457/locations/global/workloadIdentityPools/github-actions/providers/github-main
+  GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: binance-platform-runtime@binancequant.iam.gserviceaccount.com
 
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
       - name: Install deps
-        run: pip install quant-platform-kit google-cloud-firestore
+        run: |
+          set -euo pipefail
+          REQ_FILE="requirements-lock.txt"
+          if [ ! -f "$REQ_FILE" ]; then REQ_FILE="requirements.txt"; fi
+          qpk_req="$(grep -E '^quant-platform-kit @ ' "$REQ_FILE")"
+          python -m pip install --upgrade pip
+          python -m pip install "$qpk_req" google-cloud-firestore
       - name: Run watchdog
         id: check
         run: |
