@@ -46,6 +46,7 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertIn("uses: google-github-actions/auth@v3", text)
         self.assertIn("workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}", text)
         self.assertIn("service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}", text)
+        self.assertIn("WATCHDOG_MAX_AGE_SECONDS: ${{ vars.WATCHDOG_MAX_AGE_SECONDS || '1800' }}", text)
 
     def test_watchdog_installs_locked_internal_dependency(self) -> None:
         text = self.workflow_text
@@ -53,6 +54,14 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertIn("qpk_req=\"$(grep -E '^quant-platform-kit @ ' \"$REQ_FILE\")\"", text)
         self.assertIn('python -m pip install "$qpk_req" google-cloud-firestore', text)
         self.assertNotIn("pip install quant-platform-kit google-cloud-firestore", text)
+
+    def test_watchdog_reads_firestore_heartbeat_with_supported_qpk_api(self) -> None:
+        text = self.workflow_text
+
+        self.assertIn("from quant_platform_kit.common.health import HealthMonitor, is_heartbeat_fresh", text)
+        self.assertIn("heartbeat = HealthMonitor().read()", text)
+        self.assertIn("alive = is_heartbeat_fresh(heartbeat, max_age_seconds)", text)
+        self.assertNotIn(".check_alive()", text)
 
     def test_watchdog_qpk_pin_includes_health_module_release(self) -> None:
         requirement = _qpk_requirement(REQUIREMENTS)

@@ -13,6 +13,7 @@ env:
   GCP_PROJECT_ID: binancequant
   GCP_WORKLOAD_IDENTITY_PROVIDER: projects/677468735457/locations/global/workloadIdentityPools/github-actions/providers/github-main
   GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: binance-platform-runtime@binancequant.iam.gserviceaccount.com
+  WATCHDOG_MAX_AGE_SECONDS: ${{ vars.WATCHDOG_MAX_AGE_SECONDS || '1800' }}
 
 jobs:
   check:
@@ -43,9 +44,23 @@ jobs:
       - name: Run watchdog
         id: check
         run: |
-          python -c "
-          from quant_platform_kit.common.health import HealthMonitor
-          alive, detail = HealthMonitor().check_alive()
-          print(f'{alive and \"✅\" or \"❌\"} {detail}')
-          exit(0 if alive else 1)
-          "
+          python - <<'PY'
+          import os
+          from quant_platform_kit.common.health import HealthMonitor, is_heartbeat_fresh
+
+          max_age_seconds = int(os.environ.get("WATCHDOG_MAX_AGE_SECONDS", "1800"))
+          heartbeat = HealthMonitor().read()
+          alive = is_heartbeat_fresh(heartbeat, max_age_seconds)
+          if heartbeat is None:
+              detail = "missing heartbeat"
+          else:
+              detail = (
+                  f"status={heartbeat.status} "
+                  f"timestamp={heartbeat.timestamp or '<missing>'} "
+                  f"cycle_count={heartbeat.cycle_count} "
+                  f"last_error={heartbeat.last_error or '<none>'} "
+                  f"max_age_seconds={max_age_seconds}"
+              )
+          print(f"{'OK' if alive else 'FAIL'} {detail}")
+          raise SystemExit(0 if alive else 1)
+          PY
