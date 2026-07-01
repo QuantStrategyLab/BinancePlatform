@@ -1,5 +1,5 @@
-quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@86f03fb8e83c0d372f4e1c64cccf3e6da50b8dd4
-crypto-strategies @ git+https://github.com/QuantStrategyLab/CryptoStrategies.git@2c152cf
+quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@6d3675914eb5d3fe072d3212a90dfb55fe1c1df4
+crypto-strategies @ git+https://github.com/QuantStrategyLab/CryptoStrategies.git@84e7bf5566167861f7b53bf74261364d055cd30f
 python-binance
 pandas
 numpy

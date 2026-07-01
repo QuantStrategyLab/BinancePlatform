@@ -6,6 +6,22 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "watchdog.yml"
+REQUIREMENTS = ROOT / "requirements.txt"
+LOCK = ROOT / "requirements-lock.txt"
+
+
+def _qpk_requirement(path: Path) -> str:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("quant-platform-kit @ "):
+            return line
+    raise AssertionError(f"{path} does not pin quant-platform-kit")
+
+
+def _crypto_strategies_requirement(path: Path) -> str:
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("crypto-strategies @ "):
+            return line
+    raise AssertionError(f"{path} does not pin crypto-strategies")
 
 
 class WatchdogWorkflowTests(unittest.TestCase):
@@ -37,6 +53,22 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertIn("qpk_req=\"$(grep -E '^quant-platform-kit @ ' \"$REQ_FILE\")\"", text)
         self.assertIn('python -m pip install "$qpk_req" google-cloud-firestore', text)
         self.assertNotIn("pip install quant-platform-kit google-cloud-firestore", text)
+
+    def test_watchdog_qpk_pin_includes_health_module_release(self) -> None:
+        requirement = _qpk_requirement(REQUIREMENTS)
+        lock = _qpk_requirement(LOCK)
+
+        self.assertEqual(requirement, lock)
+        self.assertIn("@6d3675914eb5d3fe072d3212a90dfb55fe1c1df4", lock)
+        self.assertNotIn("@86f03fb8e83c0d372f4e1c64cccf3e6da50b8dd4", lock)
+
+    def test_crypto_strategies_pin_matches_qpk_health_dependency(self) -> None:
+        requirement = _crypto_strategies_requirement(REQUIREMENTS)
+        lock = _crypto_strategies_requirement(LOCK)
+
+        self.assertEqual(requirement, lock)
+        self.assertIn("@84e7bf5566167861f7b53bf74261364d055cd30f", lock)
+        self.assertNotIn("@2c152cf", lock)
 
 
 if __name__ == "__main__":
