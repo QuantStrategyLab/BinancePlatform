@@ -7,8 +7,8 @@ enforce_bundle = false
 migration_mode = "pyproject-uv-poc"
 
 [qsl.requires]
-quant_platform_kit = "6d3675914eb5d3fe072d3212a90dfb55fe1c1df4"
-crypto_strategies = "84e7bf5566167861f7b53bf74261364d055cd30f"
+quant_platform_kit = "7032cde4547e7ec59af15df8935d142461a77051"
+crypto_strategies = "64a62781f9194a23548a373c7724e132ef311f1f"
 
 [qsl.compat]
-bundle = "2026.07.0"
+bundle = "2026.07.1"
