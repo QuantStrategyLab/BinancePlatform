@@ -1,0 +1,13 @@
+[qsl]
+repo = "BinancePlatform"
+tier = "runtime-platform"
+ring = 3
+allow_legacy = true
+migration_mode = "pyproject-uv-poc"
+
+[qsl.requires]
+quant_platform_kit = "6d3675914eb5d3fe072d3212a90dfb55fe1c1df4"
+crypto_strategies = "84e7bf5566167861f7b53bf74261364d055cd30f"
+
+[qsl.compat]
+bundle = "2026.07.0"

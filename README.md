@@ -44,6 +44,12 @@ python -m pip install -r requirements.txt
 python -m pytest -q
 ```
 
+## QSL compatibility status
+
+- Added `qsl.toml` with `tier = "runtime-platform"`, `ring = 3`, and `compat.bundle = "2026.07.0"` for runtime compatibility tracking.
+- Current dependency workflow is still `requirements.txt/requirements-lock.txt` + `pip`; migration to `pyproject.toml + uv.lock` is intentionally deferred due runtime entrypoint/dependency bootstrap compatibility risk.
+- TODO: keep this repository under observation and schedule a low-risk migration once runtime bootstrap can retain existing scheduler/entrypoint behavior.
+
 ## Useful docs
 
 - [`docs/binance_platform_rename_checklist.md`](docs/binance_platform_rename_checklist.md)
