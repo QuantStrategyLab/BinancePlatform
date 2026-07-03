@@ -3,6 +3,7 @@ repo = "BinancePlatform"
 tier = "runtime-platform"
 ring = 3
 allow_legacy = true
+enforce_bundle = false
 migration_mode = "pyproject-uv-poc"
 
 [qsl.requires]
