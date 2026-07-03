@@ -46,7 +46,7 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertIn("uses: google-github-actions/auth@v3", text)
         self.assertIn("workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}", text)
         self.assertIn("service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}", text)
-        self.assertIn("WATCHDOG_MAX_AGE_SECONDS: ${{ vars.WATCHDOG_MAX_AGE_SECONDS || '1800' }}", text)
+        self.assertIn("WATCHDOG_MAX_AGE_SECONDS: ${{ vars.WATCHDOG_MAX_AGE_SECONDS || '4500' }}", text)
 
     def test_watchdog_installs_locked_internal_dependency(self) -> None:
         text = self.workflow_text
