@@ -58,6 +58,75 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertNotIn("trend_pool_size", runtime.merged_runtime_config)
         self.assertEqual(runtime.trend_pool_size, 5)
 
+    def test_combo_profile_exposes_binance_execution_plan(self):
+        try:
+            from decision_mapper import map_strategy_decision_to_allocation, map_strategy_decision_to_rotation_plan
+            from strategy_runtime import load_strategy_runtime
+        except ModuleNotFoundError as exc:
+            if exc.name == "pandas":
+                self.skipTest("pandas is not installed")
+            raise
+
+        runtime = load_strategy_runtime("crypto_equity_combo")
+        account_metrics = {
+            "total_equity": 1000.0,
+            "cash_usdt": 1000.0,
+            "trend_value": 0.0,
+            "dca_value": 0.0,
+        }
+        evaluation = runtime.evaluate(
+            prices={"BTCUSDT": 60000.0, "ETHUSDT": 3000.0, "SOLUSDT": 180.0},
+            trend_indicators={
+                "BTCUSDT": {
+                    "close": 60000.0,
+                    "sma200": 50000.0,
+                    "roc20": 0.08,
+                    "roc60": 0.16,
+                    "roc120": 0.30,
+                    "regime_on": True,
+                },
+                "ETHUSDT": {
+                    "close": 3000.0,
+                    "sma20": 2800.0,
+                    "sma60": 2600.0,
+                    "sma200": 2200.0,
+                    "roc20": 0.20,
+                    "roc60": 0.35,
+                    "roc120": 0.60,
+                    "vol20": 0.25,
+                },
+                "SOLUSDT": {
+                    "close": 180.0,
+                    "sma20": 170.0,
+                    "sma60": 160.0,
+                    "sma200": 120.0,
+                    "roc20": 0.28,
+                    "roc60": 0.45,
+                    "roc120": 0.75,
+                    "vol20": 0.30,
+                },
+            },
+            btc_snapshot={"regime_on": True},
+            account_metrics=account_metrics,
+            trend_universe_symbols=("ETHUSDT", "SOLUSDT"),
+            state={},
+            translator=lambda key, **_kwargs: key,
+            balances={"BTCUSDT": 0.0, "ETHUSDT": 0.0, "SOLUSDT": 0.0},
+            now_utc=datetime(2026, 4, 7, tzinfo=timezone.utc),
+        )
+
+        allocation = map_strategy_decision_to_allocation(
+            evaluation.decision,
+            account_metrics=account_metrics,
+        )
+        plan = map_strategy_decision_to_rotation_plan(evaluation.decision)
+
+        self.assertGreater(allocation["trend_usdt_pool"], 0.0)
+        self.assertGreater(allocation["dca_usdt_pool"], 0.0)
+        self.assertEqual(set(plan["selected_candidates"]), {"ETHUSDT", "SOLUSDT"})
+        self.assertEqual(set(plan["eligible_buy_symbols"]), {"ETHUSDT", "SOLUSDT"})
+        self.assertEqual(set(plan["planned_trend_buys"]), {"ETHUSDT", "SOLUSDT"})
+
     def test_strategy_runtime_evaluate_returns_decision_with_buy_sell_diagnostics(self):
         try:
             from strategy_runtime import load_strategy_runtime
