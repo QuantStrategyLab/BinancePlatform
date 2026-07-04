@@ -1,3 +1,4 @@
+import os
 import sys
 import types
 import unittest
@@ -57,6 +58,60 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.profile, "crypto_equity_combo")
         self.assertNotIn("trend_pool_size", runtime.merged_runtime_config)
         self.assertEqual(runtime.trend_pool_size, 5)
+
+    def test_combo_profile_reads_runtime_env_overrides(self):
+        try:
+            from strategy_runtime import load_strategy_runtime
+        except ModuleNotFoundError as exc:
+            if exc.name == "pandas":
+                self.skipTest("pandas is not installed")
+            raise
+
+        with patch.dict(
+            os.environ,
+            {
+                "BTC_WEIGHT": "0.5",
+                "TREND_WEIGHT": "0.5",
+                "DYNAMIC_MODE": "false",
+                "DYNAMIC_REGIME_OFF_CUT": "0.30",
+                "ROTATION_TOP_N": "3",
+                "TARGET_VOL": "0.25",
+                "CIRCUIT_BREAKER_ENABLED": "false",
+                "ZSCORE_EXIT_RISK_REDUCED_EXPOSURE": "0.40",
+                "ZSCORE_EXIT_RISK_OFF_EXPOSURE": "0.20",
+                "ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW": "false",
+            },
+            clear=True,
+        ):
+            runtime = load_strategy_runtime("crypto_equity_combo")
+
+        self.assertEqual(
+            runtime.runtime_overrides,
+            {
+                "btc_weight": 0.5,
+                "trend_weight": 0.5,
+                "dynamic_mode": False,
+                "dynamic_regime_off_cut": 0.30,
+                "rotation_top_n": 3,
+                "target_vol": 0.25,
+                "circuit_breaker_enabled": False,
+                "zscore_exit_risk_reduced_exposure": 0.40,
+                "zscore_exit_risk_off_exposure": 0.20,
+                "zscore_exit_allow_outside_execution_window": False,
+            },
+        )
+
+    def test_combo_profile_rejects_invalid_runtime_env_override(self):
+        try:
+            from strategy_runtime import load_strategy_runtime
+        except ModuleNotFoundError as exc:
+            if exc.name == "pandas":
+                self.skipTest("pandas is not installed")
+            raise
+
+        with patch.dict(os.environ, {"BTC_WEIGHT": "1.5"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "BTC_WEIGHT must be between 0 and 1"):
+                load_strategy_runtime("crypto_equity_combo")
 
     def test_combo_profile_exposes_binance_execution_plan(self):
         try:

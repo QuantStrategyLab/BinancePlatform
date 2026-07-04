@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,57 @@ DEFAULT_LOCAL_TREND_POOL_ARTIFACT = Path(__file__).resolve().parent / "artifacts
 # Ensure artifacts directory exists so local-fallback path never fails with FileNotFoundError
 DEFAULT_LOCAL_TREND_POOL_ARTIFACT.parent.mkdir(parents=True, exist_ok=True)
 DEFAULT_TREND_POOL_SIZE = 5
+COMBO_RUNTIME_ENV_OVERRIDES: tuple[tuple[str, str, str], ...] = (
+    ("BTC_WEIGHT", "btc_weight", "ratio"),
+    ("TREND_WEIGHT", "trend_weight", "ratio"),
+    ("DYNAMIC_MODE", "dynamic_mode", "bool"),
+    ("DYNAMIC_REGIME_OFF_CUT", "dynamic_regime_off_cut", "ratio"),
+    ("ROTATION_TOP_N", "rotation_top_n", "int"),
+    ("TARGET_VOL", "target_vol", "positive_float"),
+    ("CIRCUIT_BREAKER_ENABLED", "circuit_breaker_enabled", "bool"),
+    ("ZSCORE_EXIT_RISK_REDUCED_EXPOSURE", "zscore_exit_risk_reduced_exposure", "ratio"),
+    ("ZSCORE_EXIT_RISK_OFF_EXPOSURE", "zscore_exit_risk_off_exposure", "ratio"),
+    ("ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW", "zscore_exit_allow_outside_execution_window", "bool"),
+)
+
+
+def _parse_env_bool(name: str, raw: str) -> bool:
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError(f"{name} must be boolean-like")
+
+
+def _parse_runtime_env_value(name: str, raw: str, kind: str) -> Any:
+    if kind == "bool":
+        return _parse_env_bool(name, raw)
+    if kind == "int":
+        value = int(raw)
+        if value < 1:
+            raise ValueError(f"{name} must be >= 1")
+        return value
+    value = float(raw)
+    if kind == "ratio":
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f"{name} must be between 0 and 1")
+        return value
+    if kind == "positive_float":
+        if value <= 0.0:
+            raise ValueError(f"{name} must be > 0")
+        return value
+    raise ValueError(f"unsupported runtime env parser: {kind}")
+
+
+def _load_combo_runtime_overrides() -> dict[str, Any]:
+    overrides: dict[str, Any] = {}
+    for env_name, config_key, kind in COMBO_RUNTIME_ENV_OVERRIDES:
+        raw = os.getenv(env_name)
+        if raw is None or not raw.strip():
+            continue
+        overrides[config_key] = _parse_runtime_env_value(env_name, raw, kind)
+    return overrides
 
 
 @dataclass(frozen=True)
@@ -216,12 +268,16 @@ def load_strategy_runtime(raw_profile: str | None) -> LoadedStrategyRuntime:
         platform_id=BINANCE_PLATFORM,
     )
     merged_runtime_config = dict(entrypoint.manifest.default_config)
+    runtime_overrides: dict[str, Any] = {}
+    if entrypoint.manifest.profile == "crypto_equity_combo":
+        runtime_overrides.update(_load_combo_runtime_overrides())
     local_artifact_candidates = tuple(
         Path(path) for path in tp_get_default_live_pool_candidates(DEFAULT_LOCAL_TREND_POOL_ARTIFACT)
     )
     return LoadedStrategyRuntime(
         entrypoint=entrypoint,
         runtime_adapter=runtime_adapter,
+        runtime_overrides=runtime_overrides,
         merged_runtime_config=merged_runtime_config,
         local_artifact_candidates=local_artifact_candidates,
     )

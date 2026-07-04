@@ -43,7 +43,7 @@ def load_cycle_state(
             report,
             gate="trend_buy_paused_degraded_mode",
             category="trend",
-            detail=str(trend_pool_resolution.get("source", "unknown")),
+            detail=str(trend_pool_resolution.get("source_kind") or trend_pool_resolution.get("source", "unknown")),
         )
     return state, trend_pool_resolution, runtime_trend_universe, allow_new_trend_entries
 
