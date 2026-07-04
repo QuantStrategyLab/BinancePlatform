@@ -65,6 +65,21 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertIn('"$REQ_FILE unchanged; reusing cached venv."', text)
         self.assertGreaterEqual(text.count("force_reinstall_internal_git_deps"), 3)
 
+    def test_runtime_workflow_exposes_strategy_artifact_variables(self) -> None:
+        text = RUNTIME_WORKFLOW.read_text(encoding="utf-8")
+
+        for name in (
+            "STRATEGY_ARTIFACT_FILE",
+            "STRATEGY_ARTIFACT_MANIFEST_FILE",
+            "STRATEGY_ARTIFACT_FIRESTORE_COLLECTION",
+            "STRATEGY_ARTIFACT_FIRESTORE_DOCUMENT",
+            "STRATEGY_ARTIFACT_MAX_AGE_DAYS",
+            "STRATEGY_ARTIFACT_ACCEPTABLE_MODES",
+            "STRATEGY_ARTIFACT_EXPECTED_SIZE",
+            "STRATEGY_ARTIFACT_ALLOW_NEW_ENTRIES_ON_DEGRADED",
+        ):
+            self.assertIn(f"{name}: ${{{{ vars.{name} }}}}", text)
+
     def test_watchdog_reads_firestore_heartbeat_with_supported_qpk_api(self) -> None:
         text = self.workflow_text
 
