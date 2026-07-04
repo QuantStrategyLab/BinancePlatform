@@ -209,6 +209,7 @@ class ExecutionServiceTests(unittest.TestCase):
             {
                 "active_trend_pool": ["ETHUSDT"],
                 "selected_candidates": {"ETHUSDT": {"weight": 1.0, "relative_score": 1.5}},
+                "combo_diagnostics": {"regime_tier": "hard", "effective_btc_weight": 0.25},
                 "eligible_buy_symbols": [],
                 "planned_trend_buys": {},
                 "sell_reasons": {"ETHUSDT": "rotated_out"},
@@ -270,6 +271,8 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertTrue(observed["sell_called"])
         self.assertTrue(observed["status_called"])
         self.assertEqual(observed["buy_plan"], {"ETHUSDT": 320.0})
+        self.assertEqual(report["diagnostics"]["combo"]["regime_tier"], "hard")
+        self.assertAlmostEqual(report["diagnostics"]["combo"]["effective_btc_weight"], 0.25)
 
     def test_execute_trend_rotation_records_candidate_filter_reasons(self):
         runtime = SimpleNamespace(now_utc="2026-03-29T00:00:00Z")
