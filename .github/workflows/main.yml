@@ -143,6 +143,16 @@ jobs:
           NOTIFY_LANG: ${{ vars.NOTIFY_LANG }}
           EXECUTION_REPORT_GCS_URI: ${{ vars.EXECUTION_REPORT_GCS_URI }}
           BINANCE_DRY_RUN: ${{ vars.BINANCE_DRY_RUN || 'true' }}
+          BTC_WEIGHT: ${{ vars.BTC_WEIGHT }}
+          TREND_WEIGHT: ${{ vars.TREND_WEIGHT }}
+          DYNAMIC_MODE: ${{ vars.DYNAMIC_MODE }}
+          DYNAMIC_REGIME_OFF_CUT: ${{ vars.DYNAMIC_REGIME_OFF_CUT }}
+          ROTATION_TOP_N: ${{ vars.ROTATION_TOP_N }}
+          TARGET_VOL: ${{ vars.TARGET_VOL }}
+          CIRCUIT_BREAKER_ENABLED: ${{ vars.CIRCUIT_BREAKER_ENABLED }}
+          ZSCORE_EXIT_RISK_REDUCED_EXPOSURE: ${{ vars.ZSCORE_EXIT_RISK_REDUCED_EXPOSURE }}
+          ZSCORE_EXIT_RISK_OFF_EXPOSURE: ${{ vars.ZSCORE_EXIT_RISK_OFF_EXPOSURE }}
+          ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW: ${{ vars.ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW }}
           VALIDATE_ONLY: ${{ github.event.inputs.validate_only || 'false' }}
 
       - name: 5. Capture execution timestamp
