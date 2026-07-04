@@ -6,6 +6,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "watchdog.yml"
+RUNTIME_WORKFLOW = ROOT / ".github" / "workflows" / "main.yml"
 REQUIREMENTS = ROOT / "requirements.txt"
 LOCK = ROOT / "requirements-lock.txt"
 
@@ -54,6 +55,13 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertIn("qpk_req=\"$(grep -E '^quant-platform-kit @ ' \"$REQ_FILE\")\"", text)
         self.assertIn('python -m pip install "$qpk_req" google-cloud-firestore', text)
         self.assertNotIn("pip install quant-platform-kit google-cloud-firestore", text)
+
+    def test_runtime_workflow_force_reinstalls_internal_git_dependencies(self) -> None:
+        text = RUNTIME_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("force_reinstall_internal_git_deps()", text)
+        self.assertIn("pip\" install --force-reinstall --no-deps \"$requirement\"", text)
+        self.assertIn("grep -E '^(quant-platform-kit|crypto-strategies) @ git\\\\+'", text)
 
     def test_watchdog_reads_firestore_heartbeat_with_supported_qpk_api(self) -> None:
         text = self.workflow_text
