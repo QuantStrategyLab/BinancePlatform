@@ -535,9 +535,10 @@ def maybe_send_periodic_btc_status_report(
     strategy_display_name=None,
     notifier_fn=None,
 ):
+    runtime_manifest = getattr(getattr(STRATEGY_RUNTIME, "entrypoint", None), "manifest", None)
     resolved_strategy_display_name = strategy_display_name or build_strategy_display_name(t)(
         getattr(STRATEGY_RUNTIME, "profile", "crypto_live_pool_rotation"),
-        fallback_name="Crypto Live Pool Rotation",
+        fallback_name=getattr(runtime_manifest, "display_name", "Crypto Live Pool Rotation"),
     )
     return report_maybe_send_periodic_btc_status_report(
         state,

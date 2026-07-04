@@ -132,6 +132,7 @@ _TEXTS = {
         "btc_unavailable_for_dca_sell": "BTC unavailable for DCA sell",
         "strategy_name_crypto_leader_rotation": "Crypto Leader Rotation",
         "strategy_name_crypto_live_pool_rotation": "Crypto Live Pool Rotation",
+        "strategy_name_crypto_equity_combo": "Crypto Equity Combo",
     },
     "zh": {
         "rebalance_title": "🔔 加密调仓",
@@ -258,6 +259,7 @@ _TEXTS = {
         "btc_unavailable_for_dca_sell": "BTC 不足，无法执行定投止盈卖出",
         "strategy_name_crypto_leader_rotation": "加密领涨轮动",
         "strategy_name_crypto_live_pool_rotation": "加密实时池轮动",
+        "strategy_name_crypto_equity_combo": "加密动量组合",
     },
 }
 
