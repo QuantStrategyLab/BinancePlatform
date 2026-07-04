@@ -99,6 +99,14 @@ class NotifyI18nTests(unittest.TestCase):
 
         self.assertEqual(display_name, "加密领涨轮动")
 
+    def test_combo_strategy_profile_uses_chinese_display_name(self):
+        display_name = build_strategy_display_name(build_translator("zh"))(
+            "crypto_equity_combo",
+            fallback_name="Crypto Equity Combo",
+        )
+
+        self.assertEqual(display_name, "加密动量组合")
+
     def test_periodic_btc_status_report_uses_chinese_when_notify_lang_is_zh(self):
         state = {}
         messages = []
@@ -132,6 +140,44 @@ class NotifyI18nTests(unittest.TestCase):
         self.assertIn("💰 总净值", messages[0])
         self.assertIn("₿ BTC 价格", messages[0])
         self.assertIn("AHR999 偏低", messages[0])
+
+    def test_periodic_btc_status_report_uses_combo_display_name(self):
+        state = {}
+        messages = []
+        runtime = SimpleNamespace(
+            profile="crypto_equity_combo",
+            entrypoint=SimpleNamespace(
+                manifest=SimpleNamespace(display_name="Crypto Equity Combo"),
+            ),
+        )
+
+        with patch.dict(os.environ, {"NOTIFY_LANG": "zh"}, clear=False):
+            with patch.object(main, "STRATEGY_RUNTIME", runtime):
+                main.maybe_send_periodic_btc_status_report(
+                    state,
+                    tg_token="",
+                    tg_chat_id="",
+                    now_utc=SimpleNamespace(
+                        hour=0,
+                        strftime=lambda fmt: "2026032700",
+                    ),
+                    interval_hours=24,
+                    total_equity=12500.0,
+                    trend_holdings_equity=3200.0,
+                    trend_daily_pnl=0.0125,
+                    btc_price=87000.0,
+                    btc_snapshot={
+                        "ahr999": 0.7,
+                        "zscore": 1.2,
+                        "sell_trigger": 3.0,
+                        "regime_on": True,
+                    },
+                    btc_target_ratio=0.285,
+                    notifier_fn=messages.append,
+                )
+
+        self.assertEqual(len(messages), 1)
+        self.assertIn("🧭 策略: 加密动量组合", messages[0])
 
     def test_trend_pool_source_logs_use_chinese_when_notify_lang_is_zh(self):
         with patch.dict(os.environ, {"NOTIFY_LANG": "zh"}, clear=False):
