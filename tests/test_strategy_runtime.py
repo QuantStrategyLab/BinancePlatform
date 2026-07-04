@@ -44,6 +44,20 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertGreaterEqual(len(runtime.local_artifact_candidates), 1)
         self.assertIn(str(runtime.default_local_artifact_path), runtime.artifact_contract["default_local_candidates"])
 
+    def test_combo_profile_uses_platform_trend_pool_default(self):
+        try:
+            from strategy_runtime import load_strategy_runtime
+        except ModuleNotFoundError as exc:
+            if exc.name == "pandas":
+                self.skipTest("pandas is not installed")
+            raise
+
+        runtime = load_strategy_runtime("crypto_equity_combo")
+
+        self.assertEqual(runtime.profile, "crypto_equity_combo")
+        self.assertNotIn("trend_pool_size", runtime.merged_runtime_config)
+        self.assertEqual(runtime.trend_pool_size, 5)
+
     def test_strategy_runtime_evaluate_returns_decision_with_buy_sell_diagnostics(self):
         try:
             from strategy_runtime import load_strategy_runtime
