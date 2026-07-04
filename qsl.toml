@@ -3,6 +3,7 @@ repo = "BinancePlatform"
 tier = "runtime-platform"
 ring = 3
 allow_legacy = true
+legacy_reason = "requirements files remain for runtime deployment compatibility during pyproject/uv migration."
 enforce_bundle = false
 migration_mode = "pyproject-uv-poc"
 
