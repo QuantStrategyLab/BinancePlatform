@@ -196,6 +196,8 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         self.assertIn("TG_TOKEN", plan["keep_env"])
         self.assertIn("STRATEGY_ARTIFACT_FILE", plan["optional_env"])
         self.assertIn("STRATEGY_ARTIFACT_MANIFEST_FILE", plan["optional_env"])
+        self.assertIn("DYNAMIC_REGIME_MODE", plan["optional_env"])
+        self.assertIn("DYNAMIC_HARD_BTC_WEIGHT", plan["optional_env"])
         self.assertNotIn("TREND_POOL_FILE", plan["optional_env"])
         self.assertEqual(
             plan["hints"]["strategy_artifact_default_firestore_document"],

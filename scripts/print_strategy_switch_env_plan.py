@@ -50,6 +50,18 @@ def build_switch_plan(profile: str) -> dict[str, object]:
         "STRATEGY_ARTIFACT_ACCEPTABLE_MODES",
         "STRATEGY_ARTIFACT_EXPECTED_SIZE",
         "STRATEGY_ARTIFACT_ALLOW_NEW_ENTRIES_ON_DEGRADED",
+        "BTC_WEIGHT",
+        "TREND_WEIGHT",
+        "DYNAMIC_MODE",
+        "DYNAMIC_REGIME_MODE",
+        "DYNAMIC_REGIME_OFF_CUT",
+        "DYNAMIC_HARD_SMA200_RATIO",
+        "DYNAMIC_HARD_MA200_SLOPE",
+        "DYNAMIC_SOFT_SMA200_RATIO",
+        "DYNAMIC_HARD_BTC_WEIGHT",
+        "DYNAMIC_HARD_TREND_WEIGHT",
+        "DYNAMIC_SOFT_BTC_WEIGHT",
+        "DYNAMIC_SOFT_TREND_WEIGHT",
     ]
     notes = [
         "Binance runtime resolves strategy artifacts through STRATEGY_ARTIFACT_* settings.",

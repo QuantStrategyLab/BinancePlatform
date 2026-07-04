@@ -73,7 +73,15 @@ class StrategyRuntimeTests(unittest.TestCase):
                 "BTC_WEIGHT": "0.5",
                 "TREND_WEIGHT": "0.5",
                 "DYNAMIC_MODE": "false",
+                "DYNAMIC_REGIME_MODE": "cash_cap",
                 "DYNAMIC_REGIME_OFF_CUT": "0.30",
+                "DYNAMIC_HARD_SMA200_RATIO": "0.95",
+                "DYNAMIC_HARD_MA200_SLOPE": "-0.01",
+                "DYNAMIC_SOFT_SMA200_RATIO": "1.05",
+                "DYNAMIC_HARD_BTC_WEIGHT": "0.25",
+                "DYNAMIC_HARD_TREND_WEIGHT": "0.0",
+                "DYNAMIC_SOFT_BTC_WEIGHT": "0.40",
+                "DYNAMIC_SOFT_TREND_WEIGHT": "0.20",
                 "ROTATION_TOP_N": "3",
                 "TARGET_VOL": "0.25",
                 "CIRCUIT_BREAKER_ENABLED": "false",
@@ -91,7 +99,15 @@ class StrategyRuntimeTests(unittest.TestCase):
                 "btc_weight": 0.5,
                 "trend_weight": 0.5,
                 "dynamic_mode": False,
+                "dynamic_regime_mode": "dual_leg",
                 "dynamic_regime_off_cut": 0.30,
+                "dynamic_hard_sma200_ratio": 0.95,
+                "dynamic_hard_ma200_slope": -0.01,
+                "dynamic_soft_sma200_ratio": 1.05,
+                "dynamic_hard_btc_weight": 0.25,
+                "dynamic_hard_trend_weight": 0.0,
+                "dynamic_soft_btc_weight": 0.40,
+                "dynamic_soft_trend_weight": 0.20,
                 "rotation_top_n": 3,
                 "target_vol": 0.25,
                 "circuit_breaker_enabled": False,
@@ -111,6 +127,10 @@ class StrategyRuntimeTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"BTC_WEIGHT": "1.5"}, clear=True):
             with self.assertRaisesRegex(ValueError, "BTC_WEIGHT must be between 0 and 1"):
+                load_strategy_runtime("crypto_equity_combo")
+
+        with patch.dict(os.environ, {"DYNAMIC_REGIME_MODE": "unsupported"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "DYNAMIC_REGIME_MODE must be legacy or dual_leg"):
                 load_strategy_runtime("crypto_equity_combo")
 
     def test_combo_profile_exposes_binance_execution_plan(self):
