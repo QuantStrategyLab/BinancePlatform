@@ -116,6 +116,7 @@ jobs:
 
           if [ "$VENV_RECREATED" = "false" ] && [ -f "$HASH_FILE" ] && [ "$CURR_HASH" = "$(cat "$HASH_FILE")" ]; then
             echo "$REQ_FILE unchanged; reusing cached venv."
+            force_reinstall_internal_git_deps
           else
             echo "$REQ_FILE changed or cache is cold; updating dependency venv."
             install_with_retry "Upgrade pip" "$VENV_PATH/bin/pip" install -U pip
