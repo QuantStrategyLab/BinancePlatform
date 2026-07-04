@@ -96,7 +96,7 @@ jobs:
                 install_with_retry "Force reinstall internal dependency ${requirement%% @ *}" \
                   "$VENV_PATH/bin/pip" install --force-reinstall --no-deps "$requirement"
               fi
-            done < <(grep -E '^(quant-platform-kit|crypto-strategies) @ git\\+' "$REQ_FILE" || true)
+            done < <(grep -E '^(quant-platform-kit|crypto-strategies) @ git\+' "$REQ_FILE" || true)
           }
 
           if [ ! -x "$VENV_PATH/bin/python" ]; then

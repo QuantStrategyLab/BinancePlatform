@@ -61,7 +61,7 @@ class WatchdogWorkflowTests(unittest.TestCase):
 
         self.assertIn("force_reinstall_internal_git_deps()", text)
         self.assertIn("pip\" install --force-reinstall --no-deps \"$requirement\"", text)
-        self.assertIn("grep -E '^(quant-platform-kit|crypto-strategies) @ git\\\\+'", text)
+        self.assertIn("grep -E '^(quant-platform-kit|crypto-strategies) @ git\\+'", text)
         self.assertIn('"$REQ_FILE unchanged; reusing cached venv."', text)
         self.assertGreaterEqual(text.count("force_reinstall_internal_git_deps"), 3)
 
