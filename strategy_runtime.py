@@ -30,7 +30,15 @@ COMBO_RUNTIME_ENV_OVERRIDES: tuple[tuple[str, str, str], ...] = (
     ("BTC_WEIGHT", "btc_weight", "ratio"),
     ("TREND_WEIGHT", "trend_weight", "ratio"),
     ("DYNAMIC_MODE", "dynamic_mode", "bool"),
+    ("DYNAMIC_REGIME_MODE", "dynamic_regime_mode", "regime_mode"),
     ("DYNAMIC_REGIME_OFF_CUT", "dynamic_regime_off_cut", "ratio"),
+    ("DYNAMIC_HARD_SMA200_RATIO", "dynamic_hard_sma200_ratio", "positive_float"),
+    ("DYNAMIC_HARD_MA200_SLOPE", "dynamic_hard_ma200_slope", "float"),
+    ("DYNAMIC_SOFT_SMA200_RATIO", "dynamic_soft_sma200_ratio", "positive_float"),
+    ("DYNAMIC_HARD_BTC_WEIGHT", "dynamic_hard_btc_weight", "ratio"),
+    ("DYNAMIC_HARD_TREND_WEIGHT", "dynamic_hard_trend_weight", "ratio"),
+    ("DYNAMIC_SOFT_BTC_WEIGHT", "dynamic_soft_btc_weight", "ratio"),
+    ("DYNAMIC_SOFT_TREND_WEIGHT", "dynamic_soft_trend_weight", "ratio"),
     ("ROTATION_TOP_N", "rotation_top_n", "int"),
     ("TARGET_VOL", "target_vol", "positive_float"),
     ("CIRCUIT_BREAKER_ENABLED", "circuit_breaker_enabled", "bool"),
@@ -52,12 +60,21 @@ def _parse_env_bool(name: str, raw: str) -> bool:
 def _parse_runtime_env_value(name: str, raw: str, kind: str) -> Any:
     if kind == "bool":
         return _parse_env_bool(name, raw)
+    if kind == "regime_mode":
+        normalized = raw.strip().lower().replace("-", "_")
+        if normalized == "legacy":
+            return "legacy"
+        if normalized in {"dual", "dual_leg", "tiered", "cash_cap"}:
+            return "dual_leg"
+        raise ValueError(f"{name} must be legacy or dual_leg")
     if kind == "int":
         value = int(raw)
         if value < 1:
             raise ValueError(f"{name} must be >= 1")
         return value
     value = float(raw)
+    if kind == "float":
+        return value
     if kind == "ratio":
         if not 0.0 <= value <= 1.0:
             raise ValueError(f"{name} must be between 0 and 1")
