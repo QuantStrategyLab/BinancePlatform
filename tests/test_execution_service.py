@@ -271,6 +271,76 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertTrue(observed["status_called"])
         self.assertEqual(observed["buy_plan"], {"ETHUSDT": 320.0})
 
+    def test_execute_trend_rotation_records_candidate_filter_reasons(self):
+        runtime = SimpleNamespace(now_utc="2026-03-29T00:00:00Z")
+        report = {"selected_symbols": {"active_trend_pool": [], "selected_candidates": []}, "gating_summary": {}, "gating_events": []}
+        state = {}
+        runtime_trend_universe = {"ETHUSDT": {"base_asset": "ETH"}}
+        trend_indicators = {
+            "ETHUSDT": {
+                "sma20": 2100.0,
+                "sma60": 1900.0,
+                "sma200": 1700.0,
+                "roc20": 0.02,
+                "roc60": 0.04,
+                "roc120": 0.08,
+                "vol20": 0.5,
+            }
+        }
+        btc_snapshot = {"regime_on": True, "btc_roc20": 0.10, "btc_roc60": 0.08, "btc_roc120": 0.06}
+        plans = [
+            {
+                "active_trend_pool": ["ETHUSDT"],
+                "selected_candidates": {},
+                "eligible_buy_symbols": [],
+                "planned_trend_buys": {},
+                "sell_reasons": {},
+            },
+            {
+                "active_trend_pool": ["ETHUSDT"],
+                "selected_candidates": {},
+                "eligible_buy_symbols": [],
+                "planned_trend_buys": {},
+                "sell_reasons": {},
+            },
+        ]
+        observed = {"plan_calls": 0}
+
+        def fake_resolve_strategy_plan(*_args, **_kwargs):
+            plan = plans[observed["plan_calls"]]
+            observed["plan_calls"] += 1
+            return plan
+
+        result = execute_trend_rotation(
+            runtime,
+            report,
+            state,
+            runtime_trend_universe,
+            trend_indicators,
+            btc_snapshot,
+            {"ETHUSDT": 2000.0},
+            {"ETHUSDT": 0.0},
+            1000.0,
+            15.0,
+            [],
+            "20260329",
+            True,
+            True,
+            resolve_strategy_plan=fake_resolve_strategy_plan,
+            append_rotation_summary=lambda *_args: None,
+            execute_trend_sells=lambda *_args: 1000.0,
+            execute_trend_buys=lambda *_args: 1000.0,
+            append_trend_symbol_status=lambda *_args: None,
+            official_trend_pool_symbols=["ETHUSDT"],
+        )
+
+        self.assertEqual(result, 1000.0)
+        detail = report["gating_events"][0]["detail"]
+        self.assertEqual(detail["active_trend_pool_size"], 1)
+        reasons = detail["candidate_filter_reasons"]["ETHUSDT"]["reasons"]
+        self.assertIn("price_lte_sma20", reasons)
+        self.assertIn("relative_score_lte_zero", reasons)
+
     def test_execute_btc_dca_cycle_executes_buy_branch(self):
         runtime = SimpleNamespace(client=object())
         report = {"btc_dca_intents": [], "gating_summary": {}, "gating_events": []}
