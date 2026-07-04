@@ -5,6 +5,95 @@ from __future__ import annotations
 from runtime_support import record_gating_event
 
 
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _is_missing(value) -> bool:
+    if value is None:
+        return True
+    try:
+        return value != value
+    except Exception:
+        return False
+
+
+def build_trend_candidate_filter_diagnostics(
+    active_trend_pool,
+    trend_indicators,
+    btc_snapshot,
+    prices,
+):
+    diagnostics = {}
+    btc_regime_on = bool(btc_snapshot.get("regime_on", True))
+    btc_required = ("btc_roc20", "btc_roc60", "btc_roc120")
+    missing_btc_fields = [field for field in btc_required if _is_missing(btc_snapshot.get(field))]
+    for symbol in active_trend_pool:
+        symbol = str(symbol)
+        reasons = []
+        indicators = trend_indicators.get(symbol)
+        if not btc_regime_on:
+            reasons.append("btc_regime_off")
+        if missing_btc_fields:
+            reasons.append("missing_btc_momentum")
+        if not isinstance(indicators, dict):
+            diagnostics[symbol] = {"reasons": reasons + ["missing_indicators"]}
+            continue
+
+        required_fields = ("sma20", "sma60", "sma200", "roc20", "roc60", "roc120", "vol20")
+        missing_fields = [field for field in required_fields if _is_missing(indicators.get(field))]
+        if missing_fields:
+            reasons.append("missing_fields:" + ",".join(missing_fields))
+
+        raw_price = prices.get(symbol)
+        if _is_missing(raw_price):
+            reasons.append("missing_price")
+            diagnostics[symbol] = {"reasons": reasons}
+            continue
+
+        price = _safe_float(raw_price)
+        for field in ("sma20", "sma60", "sma200"):
+            value = indicators.get(field)
+            if not _is_missing(value) and price <= _safe_float(value):
+                reasons.append(f"price_lte_{field}")
+
+        vol20 = _safe_float(indicators.get("vol20"))
+        if not _is_missing(indicators.get("vol20")) and vol20 <= 0:
+            reasons.append("vol20_lte_zero")
+
+        relative_score = None
+        abs_momentum = None
+        if (
+            not missing_btc_fields
+            and not any(_is_missing(indicators.get(field)) for field in ("roc20", "roc60", "roc120", "vol20"))
+            and vol20 > 0
+        ):
+            rel_20 = _safe_float(indicators.get("roc20")) - _safe_float(btc_snapshot.get("btc_roc20"))
+            rel_60 = _safe_float(indicators.get("roc60")) - _safe_float(btc_snapshot.get("btc_roc60"))
+            rel_120 = _safe_float(indicators.get("roc120")) - _safe_float(btc_snapshot.get("btc_roc120"))
+            abs_momentum = (
+                0.5 * _safe_float(indicators.get("roc20"))
+                + 0.3 * _safe_float(indicators.get("roc60"))
+                + 0.2 * _safe_float(indicators.get("roc120"))
+            )
+            relative_score = (0.5 * rel_20 + 0.3 * rel_60 + 0.2 * rel_120) / vol20
+            if relative_score <= 0:
+                reasons.append("relative_score_lte_zero")
+            if abs_momentum <= 0:
+                reasons.append("abs_momentum_lte_zero")
+
+        payload = {"reasons": reasons or ["unknown_filter"]}
+        if relative_score is not None:
+            payload["relative_score"] = round(float(relative_score), 6)
+        if abs_momentum is not None:
+            payload["abs_momentum"] = round(float(abs_momentum), 6)
+        diagnostics[symbol] = payload
+    return diagnostics
+
+
 def run_daily_circuit_breaker(
     runtime,
     report,
@@ -361,7 +450,15 @@ def execute_trend_rotation(
             report,
             gate="trend_no_selected_candidate",
             category="trend",
-            detail={"active_trend_pool_size": len(active_trend_pool)},
+            detail={
+                "active_trend_pool_size": len(active_trend_pool),
+                "candidate_filter_reasons": build_trend_candidate_filter_diagnostics(
+                    active_trend_pool,
+                    trend_indicators,
+                    btc_snapshot,
+                    prices,
+                ),
+            },
         )
 
     append_rotation_summary(
