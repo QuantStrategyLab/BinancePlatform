@@ -101,7 +101,7 @@ class WatchdogWorkflowTests(unittest.TestCase):
         lock = _crypto_strategies_requirement(LOCK)
 
         self.assertEqual(requirement, lock)
-        self.assertIn("@6fe378adc6602412a1763ca115b5d17d311a65a9", lock)
+        self.assertIn("@746440683f63c3f696a12278aff9c7af030700c2", lock)
         self.assertNotIn("@2c152cf", lock)
 
 
