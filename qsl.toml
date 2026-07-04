@@ -3,12 +3,13 @@ repo = "BinancePlatform"
 tier = "runtime-platform"
 ring = 3
 allow_legacy = true
+legacy_reason = "requirements files remain for runtime deployment compatibility during pyproject/uv migration."
 enforce_bundle = false
 migration_mode = "pyproject-uv-poc"
 
 [qsl.requires]
-quant_platform_kit = "7032cde4547e7ec59af15df8935d142461a77051"
-crypto_strategies = "a830b5dd99d9e7fefa449dde80d7c0c2c80d5fdb"
+quant_platform_kit = "37c81901160c5b31127a27dba1c63944933fb6bf"
+crypto_strategies = "39bf4733cef922bdeacfd0adef394e7819a04908"
 
 [qsl.compat]
-bundle = "2026.07.1"
+bundle = "2026.07.2"
