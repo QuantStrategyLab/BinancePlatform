@@ -8,7 +8,7 @@ migration_mode = "pyproject-uv-poc"
 
 [qsl.requires]
 quant_platform_kit = "7032cde4547e7ec59af15df8935d142461a77051"
-crypto_strategies = "139681bd93b30447a559367c476bd29b7a78b285"
+crypto_strategies = "a830b5dd99d9e7fefa449dde80d7c0c2c80d5fdb"
 
 [qsl.compat]
 bundle = "2026.07.1"
