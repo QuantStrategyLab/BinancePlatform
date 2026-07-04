@@ -1,0 +1,162 @@
+{
+  "account_group": null,
+  "account_region": null,
+  "account_scope": null,
+  "artifacts": {
+    "runtime_report_cloud_uri": "gs://qsl-runtime-logs-shared/execution-reports/binance/crypto_equity_combo/2026-07/20260704T160029Z.json",
+    "runtime_report_local_path": "reports/execution_report.json"
+  },
+  "btc_dca_intents": [],
+  "buy_sell_intents": [],
+  "circuit_breaker_triggered": false,
+  "degraded_mode_level": null,
+  "deploy_target": "vps",
+  "diagnostics": {
+    "combo": {
+      "base_btc_weight": 0.5,
+      "base_trend_weight": 0.5,
+      "btc_sma200_ratio": 0.8404666229985628,
+      "dynamic_regime_mode": "dual_leg",
+      "effective_btc_weight": 0.25,
+      "effective_trend_weight": 0.0,
+      "gross_exposure": 0.03540761567550814,
+      "ma200_slope": -0.03619546807519469,
+      "regime_off": true,
+      "regime_tier": "hard"
+    }
+  },
+  "dry_run": false,
+  "error_summary": {},
+  "errors": [],
+  "finished_at": null,
+  "gating_events": [
+    {
+      "category": "trend",
+      "detail": {
+        "active_trend_pool_size": 5,
+        "candidate_filter_reasons": {
+          "AVAXUSDT": {
+            "abs_momentum": -0.108687,
+            "reasons": [
+              "btc_regime_off",
+              "price_lte_sma60",
+              "price_lte_sma200",
+              "relative_score_lte_zero",
+              "abs_momentum_lte_zero"
+            ],
+            "relative_score": -0.131789
+          },
+          "LINKUSDT": {
+            "abs_momentum": -0.074863,
+            "reasons": [
+              "btc_regime_off",
+              "price_lte_sma60",
+              "price_lte_sma200",
+              "abs_momentum_lte_zero"
+            ],
+            "relative_score": 1.314922
+          },
+          "LTCUSDT": {
+            "abs_momentum": -0.095838,
+            "reasons": [
+              "btc_regime_off",
+              "price_lte_sma60",
+              "price_lte_sma200",
+              "abs_momentum_lte_zero"
+            ],
+            "relative_score": 0.399771
+          },
+          "SOLUSDT": {
+            "abs_momentum": 0.055834,
+            "reasons": [
+              "btc_regime_off",
+              "price_lte_sma200"
+            ],
+            "relative_score": 5.14595
+          },
+          "TRXUSDT": {
+            "abs_momentum": 0.018637,
+            "reasons": [
+              "btc_regime_off",
+              "price_lte_sma60"
+            ],
+            "relative_score": 11.514012
+          }
+        }
+      },
+      "gate": "trend_no_selected_candidate"
+    },
+    {
+      "category": "btc_dca",
+      "detail": {
+        "dca_usdt_pool": 0.0
+      },
+      "gate": "btc_dca_buy_below_min_budget"
+    }
+  ],
+  "gating_summary": {
+    "btc_dca_buy_below_min_budget": 1,
+    "trend_no_selected_candidate": 1
+  },
+  "instance_name": null,
+  "log_lines": [
+    "📡 趋势池来源: fresh_upstream | 模式=core_major | 版本=2026-07-01-core_major | 日期=2026-07-01 | 项目=crypto-live-pool-pipelines",
+    "   · 已从 firestore:strategy/CRYPTO_LEADER_ROTATION_LIVE_POOL 载入最新上游趋势池。",
+    "━━━━━━━━━ 📦 组合快照 ━━━━━━━━━",
+    "💰 💰 总净值: $102 (+0.5%)",
+    "🪙 🎯 BTC 目标配比: 4% | $72",
+    "🔥 📈 趋势层持仓: 0% | $0 (+0.0%)",
+    "🚦 🚦 BTC 闸门: 关闭 | Ahr=0.85 Z=-1.2",
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    "🎯 TRXUSDT, AVAXUSDT, LTCUSDT, SOLUSDT, LINKUSDT",
+    "💤空仓",
+    "🧭 BTC 累积雷达: AHR999=0.847 | Z-Score=-1.23 (阈值:2.50)"
+  ],
+  "notifications": [],
+  "platform": "binance",
+  "project_id": null,
+  "redemption_subscription_intents": [],
+  "run_id": "20260704T160029Z",
+  "run_source": "github_actions",
+  "runtime_target": {},
+  "schema_version": "runtime_report.v1",
+  "selected_symbols": {
+    "active_trend_pool": [
+      "TRXUSDT",
+      "AVAXUSDT",
+      "LTCUSDT",
+      "SOLUSDT",
+      "LINKUSDT"
+    ]
+  },
+  "service_name": "binance-platform",
+  "side_effect_summary": {
+    "executed_call_count": 2,
+    "suppressed_call_count": 0
+  },
+  "started_at": "2026-07-04T16:00:29.165702Z",
+  "state_write_intents": [
+    {
+      "reason": "trend_pool_metadata_refresh"
+    },
+    {
+      "reason": "cycle_complete"
+    }
+  ],
+  "status": "ok",
+  "strategy_domain": "crypto",
+  "strategy_profile": "crypto_equity_combo",
+  "summary": {
+    "strategy_display_name": "Crypto Equity Combo",
+    "strategy_display_name_localized": "加密动量组合"
+  },
+  "total_equity_usdt": 102.4249075000628,
+  "trend_equity_usdt": 0.0,
+  "upstream_pool_symbols": [
+    "TRXUSDT",
+    "AVAXUSDT",
+    "LTCUSDT",
+    "SOLUSDT",
+    "LINKUSDT"
+  ]
+}
