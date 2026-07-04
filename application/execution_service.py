@@ -443,6 +443,9 @@ def execute_trend_rotation(
     active_trend_pool = list(strategy_plan["active_trend_pool"])
     selected_candidates = dict(strategy_plan["selected_candidates"])
     sell_reasons = dict(strategy_plan["sell_reasons"])
+    combo_diagnostics = dict(strategy_plan.get("combo_diagnostics", {}))
+    if combo_diagnostics:
+        report.setdefault("diagnostics", {})["combo"] = combo_diagnostics
     report["selected_symbols"]["active_trend_pool"] = list(active_trend_pool)
     report["selected_symbols"]["selected_candidates"] = list(selected_candidates.keys())
     if not selected_candidates:

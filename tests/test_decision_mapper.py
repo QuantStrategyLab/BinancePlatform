@@ -52,6 +52,20 @@ class DecisionMapperTests(unittest.TestCase):
         decision = StrategyDecision(
             diagnostics={
                 "trend_pool": ("ETHUSDT", "SOLUSDT"),
+                "metadata": {
+                    "combo": {
+                        "base_btc_weight": 0.50,
+                        "base_trend_weight": 0.50,
+                        "btc_weight": 0.25,
+                        "trend_weight": 0.0,
+                        "dynamic_regime_mode": "dual_leg",
+                        "regime_tier": "hard",
+                    },
+                    "regime_off": True,
+                    "btc_sma200_ratio": 0.94,
+                    "ma200_slope": -0.01,
+                    "gross_exposure": 0.25,
+                },
                 "rotation_candidates": {
                     "ETHUSDT": {"weight": 0.6, "relative_score": 1.2, "abs_momentum": 0.3},
                 },
@@ -71,6 +85,21 @@ class DecisionMapperTests(unittest.TestCase):
         self.assertEqual(plan["sell_reasons"], {"SOLUSDT": "trend_sell_reason_rotated_out"})
         self.assertEqual(plan["artifact_contract"], {"version": "v1"})
         self.assertEqual(plan["risk_flags"], ("regime_off",))
+        self.assertEqual(
+            plan["combo_diagnostics"],
+            {
+                "base_btc_weight": 0.50,
+                "base_trend_weight": 0.50,
+                "effective_btc_weight": 0.25,
+                "effective_trend_weight": 0.0,
+                "dynamic_regime_mode": "dual_leg",
+                "regime_tier": "hard",
+                "regime_off": True,
+                "btc_sma200_ratio": 0.94,
+                "ma200_slope": -0.01,
+                "gross_exposure": 0.25,
+            },
+        )
 
 
 if __name__ == "__main__":
