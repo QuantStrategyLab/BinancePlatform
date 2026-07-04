@@ -24,6 +24,7 @@ from trend_pool_support import get_default_live_pool_candidates as tp_get_defaul
 DEFAULT_LOCAL_TREND_POOL_ARTIFACT = Path(__file__).resolve().parent / "artifacts" / "live_pool_legacy.json"
 # Ensure artifacts directory exists so local-fallback path never fails with FileNotFoundError
 DEFAULT_LOCAL_TREND_POOL_ARTIFACT.parent.mkdir(parents=True, exist_ok=True)
+DEFAULT_TREND_POOL_SIZE = 5
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,7 @@ class LoadedStrategyRuntime:
 
     @property
     def trend_pool_size(self) -> int:
-        return int(self.merged_runtime_config["trend_pool_size"])
+        return int(self.merged_runtime_config.get("trend_pool_size", DEFAULT_TREND_POOL_SIZE))
 
     @property
     def artifact_contract(self) -> dict[str, Any]:
