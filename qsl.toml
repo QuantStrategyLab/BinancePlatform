@@ -5,6 +5,9 @@ ring = 3
 allow_legacy = true
 legacy_reason = "requirements files remain for runtime deployment compatibility during pyproject/uv migration."
 enforce_bundle = false
+owner = "runtime-platform"
+expires_at = "2026-09-30"
+next_action = "complete pyproject/uv migration and restore enforce_bundle=true"
 migration_mode = "pyproject-uv-poc"
 
 [qsl.requires]
