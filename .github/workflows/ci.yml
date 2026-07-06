@@ -21,7 +21,7 @@ jobs:
         id: quant-platform-kit-ref
         run: |
           set -euo pipefail
-          ref="main"
+          ref="$(grep -Eo 'QuantPlatformKit\.git@[0-9a-f]+' requirements-lock.txt requirements.txt | head -n1 | sed 's/.*@//')"
           if [ -n "${GITHUB_HEAD_REF:-}" ] && git ls-remote --exit-code --heads https://github.com/QuantStrategyLab/QuantPlatformKit.git "${GITHUB_HEAD_REF}" >/dev/null 2>&1; then
             ref="${GITHUB_HEAD_REF}"
           fi
@@ -31,7 +31,7 @@ jobs:
         id: crypto-strategies-ref
         run: |
           set -euo pipefail
-          ref="main"
+          ref="$(grep -Eo 'CryptoStrategies\.git@[0-9a-f]+' requirements-lock.txt requirements.txt | head -n1 | sed 's/.*@//')"
           if [ -n "${GITHUB_HEAD_REF:-}" ] && git ls-remote --exit-code --heads https://github.com/QuantStrategyLab/CryptoStrategies.git "${GITHUB_HEAD_REF}" >/dev/null 2>&1; then
             ref="${GITHUB_HEAD_REF}"
           fi
