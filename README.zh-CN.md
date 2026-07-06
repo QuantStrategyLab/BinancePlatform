@@ -1,5 +1,14 @@
 # BinancePlatform
 
+
+## QSL 架构角色
+
+- **层级**：`执行平台`。
+- **职责**：Binance 加密执行运行时。
+- **事实源/归属**：券商/API 连接、dry-run/live 控制、部署设置。
+- **消费对象**：CryptoStrategies、CryptoLivePoolPipelines artifacts、QuantPlatformKit、QuantRuntimeSettings。
+- **禁止事项**：承载策略研究逻辑或发布 live-pool 成员。
+
 [English README](README.md)
 
 > 投资有风险。本项目不构成投资建议，仅用于学习、研究和工程审阅。
