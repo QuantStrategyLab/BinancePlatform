@@ -80,12 +80,7 @@ class RuntimeConfigSupportTests(unittest.TestCase):
     def test_platform_supported_profiles_are_filtered_by_registry(self):
         self.assertEqual(
             get_supported_profiles_for_platform(BINANCE_PLATFORM),
-            frozenset({
-                DEFAULT_STRATEGY_PROFILE,
-                "crypto_btc_dca",
-                "crypto_trend_rotation",
-                "crypto_equity_combo",
-            }),
+            frozenset({DEFAULT_STRATEGY_PROFILE}),
         )
 
     def test_platform_profile_status_matrix_marks_default_profile_eligible_and_enabled(self):

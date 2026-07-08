@@ -93,16 +93,16 @@ class WatchdogWorkflowTests(unittest.TestCase):
         lock = _qpk_requirement(LOCK)
 
         self.assertEqual(requirement, lock)
-        self.assertIn("@37c81901160c5b31127a27dba1c63944933fb6bf", lock)
-        self.assertNotIn("@86f03fb8e83c0d372f4e1c64cccf3e6da50b8dd4", lock)
+        self.assertIn("@0af622ac9d47f7ef93f9379f9ded314c27a344ff", lock)
+        self.assertNotIn("@37c81901160c5b31127a27dba1c63944933fb6bf", lock)
 
     def test_crypto_strategies_pin_matches_qpk_health_dependency(self) -> None:
         requirement = _crypto_strategies_requirement(REQUIREMENTS)
         lock = _crypto_strategies_requirement(LOCK)
 
         self.assertEqual(requirement, lock)
-        self.assertIn("@39bf4733cef922bdeacfd0adef394e7819a04908", lock)
-        self.assertNotIn("@2c152cf", lock)
+        self.assertIn("@af4df02f88177f0f80e4eab7d1ee04a27283159f", lock)
+        self.assertNotIn("@39bf4733cef922bdeacfd0adef394e7819a04908", lock)
 
 
 if __name__ == "__main__":
