@@ -6,6 +6,7 @@ import json
 import os
 
 from quant_platform_kit.common.runtime_reports import persist_runtime_report
+from quant_platform_kit.strategy_lifecycle.performance_monitor import try_record_platform_execution
 from runtime_logging import RuntimeLogContext, emit_runtime_log
 
 
@@ -223,6 +224,18 @@ def execute_strategy_cycle(
             pass
     finally:
         report["log_lines"] = list(log_buffer)
+        try_record_platform_execution(
+            str(getattr(runtime, "strategy_profile", "") or ""),
+            {
+                "platform": "binance",
+                "status": report.get("status"),
+                "total_equity_usdt": report.get("total_equity_usdt"),
+                "trend_equity_usdt": report.get("trend_equity_usdt"),
+                "degraded_mode_level": report.get("degraded_mode_level"),
+                "error": report.get("error"),
+            },
+            domain="crypto",
+        )
 
     # Heartbeat beat — every cycle completion
     try:
