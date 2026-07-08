@@ -1,4 +1,3 @@
-import os
 import sys
 import types
 import unittest
@@ -45,7 +44,7 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertGreaterEqual(len(runtime.local_artifact_candidates), 1)
         self.assertIn(str(runtime.default_local_artifact_path), runtime.artifact_contract["default_local_candidates"])
 
-    def test_combo_profile_uses_platform_trend_pool_default(self):
+    def test_combo_profile_is_not_supported_on_binance(self):
         try:
             from strategy_runtime import load_strategy_runtime
         except ModuleNotFoundError as exc:
@@ -53,154 +52,8 @@ class StrategyRuntimeTests(unittest.TestCase):
                 self.skipTest("pandas is not installed")
             raise
 
-        runtime = load_strategy_runtime("crypto_equity_combo")
-
-        self.assertEqual(runtime.profile, "crypto_equity_combo")
-        self.assertNotIn("trend_pool_size", runtime.merged_runtime_config)
-        self.assertEqual(runtime.trend_pool_size, 5)
-
-    def test_combo_profile_reads_runtime_env_overrides(self):
-        try:
-            from strategy_runtime import load_strategy_runtime
-        except ModuleNotFoundError as exc:
-            if exc.name == "pandas":
-                self.skipTest("pandas is not installed")
-            raise
-
-        with patch.dict(
-            os.environ,
-            {
-                "BTC_WEIGHT": "0.5",
-                "TREND_WEIGHT": "0.5",
-                "DYNAMIC_MODE": "false",
-                "DYNAMIC_REGIME_MODE": "cash_cap",
-                "DYNAMIC_REGIME_OFF_CUT": "0.30",
-                "DYNAMIC_HARD_SMA200_RATIO": "0.95",
-                "DYNAMIC_HARD_MA200_SLOPE": "-0.01",
-                "DYNAMIC_SOFT_SMA200_RATIO": "1.05",
-                "DYNAMIC_HARD_BTC_WEIGHT": "0.25",
-                "DYNAMIC_HARD_TREND_WEIGHT": "0.0",
-                "DYNAMIC_SOFT_BTC_WEIGHT": "0.40",
-                "DYNAMIC_SOFT_TREND_WEIGHT": "0.20",
-                "ROTATION_TOP_N": "3",
-                "TARGET_VOL": "0.25",
-                "CIRCUIT_BREAKER_ENABLED": "false",
-                "ZSCORE_EXIT_RISK_REDUCED_EXPOSURE": "0.40",
-                "ZSCORE_EXIT_RISK_OFF_EXPOSURE": "0.20",
-                "ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW": "false",
-            },
-            clear=True,
-        ):
-            runtime = load_strategy_runtime("crypto_equity_combo")
-
-        self.assertEqual(
-            runtime.runtime_overrides,
-            {
-                "btc_weight": 0.5,
-                "trend_weight": 0.5,
-                "dynamic_mode": False,
-                "dynamic_regime_mode": "dual_leg",
-                "dynamic_regime_off_cut": 0.30,
-                "dynamic_hard_sma200_ratio": 0.95,
-                "dynamic_hard_ma200_slope": -0.01,
-                "dynamic_soft_sma200_ratio": 1.05,
-                "dynamic_hard_btc_weight": 0.25,
-                "dynamic_hard_trend_weight": 0.0,
-                "dynamic_soft_btc_weight": 0.40,
-                "dynamic_soft_trend_weight": 0.20,
-                "rotation_top_n": 3,
-                "target_vol": 0.25,
-                "circuit_breaker_enabled": False,
-                "zscore_exit_risk_reduced_exposure": 0.40,
-                "zscore_exit_risk_off_exposure": 0.20,
-                "zscore_exit_allow_outside_execution_window": False,
-            },
-        )
-
-    def test_combo_profile_rejects_invalid_runtime_env_override(self):
-        try:
-            from strategy_runtime import load_strategy_runtime
-        except ModuleNotFoundError as exc:
-            if exc.name == "pandas":
-                self.skipTest("pandas is not installed")
-            raise
-
-        with patch.dict(os.environ, {"BTC_WEIGHT": "1.5"}, clear=True):
-            with self.assertRaisesRegex(ValueError, "BTC_WEIGHT must be between 0 and 1"):
-                load_strategy_runtime("crypto_equity_combo")
-
-        with patch.dict(os.environ, {"DYNAMIC_REGIME_MODE": "unsupported"}, clear=True):
-            with self.assertRaisesRegex(ValueError, "DYNAMIC_REGIME_MODE must be legacy or dual_leg"):
-                load_strategy_runtime("crypto_equity_combo")
-
-    def test_combo_profile_exposes_binance_execution_plan(self):
-        try:
-            from decision_mapper import map_strategy_decision_to_allocation, map_strategy_decision_to_rotation_plan
-            from strategy_runtime import load_strategy_runtime
-        except ModuleNotFoundError as exc:
-            if exc.name == "pandas":
-                self.skipTest("pandas is not installed")
-            raise
-
-        runtime = load_strategy_runtime("crypto_equity_combo")
-        account_metrics = {
-            "total_equity": 1000.0,
-            "cash_usdt": 1000.0,
-            "trend_value": 0.0,
-            "dca_value": 0.0,
-        }
-        evaluation = runtime.evaluate(
-            prices={"BTCUSDT": 60000.0, "ETHUSDT": 3000.0, "SOLUSDT": 180.0},
-            trend_indicators={
-                "BTCUSDT": {
-                    "close": 60000.0,
-                    "sma200": 50000.0,
-                    "roc20": 0.08,
-                    "roc60": 0.16,
-                    "roc120": 0.30,
-                    "regime_on": True,
-                },
-                "ETHUSDT": {
-                    "close": 3000.0,
-                    "sma20": 2800.0,
-                    "sma60": 2600.0,
-                    "sma200": 2200.0,
-                    "roc20": 0.20,
-                    "roc60": 0.35,
-                    "roc120": 0.60,
-                    "vol20": 0.25,
-                },
-                "SOLUSDT": {
-                    "close": 180.0,
-                    "sma20": 170.0,
-                    "sma60": 160.0,
-                    "sma200": 120.0,
-                    "roc20": 0.28,
-                    "roc60": 0.45,
-                    "roc120": 0.75,
-                    "vol20": 0.30,
-                },
-            },
-            btc_snapshot={"regime_on": True},
-            account_metrics=account_metrics,
-            trend_universe_symbols=("ETHUSDT", "SOLUSDT"),
-            state={},
-            translator=lambda key, **_kwargs: key,
-            balances={"BTCUSDT": 0.0, "ETHUSDT": 0.0, "SOLUSDT": 0.0},
-            now_utc=datetime(2026, 4, 7, tzinfo=timezone.utc),
-        )
-
-        allocation = map_strategy_decision_to_allocation(
-            evaluation.decision,
-            account_metrics=account_metrics,
-        )
-        plan = map_strategy_decision_to_rotation_plan(evaluation.decision)
-
-        self.assertGreater(allocation["trend_usdt_pool"], 0.0)
-        self.assertGreater(allocation["dca_usdt_pool"], 0.0)
-        self.assertEqual(set(plan["selected_candidates"]), {"ETHUSDT", "SOLUSDT"})
-        self.assertEqual(set(plan["eligible_buy_symbols"]), {"ETHUSDT", "SOLUSDT"})
-        self.assertEqual(set(plan["planned_trend_buys"]), {"ETHUSDT", "SOLUSDT"})
+        with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE='crypto_equity_combo'"):
+            load_strategy_runtime("crypto_equity_combo")
 
     def test_strategy_runtime_evaluate_returns_decision_with_buy_sell_diagnostics(self):
         try:
