@@ -91,8 +91,8 @@ class WatchdogWorkflowTests(unittest.TestCase):
         requirement = _dependency("quant-platform-kit @ ")
         lock = LOCK.read_text(encoding="utf-8")
 
-        self.assertIn("QuantPlatformKit.git?rev=53b2ca73a5a50257b5d1a3c769b75c40924e4ba6", lock)
-        self.assertIn("@53b2ca73a5a50257b5d1a3c769b75c40924e4ba6", requirement)
+        self.assertIn("QuantPlatformKit.git?rev=69a0256934d081b5ef309a885384b9eb9f62cf90", lock)
+        self.assertIn("@69a0256934d081b5ef309a885384b9eb9f62cf90", requirement)
         self.assertNotIn("@0af622ac9d47f7ef93f9379f9ded314c27a344ff", lock)
 
     def test_crypto_strategies_pin_matches_qpk_health_dependency(self) -> None:
