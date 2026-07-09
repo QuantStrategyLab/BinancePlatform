@@ -56,22 +56,22 @@ jobs:
       - name: 3. Prepare or update dependency environment
         run: |
           set -euo pipefail
-          REQ_FILE="requirements-lock.txt"
-          if [ ! -f "$REQ_FILE" ]; then REQ_FILE="requirements.txt"; fi
+          LOCK_FILE="uv.lock"
           PYTHON_BIN="python3"
           if command -v python3.11 >/dev/null 2>&1; then PYTHON_BIN="python3.11"; fi
           echo "Using interpreter: $PYTHON_BIN ($($PYTHON_BIN --version 2>&1))"
 
           CACHE_ROOT="${RUNNER_WORKSPACE}/.runtime-cache/binance-platform"
           VENV_PATH="${CACHE_ROOT}/venv"
-          HASH_FILE="${CACHE_ROOT}/requirements.sha256"
+          HASH_FILE="${CACHE_ROOT}/uv.lock.sha256"
           PYTHON_VERSION_FILE="${CACHE_ROOT}/python.version"
-          CURR_HASH=$(sha256sum "$REQ_FILE" | cut -d' ' -f1)
+          CURR_HASH=$(sha256sum "$LOCK_FILE" | cut -d' ' -f1)
           CURR_PYTHON_VERSION="$("$PYTHON_BIN" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')"
 
           mkdir -p "$CACHE_ROOT"
           echo "VENV_PATH=$VENV_PATH" >> "$GITHUB_ENV"
           VENV_RECREATED=false
+          "$PYTHON_BIN" -m pip install --upgrade pip uv
 
           install_with_retry() {
             local description="$1"
@@ -89,16 +89,6 @@ jobs:
             return 1
           }
 
-          force_reinstall_internal_git_deps() {
-            local requirement
-            while IFS= read -r requirement; do
-              if [ -n "$requirement" ]; then
-                install_with_retry "Force reinstall internal dependency ${requirement%% @ *}" \
-                  "$VENV_PATH/bin/pip" install --force-reinstall --no-deps "$requirement"
-              fi
-            done < <(grep -E '^(quant-platform-kit|crypto-strategies) @ git\+' "$REQ_FILE" || true)
-          }
-
           if [ ! -x "$VENV_PATH/bin/python" ]; then
             echo "Creating dependency venv at $VENV_PATH."
             rm -rf "$VENV_PATH"
@@ -114,14 +104,18 @@ jobs:
             rm -f "$HASH_FILE" "$PYTHON_VERSION_FILE"
           fi
 
+          export UV_PROJECT_ENVIRONMENT="$VENV_PATH"
+
           if [ "$VENV_RECREATED" = "false" ] && [ -f "$HASH_FILE" ] && [ "$CURR_HASH" = "$(cat "$HASH_FILE")" ]; then
-            echo "$REQ_FILE unchanged; reusing cached venv."
-            force_reinstall_internal_git_deps
+            echo "$LOCK_FILE unchanged; reusing cached venv."
           else
-            echo "$REQ_FILE changed or cache is cold; updating dependency venv."
-            install_with_retry "Upgrade pip" "$VENV_PATH/bin/pip" install -U pip
-            install_with_retry "Install runtime dependencies" "$VENV_PATH/bin/pip" install -r "$REQ_FILE"
-            force_reinstall_internal_git_deps
+            echo "$LOCK_FILE changed or cache is cold; refreshing dependency venv."
+          fi
+
+          install_with_retry "Sync runtime dependencies" \
+            env UV_PROJECT_ENVIRONMENT="$VENV_PATH" uv sync --frozen --no-dev
+
+          if [ "$VENV_RECREATED" = "true" ] || [ ! -f "$HASH_FILE" ] || [ "$CURR_HASH" != "$(cat "$HASH_FILE" 2>/dev/null || true)" ]; then
             echo "$CURR_HASH" > "$HASH_FILE"
             echo "$CURR_PYTHON_VERSION" > "$PYTHON_VERSION_FILE"
           fi

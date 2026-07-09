@@ -49,15 +49,16 @@ Direct runtime profiles can usually run from market history or portfolio state. 
 ## Quick start
 
 ```bash
-python -m pip install -r requirements.txt
-python -m pytest -q
+python -m pip install --upgrade pip uv
+uv sync --frozen --extra test
+uv run --no-sync python -m unittest discover -s tests -v
 ```
 
 ## QSL compatibility status
 
 - Added `qsl.toml` with `tier = "runtime-platform"`, `ring = 3`, and `compat.bundle = "2026.07.0"` for runtime compatibility tracking.
-- Current dependency workflow is still `requirements.txt/requirements-lock.txt` + `pip`; migration to `pyproject.toml + uv.lock` is intentionally deferred due runtime entrypoint/dependency bootstrap compatibility risk.
-- TODO: keep this repository under observation and schedule a low-risk migration once runtime bootstrap can retain existing scheduler/entrypoint behavior.
+- Dependency workflow is now `pyproject.toml + uv.lock`.
+- CI, watchdog, and self-hosted runtime bootstrap all install from `uv.lock`.
 
 ## Useful docs
 

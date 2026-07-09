@@ -163,9 +163,8 @@ Preferred local install path:
 cd /path/to/BinancePlatform
 python3 -m venv venv
 source venv/bin/activate
-REQ_FILE="requirements-lock.txt"
-if [ ! -f "$REQ_FILE" ]; then REQ_FILE="requirements.txt"; fi
-pip install -r "$REQ_FILE"
+python -m pip install --upgrade pip uv
+uv sync --frozen --extra test
 ```
 
 Replay one fixed cycle:
