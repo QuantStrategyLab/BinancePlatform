@@ -236,6 +236,14 @@ class LoadedStrategyRuntime:
             trend_universe_symbols=tuple(trend_universe_symbols),
             as_of=runtime_now,
         )
+        from quant_platform_kit.strategy_lifecycle.live_equity import stamp_consecutive_losses_on_snapshot
+
+        portfolio_snapshot = stamp_consecutive_losses_on_snapshot(
+            portfolio_snapshot,
+            strategy_profile=self.profile,
+            domain="crypto",
+            logger=getattr(self, "logger", None),
+        )
         evaluation_inputs = build_strategy_evaluation_inputs(
             available_inputs=self.runtime_adapter.available_inputs,
             market_inputs={
