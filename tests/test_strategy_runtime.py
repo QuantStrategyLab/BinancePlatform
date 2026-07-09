@@ -245,6 +245,81 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertEqual(ctx.portfolio.metadata["account_metrics"]["cash_usdt"], 2000.0)
         self.assertEqual(evaluation.metadata["strategy_display_name"], "Crypto Live Pool Rotation")
 
+    def test_evaluate_stamps_consecutive_losses(self):
+        import strategy_runtime as strategy_runtime_module
+        from quant_platform_kit.strategy_contracts import StrategyDecision
+
+        class FakeEntrypoint:
+            manifest = StrategyManifest(
+                profile="crypto_live_pool_rotation",
+                domain="crypto",
+                display_name="Crypto Live Pool Rotation",
+                description="test",
+                required_inputs=frozenset(
+                    {
+                        "market_prices",
+                        "derived_indicators",
+                        "benchmark_snapshot",
+                        "portfolio_snapshot",
+                        "universe_snapshot",
+                    }
+                ),
+                default_config={},
+            )
+
+            def evaluate(self, ctx):
+                self.ctx = ctx
+                return StrategyDecision()
+
+        entrypoint = FakeEntrypoint()
+        runtime = strategy_runtime_module.LoadedStrategyRuntime(
+            entrypoint=entrypoint,
+            runtime_adapter=StrategyRuntimeAdapter(
+                available_inputs=frozenset(entrypoint.manifest.required_inputs),
+                portfolio_input_name="portfolio_snapshot",
+            ),
+            merged_runtime_config=FakeEntrypoint.manifest.default_config,
+        )
+        stamped_meta = {"consecutive_losses": 5}
+
+        def _stamp(snapshot, **_kwargs):
+            from dataclasses import replace
+
+            metadata = dict(snapshot.metadata)
+            metadata.update(stamped_meta)
+            return replace(snapshot, metadata=metadata)
+
+        with (
+            patch.object(
+                strategy_runtime_module,
+                "resolve_strategy_metadata",
+                return_value=SimpleNamespace(display_name="Crypto Live Pool Rotation"),
+            ),
+            patch(
+                "quant_platform_kit.strategy_lifecycle.live_equity.stamp_consecutive_losses_on_snapshot",
+                side_effect=_stamp,
+            ) as stamp,
+        ):
+            runtime.evaluate(
+                prices={"BTCUSDT": 60000.0, "ETHUSDT": 3000.0},
+                trend_indicators={"ETHUSDT": {"close": 3000.0}},
+                btc_snapshot={"regime_on": True},
+                account_metrics={
+                    "total_equity": 10000.0,
+                    "cash_usdt": 2000.0,
+                    "trend_value": 3000.0,
+                    "dca_value": 5000.0,
+                },
+                trend_universe_symbols=("ETHUSDT",),
+                balances={"BTCUSDT": 0.0833333333, "ETHUSDT": 1.0},
+                state={},
+                translator=lambda key, **_kwargs: key,
+                now_utc=datetime(2026, 4, 7, tzinfo=timezone.utc),
+            )
+
+        stamp.assert_called_once()
+        self.assertEqual(entrypoint.ctx.portfolio.metadata["consecutive_losses"], 5)
+
 
 if __name__ == "__main__":
     unittest.main()
