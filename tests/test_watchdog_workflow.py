@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -7,22 +8,20 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "watchdog.yml"
 RUNTIME_WORKFLOW = ROOT / ".github" / "workflows" / "main.yml"
-REQUIREMENTS = ROOT / "requirements.txt"
-LOCK = ROOT / "requirements-lock.txt"
+PYPROJECT = ROOT / "pyproject.toml"
+LOCK = ROOT / "uv.lock"
 
 
-def _qpk_requirement(path: Path) -> str:
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.startswith("quant-platform-kit @ "):
-            return line
-    raise AssertionError(f"{path} does not pin quant-platform-kit")
+def _project_dependencies() -> list[str]:
+    data = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    return list(data["project"]["dependencies"])
 
 
-def _crypto_strategies_requirement(path: Path) -> str:
-    for line in path.read_text(encoding="utf-8").splitlines():
-        if line.startswith("crypto-strategies @ "):
-            return line
-    raise AssertionError(f"{path} does not pin crypto-strategies")
+def _dependency(prefix: str) -> str:
+    for dep in _project_dependencies():
+        if dep.startswith(prefix):
+            return dep
+    raise AssertionError(f"{PYPROJECT} does not pin {prefix}")
 
 
 class WatchdogWorkflowTests(unittest.TestCase):
@@ -52,18 +51,18 @@ class WatchdogWorkflowTests(unittest.TestCase):
     def test_watchdog_installs_locked_internal_dependency(self) -> None:
         text = self.workflow_text
 
-        self.assertIn("qpk_req=\"$(grep -E '^quant-platform-kit @ ' \"$REQ_FILE\")\"", text)
-        self.assertIn('python -m pip install "$qpk_req" google-cloud-firestore', text)
-        self.assertNotIn("pip install quant-platform-kit google-cloud-firestore", text)
+        self.assertIn("python -m pip install --upgrade pip uv", text)
+        self.assertIn("uv sync --frozen --no-dev", text)
+        self.assertIn("uv run --no-sync python - <<'PY'", text)
 
-    def test_runtime_workflow_force_reinstalls_internal_git_dependencies(self) -> None:
+    def test_runtime_workflow_uses_cached_uv_environment(self) -> None:
         text = RUNTIME_WORKFLOW.read_text(encoding="utf-8")
 
-        self.assertIn("force_reinstall_internal_git_deps()", text)
-        self.assertIn("pip\" install --force-reinstall --no-deps \"$requirement\"", text)
-        self.assertIn("grep -E '^(quant-platform-kit|crypto-strategies) @ git\\+'", text)
-        self.assertIn('"$REQ_FILE unchanged; reusing cached venv."', text)
-        self.assertGreaterEqual(text.count("force_reinstall_internal_git_deps"), 3)
+        self.assertIn('LOCK_FILE="uv.lock"', text)
+        self.assertIn('HASH_FILE="${CACHE_ROOT}/uv.lock.sha256"', text)
+        self.assertIn('export UV_PROJECT_ENVIRONMENT="$VENV_PATH"', text)
+        self.assertIn('env UV_PROJECT_ENVIRONMENT="$VENV_PATH" uv sync --frozen --no-dev', text)
+        self.assertIn('"$LOCK_FILE unchanged; reusing cached venv."', text)
 
     def test_runtime_workflow_exposes_strategy_artifact_variables(self) -> None:
         text = RUNTIME_WORKFLOW.read_text(encoding="utf-8")
@@ -89,19 +88,19 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertNotIn(".check_alive()", text)
 
     def test_watchdog_qpk_pin_includes_health_module_release(self) -> None:
-        requirement = _qpk_requirement(REQUIREMENTS)
-        lock = _qpk_requirement(LOCK)
+        requirement = _dependency("quant-platform-kit @ ")
+        lock = LOCK.read_text(encoding="utf-8")
 
-        self.assertEqual(requirement, lock)
-        self.assertIn("@8378e939d9324ea63a0f45c9f21ba0e2eeb1cfff", lock)
+        self.assertIn("QuantPlatformKit.git?rev=8378e939d9324ea63a0f45c9f21ba0e2eeb1cfff", lock)
+        self.assertIn("@8378e939d9324ea63a0f45c9f21ba0e2eeb1cfff", requirement)
         self.assertNotIn("@0af622ac9d47f7ef93f9379f9ded314c27a344ff", lock)
 
     def test_crypto_strategies_pin_matches_qpk_health_dependency(self) -> None:
-        requirement = _crypto_strategies_requirement(REQUIREMENTS)
-        lock = _crypto_strategies_requirement(LOCK)
+        requirement = _dependency("crypto-strategies @ ")
+        lock = LOCK.read_text(encoding="utf-8")
 
-        self.assertEqual(requirement, lock)
-        self.assertIn("@ef78312d7653095f585c4f75d45bf765bedc2751", lock)
+        self.assertIn("CryptoStrategies.git?rev=ef78312d7653095f585c4f75d45bf765bedc2751", lock)
+        self.assertIn("@ef78312d7653095f585c4f75d45bf765bedc2751", requirement)
         self.assertNotIn("@eb7bf665c5199f7f075af61ef5c86171eea1f057", lock)
 
 

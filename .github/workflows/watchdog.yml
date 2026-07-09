@@ -36,15 +36,12 @@ jobs:
       - name: Install deps
         run: |
           set -euo pipefail
-          REQ_FILE="requirements-lock.txt"
-          if [ ! -f "$REQ_FILE" ]; then REQ_FILE="requirements.txt"; fi
-          qpk_req="$(grep -E '^quant-platform-kit @ ' "$REQ_FILE")"
-          python -m pip install --upgrade pip
-          python -m pip install "$qpk_req" google-cloud-firestore
+          python -m pip install --upgrade pip uv
+          uv sync --frozen --no-dev
       - name: Run watchdog
         id: check
         run: |
-          python - <<'PY'
+          uv run --no-sync python - <<'PY'
           import os
           from quant_platform_kit.common.health import HealthMonitor, is_heartbeat_fresh
 

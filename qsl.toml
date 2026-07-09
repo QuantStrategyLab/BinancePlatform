@@ -2,13 +2,11 @@
 repo = "BinancePlatform"
 tier = "runtime-platform"
 ring = 3
-allow_legacy = true
-legacy_reason = "requirements files remain for runtime deployment compatibility during pyproject/uv migration."
-enforce_bundle = false
+allow_legacy = false
+enforce_bundle = true
 owner = "runtime-platform"
 expires_at = "2026-09-30"
-next_action = "complete pyproject/uv migration and restore enforce_bundle=true"
-migration_mode = "pyproject-uv-poc"
+next_action = "keep uv.lock current and maintain QPK/CryptoStrategies pin consistency"
 
 [qsl.requires]
 quant_platform_kit = "8378e939d9324ea63a0f45c9f21ba0e2eeb1cfff"

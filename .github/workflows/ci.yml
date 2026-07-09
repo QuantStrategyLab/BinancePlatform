@@ -21,7 +21,7 @@ jobs:
         id: quant-platform-kit-ref
         run: |
           set -euo pipefail
-          ref="$(grep -Eo 'QuantPlatformKit\.git@[0-9a-f]+' requirements-lock.txt requirements.txt | head -n1 | sed 's/.*@//')"
+          ref="$(grep -Eo 'QuantPlatformKit\.git@[0-9a-f]+' pyproject.toml | head -n1 | sed 's/.*@//')"
           if [ -n "${GITHUB_HEAD_REF:-}" ] && git ls-remote --exit-code --heads https://github.com/QuantStrategyLab/QuantPlatformKit.git "${GITHUB_HEAD_REF}" >/dev/null 2>&1; then
             ref="${GITHUB_HEAD_REF}"
           fi
@@ -31,7 +31,7 @@ jobs:
         id: crypto-strategies-ref
         run: |
           set -euo pipefail
-          ref="$(grep -Eo 'CryptoStrategies\.git@[0-9a-f]+' requirements-lock.txt requirements.txt | head -n1 | sed 's/.*@//')"
+          ref="$(grep -Eo 'CryptoStrategies\.git@[0-9a-f]+' pyproject.toml | head -n1 | sed 's/.*@//')"
           if [ -n "${GITHUB_HEAD_REF:-}" ] && git ls-remote --exit-code --heads https://github.com/QuantStrategyLab/CryptoStrategies.git "${GITHUB_HEAD_REF}" >/dev/null 2>&1; then
             ref="${GITHUB_HEAD_REF}"
           fi
@@ -58,17 +58,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          REQ_FILE="requirements-lock.txt"
-          if [ ! -f "$REQ_FILE" ]; then REQ_FILE="requirements.txt"; fi
           set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install -r "$REQ_FILE"
-          pip install ruff
-          python -m pip install --no-deps -e external/QuantPlatformKit -e external/CryptoStrategies
+          python -m pip install --upgrade pip uv
+          uv sync --frozen --extra test
+          uv pip install --no-deps -e external/QuantPlatformKit -e external/CryptoStrategies
 
       - name: Compile scripts
         run: |
-          python -m py_compile \
+          uv run --no-sync python -m py_compile \
             application/cycle_service.py \
             application/state_service.py \
             degraded_mode_support.py \
@@ -90,20 +87,15 @@ jobs:
             trade_state_support.py
 
       - name: Run ruff
-        run: ruff check --exclude external .
+        run: uv run --no-sync ruff check --exclude external .
 
-      - name: Check QPK pin and requirements consistency
+      - name: Check QPK pin and lock consistency
         run: |
           set -euo pipefail
-          mkdir -p /tmp/qpk-pin-guard
-          curl -fsSL -o /tmp/qpk-pin-guard/QPK_PIN \
-            https://raw.githubusercontent.com/QuantStrategyLab/QuantPlatformKit/main/QPK_PIN
-          curl -fsSL -o /tmp/qpk-pin-guard/check_qpk_pin_consistency.py \
-            https://raw.githubusercontent.com/QuantStrategyLab/QuantPlatformKit/main/scripts/check_qpk_pin_consistency.py
-          python /tmp/qpk-pin-guard/check_qpk_pin_consistency.py \
+          uv run --no-sync python external/QuantPlatformKit/scripts/check_qpk_pin_consistency.py \
             --root . \
-            --pin-file /tmp/qpk-pin-guard/QPK_PIN
-          cmp -s requirements.txt requirements-lock.txt
+            --pin-file external/QuantPlatformKit/QPK_PIN
+          uv lock --check
 
       - name: Run unit tests
-        run: python -m unittest discover -s tests -v
+        run: uv run --no-sync python -m unittest discover -s tests -v
