@@ -11,8 +11,8 @@ next_action = "complete pyproject/uv migration and restore enforce_bundle=true"
 migration_mode = "pyproject-uv-poc"
 
 [qsl.requires]
-quant_platform_kit = "37c81901160c5b31127a27dba1c63944933fb6bf"
-crypto_strategies = "39bf4733cef922bdeacfd0adef394e7819a04908"
+quant_platform_kit = "8378e939d9324ea63a0f45c9f21ba0e2eeb1cfff"
+crypto_strategies = "ef78312d7653095f585c4f75d45bf765bedc2751"
 
 [qsl.compat]
 bundle = "2026.07.2"
