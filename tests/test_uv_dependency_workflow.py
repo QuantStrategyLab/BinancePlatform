@@ -11,6 +11,8 @@ class UvDependencyWorkflowTests(unittest.TestCase):
         self.assertIn("crypto-strategies @ git+https://github.com/QuantStrategyLab/", pyproject)
         self.assertIn("[project.optional-dependencies]", pyproject)
         self.assertIn("test = [", pyproject)
+        self.assertIn("[tool.uv]", pyproject)
+        self.assertIn('override-dependencies = [', pyproject)
 
     def test_ci_runtime_and_watchdog_use_uv_lock(self) -> None:
         ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
@@ -33,6 +35,14 @@ class UvDependencyWorkflowTests(unittest.TestCase):
         self.assertIn("python -m pip install --upgrade pip uv", watchdog)
         self.assertIn("uv sync --frozen --no-dev", watchdog)
         self.assertIn("uv run --no-sync python - <<'PY'", watchdog)
+        self.assertIn(
+            "QuantPlatformKit.git?rev=69a0256934d081b5ef309a885384b9eb9f62cf90#69a0256934d081b5ef309a885384b9eb9f62cf90",
+            lockfile,
+        )
+        self.assertNotIn(
+            "QuantPlatformKit.git?rev=69a0256934d081b5ef309a885384b9eb9f62cf90#53b2ca73a5a50257b5d1a3c769b75c40924e4ba6",
+            lockfile,
+        )
         self.assertNotIn("requirements-lock.txt", ci)
         self.assertNotIn("requirements.txt", ci)
 
