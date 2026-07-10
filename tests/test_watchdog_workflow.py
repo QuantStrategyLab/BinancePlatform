@@ -60,8 +60,11 @@ class WatchdogWorkflowTests(unittest.TestCase):
 
         self.assertIn('LOCK_FILE="uv.lock"', text)
         self.assertIn('HASH_FILE="${CACHE_ROOT}/uv.lock.sha256"', text)
+        self.assertIn('"$VENV_PATH/bin/python" -m pip install --upgrade pip uv', text)
         self.assertIn('export UV_PROJECT_ENVIRONMENT="$VENV_PATH"', text)
-        self.assertIn('env UV_PROJECT_ENVIRONMENT="$VENV_PATH" uv sync --frozen --no-dev', text)
+        self.assertIn('UV_BIN="$VENV_PATH/bin/uv"', text)
+        self.assertIn('env UV_PROJECT_ENVIRONMENT="$VENV_PATH" "$UV_BIN" sync --frozen --no-dev', text)
+        self.assertNotIn('"$PYTHON_BIN" -m pip install --upgrade pip uv', text)
         self.assertIn('"$LOCK_FILE unchanged; reusing cached venv."', text)
 
     def test_runtime_workflow_exposes_strategy_artifact_variables(self) -> None:
