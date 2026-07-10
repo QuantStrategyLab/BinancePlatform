@@ -13,6 +13,9 @@ on:
         default: false
         type: boolean
 
+permissions:
+  contents: read
+
 env:
   GCP_PROJECT_ID: binancequant
   GCP_WORKLOAD_IDENTITY_PROVIDER: projects/677468735457/locations/global/workloadIdentityPools/github-actions/providers/github-main
@@ -33,6 +36,7 @@ jobs:
       )
     runs-on: self-hosted
     timeout-minutes: 60
+    environment: binance-runtime
     permissions:
       actions: read
       contents: write
