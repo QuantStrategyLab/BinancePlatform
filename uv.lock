@@ -16,6 +16,9 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
+[manifest]
+overrides = [{ name = "quant-platform-kit", git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=69a0256934d081b5ef309a885384b9eb9f62cf90" }]
+
 [[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
@@ -1614,7 +1617,7 @@ wheels = [
 [[package]]
 name = "quant-platform-kit"
 version = "0.10.0"
-source = { git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=69a0256934d081b5ef309a885384b9eb9f62cf90#53b2ca73a5a50257b5d1a3c769b75c40924e4ba6" }
+source = { git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=69a0256934d081b5ef309a885384b9eb9f62cf90#69a0256934d081b5ef309a885384b9eb9f62cf90" }
 
 [[package]]
 name = "regex"
