@@ -23,7 +23,9 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: codex-review-gate-${{ github.event.pull_request.number }}
+  # A non-Codex review still emits pull_request_review.  Keep that skipped
+  # event from cancelling the active pull_request polling run.
+  group: codex-review-gate-${{ github.event.pull_request.number }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
