@@ -1,7 +1,7 @@
 [qsl]
 repo = "BinancePlatform"
-tier = "runtime-platform"
-ring = 3
+tier = "runtime"
+upgrade_ring = "ring_d"
 allow_legacy = false
 enforce_bundle = true
 owner = "runtime-platform"
@@ -13,4 +13,4 @@ quant_platform_kit = "69a0256934d081b5ef309a885384b9eb9f62cf90"
 crypto_strategies = "ef78312d7653095f585c4f75d45bf765bedc2751"
 
 [qsl.compat]
-bundle = "2026.07.2"
+bundle = "2026.07.3"
