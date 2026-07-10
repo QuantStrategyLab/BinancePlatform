@@ -10,6 +10,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "watchdog.yml"
 RUNTIME_WORKFLOW = ROOT / ".github" / "workflows" / "main.yml"
 PYPROJECT = ROOT / "pyproject.toml"
 LOCK = ROOT / "uv.lock"
+QSL = ROOT / "qsl.toml"
 
 
 def _project_dependencies() -> list[str]:
@@ -98,6 +99,15 @@ class WatchdogWorkflowTests(unittest.TestCase):
 
         self.assertRegex(revision, r"^[0-9a-f]{40}$")
         self.assertIn(f"QuantPlatformKit.git?rev={revision}#{revision}", lock)
+
+    def test_qsl_qpk_pin_matches_manifest(self) -> None:
+        requirement = _dependency("quant-platform-kit @ ")
+        qsl = tomllib.loads(QSL.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            qsl["qsl"]["requires"]["quant_platform_kit"],
+            requirement.rsplit("@", maxsplit=1)[1],
+        )
 
     def test_crypto_strategies_pin_matches_qpk_health_dependency(self) -> None:
         requirement = _dependency("crypto-strategies @ ")
