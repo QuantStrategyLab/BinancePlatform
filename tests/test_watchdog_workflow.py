@@ -60,6 +60,7 @@ class WatchdogWorkflowTests(unittest.TestCase):
 
         self.assertIn('LOCK_FILE="uv.lock"', text)
         self.assertIn('HASH_FILE="${CACHE_ROOT}/uv.lock.sha256"', text)
+        self.assertIn('"$VENV_PATH/bin/python" -m ensurepip --upgrade', text)
         self.assertIn('"$VENV_PATH/bin/python" -m pip install --upgrade pip uv', text)
         self.assertIn('export UV_PROJECT_ENVIRONMENT="$VENV_PATH"', text)
         self.assertIn('UV_BIN="$VENV_PATH/bin/uv"', text)

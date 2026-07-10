@@ -27,6 +27,7 @@ class UvDependencyWorkflowTests(unittest.TestCase):
         self.assertIn("https://raw.githubusercontent.com/QuantStrategyLab/QuantPlatformKit/main/QPK_PIN", ci)
         self.assertIn("uv lock --check", ci)
         self.assertIn('LOCK_FILE="uv.lock"', runtime)
+        self.assertIn('"$VENV_PATH/bin/python" -m ensurepip --upgrade', runtime)
         self.assertIn('"$VENV_PATH/bin/python" -m pip install --upgrade pip uv', runtime)
         self.assertIn('export UV_PROJECT_ENVIRONMENT="$VENV_PATH"', runtime)
         self.assertIn('UV_BIN="$VENV_PATH/bin/uv"', runtime)
