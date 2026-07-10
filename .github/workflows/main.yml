@@ -88,6 +88,14 @@ jobs:
             return 1
           }
 
+          ensure_venv_pip() {
+            if "$VENV_PATH/bin/python" -m pip --version >/dev/null 2>&1; then
+              return 0
+            fi
+            echo "pip missing from dependency venv; bootstrapping with ensurepip."
+            "$VENV_PATH/bin/python" -m ensurepip --upgrade
+          }
+
           if [ ! -x "$VENV_PATH/bin/python" ]; then
             echo "Creating dependency venv at $VENV_PATH."
             rm -rf "$VENV_PATH"
@@ -103,6 +111,7 @@ jobs:
             rm -f "$HASH_FILE" "$PYTHON_VERSION_FILE"
           fi
 
+          ensure_venv_pip
           install_with_retry "Install uv into dependency venv" \
             "$VENV_PATH/bin/python" -m pip install --upgrade pip uv
 
