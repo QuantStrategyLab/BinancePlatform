@@ -91,13 +91,13 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertIn("alive = is_heartbeat_fresh(heartbeat, max_age_seconds)", text)
         self.assertNotIn(".check_alive()", text)
 
-    def test_watchdog_qpk_pin_includes_health_module_release(self) -> None:
+    def test_watchdog_qpk_pin_matches_lockfile(self) -> None:
         requirement = _dependency("quant-platform-kit @ ")
         lock = LOCK.read_text(encoding="utf-8")
+        revision = requirement.rsplit("@", maxsplit=1)[1]
 
-        self.assertIn("QuantPlatformKit.git?rev=69a0256934d081b5ef309a885384b9eb9f62cf90", lock)
-        self.assertIn("@69a0256934d081b5ef309a885384b9eb9f62cf90", requirement)
-        self.assertNotIn("@0af622ac9d47f7ef93f9379f9ded314c27a344ff", lock)
+        self.assertRegex(revision, r"^[0-9a-f]{40}$")
+        self.assertIn(f"QuantPlatformKit.git?rev={revision}#{revision}", lock)
 
     def test_crypto_strategies_pin_matches_qpk_health_dependency(self) -> None:
         requirement = _dependency("crypto-strategies @ ")

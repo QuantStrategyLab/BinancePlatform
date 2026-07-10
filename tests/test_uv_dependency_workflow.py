@@ -1,3 +1,4 @@
+import re
 import unittest
 from pathlib import Path
 
@@ -36,14 +37,11 @@ class UvDependencyWorkflowTests(unittest.TestCase):
         self.assertIn("python -m pip install --upgrade pip uv", watchdog)
         self.assertIn("uv sync --frozen --no-dev", watchdog)
         self.assertIn("uv run --no-sync python - <<'PY'", watchdog)
-        self.assertIn(
-            "QuantPlatformKit.git?rev=69a0256934d081b5ef309a885384b9eb9f62cf90#69a0256934d081b5ef309a885384b9eb9f62cf90",
-            lockfile,
-        )
-        self.assertNotIn(
-            "QuantPlatformKit.git?rev=69a0256934d081b5ef309a885384b9eb9f62cf90#53b2ca73a5a50257b5d1a3c769b75c40924e4ba6",
-            lockfile,
-        )
+        pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r"QuantPlatformKit\.git@([0-9a-f]{40})", pyproject)
+        self.assertIsNotNone(match)
+        qpk_pin = match.group(1)
+        self.assertIn(f"QuantPlatformKit.git?rev={qpk_pin}#{qpk_pin}", lockfile)
         self.assertNotIn("requirements-lock.txt", ci)
         self.assertNotIn("requirements.txt", ci)
 
