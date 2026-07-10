@@ -22,7 +22,10 @@ jobs:
       allow_unconfigured_backend: false
       api_fallback_enabled: "false"
       direct_api_primary_enabled: "false"
-    secrets: inherit
+    # The centralized workflow is fail-closed and only needs the service URL.
+    # Do not expose unrelated repository or organization secrets to it.
+    secrets:
+      CODEX_AUDIT_SERVICE_URL: ${{ secrets.CODEX_AUDIT_SERVICE_URL }}
     permissions:
       contents: read
       id-token: write
