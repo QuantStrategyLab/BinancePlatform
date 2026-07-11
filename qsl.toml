@@ -13,4 +13,4 @@ quant_platform_kit = "651c9ac4f37ce6e7fe1bac84dc7646cd5abc9e6e"
 crypto_strategies = "ef78312d7653095f585c4f75d45bf765bedc2751"
 
 [qsl.compat]
-bundle = "2026.07.3"
+bundle = "2026.07.4"
