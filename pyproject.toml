@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "QuantStrategyLab platform layer for Binance exchange."
 requires-python = ">=3.11"
 dependencies = [
-  "quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@fdae6666ba4e7c61444d87253476cee4ad02d2c1",
+  "quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@651c9ac4f37ce6e7fe1bac84dc7646cd5abc9e6e",
   "crypto-strategies @ git+https://github.com/QuantStrategyLab/CryptoStrategies.git@ef78312d7653095f585c4f75d45bf765bedc2751",
   "python-binance",
   "pandas",
@@ -23,7 +23,7 @@ test = [
 
 [tool.uv]
 override-dependencies = [
-  "quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@fdae6666ba4e7c61444d87253476cee4ad02d2c1",
+  "quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@651c9ac4f37ce6e7fe1bac84dc7646cd5abc9e6e",
 ]
 
 [tool.ruff]
