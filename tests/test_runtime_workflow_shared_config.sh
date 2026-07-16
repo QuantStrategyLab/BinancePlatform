@@ -16,6 +16,8 @@ grep -Fq 'GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDE
 grep -Fq 'GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}' "$workflow_file"
 grep -Fq 'for name in GCP_PROJECT_ID GCP_WORKLOAD_IDENTITY_PROVIDER GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT; do' "$workflow_file"
 grep -Fq 'echo "::error::Required repository variable ${name} is not configured."' "$workflow_file"
+grep -Eq 'readonly EXPECTED_OIDC_IDENTITY_SHA256="[0-9a-f]{64}"' "$workflow_file"
+grep -Fq "printf '%s\\0%s\\0%s'" "$workflow_file"
 preflight_line="$(grep -nF -- '- name: 0. Validate deployment identity configuration' "$workflow_file" | cut -d: -f1)"
 checkout_line="$(grep -nF -- '- name: 1. Checkout latest code' "$workflow_file" | cut -d: -f1)"
 auth_line="$(grep -nF -- '- name: 2. Authenticate to Google Cloud' "$workflow_file" | cut -d: -f1)"
