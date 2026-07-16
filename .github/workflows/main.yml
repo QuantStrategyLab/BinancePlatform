@@ -17,9 +17,9 @@ permissions:
   contents: read
 
 env:
-  GCP_PROJECT_ID: binancequant
-  GCP_WORKLOAD_IDENTITY_PROVIDER: projects/677468735457/locations/global/workloadIdentityPools/github-actions/providers/github-main
-  GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: binance-platform-runtime@binancequant.iam.gserviceaccount.com
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+  GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
@@ -42,6 +42,29 @@ jobs:
       contents: write
       id-token: write
     steps:
+      - name: 0. Validate deployment identity configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in GCP_PROJECT_ID GCP_WORKLOAD_IDENTITY_PROVIDER GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Required repository variable ${name} is not configured."
+              exit 1
+            fi
+          done
+          readonly EXPECTED_OIDC_IDENTITY_SHA256="68e87a5dc1bbe2e41af33d526514034246c6487fb7b716596cc75fe1c739a6b9"
+          actual_oidc_identity_sha256="$(
+            printf '%s\0%s\0%s' \
+              "$GCP_PROJECT_ID" \
+              "$GCP_WORKLOAD_IDENTITY_PROVIDER" \
+              "$GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT" |
+              sha256sum |
+              awk '{print $1}'
+          )"
+          if [ "$actual_oidc_identity_sha256" != "$EXPECTED_OIDC_IDENTITY_SHA256" ]; then
+            echo "::error::Repository OIDC identity variables do not match the reviewed identity contract."
+            exit 1
+          fi
       - name: 1. Checkout latest code
         uses: actions/checkout@v6
         with:

@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import os
+import re
+import subprocess
 import tomllib
 import unittest
 from pathlib import Path
@@ -11,6 +15,46 @@ RUNTIME_WORKFLOW = ROOT / ".github" / "workflows" / "main.yml"
 PYPROJECT = ROOT / "pyproject.toml"
 LOCK = ROOT / "uv.lock"
 QSL = ROOT / "qsl.toml"
+IDENTITY_NAMES = (
+    "GCP_PROJECT_ID",
+    "GCP_WORKLOAD_IDENTITY_PROVIDER",
+    "GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT",
+)
+EXPECTED_DIGEST_PATTERN = re.compile(r'EXPECTED_OIDC_IDENTITY_SHA256="([0-9a-f]{64})"')
+
+
+def _identity_digest(values: dict[str, str]) -> str:
+    canonical = b"\0".join(values[name].encode("utf-8") for name in IDENTITY_NAMES)
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _preflight_script(workflow_text: str) -> str:
+    step = workflow_text.index("Validate deployment identity configuration")
+    run_marker = "        run: |\n"
+    start = workflow_text.index(run_marker, step) + len(run_marker)
+    lines: list[str] = []
+    for line in workflow_text[start:].splitlines():
+        if line.startswith("      - "):
+            break
+        if line.startswith("          "):
+            lines.append(line[10:])
+        elif not line:
+            lines.append("")
+        else:
+            break
+    return "\n".join(lines)
+
+
+def _run_preflight(script: str, values: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    env = {"PATH": os.environ.get("PATH", "")}
+    env.update(values)
+    return subprocess.run(
+        ["bash", "-c", script],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def _project_dependencies() -> list[str]:
@@ -30,24 +74,113 @@ class WatchdogWorkflowTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.workflow_text = WORKFLOW.read_text(encoding="utf-8")
 
-    def test_watchdog_uses_binance_runtime_identity(self) -> None:
+    def test_watchdog_uses_repository_variables_before_remote_actions(self) -> None:
         text = self.workflow_text
 
         self.assertIn("id-token: write", text)
+        for name in (
+            "GCP_PROJECT_ID",
+            "GCP_WORKLOAD_IDENTITY_PROVIDER",
+            "GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT",
+        ):
+            self.assertIn(f"{name}: ${{{{ vars.{name} }}}}", text)
         self.assertIn(
-            "GCP_WORKLOAD_IDENTITY_PROVIDER: "
-            "projects/677468735457/locations/global/workloadIdentityPools/github-actions/providers/github-main",
+            "for name in GCP_PROJECT_ID GCP_WORKLOAD_IDENTITY_PROVIDER "
+            "GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT; do",
             text,
         )
         self.assertIn(
-            "GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: "
-            "binance-platform-runtime@binancequant.iam.gserviceaccount.com",
+            'echo "::error::Required repository variable ${name} is not configured."',
             text,
         )
+        preflight = text.index("- name: Validate deployment identity configuration")
+        checkout = text.index("- uses: actions/checkout@v6")
+        auth = text.index("- name: Authenticate to Google Cloud")
+        self.assertLess(preflight, checkout)
+        self.assertLess(preflight, auth)
         self.assertIn("uses: google-github-actions/auth@v3", text)
         self.assertIn("workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}", text)
         self.assertIn("service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}", text)
         self.assertIn("WATCHDOG_MAX_AGE_SECONDS: ${{ vars.WATCHDOG_MAX_AGE_SECONDS || '4500' }}", text)
+
+    def test_oidc_identity_digest_is_fixed_and_shared(self) -> None:
+        scripts = (
+            _preflight_script(RUNTIME_WORKFLOW.read_text(encoding="utf-8")),
+            _preflight_script(self.workflow_text),
+        )
+        digests: list[str] = []
+
+        for script in scripts:
+            matches = EXPECTED_DIGEST_PATTERN.findall(script)
+            self.assertEqual(len(matches), 1)
+            digests.extend(matches)
+            self.assertIn("readonly EXPECTED_OIDC_IDENTITY_SHA256=", script)
+            self.assertIn("set -euo pipefail", script)
+            self.assertNotIn("set -x", script)
+            self.assertIn(r"printf '%s\0%s\0%s'", script)
+            self.assertLess(script.index('"$GCP_PROJECT_ID"'), script.index('"$GCP_WORKLOAD_IDENTITY_PROVIDER"'))
+            self.assertLess(
+                script.index('"$GCP_WORKLOAD_IDENTITY_PROVIDER"'),
+                script.index('"$GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT"'),
+            )
+
+        self.assertEqual(len(set(digests)), 1)
+
+    def test_oidc_identity_digest_fails_closed_without_value_output(self) -> None:
+        baseline = {
+            "GCP_PROJECT_ID": "synthetic-project",
+            "GCP_WORKLOAD_IDENTITY_PROVIDER": "synthetic-provider",
+            "GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT": "synthetic-service-account",
+        }
+        expected = _identity_digest(baseline)
+
+        for workflow in (RUNTIME_WORKFLOW, WORKFLOW):
+            script = _preflight_script(workflow.read_text(encoding="utf-8"))
+            script, replacements = EXPECTED_DIGEST_PATTERN.subn(
+                f'EXPECTED_OIDC_IDENTITY_SHA256="{expected}"',
+                script,
+            )
+            self.assertEqual(replacements, 1)
+            baseline_result = _run_preflight(script, baseline)
+            self.assertEqual(baseline_result.returncode, 0)
+            baseline_output = baseline_result.stdout + baseline_result.stderr
+            self.assertNotIn(expected, baseline_output)
+            for value in baseline.values():
+                self.assertNotIn(value, baseline_output)
+
+            candidates: list[dict[str, str]] = []
+            for name in IDENTITY_NAMES:
+                empty = dict(baseline)
+                empty[name] = ""
+                candidates.append(empty)
+
+                modified = dict(baseline)
+                modified[name] = f"{modified[name]}-modified"
+                candidates.append(modified)
+
+            for left, right in ((0, 1), (0, 2), (1, 2)):
+                swapped = dict(baseline)
+                swapped[IDENTITY_NAMES[left]], swapped[IDENTITY_NAMES[right]] = (
+                    swapped[IDENTITY_NAMES[right]],
+                    swapped[IDENTITY_NAMES[left]],
+                )
+                candidates.append(swapped)
+            candidates.append(
+                {
+                    IDENTITY_NAMES[0]: baseline[IDENTITY_NAMES[0]] + baseline[IDENTITY_NAMES[1]],
+                    IDENTITY_NAMES[1]: baseline[IDENTITY_NAMES[2]],
+                    IDENTITY_NAMES[2]: baseline[IDENTITY_NAMES[0]],
+                }
+            )
+
+            for candidate in candidates:
+                result = _run_preflight(script, candidate)
+                self.assertNotEqual(result.returncode, 0)
+                output = result.stdout + result.stderr
+                self.assertNotIn(expected, output)
+                for value in candidate.values():
+                    if value:
+                        self.assertNotIn(value, output)
 
     def test_watchdog_installs_locked_internal_dependency(self) -> None:
         text = self.workflow_text
