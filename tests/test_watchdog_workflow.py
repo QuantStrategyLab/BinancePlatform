@@ -30,20 +30,30 @@ class WatchdogWorkflowTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.workflow_text = WORKFLOW.read_text(encoding="utf-8")
 
-    def test_watchdog_uses_binance_runtime_identity(self) -> None:
+    def test_watchdog_uses_repository_variables_before_remote_actions(self) -> None:
         text = self.workflow_text
 
         self.assertIn("id-token: write", text)
+        for name in (
+            "GCP_PROJECT_ID",
+            "GCP_WORKLOAD_IDENTITY_PROVIDER",
+            "GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT",
+        ):
+            self.assertIn(f"{name}: ${{{{ vars.{name} }}}}", text)
         self.assertIn(
-            "GCP_WORKLOAD_IDENTITY_PROVIDER: "
-            "projects/677468735457/locations/global/workloadIdentityPools/github-actions/providers/github-main",
+            "for name in GCP_PROJECT_ID GCP_WORKLOAD_IDENTITY_PROVIDER "
+            "GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT; do",
             text,
         )
         self.assertIn(
-            "GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: "
-            "binance-platform-runtime@binancequant.iam.gserviceaccount.com",
+            'echo "::error::Required repository variable ${name} is not configured."',
             text,
         )
+        preflight = text.index("- name: Validate deployment identity configuration")
+        checkout = text.index("- uses: actions/checkout@v6")
+        auth = text.index("- name: Authenticate to Google Cloud")
+        self.assertLess(preflight, checkout)
+        self.assertLess(preflight, auth)
         self.assertIn("uses: google-github-actions/auth@v3", text)
         self.assertIn("workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}", text)
         self.assertIn("service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}", text)

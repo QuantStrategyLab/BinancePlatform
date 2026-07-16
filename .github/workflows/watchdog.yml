@@ -10,9 +10,9 @@ permissions:
   contents: read
 
 env:
-  GCP_PROJECT_ID: binancequant
-  GCP_WORKLOAD_IDENTITY_PROVIDER: projects/677468735457/locations/global/workloadIdentityPools/github-actions/providers/github-main
-  GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: binance-platform-runtime@binancequant.iam.gserviceaccount.com
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+  GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
   WATCHDOG_MAX_AGE_SECONDS: ${{ vars.WATCHDOG_MAX_AGE_SECONDS || '4500' }}
 
 jobs:
@@ -20,6 +20,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Validate deployment identity configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in GCP_PROJECT_ID GCP_WORKLOAD_IDENTITY_PROVIDER GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Required repository variable ${name} is not configured."
+              exit 1
+            fi
+          done
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
