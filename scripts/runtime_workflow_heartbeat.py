@@ -7,9 +7,16 @@ import datetime as dt
 import json
 import os
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any
+
+
+_GITHUB_API_MAX_ATTEMPTS = 4
+_GITHUB_API_MAX_RETRY_DELAY_SECONDS = 30.0
+_RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
 def _split_values(raw: str | None) -> list[str]:
@@ -37,6 +44,16 @@ def _parse_timestamp(value: Any) -> dt.datetime | None:
     return parsed.astimezone(dt.timezone.utc)
 
 
+def _github_retry_delay(exc: urllib.error.HTTPError | urllib.error.URLError, attempt: int) -> float:
+    retry_after = exc.headers.get("Retry-After") if isinstance(exc, urllib.error.HTTPError) else None
+    if retry_after:
+        try:
+            return min(max(float(retry_after), 0.0), _GITHUB_API_MAX_RETRY_DELAY_SECONDS)
+        except ValueError:
+            pass
+    return min(float(2 ** (attempt - 1)), _GITHUB_API_MAX_RETRY_DELAY_SECONDS)
+
+
 def _github_request(url: str, token: str) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
@@ -46,8 +63,32 @@ def _github_request(url: str, token: str) -> dict[str, Any]:
             "X-GitHub-Api-Version": "2022-11-28",
         },
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
-        return json.loads(response.read().decode("utf-8"))
+    for attempt in range(1, _GITHUB_API_MAX_ATTEMPTS + 1):
+        retry_error: urllib.error.HTTPError | urllib.error.URLError | None = None
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            retryable = exc.code in _RETRYABLE_HTTP_STATUSES
+            if not retryable or attempt == _GITHUB_API_MAX_ATTEMPTS:
+                raise
+            retry_error = exc
+        except urllib.error.URLError as exc:
+            if attempt == _GITHUB_API_MAX_ATTEMPTS:
+                raise
+            retry_error = exc
+
+        assert retry_error is not None
+        delay = _github_retry_delay(retry_error, attempt)
+        print(
+            "GitHub API request failed "
+            f"({retry_error}); retrying in {delay:g}s "
+            f"(attempt {attempt + 1}/{_GITHUB_API_MAX_ATTEMPTS})",
+            file=sys.stderr,
+        )
+        time.sleep(delay)
+
+    raise RuntimeError("unreachable")
 
 
 def _workflow_paths(workflow: str) -> set[str]:
