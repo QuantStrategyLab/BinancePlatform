@@ -65,6 +65,7 @@ The monthly execution pool is locked to the accepted upstream `version` / `as_of
 - GitHub Actions no longer owns the hourly cadence for runtime execution in this repo.
 - Production cadence should come from one external scheduler, for example VPS cron calling the GitHub Actions dispatch API.
 - The VPS dispatch guard retries bounded transient failures such as network errors and GitHub `500`/`502`/`503`/`504`, but still alerts immediately for configuration and permission failures.
+- Repository variable changes are consumed by the next externally scheduled dispatch; they do not reconfigure the VPS scheduler cadence.
 - Avoid overlapping dispatches from multiple schedulers or from a second manual run while the current runtime job is still in progress.
 
 ## Degraded Mode Ladder
@@ -93,6 +94,7 @@ Use the generic `STRATEGY_ARTIFACT_*` names for crypto strategy artifacts.
 
 Primary settings:
 
+- `RUNTIME_TARGET_JSON`: canonical runtime target written by QuantRuntimeSettings; when present, `STRATEGY_PROFILE` and `BINANCE_DRY_RUN` must match it or the run fails closed
 - `STRATEGY_PROFILE`: live profile selector; current supported value is `crypto_live_pool_rotation`
 - `STRATEGY_ARTIFACT_FIRESTORE_COLLECTION`: upstream artifact collection, default `strategy`
 - `STRATEGY_ARTIFACT_FIRESTORE_DOCUMENT`: upstream artifact document, default `CRYPTO_LIVE_POOL_ROTATION_LIVE_POOL`
@@ -147,8 +149,10 @@ Operator action:
 
 Expected behavior:
 
-- Telegram send failures should not stop the trading cycle
-- The cycle may still finish while alert delivery is degraded
+- Telegram transport and response-body acknowledgement are both validated
+- A delivery failure does not roll back completed trading actions, but the execution report and workflow are marked failed
+- Persisted notification receipts contain only delivery metadata and message hashes, never tokens, chat IDs, or message text
+- A failed periodic status delivery does not advance its report bucket, so a later cycle can retry
 
 Operator action:
 

@@ -430,7 +430,7 @@ def append_log(log_buffer, message):
 
 
 def send_tg_msg(token, chat_id, text):
-    live_send_tg_msg(token, chat_id, text)
+    return live_send_tg_msg(token, chat_id, text)
 
 
 def _runtime_error_notification_message(exc):
@@ -454,11 +454,13 @@ def _notify_runtime_error(exc):
         print("Binance runtime error notification skipped: no Telegram target configured.")
         return False
     try:
-        send_tg_msg(token, chat_id, _runtime_error_notification_message(exc))
+        receipt = send_tg_msg(token, chat_id, _runtime_error_notification_message(exc))
     except Exception as send_exc:
         print(f"Binance runtime error Telegram send failed: {send_exc}")
         return False
-    return True
+    if isinstance(receipt, dict):
+        return receipt.get("transport_acknowledged") is True
+    return receipt is True
 
 # ==========================================
 # 2. Earn and balance helpers

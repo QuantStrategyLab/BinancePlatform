@@ -144,6 +144,25 @@ class MainRuntimeErrorNotificationTests(unittest.TestCase):
         self.assertIn("Binance strategy run failed", observed["messages"][0][2])
         self.assertIn("RuntimeError: runtime setup failed", observed["messages"][0][2])
 
+    def test_runtime_error_notification_requires_transport_acknowledgement(self):
+        with patch.dict(
+            os.environ,
+            {
+                "TG_TOKEN": "token-1",
+                "GLOBAL_TELEGRAM_CHAT_ID": "chat-1",
+            },
+            clear=False,
+        ):
+            with patch.object(
+                main,
+                "send_tg_msg",
+                return_value={
+                    "delivery_status": "failed",
+                    "transport_acknowledged": False,
+                },
+            ):
+                self.assertFalse(main._notify_runtime_error(RuntimeError("boom")))
+
 
 if __name__ == "__main__":
     unittest.main()

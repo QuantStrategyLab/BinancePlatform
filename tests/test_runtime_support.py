@@ -12,7 +12,14 @@ QPK_SRC = ROOT.parent / "QuantPlatformKit" / "src"
 if str(QPK_SRC) not in sys.path:
     sys.path.insert(0, str(QPK_SRC))
 
-from runtime_support import ExecutionRuntime, build_execution_report, record_gating_event
+from runtime_support import (
+    ExecutionRuntime,
+    build_execution_report,
+    finalize_notification_delivery,
+    record_gating_event,
+    runtime_notify,
+)
+from quant_platform_kit.common.runtime_target import build_runtime_target
 
 
 class TestBuildExecutionReport(unittest.TestCase):
@@ -48,6 +55,24 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertIn("buy_sell_intents", report)
         self.assertIn("log_lines", report)
 
+    def test_report_uses_runtime_target_service_identity(self):
+        runtime_target = build_runtime_target(
+            platform_id="binance",
+            strategy_profile="crypto_live_pool_rotation",
+            dry_run_only=False,
+            service_name="binance-platform",
+        )
+        runtime = ExecutionRuntime(
+            dry_run=False,
+            run_id="test-runtime-target",
+            runtime_target=runtime_target,
+        )
+
+        report = build_execution_report(runtime)
+
+        self.assertEqual(report["service_name"], "binance-platform")
+        self.assertEqual(report["runtime_target"]["service_name"], "binance-platform")
+
     def test_record_gating_event_updates_summary_and_events(self):
         report = {}
 
@@ -67,3 +92,31 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertEqual(report["gating_summary"]["trend_buy_below_min_budget"], 2)
         self.assertEqual(report["gating_events"][0]["symbol"], "ETHUSDT")
         self.assertEqual(report["gating_events"][0]["detail"]["budget_usdt"], 12.0)
+
+    def test_runtime_notify_persists_only_safe_failed_delivery_receipt(self):
+        runtime = ExecutionRuntime(
+            dry_run=False,
+            run_id="test-notification",
+            tg_token="secret-token",
+            tg_chat_id="private-chat",
+            notifier=lambda **_kwargs: {
+                "sink": "telegram",
+                "delivery_status": "failed",
+                "transport_acknowledged": False,
+                "error_type": "telegram_rejected",
+            },
+        )
+        report = build_execution_report(runtime)
+
+        acknowledged = runtime_notify(runtime, report, "sensitive notification body")
+        finalize_notification_delivery(report)
+
+        serialized = str(report)
+        self.assertFalse(acknowledged)
+        self.assertEqual(report["status"], "error")
+        self.assertFalse(
+            report["summary"]["notification_delivery_summary"]["all_acknowledged"]
+        )
+        self.assertNotIn("secret-token", serialized)
+        self.assertNotIn("private-chat", serialized)
+        self.assertNotIn("sensitive notification body", serialized)

@@ -5,6 +5,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from quant_platform_kit.common.runtime_target import (
+    RuntimeTarget,
+    build_runtime_target,
+    resolve_runtime_target_from_env,
+)
+
 from notify_i18n_support import build_strategy_display_name, build_translator, get_notify_lang
 from runtime_support import ExecutionRuntime
 from strategy_registry import (
@@ -43,14 +49,12 @@ class CycleExecutionSettings:
     strategy_display_name: str
     strategy_display_name_localized: str
     strategy_domain: str
+    runtime_target: RuntimeTarget
 
 
 def load_cycle_execution_settings() -> CycleExecutionSettings:
     notify_lang = get_notify_lang()
-    strategy_definition = resolve_strategy_definition(
-        os.getenv("STRATEGY_PROFILE"),
-        platform_id=BINANCE_PLATFORM,
-    )
+    runtime_target, strategy_definition = _resolve_runtime_target()
     strategy_metadata = resolve_strategy_metadata(
         strategy_definition.profile,
         platform_id=BINANCE_PLATFORM,
@@ -70,7 +74,53 @@ def load_cycle_execution_settings() -> CycleExecutionSettings:
         strategy_display_name=strategy_metadata.display_name,
         strategy_display_name_localized=strategy_display_name_localized,
         strategy_domain=strategy_definition.domain,
+        runtime_target=runtime_target,
     )
+
+
+def _resolve_runtime_target():
+    raw_runtime_target = str(os.getenv("RUNTIME_TARGET_JSON") or "").strip()
+    raw_strategy_profile = str(os.getenv("STRATEGY_PROFILE") or "").strip()
+    if raw_runtime_target:
+        runtime_target = resolve_runtime_target_from_env(
+            env=os.environ,
+            expected_platform_id=BINANCE_PLATFORM,
+        )
+        strategy_definition = resolve_strategy_definition(
+            runtime_target.strategy_profile,
+            platform_id=BINANCE_PLATFORM,
+        )
+        if raw_strategy_profile:
+            legacy_definition = resolve_strategy_definition(
+                raw_strategy_profile,
+                platform_id=BINANCE_PLATFORM,
+            )
+            if legacy_definition.profile != strategy_definition.profile:
+                raise ValueError(
+                    "STRATEGY_PROFILE does not match RUNTIME_TARGET_JSON.strategy_profile"
+                )
+        if "BINANCE_DRY_RUN" in os.environ:
+            legacy_dry_run = get_env_bool("BINANCE_DRY_RUN", default=True)
+            if legacy_dry_run != runtime_target.dry_run_only:
+                raise ValueError(
+                    "BINANCE_DRY_RUN does not match RUNTIME_TARGET_JSON.dry_run_only"
+                )
+        return runtime_target, strategy_definition
+
+    strategy_definition = resolve_strategy_definition(
+        raw_strategy_profile or None,
+        platform_id=BINANCE_PLATFORM,
+    )
+    runtime_target = build_runtime_target(
+        platform_id=BINANCE_PLATFORM,
+        strategy_profile=strategy_definition.profile,
+        dry_run_only=get_env_bool("BINANCE_DRY_RUN", default=True),
+        deployment_selector=os.getenv("DEPLOYMENT_SELECTOR") or "default",
+        account_selector=os.getenv("ACCOUNT_SELECTOR") or "default",
+        account_scope=os.getenv("ACCOUNT_SCOPE") or "default",
+        service_name=os.getenv("SERVICE_NAME") or "binance-platform",
+    )
+    return runtime_target, strategy_definition
 
 
 def build_live_runtime(
@@ -83,7 +133,7 @@ def build_live_runtime(
     runtime_now = now_utc or datetime.now(timezone.utc)
     cycle_settings = load_cycle_execution_settings()
     return ExecutionRuntime(
-        dry_run=get_env_bool("BINANCE_DRY_RUN", default=True),
+        dry_run=cycle_settings.runtime_target.dry_run_only,
         now_utc=runtime_now,
         strategy_profile=cycle_settings.strategy_profile,
         strategy_domain=cycle_settings.strategy_domain,
@@ -96,4 +146,5 @@ def build_live_runtime(
         state_loader=state_loader,
         state_writer=state_writer,
         notifier=notifier,
+        runtime_target=cycle_settings.runtime_target,
     )

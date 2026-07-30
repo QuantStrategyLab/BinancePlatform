@@ -1,3 +1,5 @@
+import hashlib
+
 import requests
 
 from notify_i18n_support import build_telegram_message, translate as t
@@ -46,10 +48,33 @@ def save_trade_state(data, *, normalize_fn, collection="strategy", document="MUL
 
 
 def send_tg_msg(token, chat_id, text):
+    message = build_telegram_message(text)
+    receipt = {
+        "sink": "telegram",
+        "delivery_status": "failed",
+        "transport_acknowledged": False,
+        "compact_text_sha256": hashlib.sha256(message.encode("utf-8")).hexdigest(),
+        "compact_text_length": len(message),
+    }
     if not token or not chat_id:
-        return
+        return {**receipt, "error_type": "missing_target"}
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": chat_id, "text": build_telegram_message(text)}, timeout=10)
-    except Exception:
+        response = requests.post(
+            url,
+            data={"chat_id": chat_id, "text": message},
+            timeout=10,
+        )
+        if int(getattr(response, "status_code", 500)) >= 400:
+            return {**receipt, "error_type": "http_error"}
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            return {**receipt, "error_type": "telegram_rejected"}
+        return {
+            **receipt,
+            "delivery_status": "sent",
+            "transport_acknowledged": True,
+        }
+    except Exception as exc:
         print(t("telegram_send_failed"))
+        return {**receipt, "error_type": type(exc).__name__}
