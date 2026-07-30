@@ -206,7 +206,16 @@ def _send_telegram(message: str) -> bool:
         )
         try:
             with urllib.request.urlopen(request, timeout=15) as response:
-                ok = ok and response.status < 400
+                try:
+                    payload = json.loads(response.read().decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    payload = {}
+                ok = (
+                    ok
+                    and response.status < 400
+                    and isinstance(payload, dict)
+                    and payload.get("ok") is True
+                )
         except Exception as exc:  # noqa: BLE001
             ok = False
             print(f"Telegram send failed: {exc}", file=sys.stderr)

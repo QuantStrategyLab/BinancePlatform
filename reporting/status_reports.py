@@ -67,11 +67,15 @@ def maybe_send_periodic_btc_status_report(
         f"{separator}\n"
         f"💡 {hint}"
     )
-    if notifier_fn is None:
-        send_tg_msg_fn(tg_token, tg_chat_id, text)
+    delivery = send_tg_msg_fn(tg_token, tg_chat_id, text) if notifier_fn is None else notifier_fn(text)
+    if isinstance(delivery, dict):
+        acknowledged = delivery.get("transport_acknowledged") is True
     else:
-        notifier_fn(text)
+        acknowledged = delivery is not False
+    if not acknowledged:
+        return False
     state["last_btc_status_report_bucket"] = report_bucket
+    return True
 
 
 def append_portfolio_report(

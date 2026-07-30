@@ -8,6 +8,7 @@ import os
 from quant_platform_kit.common.runtime_reports import persist_runtime_report
 from quant_platform_kit.strategy_lifecycle.performance_monitor import try_record_platform_execution
 from runtime_logging import RuntimeLogContext, emit_runtime_log
+from runtime_support import finalize_notification_delivery
 
 
 def execute_strategy_cycle(
@@ -224,6 +225,7 @@ def execute_strategy_cycle(
             pass
     finally:
         report["log_lines"] = list(log_buffer)
+        finalize_notification_delivery(report)
         try_record_platform_execution(
             str(getattr(runtime, "strategy_profile", "") or ""),
             {
@@ -269,10 +271,15 @@ def run_live_cycle(
     exit_fn=None,
 ):
     runtime = runtime_builder()
+    runtime_target = getattr(runtime, "runtime_target", None)
     log_context = RuntimeLogContext(
         platform="binance",
         deploy_target=os.getenv("LOG_DEPLOY_TARGET", "vps"),
-        service_name=os.getenv("SERVICE_NAME", "binance-platform"),
+        service_name=(
+            getattr(runtime_target, "service_name", None)
+            or os.getenv("SERVICE_NAME")
+            or "binance-platform"
+        ),
         strategy_profile=str(getattr(runtime, "strategy_profile", "") or os.getenv("STRATEGY_PROFILE", "crypto_live_pool_rotation")),
         run_id=str(getattr(runtime, "run_id", "") or ""),
         extra_fields={

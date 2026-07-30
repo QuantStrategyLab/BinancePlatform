@@ -121,6 +121,27 @@ class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
         self.assertTrue(any("/actions/runs?" in url for url in requested_urls))
         send_telegram.assert_not_called()
 
+    def test_send_telegram_rejects_api_ok_false(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self):
+                return b'{"ok":false,"description":"rejected"}'
+
+        with patch.dict(
+            os.environ,
+            {"TG_TOKEN": "token-1", "GLOBAL_TELEGRAM_CHAT_ID": "chat-1"},
+            clear=True,
+        ):
+            with patch.object(heartbeat.urllib.request, "urlopen", return_value=FakeResponse()):
+                self.assertFalse(heartbeat._send_telegram("heartbeat failed"))
+
 
 if __name__ == "__main__":
     unittest.main()

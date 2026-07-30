@@ -125,6 +125,50 @@ class StatusReportTests(unittest.TestCase):
         self.assertTrue(observed)
         self.assertIn("strategy=加密领涨轮动", observed[0])
 
+    def test_periodic_report_does_not_advance_bucket_when_delivery_fails(self):
+        state = {}
+        now = SimpleNamespace(hour=8, strftime=lambda _fmt: "2026032908")
+        translations = {
+            "heartbeat_title": "heartbeat",
+            "strategy_label": "strategy={name}",
+            "total_equity": "equity",
+            "trend_equity": "trend",
+            "btc_price": "btc",
+            "btc_gate": "gate",
+            "gate_on": "on",
+            "gate_off": "off",
+            "zscore": "zscore",
+            "zscore_threshold": "threshold",
+            "btc_target": "target",
+            "manual_hint_low_value": "low",
+            "manual_hint_neutral": "neutral",
+        }
+
+        def translate(key, **kwargs):
+            template = translations[key]
+            return template.format(**kwargs) if kwargs else template
+
+        acknowledged = maybe_send_periodic_btc_status_report(
+            state,
+            "token",
+            "chat-id",
+            now,
+            8,
+            1000.0,
+            250.0,
+            0.01,
+            50_000.0,
+            {"ahr999": 0.8, "zscore": 1.0, "sell_trigger": 3.0, "regime_on": True},
+            0.5,
+            "Crypto",
+            translate_fn=translate,
+            separator="---",
+            notifier_fn=lambda _text: False,
+        )
+
+        self.assertFalse(acknowledged)
+        self.assertNotIn("last_btc_status_report_bucket", state)
+
 
 if __name__ == "__main__":
     unittest.main()

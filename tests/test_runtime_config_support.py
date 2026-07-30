@@ -147,6 +147,54 @@ class RuntimeConfigSupportTests(unittest.TestCase):
 
         self.assertEqual(runtime.tg_chat_id, "shared-chat-id")
 
+    def test_build_live_runtime_uses_runtime_target_json(self):
+        runtime_target = {
+            "platform_id": "binance",
+            "strategy_profile": DEFAULT_STRATEGY_PROFILE,
+            "dry_run_only": False,
+            "deployment_selector": "default",
+            "account_selector": ["default"],
+            "account_scope": "default",
+            "service_name": "binance-platform",
+            "execution_mode": "live",
+            "market": "CRYPTO",
+            "market_calendar": "24/7",
+            "market_timezone": "UTC",
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "RUNTIME_TARGET_JSON": json.dumps(runtime_target),
+                "STRATEGY_PROFILE": DEFAULT_STRATEGY_PROFILE,
+                "BINANCE_DRY_RUN": "false",
+            },
+            clear=True,
+        ):
+            runtime = build_live_runtime()
+
+        self.assertFalse(runtime.dry_run)
+        self.assertEqual(runtime.runtime_target.service_name, "binance-platform")
+        self.assertEqual(runtime.runtime_target.strategy_profile, DEFAULT_STRATEGY_PROFILE)
+
+    def test_runtime_target_and_legacy_dry_run_variable_must_match(self):
+        runtime_target = {
+            "platform_id": "binance",
+            "strategy_profile": DEFAULT_STRATEGY_PROFILE,
+            "dry_run_only": False,
+            "execution_mode": "live",
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "RUNTIME_TARGET_JSON": json.dumps(runtime_target),
+                "STRATEGY_PROFILE": DEFAULT_STRATEGY_PROFILE,
+                "BINANCE_DRY_RUN": "true",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "BINANCE_DRY_RUN"):
+                build_live_runtime()
+
     def test_status_script_json_matches_registry(self):
         script = ROOT / "scripts" / "print_strategy_profile_status.py"
         result = subprocess.run(

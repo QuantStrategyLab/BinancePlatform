@@ -1,5 +1,7 @@
+import hashlib
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
@@ -37,6 +39,7 @@ class ExecutionRuntime:
     state_loader: Optional[Callable[..., Any]] = None
     state_writer: Optional[Callable[[dict[str, Any]], Any]] = None
     notifier: Optional[Callable[..., Any]] = None
+    runtime_target: Any = None
     trend_pool_payload: Optional[dict[str, Any]] = None
     btc_market_snapshot: Optional[dict[str, Any]] = None
     trend_indicator_snapshots: Optional[dict[str, Any]] = None
@@ -52,10 +55,16 @@ class ExecutionRuntime:
 
 
 def build_execution_report(runtime):
+    runtime_target = getattr(runtime, "runtime_target", None)
+    runtime_service_name = (
+        getattr(runtime_target, "service_name", None)
+        or os.getenv("SERVICE_NAME")
+        or "binance-platform"
+    )
     report = build_runtime_report_base(
         platform="binance",
         deploy_target=os.getenv("LOG_DEPLOY_TARGET", "vps"),
-        service_name=os.getenv("SERVICE_NAME", "binance-platform"),
+        service_name=runtime_service_name,
         strategy_profile=str(runtime.strategy_profile or os.getenv("STRATEGY_PROFILE", "crypto_live_pool_rotation")),
         strategy_domain=str(runtime.strategy_domain or os.getenv("STRATEGY_DOMAIN", "crypto")),
         run_id=str(runtime.run_id),
@@ -97,6 +106,8 @@ def build_execution_report(runtime):
             "strategy_display_name_localized": str(runtime.strategy_display_name_localized or ""),
         },
     })
+    if runtime_target is not None:
+        report["runtime_target"] = runtime_target.to_dict()
     return report
 
 
@@ -141,21 +152,99 @@ def next_order_id(runtime, prefix, symbol):
 
 
 def runtime_notify(runtime, report, text):
-    payload = {
-        "token": str(runtime.tg_token),
-        "chat_id": str(runtime.tg_chat_id),
-        "text": str(text),
+    message = str(text)
+    safe_event = {
+        "sink": "telegram",
+        "compact_text_sha256": hashlib.sha256(message.encode("utf-8")).hexdigest(),
+        "compact_text_length": len(message),
         "run_id": str(runtime.run_id),
         "dry_run": bool(runtime.dry_run),
     }
-    report["notifications"].append(payload)
     if runtime.dry_run:
-        record_side_effect(runtime, report, effect_type="notify", target="telegram", payload=payload, executed=False)
-        return
+        safe_event.update(
+            {
+                "delivery_status": "suppressed",
+                "transport_acknowledged": False,
+            }
+        )
+        report["notifications"].append(safe_event)
+        record_side_effect(
+            runtime,
+            report,
+            effect_type="notify",
+            target="telegram",
+            payload=safe_event,
+            executed=False,
+        )
+        return False
     if runtime.notifier is None:
         raise RuntimeError("runtime.notifier is not configured")
-    runtime.notifier(**payload)
-    record_side_effect(runtime, report, effect_type="notify", target="telegram", payload=payload, executed=True)
+    receipt = runtime.notifier(
+        token=str(runtime.tg_token),
+        chat_id=str(runtime.tg_chat_id),
+        text=message,
+        run_id=str(runtime.run_id),
+        dry_run=False,
+    )
+    if isinstance(receipt, Mapping):
+        for key in (
+            "sink",
+            "delivery_status",
+            "transport_acknowledged",
+            "error_type",
+            "compact_text_sha256",
+            "compact_text_length",
+        ):
+            if key in receipt:
+                safe_event[key] = receipt[key]
+        acknowledged = receipt.get("transport_acknowledged") is True
+    else:
+        acknowledged = receipt is True
+    safe_event.setdefault("delivery_status", "sent" if acknowledged else "failed")
+    safe_event["transport_acknowledged"] = acknowledged
+    report["notifications"].append(safe_event)
+    delivery_events = [
+        event
+        for event in report["notifications"]
+        if event.get("delivery_status") != "suppressed"
+    ]
+    report.setdefault("summary", {})["notification_delivery_summary"] = {
+        "event_count": len(delivery_events),
+        "sent_count": sum(
+            event.get("transport_acknowledged") is True for event in delivery_events
+        ),
+        "failed_count": sum(
+            event.get("transport_acknowledged") is not True for event in delivery_events
+        ),
+        "all_acknowledged": all(
+            event.get("transport_acknowledged") is True for event in delivery_events
+        ),
+    }
+    record_side_effect(
+        runtime,
+        report,
+        effect_type="notify",
+        target="telegram",
+        payload=safe_event,
+        executed=acknowledged,
+    )
+    return acknowledged
+
+
+def finalize_notification_delivery(report):
+    delivery_summary = report.get("summary", {}).get("notification_delivery_summary")
+    if not isinstance(delivery_summary, dict) or delivery_summary.get("all_acknowledged") is not False:
+        return
+    errors = report.setdefault("error_summary", {}).setdefault("errors", [])
+    if not any(error.get("stage") == "notification_delivery" for error in errors if isinstance(error, dict)):
+        errors.append(
+            {
+                "stage": "notification_delivery",
+                "message": "Telegram delivery was not acknowledged.",
+            }
+        )
+    if report.get("status") == "ok":
+        report["status"] = "error"
 
 
 def runtime_set_trade_state(runtime, report, state, *, reason):
