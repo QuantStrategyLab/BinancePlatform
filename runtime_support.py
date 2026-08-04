@@ -1,4 +1,6 @@
 import hashlib
+import json
+import math
 import os
 import re
 import time
@@ -13,18 +15,32 @@ from quant_platform_kit.common.runtime_reports import build_runtime_report_base
 _BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC = 0.25  # max ~4 orders/sec
 _LAST_API_CALL_TS: float = 0.0
 RUNTIME_EVIDENCE_CONTRACT_VERSION = "qsl.runtime_evidence_aggregate.v1"
+RUNTIME_EVIDENCE_V2_CONTRACT_VERSION = "qsl.runtime_evidence_aggregate.v2"
 RECONCILIATION_STATUSES = frozenset({"MISSING", "MATCHED", "MISMATCHED"})
 _RUNTIME_EVIDENCE_FORBIDDEN_FIELDS = frozenset(
     {
         "api_key",
         "api_secret",
+        "account_id",
         "authorization",
+        "balance",
         "balances",
+        "cookie",
         "credentials",
+        "fill",
+        "fill_id",
+        "fills",
         "headers",
+        "jwt",
+        "notional",
+        "order",
+        "order_id",
         "orders",
+        "position",
         "positions",
         "provider_rows",
+        "quantity",
+        "raw_series",
         "secret",
         "token",
     }
@@ -164,7 +180,6 @@ def validate_runtime_evidence_aggregate(aggregate: Any) -> dict[str, Any]:
     if aggregate.get("contract_version") != RUNTIME_EVIDENCE_CONTRACT_VERSION:
         errors.append(f"{label} contract_version must be {RUNTIME_EVIDENCE_CONTRACT_VERSION}")
     _validate_release_identity(aggregate.get("release_identity"), errors)
-
     risk_engine = aggregate.get("risk_engine")
     if not isinstance(risk_engine, Mapping):
         errors.append(f"{label} risk_engine must be an object")
@@ -234,6 +249,463 @@ def build_runtime_evidence_aggregate(
     return aggregate
 
 
+def _canonical_sha256(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+_RISK_ASSESSMENT_V1_FIELDS = frozenset(
+    {
+        "contract_version",
+        "scope",
+        "evaluated_at",
+        "policy_id",
+        "policy_version",
+        "qpk_source_revision",
+        "mandate_id",
+        "mandate_version",
+        "mandate_authority_receipt_sha256",
+        "mandate_scope",
+        "decision_digest_sha256",
+        "portfolio_snapshot_digest_sha256",
+        "effective_exposure_cap",
+        "observed_effective_exposure",
+        "proposed_effective_exposure",
+        "outcome",
+        "reason_codes",
+        "assessment_sha256",
+    }
+)
+_CAP_ASSESSMENT_FIELDS = frozenset(
+    {
+        "outcome",
+        "mandate_id",
+        "mandate_version",
+        "mandate_authority_receipt_sha256",
+        "mandate_scope",
+        "effective_exposure_cap",
+        "decision_digest_sha256",
+        "release_identity_sha256",
+        "account_snapshot_sha256",
+        "account_assessment_sha256",
+        "qpk_source_revision",
+        "order_authorization_sha256",
+    }
+)
+_ORDER_AUTHORIZATION_V2_FIELDS = frozenset(
+    {
+        "contract_version",
+        "outcome",
+        "run_id",
+        "authorization_kind",
+        "action_sequence",
+        "action_class",
+        "method_name",
+        "effect_type",
+        "canonical_payload_sha256",
+        "decision_digest_sha256",
+        "release_identity_sha256",
+        "account_snapshot_sha256",
+        "member_assessment_sha256",
+        "account_assessment_sha256",
+        "mandate_authority_receipt_sha256",
+        "mandate_scope",
+        "authorization_sha256",
+    }
+)
+_RUNTIME_EVIDENCE_V2_FIELDS = frozenset(
+    {
+        "contract_version",
+        "produced_at",
+        "run_id",
+        "producer_revision",
+        "release_identity",
+        "member_risk_assessment",
+        "account_risk_assessment",
+        "cap_assessment",
+        "order_authorization",
+        "strategy_stop_evaluation",
+        "account_breaker_evaluation",
+        "execution_gate_outcome",
+        "reconciliation",
+        "verified_active",
+        "fills_verified",
+        "capital_use_verified",
+    }
+)
+
+
+def _append_exact_field_errors(
+    payload: Mapping[str, Any],
+    expected_fields: frozenset[str],
+    errors: list[str],
+    label: str,
+) -> None:
+    actual_fields = set(payload)
+    for field_name in sorted(expected_fields - actual_fields, key=str):
+        errors.append(f"{label} missing field: {field_name}")
+    for field_name in sorted(actual_fields - expected_fields, key=str):
+        errors.append(f"{label} unexpected field: {field_name}")
+
+
+def _is_finite_cap(value: Any) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+        and 0.0 <= float(value) <= 1.0
+    )
+
+
+def _is_nonnegative_finite_number(value: Any) -> bool:
+    return (
+        not isinstance(value, bool)
+        and isinstance(value, (int, float))
+        and math.isfinite(float(value))
+        and float(value) >= 0.0
+    )
+
+
+def _validate_risk_assessment_v1(
+    assessment: Any,
+    *,
+    expected_scope: str,
+    errors: list[str],
+    label: str,
+) -> Mapping[str, Any] | None:
+    if not isinstance(assessment, Mapping):
+        errors.append(f"{label} must be an object")
+        return None
+    _append_exact_field_errors(assessment, _RISK_ASSESSMENT_V1_FIELDS, errors, label)
+    if assessment.get("contract_version") != "qsl.risk_gate_assessment.v1":
+        errors.append(f"{label}.contract_version is invalid")
+    if assessment.get("scope") != expected_scope:
+        errors.append(f"{label}.scope must be {expected_scope}")
+    if assessment.get("outcome") not in {"APPROVE", "REJECT"}:
+        errors.append(f"{label}.outcome is invalid")
+    if not _is_sha256(assessment.get("assessment_sha256")):
+        errors.append(f"{label}.assessment_sha256 is invalid")
+    for digest_field in (
+        "mandate_authority_receipt_sha256",
+        "decision_digest_sha256",
+        "portfolio_snapshot_digest_sha256",
+    ):
+        if not _is_sha256(assessment.get(digest_field)):
+            errors.append(f"{label}.{digest_field} is invalid")
+    if not _is_git_revision(assessment.get("qpk_source_revision")):
+        errors.append(f"{label}.qpk_source_revision is invalid")
+    if not _is_utc_timestamp(assessment.get("evaluated_at")):
+        errors.append(f"{label}.evaluated_at is invalid")
+    for field_name in ("policy_id", "policy_version", "mandate_id", "mandate_version"):
+        if not isinstance(assessment.get(field_name), str) or not assessment[field_name].strip():
+            errors.append(f"{label}.{field_name} is invalid")
+    if assessment.get("mandate_scope") not in {"RESEARCH_ONLY", "PAPER", "LIVE"}:
+        errors.append(f"{label}.mandate_scope is invalid")
+    if not _is_finite_cap(assessment.get("effective_exposure_cap")):
+        errors.append(f"{label}.effective_exposure_cap is invalid")
+    for field_name in ("observed_effective_exposure", "proposed_effective_exposure"):
+        if not _is_nonnegative_finite_number(assessment.get(field_name)):
+            errors.append(f"{label}.{field_name} is invalid")
+    reason_codes = assessment.get("reason_codes")
+    if not isinstance(reason_codes, (list, tuple)) or not all(isinstance(code, str) for code in reason_codes):
+        errors.append(f"{label}.reason_codes is invalid")
+    digest_payload = {key: value for key, value in assessment.items() if key != "assessment_sha256"}
+    try:
+        expected_digest = _canonical_sha256(digest_payload)
+    except (TypeError, ValueError):
+        errors.append(f"{label} must be canonical JSON")
+    else:
+        if assessment.get("assessment_sha256") != expected_digest:
+            errors.append(f"{label}.assessment_sha256 mismatch")
+    return assessment
+
+
+def _validate_runtime_evidence_aggregate_v2_payload(
+    aggregate: Any,
+    *,
+    require_aggregate_sha256: bool,
+) -> list[str]:
+    errors: list[str] = []
+    label = "runtime_evidence_aggregate_v2"
+    if not isinstance(aggregate, Mapping):
+        return [f"{label} must be an object"]
+    _append_forbidden_field_errors(aggregate, errors)
+    expected_aggregate_fields = _RUNTIME_EVIDENCE_V2_FIELDS | (
+        {"aggregate_sha256"} if require_aggregate_sha256 else set()
+    )
+    _append_exact_field_errors(aggregate, frozenset(expected_aggregate_fields), errors, label)
+    if aggregate.get("contract_version") != RUNTIME_EVIDENCE_V2_CONTRACT_VERSION:
+        errors.append(f"{label} contract_version must be {RUNTIME_EVIDENCE_V2_CONTRACT_VERSION}")
+    if not _is_utc_timestamp(aggregate.get("produced_at")):
+        errors.append(f"{label} produced_at must be a UTC timestamp")
+    if not isinstance(aggregate.get("run_id"), str) or not aggregate["run_id"].strip():
+        errors.append(f"{label} run_id must be non-empty")
+    if not _is_git_revision(aggregate.get("producer_revision")):
+        errors.append(f"{label} producer_revision must be a git revision")
+    _validate_release_identity(aggregate.get("release_identity"), errors)
+    release_artifacts = aggregate.get("release_identity", {}).get("artifacts", {}) if isinstance(
+        aggregate.get("release_identity"), Mapping
+    ) else {}
+    if set(release_artifacts) != {"live_pool", "live_pool_legacy", "latest_ranking", "latest_universe"}:
+        errors.append(f"{label} release_identity must bind the exact four artifacts")
+    member = _validate_risk_assessment_v1(
+        aggregate.get("member_risk_assessment"),
+        expected_scope="MEMBER",
+        errors=errors,
+        label=f"{label} member_risk_assessment",
+    )
+    account = _validate_risk_assessment_v1(
+        aggregate.get("account_risk_assessment"),
+        expected_scope="ACCOUNT",
+        errors=errors,
+        label=f"{label} account_risk_assessment",
+    )
+    if member is not None and account is not None:
+        for field_name in (
+            "policy_id",
+            "policy_version",
+            "qpk_source_revision",
+            "mandate_id",
+            "mandate_version",
+            "mandate_authority_receipt_sha256",
+            "mandate_scope",
+            "decision_digest_sha256",
+            "portfolio_snapshot_digest_sha256",
+            "effective_exposure_cap",
+        ):
+            if member.get(field_name) != account.get(field_name):
+                errors.append(f"{label} risk assessments disagree on {field_name}")
+    release_identity = aggregate.get("release_identity")
+    release_identity_sha256 = ""
+    if isinstance(release_identity, Mapping):
+        try:
+            release_identity_sha256 = _canonical_sha256(release_identity)
+        except (TypeError, ValueError):
+            errors.append(f"{label} release_identity must be canonical JSON")
+    cap = aggregate.get("cap_assessment")
+    if not isinstance(cap, Mapping) or cap.get("outcome") not in {"APPROVE", "REJECT"}:
+        errors.append(f"{label} cap_assessment is invalid")
+    else:
+        _append_exact_field_errors(cap, _CAP_ASSESSMENT_FIELDS, errors, f"{label} cap_assessment")
+        for field_name in (
+            "decision_digest_sha256",
+            "release_identity_sha256",
+            "account_snapshot_sha256",
+            "account_assessment_sha256",
+            "mandate_authority_receipt_sha256",
+            "order_authorization_sha256",
+        ):
+            if not _is_sha256(cap.get(field_name)):
+                errors.append(f"{label} cap_assessment.{field_name} is invalid")
+        if not _is_git_revision(cap.get("qpk_source_revision")):
+            errors.append(f"{label} cap_assessment.qpk_source_revision is invalid")
+        if not _is_finite_cap(cap.get("effective_exposure_cap")):
+            errors.append(f"{label} cap_assessment.effective_exposure_cap is invalid")
+        for field_name in ("mandate_id", "mandate_version"):
+            if not isinstance(cap.get(field_name), str) or not cap[field_name].strip():
+                errors.append(f"{label} cap_assessment.{field_name} is invalid")
+        if cap.get("mandate_scope") not in {"RESEARCH_ONLY", "PAPER", "LIVE"}:
+            errors.append(f"{label} cap_assessment.mandate_scope is invalid")
+        if account is not None:
+            cap_bindings = {
+                "decision_digest_sha256": account.get("decision_digest_sha256"),
+                "release_identity_sha256": release_identity_sha256,
+                "account_snapshot_sha256": account.get("portfolio_snapshot_digest_sha256"),
+                "account_assessment_sha256": account.get("assessment_sha256"),
+                "mandate_id": account.get("mandate_id"),
+                "mandate_version": account.get("mandate_version"),
+                "mandate_authority_receipt_sha256": account.get("mandate_authority_receipt_sha256"),
+                "mandate_scope": account.get("mandate_scope"),
+                "effective_exposure_cap": account.get("effective_exposure_cap"),
+                "qpk_source_revision": account.get("qpk_source_revision"),
+            }
+            for field_name, expected_value in cap_bindings.items():
+                if cap.get(field_name) != expected_value:
+                    errors.append(f"{label} cap_assessment.{field_name} binding mismatch")
+        if cap.get("outcome") == "APPROVE" and (
+            member is None
+            or account is None
+            or member.get("outcome") != "APPROVE"
+            or account.get("outcome") != "APPROVE"
+            or cap.get("mandate_scope") not in {"PAPER", "LIVE"}
+            or not _is_finite_cap(cap.get("effective_exposure_cap"))
+            or float(cap.get("effective_exposure_cap", 0.0)) <= 0.0
+        ):
+            errors.append(f"{label} cap APPROVE requires MEMBER and ACCOUNT APPROVE")
+    authorization = aggregate.get("order_authorization")
+    if not isinstance(authorization, Mapping):
+        errors.append(f"{label} order_authorization must be an object")
+    else:
+        _append_exact_field_errors(
+            authorization,
+            _ORDER_AUTHORIZATION_V2_FIELDS,
+            errors,
+            f"{label} order_authorization",
+        )
+        if authorization.get("contract_version") != "qsl.binance_order_authorization.v2":
+            errors.append(f"{label} order_authorization.contract_version is invalid")
+        if authorization.get("outcome") not in {"APPROVE", "REJECT"}:
+            errors.append(f"{label} order_authorization.outcome is invalid")
+        if authorization.get("authorization_kind") not in {"PRELIMINARY", "ACTION"}:
+            errors.append(f"{label} order_authorization.authorization_kind is invalid")
+        if not isinstance(authorization.get("run_id"), str) or not authorization["run_id"].strip():
+            errors.append(f"{label} order_authorization.run_id is invalid")
+        if authorization.get("mandate_scope") not in {"RESEARCH_ONLY", "PAPER", "LIVE"}:
+            errors.append(f"{label} order_authorization.mandate_scope is invalid")
+        for field_name in (
+            "canonical_payload_sha256",
+            "decision_digest_sha256",
+            "release_identity_sha256",
+            "account_snapshot_sha256",
+            "member_assessment_sha256",
+            "account_assessment_sha256",
+            "mandate_authority_receipt_sha256",
+            "authorization_sha256",
+        ):
+            if field_name == "canonical_payload_sha256" and authorization.get("authorization_kind") == "PRELIMINARY":
+                continue
+            if not _is_sha256(authorization.get(field_name)):
+                errors.append(f"{label} order_authorization.{field_name} is invalid")
+        if authorization.get("authorization_kind") == "ACTION":
+            if (
+                isinstance(authorization.get("action_sequence"), bool)
+                or not isinstance(authorization.get("action_sequence"), int)
+                or authorization.get("action_sequence") <= 0
+            ):
+                errors.append(f"{label} order_authorization.action_sequence is invalid")
+            for field_name in ("action_class", "method_name", "effect_type"):
+                if not isinstance(authorization.get(field_name), str) or not authorization[field_name].strip():
+                    errors.append(f"{label} order_authorization.{field_name} is invalid")
+        elif authorization.get("action_sequence") != 0 or any(
+            authorization.get(field_name) != ""
+            for field_name in ("action_class", "method_name", "effect_type", "canonical_payload_sha256")
+        ):
+            errors.append(f"{label} PRELIMINARY order_authorization must not bind an action")
+        authorization_payload = {
+            key: value for key, value in authorization.items() if key != "authorization_sha256"
+        }
+        try:
+            expected_authorization_sha256 = _canonical_sha256(authorization_payload)
+        except (TypeError, ValueError):
+            errors.append(f"{label} order_authorization must be canonical JSON")
+        else:
+            if authorization.get("authorization_sha256") != expected_authorization_sha256:
+                errors.append(f"{label} order_authorization.authorization_sha256 mismatch")
+        if member is not None and account is not None:
+            authorization_bindings = {
+                "run_id": aggregate.get("run_id"),
+                "decision_digest_sha256": account.get("decision_digest_sha256"),
+                "release_identity_sha256": release_identity_sha256,
+                "account_snapshot_sha256": account.get("portfolio_snapshot_digest_sha256"),
+                "member_assessment_sha256": member.get("assessment_sha256"),
+                "account_assessment_sha256": account.get("assessment_sha256"),
+                "mandate_authority_receipt_sha256": account.get("mandate_authority_receipt_sha256"),
+                "mandate_scope": account.get("mandate_scope"),
+            }
+            for field_name, expected_value in authorization_bindings.items():
+                if authorization.get(field_name) != expected_value:
+                    errors.append(f"{label} order_authorization.{field_name} binding mismatch")
+        if aggregate.get("execution_gate_outcome") != authorization.get("outcome"):
+            errors.append(f"{label} execution_gate_outcome does not match order_authorization")
+        if isinstance(cap, Mapping) and cap.get("order_authorization_sha256") != authorization.get(
+            "authorization_sha256"
+        ):
+            errors.append(f"{label} cap_assessment.order_authorization_sha256 binding mismatch")
+    for field_name in ("strategy_stop_evaluation", "account_breaker_evaluation"):
+        evaluation = aggregate.get(field_name)
+        if not isinstance(evaluation, Mapping) or evaluation.get("evaluated") is not True:
+            errors.append(f"{label} {field_name} must be evaluated")
+        elif evaluation.get("outcome") not in {"CLEAR", "TRIGGERED"}:
+            errors.append(f"{label} {field_name}.outcome is invalid")
+    if aggregate.get("execution_gate_outcome") not in {"APPROVE", "REJECT"}:
+        errors.append(f"{label} execution_gate_outcome is invalid")
+    elif aggregate.get("execution_gate_outcome") == "APPROVE" and (
+        not isinstance(cap, Mapping)
+        or cap.get("outcome") != "APPROVE"
+        or member is None
+        or account is None
+        or member.get("outcome") != "APPROVE"
+        or account.get("outcome") != "APPROVE"
+    ):
+        errors.append(f"{label} execution APPROVE requires cap, MEMBER and ACCOUNT APPROVE")
+    reconciliation = aggregate.get("reconciliation")
+    if not isinstance(reconciliation, Mapping) or dict(reconciliation) != {"status": "MISSING"}:
+        errors.append(f"{label} platform reconciliation must be MISSING")
+    for field_name in ("verified_active", "fills_verified", "capital_use_verified"):
+        if aggregate.get(field_name) is not False:
+            errors.append(f"{label} {field_name} must be false")
+    if require_aggregate_sha256 and not errors:
+        claimed_digest = aggregate.get("aggregate_sha256")
+        digest_payload = {key: value for key, value in aggregate.items() if key != "aggregate_sha256"}
+        try:
+            expected_digest = _canonical_sha256(digest_payload)
+        except (TypeError, ValueError):
+            errors.append(f"{label} must be canonical JSON")
+        else:
+            if claimed_digest != expected_digest:
+                errors.append(f"{label} aggregate_sha256 mismatch")
+    return errors
+
+
+def validate_runtime_evidence_aggregate_v2(aggregate: Any) -> dict[str, Any]:
+    errors = _validate_runtime_evidence_aggregate_v2_payload(
+        aggregate,
+        require_aggregate_sha256=True,
+    )
+    return {"ok": not errors, "errors": errors}
+
+
+def build_runtime_evidence_aggregate_v2(
+    *,
+    produced_at: str,
+    run_id: str,
+    producer_revision: str,
+    release_identity: Mapping[str, Any],
+    member_risk_assessment: Mapping[str, Any],
+    account_risk_assessment: Mapping[str, Any],
+    cap_assessment: Mapping[str, Any],
+    order_authorization: Mapping[str, Any],
+    strategy_stop_evaluation: Mapping[str, Any],
+    account_breaker_evaluation: Mapping[str, Any],
+    execution_gate_outcome: str,
+    reconciliation: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    aggregate = {
+        "contract_version": RUNTIME_EVIDENCE_V2_CONTRACT_VERSION,
+        "produced_at": str(produced_at),
+        "run_id": str(run_id),
+        "producer_revision": str(producer_revision),
+        "release_identity": dict(release_identity),
+        "member_risk_assessment": dict(member_risk_assessment),
+        "account_risk_assessment": dict(account_risk_assessment),
+        "cap_assessment": dict(cap_assessment),
+        "order_authorization": dict(order_authorization),
+        "strategy_stop_evaluation": dict(strategy_stop_evaluation),
+        "account_breaker_evaluation": dict(account_breaker_evaluation),
+        "execution_gate_outcome": str(execution_gate_outcome),
+        "reconciliation": dict(reconciliation or {"status": "MISSING"}),
+        "verified_active": False,
+        "fills_verified": False,
+        "capital_use_verified": False,
+    }
+    errors = _validate_runtime_evidence_aggregate_v2_payload(
+        aggregate,
+        require_aggregate_sha256=False,
+    )
+    if errors:
+        raise ValueError("Runtime evidence v2 validation failed: " + "; ".join(errors))
+    aggregate["aggregate_sha256"] = _canonical_sha256(aggregate)
+    validation = validate_runtime_evidence_aggregate_v2(aggregate)
+    if not validation["ok"]:
+        raise ValueError("Runtime evidence v2 validation failed: " + "; ".join(validation["errors"]))
+    return aggregate
+
+
 @dataclass
 class ExecutionRuntime:
     dry_run: bool = False
@@ -257,7 +729,12 @@ class ExecutionRuntime:
     trend_indicator_snapshots: Optional[dict[str, Any]] = None
     print_traceback: bool = True
     order_sequence: int = 0
+    authorization_sequence: int = 0
+    consumed_order_authorizations: set[str] = field(default_factory=set)
+    action_authorizer: Optional[Callable[..., Any]] = None
+    action_cash_usdt: float = 0.0
     side_effect_log: list[dict[str, Any]] = field(default_factory=list)
+    producer_revision: str = ""
 
     def __post_init__(self):
         if self.now_utc is None:
@@ -313,6 +790,14 @@ def build_execution_report(runtime):
         "circuit_breaker_triggered": False,
         "degraded_mode_level": None,
         "upstream_pool_symbols": [],
+        "release_identity": {},
+        "release_identity_sha256": "",
+        "member_risk_assessment": {},
+        "account_risk_assessment": {},
+        "cap_assessment": {},
+        "strategy_stop_evaluation": {},
+        "account_breaker_evaluation": {},
+        "order_authorization": {},
         "summary": {
             "strategy_display_name": str(runtime.strategy_display_name or ""),
             "strategy_display_name_localized": str(runtime.strategy_display_name_localized or ""),
@@ -471,8 +956,95 @@ def runtime_set_trade_state(runtime, report, state, *, reason):
     record_side_effect(runtime, report, effect_type="state_write", target="firestore", payload=payload, executed=True)
 
 
+def authorize_runtime_action(runtime, report, *, action_class, method_name, payload, effect_type, u_total):
+    authorizer = getattr(runtime, "action_authorizer", None)
+    if not callable(authorizer):
+        return None
+    return authorizer(
+        action_class=action_class,
+        method_name=method_name,
+        payload=payload,
+        effect_type=effect_type,
+        u_total=float(u_total),
+    )
+
+
+def validate_current_order_authorization(runtime, report, *, method_name, payload, effect_type) -> dict[str, Any]:
+    authorization = report.get("order_authorization")
+    member = report.get("member_risk_assessment")
+    account = report.get("account_risk_assessment")
+    release_digest = report.get("release_identity_sha256")
+    if not all(isinstance(value, Mapping) for value in (authorization, member, account)):
+        return {"ok": False, "reason": "missing_order_authorization_binding"}
+    required_digests = (
+        "decision_digest_sha256",
+        "release_identity_sha256",
+        "account_snapshot_sha256",
+        "member_assessment_sha256",
+        "account_assessment_sha256",
+        "mandate_authority_receipt_sha256",
+        "canonical_payload_sha256",
+        "authorization_sha256",
+    )
+    try:
+        canonical_payload_sha256 = _canonical_sha256(payload) if isinstance(payload, Mapping) else ""
+    except (TypeError, ValueError):
+        canonical_payload_sha256 = ""
+    if (
+        authorization.get("contract_version") != "qsl.binance_order_authorization.v2"
+        or authorization.get("outcome") != "APPROVE"
+        or authorization.get("run_id") != str(runtime.run_id)
+        or authorization.get("authorization_kind") != "ACTION"
+        or not isinstance(authorization.get("action_sequence"), int)
+        or isinstance(authorization.get("action_sequence"), bool)
+        or authorization.get("action_sequence") <= 0
+        or authorization.get("action_sequence") != runtime.authorization_sequence
+        or not isinstance(authorization.get("action_class"), str)
+        or not authorization.get("action_class")
+        or authorization.get("method_name") != str(method_name)
+        or authorization.get("effect_type") != str(effect_type)
+        or authorization.get("canonical_payload_sha256") != canonical_payload_sha256
+        or authorization.get("mandate_scope") not in {"PAPER", "LIVE"}
+        or member.get("scope") != "MEMBER"
+        or member.get("outcome") != "APPROVE"
+        or account.get("scope") != "ACCOUNT"
+        or account.get("outcome") != "APPROVE"
+        or authorization.get("decision_digest_sha256") != member.get("decision_digest_sha256")
+        or authorization.get("decision_digest_sha256") != account.get("decision_digest_sha256")
+        or authorization.get("release_identity_sha256") != release_digest
+        or authorization.get("account_snapshot_sha256") != account.get("portfolio_snapshot_digest_sha256")
+        or authorization.get("member_assessment_sha256") != member.get("assessment_sha256")
+        or authorization.get("account_assessment_sha256") != account.get("assessment_sha256")
+        or any(not _is_sha256(authorization.get(field_name)) for field_name in required_digests)
+        or authorization.get("authorization_sha256") in runtime.consumed_order_authorizations
+    ):
+        return {"ok": False, "reason": "mismatched_order_authorization_binding"}
+    claimed_digest = authorization["authorization_sha256"]
+    digest_payload = {key: value for key, value in authorization.items() if key != "authorization_sha256"}
+    if claimed_digest != _canonical_sha256(digest_payload):
+        return {"ok": False, "reason": "invalid_order_authorization_digest"}
+    return {"ok": True, "reason": "approved"}
+
+
 def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                         max_retries: int = 3, retry_base_sec: float = 1.0):
+    authorization = validate_current_order_authorization(
+        runtime,
+        report,
+        method_name=method_name,
+        payload=payload,
+        effect_type=effect_type,
+    )
+    if not authorization["ok"]:
+        record_gating_event(
+            report,
+            gate="account_order_authorization",
+            category="execution",
+            detail={"outcome": "REJECT", "reason": authorization["reason"]},
+        )
+        raise RuntimeError("client mutation blocked by account order authorization")
+    authorization_sha256 = str(report["order_authorization"]["authorization_sha256"])
+    runtime.consumed_order_authorizations.add(authorization_sha256)
     if runtime.dry_run:
         record_side_effect(
             runtime, report, effect_type=effect_type,

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from runtime_support import authorize_runtime_action
+
 
 def resolve_runtime_btc_snapshot(
     runtime,
@@ -69,6 +71,8 @@ def ensure_asset_available_runtime(
             return True
 
         shortfall = required_amount - spot_free
+        if not callable(getattr(runtime, "action_authorizer", None)):
+            return False
         earn_positions = runtime.client.get_simple_earn_flexible_product_position(asset=asset)
         if earn_positions and "rows" in earn_positions and len(earn_positions["rows"]) > 0:
             row = earn_positions["rows"][0]
@@ -83,14 +87,24 @@ def ensure_asset_available_runtime(
                     "amount": float(redeem_amt),
                     "reason": "asset_availability",
                 }
-                report["redemption_subscription_intents"].append(intent)
+                payload = {"productId": product_id, "amount": redeem_amt}
+                authorize_runtime_action(
+                    runtime,
+                    report,
+                    action_class="earn_asset_availability_redeem",
+                    method_name="redeem_simple_earn_flexible_product",
+                    payload=payload,
+                    effect_type="earn_redeem",
+                    u_total=getattr(runtime, "action_cash_usdt", 0.0),
+                )
                 runtime_call_client_fn(
                     runtime,
                     report,
                     method_name="redeem_simple_earn_flexible_product",
-                    payload={"productId": product_id, "amount": redeem_amt},
+                    payload=payload,
                     effect_type="earn_redeem",
                 )
+                report["redemption_subscription_intents"].append(intent)
                 append_log_fn(
                     log_buffer,
                     translate_fn("execution_spot_short_redeeming_from_earn", asset=asset, amount=redeem_amt),
@@ -120,6 +134,8 @@ def manage_usdt_earn_buffer_runtime(
     spot_free_override=None,
 ):
     try:
+        if not callable(getattr(runtime, "action_authorizer", None)):
+            return
         asset = "USDT"
         if spot_free_override is None:
             spot_free = float(runtime.client.get_asset_balance(asset=asset)["free"])
@@ -134,6 +150,23 @@ def manage_usdt_earn_buffer_runtime(
         if spot_free > target_buffer + 5.0:
             excess = round(spot_free - target_buffer, 4)
             if excess >= 0.1:
+                payload = {"productId": product_id, "amount": excess}
+                authorize_runtime_action(
+                    runtime,
+                    report,
+                    action_class="earn_buffer_subscribe",
+                    method_name="subscribe_simple_earn_flexible_product",
+                    payload=payload,
+                    effect_type="earn_subscribe",
+                    u_total=getattr(runtime, "action_cash_usdt", 0.0),
+                )
+                runtime_call_client_fn(
+                    runtime,
+                    report,
+                    method_name="subscribe_simple_earn_flexible_product",
+                    payload=payload,
+                    effect_type="earn_subscribe",
+                )
                 report["redemption_subscription_intents"].append(
                     {
                         "asset": asset,
@@ -143,13 +176,6 @@ def manage_usdt_earn_buffer_runtime(
                         "reason": "maintain_usdt_buffer",
                     }
                 )
-                runtime_call_client_fn(
-                    runtime,
-                    report,
-                    method_name="subscribe_simple_earn_flexible_product",
-                    payload={"productId": product_id, "amount": excess},
-                    effect_type="earn_subscribe",
-                )
                 append_log_fn(log_buffer, translate_fn("cash_manager_subscribed_to_earn", amount=excess))
         elif spot_free < target_buffer - 5.0:
             shortfall = round(target_buffer - spot_free, 4)
@@ -158,6 +184,23 @@ def manage_usdt_earn_buffer_runtime(
                 earn_free = float(earn_positions["rows"][0]["totalAmount"])
                 if earn_free > 0:
                     redeem_amt = round(min(shortfall, earn_free), 8)
+                    payload = {"productId": product_id, "amount": redeem_amt}
+                    authorize_runtime_action(
+                        runtime,
+                        report,
+                        action_class="earn_buffer_redeem",
+                        method_name="redeem_simple_earn_flexible_product",
+                        payload=payload,
+                        effect_type="earn_redeem",
+                        u_total=getattr(runtime, "action_cash_usdt", 0.0),
+                    )
+                    runtime_call_client_fn(
+                        runtime,
+                        report,
+                        method_name="redeem_simple_earn_flexible_product",
+                        payload=payload,
+                        effect_type="earn_redeem",
+                    )
                     report["redemption_subscription_intents"].append(
                         {
                             "asset": asset,
@@ -166,13 +209,6 @@ def manage_usdt_earn_buffer_runtime(
                             "amount": float(redeem_amt),
                             "reason": "maintain_usdt_buffer",
                         }
-                    )
-                    runtime_call_client_fn(
-                        runtime,
-                        report,
-                        method_name="redeem_simple_earn_flexible_product",
-                        payload={"productId": product_id, "amount": redeem_amt},
-                        effect_type="earn_redeem",
                     )
                     append_log_fn(log_buffer, translate_fn("cash_manager_redeeming_to_spot", amount=redeem_amt))
     except Exception as exc:

@@ -6,7 +6,24 @@ from typing import Any
 from quant_platform_kit.strategy_contracts import StrategyDecision
 
 
+def _decision_is_order_authorized(decision: StrategyDecision) -> bool:
+    diagnostics = decision.diagnostics if isinstance(decision.diagnostics, Mapping) else {}
+    member = diagnostics.get("member_risk_assessment", {})
+    account = diagnostics.get("account_risk_assessment", {})
+    authorization = diagnostics.get("order_authorization", {})
+    return (
+        isinstance(member, Mapping)
+        and member.get("outcome") == "APPROVE"
+        and isinstance(account, Mapping)
+        and account.get("outcome") == "APPROVE"
+        and isinstance(authorization, Mapping)
+        and authorization.get("outcome") == "APPROVE"
+    )
+
+
 def _budget_map(decision: StrategyDecision) -> dict[str, float]:
+    if not _decision_is_order_authorized(decision):
+        return {}
     values: dict[str, float] = {}
     for budget in decision.budgets:
         if budget.amount is not None:
@@ -15,6 +32,8 @@ def _budget_map(decision: StrategyDecision) -> dict[str, float]:
 
 
 def _position_weight_map(decision: StrategyDecision) -> dict[str, float]:
+    if not _decision_is_order_authorized(decision):
+        return {}
     values: dict[str, float] = {}
     for position in decision.positions:
         if position.target_weight is not None:
@@ -63,7 +82,7 @@ def map_strategy_decision_to_rotation_plan(decision: StrategyDecision) -> dict[s
     planned_trend_buys = {
         str(symbol): float(amount)
         for symbol, amount in dict(diagnostics.get("planned_trend_buys", {})).items()
-    }
+    } if _decision_is_order_authorized(decision) else {}
     sell_reasons = {
         str(symbol): str(reason)
         for symbol, reason in dict(diagnostics.get("sell_reasons", {})).items()

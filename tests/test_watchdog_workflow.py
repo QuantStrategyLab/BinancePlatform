@@ -245,9 +245,12 @@ class WatchdogWorkflowTests(unittest.TestCase):
     def test_crypto_strategies_pin_matches_qpk_health_dependency(self) -> None:
         requirement = _dependency("crypto-strategies @ ")
         lock = LOCK.read_text(encoding="utf-8")
+        qsl = tomllib.loads(QSL.read_text(encoding="utf-8"))
+        revision = "5ef4d4ae840704c850b4dc63a63b7a0e084d3d88"
 
-        self.assertIn("CryptoStrategies.git?rev=ef78312d7653095f585c4f75d45bf765bedc2751", lock)
-        self.assertIn("@ef78312d7653095f585c4f75d45bf765bedc2751", requirement)
+        self.assertIn(f"CryptoStrategies.git?rev={revision}#{revision}", lock)
+        self.assertEqual(requirement.rsplit("@", maxsplit=1)[1], revision)
+        self.assertEqual(qsl["qsl"]["requires"]["crypto_strategies"], revision)
         self.assertNotIn("@eb7bf665c5199f7f075af61ef5c86171eea1f057", lock)
 
 

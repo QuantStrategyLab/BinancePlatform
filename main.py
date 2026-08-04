@@ -7,6 +7,8 @@ helpers, and live service adapters live in dedicated modules.
 
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 import traceback
@@ -717,12 +719,24 @@ def get_tradable_qty(symbol, total_qty, prices, min_bnb_value):
 # 3. Core strategy
 # ==========================================
 def build_live_runtime(now_utc=None):
-    return rc_build_live_runtime(
+    runtime = rc_build_live_runtime(
         now_utc=now_utc,
         state_loader=get_trade_state,
         state_writer=set_trade_state,
         notifier=lambda **kwargs: send_tg_msg(kwargs["token"], kwargs["chat_id"], kwargs["text"]),
     )
+    try:
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD^{commit}"],
+            cwd=Path(__file__).resolve().parent,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        revision = ""
+    runtime.producer_revision = revision if re.fullmatch(r"[0-9a-f]{40}", revision) else ""
+    return runtime
 
 
 def _set_runtime_trend_universe(resolved_trend_universe):
@@ -801,6 +815,7 @@ def _resolve_strategy_evaluation(
     *,
     allow_new_trend_entries=True,
     allow_pool_refresh=True,
+    action_context=None,
 ):
     account_metrics = STRATEGY_RUNTIME.compute_account_metrics(
         runtime_trend_universe,
@@ -823,7 +838,63 @@ def _resolve_strategy_evaluation(
         allow_rotation_refresh=allow_pool_refresh,
         get_symbol_trade_state_fn=get_symbol_trade_state,
         set_symbol_trade_state_fn=set_symbol_trade_state,
+        release_identity=getattr(runtime, "release_identity", {}),
+        release_identity_sha256=getattr(runtime, "release_identity_sha256", ""),
+        run_id=str(runtime.run_id),
+        action_context=action_context,
     )
+
+
+def _refresh_action_authorization(
+    runtime,
+    report,
+    state,
+    runtime_trend_universe,
+    trend_indicators,
+    btc_snapshot,
+    prices,
+    balances,
+    fuel_val,
+    *,
+    allow_new_trend_entries,
+    allow_pool_refresh,
+    action_class,
+    method_name,
+    payload,
+    effect_type,
+    u_total,
+):
+    runtime.authorization_sequence += 1
+    evaluation = _resolve_strategy_evaluation(
+        runtime,
+        state,
+        runtime_trend_universe,
+        trend_indicators,
+        btc_snapshot,
+        prices,
+        balances,
+        u_total,
+        fuel_val,
+        allow_new_trend_entries=allow_new_trend_entries,
+        allow_pool_refresh=allow_pool_refresh,
+        action_context={
+            "action_sequence": runtime.authorization_sequence,
+            "action_class": action_class,
+            "method_name": method_name,
+            "effect_type": effect_type,
+            "payload": dict(payload),
+        },
+    )
+    diagnostics = dict(evaluation.decision.diagnostics or {})
+    for field_name in (
+        "member_risk_assessment",
+        "account_risk_assessment",
+        "cap_assessment",
+        "strategy_stop_evaluation",
+        "order_authorization",
+    ):
+        report[field_name] = dict(diagnostics.get(field_name, {}))
+    return evaluation.decision
 
 
 def _resolve_strategy_plan(
@@ -874,10 +945,19 @@ def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, pri
         u_total,
         fuel_val,
     )
-    return map_decision_to_allocation(
+    allocation = map_decision_to_allocation(
         evaluation.decision,
         account_metrics=evaluation.account_metrics,
     )
+    diagnostics = dict(evaluation.decision.diagnostics or {})
+    allocation["_risk_evidence"] = {
+        "member_risk_assessment": dict(diagnostics.get("member_risk_assessment", {})),
+        "account_risk_assessment": dict(diagnostics.get("account_risk_assessment", {})),
+        "cap_assessment": dict(diagnostics.get("cap_assessment", {})),
+        "strategy_stop_evaluation": dict(diagnostics.get("strategy_stop_evaluation", {})),
+        "order_authorization": dict(diagnostics.get("order_authorization", {})),
+    }
+    return allocation
 
 
 def _build_balance_snapshot(runtime_trend_universe, balances, u_total):
@@ -946,7 +1026,7 @@ def _run_daily_circuit_breaker(
     balances,
     u_total,
     prices,
-    trend_daily_pnl,
+    account_daily_pnl,
     circuit_breaker_pct,
     log_buffer,
 ):
@@ -958,7 +1038,7 @@ def _run_daily_circuit_breaker(
         balances,
         u_total,
         prices,
-        trend_daily_pnl,
+        account_daily_pnl,
         circuit_breaker_pct,
         log_buffer,
         format_qty_fn=format_qty,
@@ -1169,6 +1249,7 @@ def execute_cycle(runtime):
             append_trend_pool_source_logs=_append_trend_pool_source_logs,
             capture_market_snapshot=_capture_market_snapshot,
             compute_portfolio_allocation=_compute_portfolio_allocation,
+            refresh_action_authorization=_refresh_action_authorization,
             build_balance_snapshot=_build_balance_snapshot,
             maybe_reset_daily_state=_maybe_reset_daily_state,
             maybe_rebase_daily_state_for_balance_change=_maybe_rebase_daily_state_for_balance_change,

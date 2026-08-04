@@ -15,6 +15,30 @@ from quant_platform_kit.strategy_contracts import BudgetIntent, PositionTarget, 
 
 
 class DecisionMapperTests(unittest.TestCase):
+    @staticmethod
+    def approved_diagnostics(values):
+        return {
+            "member_risk_assessment": {"outcome": "APPROVE"},
+            "account_risk_assessment": {"outcome": "APPROVE"},
+            "order_authorization": {"outcome": "APPROVE"},
+            **values,
+        }
+
+    def test_rejected_member_budgets_do_not_map_to_intents(self):
+        decision = StrategyDecision(
+            positions=(),
+            budgets=(BudgetIntent(name="trend_rotation_pool", amount=100.0),),
+            diagnostics={"member_risk_assessment": {"outcome": "REJECT"}},
+        )
+
+        allocation = map_strategy_decision_to_allocation(
+            decision,
+            account_metrics={"total_equity": 1000.0, "trend_value": 0.0, "dca_value": 0.0},
+        )
+        plan = map_strategy_decision_to_rotation_plan(decision)
+
+        self.assertEqual(allocation["trend_usdt_pool"], 0.0)
+        self.assertEqual(plan["planned_trend_buys"], {})
     def test_map_strategy_decision_to_allocation_uses_budgets_and_diagnostics(self):
         decision = StrategyDecision(
             positions=(
@@ -25,11 +49,11 @@ class DecisionMapperTests(unittest.TestCase):
                 BudgetIntent(name="btc_core_dca_pool", symbol="BTCUSDT", amount=250.0),
                 BudgetIntent(name="trend_rotation_pool", amount=400.0),
             ),
-            diagnostics={
+            diagnostics=self.approved_diagnostics({
                 "btc_target_ratio": 0.3,
                 "trend_target_ratio": 0.7,
                 "btc_base_order_usdt": 50.0,
-            },
+            }),
         )
 
         allocation = map_strategy_decision_to_allocation(
@@ -50,7 +74,7 @@ class DecisionMapperTests(unittest.TestCase):
 
     def test_map_strategy_decision_to_rotation_plan_uses_unified_diagnostics(self):
         decision = StrategyDecision(
-            diagnostics={
+            diagnostics=self.approved_diagnostics({
                 "trend_pool": ("ETHUSDT", "SOLUSDT"),
                 "metadata": {
                     "combo": {
@@ -73,7 +97,7 @@ class DecisionMapperTests(unittest.TestCase):
                 "planned_trend_buys": {"ETHUSDT": 320.0},
                 "sell_reasons": {"SOLUSDT": "trend_sell_reason_rotated_out"},
                 "artifact_contract": {"version": "v1"},
-            },
+            }),
             risk_flags=("regime_off",),
         )
 

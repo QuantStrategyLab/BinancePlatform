@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from market_snapshot_support import capture_market_snapshot
 
@@ -13,6 +14,28 @@ class FakeClient:
 
 
 class MarketSnapshotSupportTests(unittest.TestCase):
+    def test_capture_market_snapshot_does_not_attempt_bnb_mutation_without_binding(self):
+        runtime_calls = Mock()
+        report = {"buy_sell_intents": []}
+
+        capture_market_snapshot(
+            SimpleNamespace(client=FakeClient({"BNBUSDT": 300.0, "BTCUSDT": 50000.0}), dry_run=True),
+            report,
+            {},
+            [],
+            10.0,
+            15.0,
+            get_total_balance_fn=lambda _client, asset, **_kwargs: {"USDT": 100.0, "BNB": 0.0, "BTC": 0.0}[asset],
+            ensure_asset_available_fn=Mock(return_value=True),
+            runtime_call_client_fn=runtime_calls,
+            runtime_notify_fn=Mock(),
+            append_log_fn=Mock(),
+            resolve_btc_snapshot_fn=Mock(return_value={}),
+            resolve_trend_indicators_fn=Mock(return_value={}),
+        )
+
+        runtime_calls.assert_not_called()
+        self.assertEqual(report["buy_sell_intents"], [])
     def test_capture_market_snapshot_handles_bnb_top_up_and_collects_balances(self):
         runtime = SimpleNamespace(
             client=FakeClient(
@@ -24,7 +47,7 @@ class MarketSnapshotSupportTests(unittest.TestCase):
                 }
             )
         )
-        report = {"buy_sell_intents": []}
+        report = {"buy_sell_intents": [], "order_authorization": {"outcome": "APPROVE"}}
         log_buffer = []
         side_effect_calls = []
         balance_map = {

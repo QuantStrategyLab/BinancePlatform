@@ -1,10 +1,13 @@
 import contextlib
+import hashlib
 import io
+import json
 import sys
 import types
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 def install_test_stubs():
@@ -78,52 +81,193 @@ for path in (PLATFORM_KIT_SRC, CRYPTO_STRATEGIES_SRC):
 
 import main
 import run_cycle_replay
+from application.cycle_service import run_live_cycle
+from trend_pool_support import build_static_trend_pool_resolution
 
 
 FIXTURE_TIME = datetime(2026, 3, 15, 0, 0, tzinfo=timezone.utc)
+RISK_EVALUATION_TIME = datetime(2026, 8, 4, 12, 0, tzinfo=timezone.utc)
+
+
+def canonical_digest(value):
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def valid_release_identity():
+    return {
+        "strategy_profile": "crypto_live_pool_rotation",
+        "mode": "core_major",
+        "source_revision": "a" * 40,
+        "input_timestamp": "2026-03-10T00:00:00Z",
+        "artifact_contract": "qsl.crypto_live_pool.artifact_manifest.v1",
+        "artifact_version": "2026-03-10-core_major",
+        "artifacts": {
+            name: {"sha256": character * 64}
+            for name, character in zip(
+                ("live_pool", "live_pool_legacy", "latest_ranking", "latest_universe"),
+                "1234",
+            )
+        },
+    }
+
+
+def runtime_evidence_identity(report):
+    aggregate = report.get("runtime_evidence_aggregate")
+    return {
+        "release_identity": report.get("release_identity", {}),
+        "account_risk_assessment": report.get("account_risk_assessment", {}),
+        "order_authorization": report.get("order_authorization", {}),
+        "strategy_stop_evaluation": report.get("strategy_stop_evaluation", {}),
+        "account_breaker_evaluation": report.get("account_breaker_evaluation", {}),
+        "durable_v2": aggregate,
+        "reconciliation": (
+            aggregate.get("reconciliation", {})
+            if isinstance(aggregate, dict)
+            else {"status": "MISSING"}
+        ),
+    }
 
 
 class CycleReplayRuntimeTests(unittest.TestCase):
-    def run_cycle(self, *, run_id):
-        output_buffer = io.StringIO()
-        with contextlib.redirect_stdout(output_buffer):
-            return run_cycle_replay.run_replay_cycle(
-                run_id=run_id,
-                dry_run=True,
-                now_utc=FIXTURE_TIME,
+    def run_cycle(self, *, run_id, include_release_identity=False, static_fallback=False):
+        runtime, client, state_store, notifier = run_cycle_replay.build_replay_runtime(
+            run_id=run_id,
+            dry_run=True,
+            now_utc=FIXTURE_TIME,
+        )
+        if include_release_identity:
+            identity = valid_release_identity()
+            symbol_map = runtime.trend_pool_payload["symbol_map"]
+            legacy_payload = {
+                **runtime.trend_pool_payload,
+                "symbols": symbol_map,
+                "symbol_map": symbol_map,
+            }
+            exact_text = json.dumps(legacy_payload, separators=(", ", ": "))
+            identity["artifacts"]["live_pool_legacy"]["sha256"] = hashlib.sha256(
+                exact_text.encode("utf-8")
+            ).hexdigest()
+            runtime.trend_pool_payload["runtime_evidence_identity"] = identity
+            runtime.trend_pool_payload["live_pool_legacy_exact_bytes"] = {
+                "contract_version": "qsl.crypto_live_pool_legacy_exact_bytes.v1",
+                "encoding": "utf-8",
+                "utf8_text": exact_text,
+            }
+        trend_pool_patch = contextlib.nullcontext()
+        if static_fallback:
+            static_universe = dict(runtime.trend_pool_payload["symbol_map"])
+            runtime.trend_pool_payload = None
+            resolution = build_static_trend_pool_resolution(
+                now_utc=runtime.now_utc,
+                messages=["forced static fallback"],
+                static_trend_universe=static_universe,
             )
+            trend_pool_patch = patch(
+                "main.load_trend_universe_from_live_pool",
+                return_value=(resolution["symbol_map"], resolution),
+            )
+        output_buffer = io.StringIO()
+        with (
+            patch("quant_platform_kit.risk.gate._utc_now", return_value=RISK_EVALUATION_TIME),
+            trend_pool_patch,
+            contextlib.redirect_stdout(output_buffer),
+        ):
+            report = main.execute_cycle(runtime)
+        return {
+            "report": report,
+            "runtime": runtime,
+            "client": client,
+            "state_store": state_store,
+            "notifier": notifier,
+        }
+
+    def test_static_degraded_fallback_persists_without_v2_aggregate_or_orders(self):
+        result = self.run_cycle(run_id="static-degraded", static_fallback=True)
+        written = []
+
+        with patch(
+            "application.cycle_service.persist_runtime_report",
+            return_value=types.SimpleNamespace(local_path="/tmp/static-report.json", cloud_uri=None),
+        ):
+            report, _ = run_live_cycle(
+                runtime_builder=lambda: result["runtime"],
+                execute_cycle=lambda _runtime: result["report"],
+                output_printer=lambda _line: None,
+                report_writer=lambda current: written.append(dict(current)) or "/tmp/static-report.json",
+            )
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["degraded_mode_level"], "static")
+        self.assertEqual(report["release_identity"], {})
+        self.assertNotIn("runtime_evidence_aggregate", report)
+        self.assertEqual(runtime_evidence_identity(report)["reconciliation"], {"status": "MISSING"})
+        self.assertEqual(report["buy_sell_intents"], [])
+        self.assertEqual(report["btc_dca_intents"], [])
+        self.assertEqual(report["redemption_subscription_intents"], [])
+        self.assertEqual(result["client"].side_effect_calls, [])
+        self.assertEqual(result["state_store"].write_calls, [])
+        self.assertNotIn("runtime_evidence_aggregate", written[0])
 
     def test_dry_run_produces_no_real_side_effects(self):
         result = self.run_cycle(run_id="dry-run-regression")
         report = result["report"]
 
-        self.assertEqual(report["status"], "ok")
+        self.assertNotEqual(report["status"], "ok")
         self.assertTrue(report["dry_run"])
         self.assertEqual(result["client"].side_effect_calls, [])
         self.assertEqual(result["state_store"].write_calls, [])
+        self.assertEqual(result["notifier"].messages, [])
         self.assertEqual(report["side_effect_summary"]["executed_call_count"], 0)
         self.assertGreater(report["side_effect_summary"]["suppressed_call_count"], 0)
-        self.assertGreaterEqual(len(report["buy_sell_intents"]), 2)
-        self.assertGreaterEqual(len(report["redemption_subscription_intents"]), 1)
+        self.assertEqual(report.get("positions", []), [])
+        self.assertEqual(report.get("budgets", []), [])
+        self.assertEqual(report["buy_sell_intents"], [])
+        self.assertEqual(report["btc_dca_intents"], [])
+        self.assertEqual(report["redemption_subscription_intents"], [])
+        self.assertEqual(report["selected_symbols"]["active_trend_pool"], [])
+        self.assertEqual(
+            runtime_evidence_identity(report),
+            {
+                "release_identity": {},
+                "account_risk_assessment": {},
+                "order_authorization": {},
+                "strategy_stop_evaluation": {},
+                "account_breaker_evaluation": {},
+                "durable_v2": None,
+                "reconciliation": {"status": "MISSING"},
+            },
+        )
 
     def test_fixed_input_produces_deterministic_execution_report(self):
-        first = self.run_cycle(run_id="deterministic-report")
-        second = self.run_cycle(run_id="deterministic-report")
+        first = self.run_cycle(run_id="deterministic-report", include_release_identity=True)
+        second = self.run_cycle(run_id="deterministic-report", include_release_identity=True)
 
         self.assertEqual(first["report"], second["report"])
+        self.assertEqual(canonical_digest(first["report"]), canonical_digest(second["report"]))
         self.assertEqual(
             first["report"]["selected_symbols"]["active_trend_pool"],
             ["ETHUSDT", "SOLUSDT", "XRPUSDT", "LTCUSDT", "BCHUSDT"],
         )
-        trend_buy_symbols = [
-            intent["symbol"]
-            for intent in first["report"]["buy_sell_intents"]
-            if intent["category"] == "trend" and intent["action"] == "buy"
-        ]
-        self.assertEqual(trend_buy_symbols, ["ETHUSDT", "SOLUSDT"])
-        self.assertEqual(first["report"]["btc_dca_intents"][0]["action"], "buy")
-        self.assertEqual(first["report"]["redemption_subscription_intents"][0]["action"], "subscribe")
-        self.assertAlmostEqual(first["report"]["redemption_subscription_intents"][0]["amount"], 71.5)
+        self.assertEqual(first["report"]["selected_symbols"]["selected_candidates"], ["ETHUSDT", "SOLUSDT"])
+        self.assertEqual(first["report"]["selected_symbols"], second["report"]["selected_symbols"])
+        self.assertEqual(first["report"]["buy_sell_intents"], [])
+        self.assertEqual(first["report"]["btc_dca_intents"], [])
+        self.assertEqual(first["report"]["redemption_subscription_intents"], [])
+        self.assertEqual(first["client"].side_effect_calls, [])
+        self.assertEqual(first["state_store"].write_calls, [])
+        self.assertEqual(first["report"]["side_effect_summary"]["executed_call_count"], 0)
+        first_identity = runtime_evidence_identity(first["report"])
+        self.assertEqual(first_identity, runtime_evidence_identity(second["report"]))
+        self.assertEqual(first_identity["account_risk_assessment"]["scope"], "ACCOUNT")
+        self.assertEqual(first_identity["account_risk_assessment"]["outcome"], "REJECT")
+        self.assertEqual(first_identity["account_risk_assessment"]["effective_exposure_cap"], 0.0)
+        self.assertEqual(first_identity["order_authorization"]["outcome"], "REJECT")
+        self.assertEqual(first_identity["order_authorization"]["mandate_scope"], "RESEARCH_ONLY")
+        self.assertTrue(first_identity["strategy_stop_evaluation"]["evaluated"])
+        self.assertTrue(first_identity["account_breaker_evaluation"]["evaluated"])
+        self.assertIsNone(first_identity["durable_v2"])
+        self.assertEqual(first_identity["reconciliation"], {"status": "MISSING"})
 
     def test_state_load_failure_aborts_execution_safely(self):
         runtime, client, state_store, _ = run_cycle_replay.build_replay_runtime(

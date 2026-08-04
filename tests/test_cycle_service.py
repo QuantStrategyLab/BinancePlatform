@@ -3,12 +3,160 @@ import os
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from application.cycle_service import execute_strategy_cycle, run_live_cycle, write_execution_report
 
 
 class CycleServiceTests(unittest.TestCase):
+    def test_execute_strategy_cycle_passes_total_account_daily_pnl_to_breaker(self):
+        observed_pnls = []
+
+        for daily_pnl, trend_daily_pnl in ((-0.01, 0.02), (0.0, -0.10)):
+            runtime = SimpleNamespace(
+                dry_run=True,
+                print_traceback=False,
+                now_utc=SimpleNamespace(strftime=lambda _fmt: "20260804"),
+            )
+            execute_strategy_cycle(
+                runtime,
+                build_execution_report=lambda _runtime: {
+                    "status": "ok",
+                    "log_lines": [],
+                    "error_summary": {"errors": []},
+                },
+                ensure_runtime_client=lambda *_args, **_kwargs: True,
+                load_cycle_execution_settings=lambda: SimpleNamespace(
+                    btc_status_report_interval_hours=24,
+                    allow_new_trend_entries_on_degraded=False,
+                ),
+                load_cycle_state=lambda *_args, **_kwargs: (
+                    {},
+                    {
+                        "runtime_evidence_identity": {},
+                        "release_identity_sha256": "",
+                        "degraded": False,
+                    },
+                    {},
+                    False,
+                ),
+                append_trend_pool_source_logs=lambda *_args, **_kwargs: None,
+                capture_market_snapshot=lambda *_args, **_kwargs: {
+                    "u_total": 100.0,
+                    "fuel_val": 0.0,
+                    "dynamic_usdt_buffer": 0.0,
+                    "prices": {},
+                    "balances": {},
+                    "btc_snapshot": {},
+                    "trend_indicators": {},
+                },
+                compute_portfolio_allocation=lambda *_args, **_kwargs: {
+                    "_risk_evidence": {},
+                    "total_equity": 100.0,
+                    "trend_val": 20.0,
+                },
+                build_balance_snapshot=lambda *_args, **_kwargs: {},
+                maybe_reset_daily_state=lambda *_args, **_kwargs: None,
+                maybe_rebase_daily_state_for_balance_change=lambda *_args, **_kwargs: False,
+                compute_daily_pnls=lambda *_args, **_kwargs: (daily_pnl, trend_daily_pnl),
+                append_portfolio_report=lambda *_args, **_kwargs: None,
+                run_daily_circuit_breaker=lambda *args, **_kwargs: observed_pnls.append(args[7]) or True,
+                execute_trend_rotation=lambda *_args, **_kwargs: None,
+                execute_btc_dca_cycle=lambda *_args, **_kwargs: None,
+                manage_usdt_earn_buffer_runtime=lambda *_args, **_kwargs: None,
+                maybe_send_periodic_btc_status_report=lambda *_args, **_kwargs: None,
+                runtime_set_trade_state=lambda *_args, **_kwargs: None,
+                append_report_error=lambda *_args, **_kwargs: None,
+                runtime_notify=lambda *_args, **_kwargs: None,
+                translate_fn=lambda key, **kwargs: key,
+                traceback_module=SimpleNamespace(print_exc=lambda: None),
+            )
+
+        self.assertEqual(observed_pnls, [-0.01, 0.0])
+
+    def test_run_live_cycle_preserves_static_degraded_fallback_without_aggregate(self):
+        runtime = SimpleNamespace(
+            runtime_target=None,
+            strategy_profile="crypto_live_pool_rotation",
+            strategy_display_name="",
+            strategy_display_name_localized="",
+            run_id="static-fallback",
+            dry_run=True,
+            producer_revision="a" * 40,
+        )
+        report = {
+            "status": "ok",
+            "run_id": runtime.run_id,
+            "log_lines": [],
+            "error_summary": {"errors": []},
+            "degraded_mode_level": "static",
+            "release_identity": {},
+            "buy_sell_intents": [],
+            "btc_dca_intents": [],
+            "redemption_subscription_intents": [],
+        }
+        written = []
+        exit_fn = Mock()
+
+        with patch("application.cycle_service.build_runtime_evidence_aggregate_v2") as builder, patch(
+            "application.cycle_service.persist_runtime_report",
+            return_value=SimpleNamespace(local_path="/tmp/report.json", cloud_uri=None),
+        ) as persist:
+            result, _ = run_live_cycle(
+                runtime_builder=lambda: runtime,
+                execute_cycle=lambda _runtime: report,
+                output_printer=lambda _line: None,
+                report_writer=lambda current: written.append(dict(current)) or "/tmp/report.json",
+                exit_fn=exit_fn,
+            )
+
+        builder.assert_not_called()
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["degraded_mode_level"], "static")
+        self.assertNotIn("runtime_evidence_aggregate", result)
+        self.assertFalse(result["error_summary"]["errors"])
+        self.assertEqual(result["buy_sell_intents"], [])
+        self.assertEqual(result["btc_dca_intents"], [])
+        self.assertEqual(result["redemption_subscription_intents"], [])
+        self.assertNotIn("runtime_evidence_aggregate", written[0])
+        self.assertNotIn("runtime_evidence_aggregate", persist.call_args.args[0])
+        exit_fn.assert_not_called()
+
+    def test_run_live_cycle_attaches_v2_aggregate_before_durable_persist(self):
+        runtime = SimpleNamespace(
+            runtime_target=None,
+            strategy_profile="crypto_live_pool_rotation",
+            strategy_display_name="",
+            strategy_display_name_localized="",
+            run_id="synthetic-run",
+            dry_run=True,
+            producer_revision="a" * 40,
+        )
+        report = {
+            "status": "ok",
+            "run_id": runtime.run_id,
+            "log_lines": [],
+            "error_summary": {"errors": []},
+        }
+        written = []
+
+        with patch(
+            "application.cycle_service.build_runtime_evidence_aggregate_v2",
+            return_value={"contract_version": "qsl.runtime_evidence_aggregate.v2"},
+        ) as builder, patch(
+            "application.cycle_service.persist_runtime_report",
+            return_value=SimpleNamespace(local_path="/tmp/report.json", cloud_uri=None),
+        ) as persist:
+            run_live_cycle(
+                runtime_builder=lambda: runtime,
+                execute_cycle=lambda _runtime: report,
+                output_printer=lambda _line: None,
+                report_writer=lambda current: written.append(dict(current)) or "/tmp/report.json",
+            )
+
+        builder.assert_called_once()
+        self.assertEqual(written[0]["runtime_evidence_aggregate"]["contract_version"], "qsl.runtime_evidence_aggregate.v2")
+        self.assertIn("runtime_evidence_aggregate", persist.call_args.args[0])
     def test_write_execution_report_persists_json(self):
         report = {"status": "ok", "log_lines": ["hello"], "value": 1}
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -55,7 +203,8 @@ class CycleServiceTests(unittest.TestCase):
         self.assertEqual(observed["built"], 1)
         self.assertEqual(len(observed["printed"]), 3)
         self.assertEqual(observed["printed"][1], "line-1\nline-2")
-        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(report["error_summary"]["errors"][0]["stage"], "runtime_evidence_aggregate")
         self.assertEqual(payload["log_lines"], ["line-1", "line-2"])
 
     def test_run_live_cycle_emits_structured_runtime_events(self):
@@ -96,7 +245,7 @@ class CycleServiceTests(unittest.TestCase):
                     ),
                 )
 
-        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["status"], "error")
         self.assertEqual(len(observed["printed"]), 3)
         start_log = json.loads(observed["printed"][0])
         end_log = json.loads(observed["printed"][2])
@@ -105,8 +254,8 @@ class CycleServiceTests(unittest.TestCase):
         self.assertEqual(start_log["strategy_display_name"], "Crypto Live Pool Rotation")
         self.assertEqual(start_log["strategy_display_name_localized"], "加密领涨轮动")
         self.assertEqual(start_log["run_id"], "run-001")
-        self.assertEqual(end_log["event"], "strategy_cycle_completed")
-        self.assertEqual(end_log["status"], "ok")
+        self.assertEqual(end_log["event"], "strategy_cycle_failed")
+        self.assertEqual(end_log["status"], "error")
 
     def test_run_live_cycle_uses_shared_runtime_report_archive(self):
         observed = {}
@@ -151,9 +300,9 @@ class CycleServiceTests(unittest.TestCase):
                         ),
                     )
 
-        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["status"], "error")
         self.assertEqual(persisted_path, output_path)
-        self.assertEqual(observed["status"], "ok")
+        self.assertEqual(observed["status"], "error")
         self.assertEqual(observed["kwargs"]["output_path"], output_path)
         self.assertEqual(observed["kwargs"]["cloud_prefix_uri"], "gs://demo-bucket/runtime-reports")
         self.assertEqual(observed["kwargs"]["project_id"], "demo-project")

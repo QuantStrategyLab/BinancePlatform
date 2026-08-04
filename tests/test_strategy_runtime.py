@@ -1,6 +1,8 @@
 import sys
 import types
 import unittest
+import hashlib
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 from datetime import datetime, timezone
@@ -20,10 +22,123 @@ if "requests" not in sys.modules:
     sys.modules["requests"] = requests_module
 
 from quant_platform_kit import PortfolioSnapshot
-from quant_platform_kit.strategy_contracts import StrategyManifest, StrategyRuntimeAdapter
+from quant_platform_kit.strategy_contracts import StrategyDecision, StrategyManifest, StrategyRuntimeAdapter
 
 
 class StrategyRuntimeTests(unittest.TestCase):
+    def test_account_gate_binds_exact_action_and_requires_action_context(self):
+        from strategy_runtime import apply_account_risk_gate, build_binance_research_mandate
+
+        decision = StrategyDecision(positions=(), budgets=(), diagnostics={
+            "member_risk_assessment": {
+                "scope": "MEMBER",
+                "outcome": "APPROVE",
+                "decision_digest_sha256": "1" * 64,
+                "assessment_sha256": "2" * 64,
+            }
+        })
+        assessment = SimpleNamespace(
+            scope="ACCOUNT",
+            outcome="APPROVE",
+            decision_digest_sha256="1" * 64,
+            portfolio_snapshot_digest_sha256="3" * 64,
+            assessment_sha256="4" * 64,
+            effective_exposure_cap=0.5,
+            mandate_scope="PAPER",
+        )
+        mandate = build_binance_research_mandate()
+        mandate.update({
+            "authority_scope": "PAPER",
+            "effective_exposure_cap": 0.5,
+            "loss_budget": 1.0,
+            "product_caps": 0.5,
+            "nominal_caps": 0.5,
+            "allowed_nonzero_assets": ["BTCUSDT"],
+            "product_leverage_factors": {"BTCUSDT": 1},
+        })
+        payload = {"symbol": "BTCUSDT", "quantity": 0.001}
+        action_context = {
+            "action_sequence": 7,
+            "action_class": "btc_dca_buy",
+            "method_name": "order_market_buy",
+            "effect_type": "order_buy",
+            "payload": payload,
+        }
+
+        with patch(
+            "strategy_runtime.qpk_assess_with_evidence",
+            return_value=SimpleNamespace(decision=decision, assessment=assessment),
+        ) as assess:
+            bound = apply_account_risk_gate(
+                decision,
+                portfolio_snapshot={"as_of": "2026-08-04T00:00:00Z"},
+                release_identity_sha256="5" * 64,
+                run_id="synthetic-run",
+                mandate_provenance=mandate,
+                market_data={},
+                action_context=action_context,
+            )
+            preliminary = apply_account_risk_gate(
+                decision,
+                portfolio_snapshot={"as_of": "2026-08-04T00:00:00Z"},
+                release_identity_sha256="5" * 64,
+                run_id="synthetic-run",
+                mandate_provenance=mandate,
+                market_data={},
+            )
+
+        authorization = bound.order_authorization
+        self.assertEqual(assess.call_count, 2)
+        self.assertEqual(authorization["contract_version"], "qsl.binance_order_authorization.v2")
+        self.assertEqual(authorization["outcome"], "APPROVE")
+        self.assertEqual(authorization["action_sequence"], 7)
+        self.assertEqual(authorization["action_class"], "btc_dca_buy")
+        self.assertEqual(authorization["method_name"], "order_market_buy")
+        self.assertEqual(authorization["effect_type"], "order_buy")
+        self.assertEqual(
+            authorization["canonical_payload_sha256"],
+            hashlib.sha256(
+                json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+            ).hexdigest(),
+        )
+        self.assertEqual(preliminary.order_authorization["outcome"], "APPROVE")
+        self.assertEqual(preliminary.order_authorization["authorization_kind"], "PRELIMINARY")
+        self.assertEqual(preliminary.order_authorization["action_sequence"], 0)
+
+    def test_account_gate_uses_qpk_and_never_authorizes_research_only_mandate(self):
+        from strategy_runtime import apply_account_risk_gate, build_binance_research_mandate
+
+        decision = StrategyDecision(positions=(), budgets=(), diagnostics={
+            "member_risk_assessment": {
+                "scope": "MEMBER",
+                "outcome": "APPROVE",
+                "decision_digest_sha256": "1" * 64,
+                "assessment_sha256": "2" * 64,
+            }
+        })
+        assessment = SimpleNamespace(
+            scope="ACCOUNT",
+            outcome="APPROVE",
+            decision_digest_sha256="1" * 64,
+            portfolio_snapshot_digest_sha256="3" * 64,
+            assessment_sha256="4" * 64,
+            effective_exposure_cap=0.0,
+            mandate_scope="RESEARCH_ONLY",
+        )
+        qpk_result = SimpleNamespace(decision=decision, assessment=assessment)
+
+        with patch("strategy_runtime.qpk_assess_with_evidence", return_value=qpk_result) as assess:
+            result = apply_account_risk_gate(
+                decision,
+                portfolio_snapshot={"as_of": "2026-08-04T00:00:00Z"},
+                release_identity_sha256="5" * 64,
+                run_id="synthetic-run",
+                mandate_provenance=build_binance_research_mandate(),
+                market_data={},
+            )
+
+        self.assertEqual(assess.call_args.kwargs["scope"], "ACCOUNT")
+        self.assertEqual(result.order_authorization["outcome"], "REJECT")
     def test_load_strategy_runtime_exposes_explicit_artifact_contract(self):
         try:
             from strategy_runtime import load_strategy_runtime

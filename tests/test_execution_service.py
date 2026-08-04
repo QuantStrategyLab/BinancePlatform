@@ -1,5 +1,8 @@
+import hashlib
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from application.execution_service import (
     execute_btc_dca_cycle,
@@ -11,9 +14,170 @@ from application.execution_service import (
 
 
 class ExecutionServiceTests(unittest.TestCase):
+    def test_run_daily_circuit_breaker_keeps_break_even_clear_at_zero_threshold(self):
+        report = {"buy_sell_intents": [], "error_summary": {"errors": []}, "status": "ok"}
+        state = {}
+        runtime_notify_fn = Mock()
+        runtime_call_client_fn = Mock()
+        runtime_set_trade_state_fn = Mock()
+
+        triggered = run_daily_circuit_breaker(
+            SimpleNamespace(client=object(), now_utc=datetime(2026, 8, 4, tzinfo=timezone.utc)),
+            report,
+            state,
+            {},
+            {},
+            100.0,
+            {},
+            0.0,
+            0.0,
+            [],
+            format_qty_fn=Mock(),
+            runtime_notify_fn=runtime_notify_fn,
+            ensure_asset_available_fn=Mock(),
+            runtime_call_client_fn=runtime_call_client_fn,
+            set_symbol_trade_state_fn=Mock(),
+            runtime_set_trade_state_fn=runtime_set_trade_state_fn,
+            build_balance_snapshot_fn=Mock(),
+            translate_fn=lambda key, **kwargs: key,
+        )
+
+        self.assertFalse(triggered)
+        self.assertEqual(state, {})
+        self.assertEqual(report["account_breaker_evaluation"]["outcome"], "CLEAR")
+        self.assertEqual(report["account_breaker_evaluation"]["action_result"]["status"], "NOT_REQUIRED")
+        self.assertEqual(report["account_breaker_evaluation"]["observed_loss_ratio"], 0.0)
+        self.assertEqual(
+            report["account_breaker_evaluation"]["snapshot_digest_sha256"],
+            hashlib.sha256(b'{"account_daily_pnl":0.0}').hexdigest(),
+        )
+        runtime_notify_fn.assert_not_called()
+        runtime_call_client_fn.assert_not_called()
+        runtime_set_trade_state_fn.assert_not_called()
+
+    def test_run_daily_circuit_breaker_triggers_on_loss_and_preserves_latch(self):
+        runtime = SimpleNamespace(client=object(), now_utc=datetime(2026, 8, 4, tzinfo=timezone.utc))
+        report = {"buy_sell_intents": [], "error_summary": {"errors": []}, "status": "ok"}
+        state = {}
+
+        triggered = run_daily_circuit_breaker(
+            runtime,
+            report,
+            state,
+            {},
+            {},
+            100.0,
+            {},
+            -0.01,
+            0.0,
+            [],
+            format_qty_fn=Mock(),
+            runtime_notify_fn=Mock(),
+            ensure_asset_available_fn=Mock(),
+            runtime_call_client_fn=Mock(),
+            set_symbol_trade_state_fn=Mock(),
+            runtime_set_trade_state_fn=Mock(),
+            build_balance_snapshot_fn=Mock(return_value={}),
+            translate_fn=lambda key, **kwargs: key,
+        )
+
+        self.assertTrue(triggered)
+        self.assertTrue(state["is_circuit_broken"])
+        self.assertEqual(report["account_breaker_evaluation"]["outcome"], "TRIGGERED")
+        self.assertEqual(report["account_breaker_evaluation"]["observed_metric"], "account_daily_pnl")
+        self.assertEqual(report["account_breaker_evaluation"]["observed_loss_ratio"], -0.01)
+        self.assertEqual(
+            report["account_breaker_evaluation"]["snapshot_digest_sha256"],
+            hashlib.sha256(b'{"account_daily_pnl":-0.01}').hexdigest(),
+        )
+
+        latched_report = {"buy_sell_intents": [], "error_summary": {"errors": []}, "status": "ok"}
+        latched = run_daily_circuit_breaker(
+            runtime,
+            latched_report,
+            state,
+            {},
+            {},
+            100.0,
+            {},
+            0.0,
+            0.0,
+            [],
+            format_qty_fn=Mock(),
+            runtime_notify_fn=Mock(),
+            ensure_asset_available_fn=Mock(),
+            runtime_call_client_fn=Mock(),
+            set_symbol_trade_state_fn=Mock(),
+            runtime_set_trade_state_fn=Mock(),
+            build_balance_snapshot_fn=Mock(),
+            translate_fn=lambda key, **kwargs: key,
+        )
+
+        self.assertTrue(latched)
+        self.assertEqual(latched_report["account_breaker_evaluation"]["outcome"], "TRIGGERED")
+        self.assertEqual(latched_report["account_breaker_evaluation"]["action_result"]["status"], "BLOCKED")
+
+    def test_run_daily_circuit_breaker_emits_clear_evaluation_receipt(self):
+        report = {"buy_sell_intents": [], "error_summary": {"errors": []}, "status": "ok"}
+
+        triggered = run_daily_circuit_breaker(
+            SimpleNamespace(client=object(), now_utc=datetime(2026, 8, 4, tzinfo=timezone.utc)),
+            report,
+            {},
+            {},
+            {},
+            100.0,
+            {},
+            0.0,
+            -0.05,
+            [],
+            format_qty_fn=Mock(),
+            runtime_notify_fn=Mock(),
+            ensure_asset_available_fn=Mock(),
+            runtime_call_client_fn=Mock(),
+            set_symbol_trade_state_fn=Mock(),
+            runtime_set_trade_state_fn=Mock(),
+            build_balance_snapshot_fn=Mock(),
+            translate_fn=lambda key, **kwargs: key,
+        )
+
+        self.assertFalse(triggered)
+        self.assertEqual(report["account_breaker_evaluation"]["outcome"], "CLEAR")
+        self.assertEqual(report["account_breaker_evaluation"]["action_result"]["attempted_count"], 0)
+
+    def test_run_daily_circuit_breaker_treats_zero_quantity_as_failed_action(self):
+        report = {"buy_sell_intents": [], "error_summary": {"errors": []}, "status": "ok"}
+
+        run_daily_circuit_breaker(
+            SimpleNamespace(client=object(), now_utc=datetime(2026, 8, 4, tzinfo=timezone.utc)),
+            report,
+            {},
+            {"ETHUSDT": {"base_asset": "ETH"}},
+            {"ETHUSDT": 1.0},
+            0.0,
+            {"ETHUSDT": 100.0},
+            -0.10,
+            -0.05,
+            [],
+            format_qty_fn=lambda *_args: 0.0,
+            runtime_notify_fn=Mock(),
+            ensure_asset_available_fn=Mock(),
+            runtime_call_client_fn=Mock(),
+            set_symbol_trade_state_fn=Mock(),
+            runtime_set_trade_state_fn=Mock(),
+            build_balance_snapshot_fn=Mock(return_value={}),
+            translate_fn=lambda key, **kwargs: key,
+        )
+
+        action_result = report["account_breaker_evaluation"]["action_result"]
+        self.assertEqual(action_result["status"], "FAILED")
+        self.assertEqual(action_result["attempted_count"], 1)
+        self.assertEqual(action_result["failed_count"], 1)
+        self.assertEqual(report["status"], "error")
+
     def test_run_daily_circuit_breaker_liquidates_and_latches_state(self):
-        runtime = SimpleNamespace(client=object())
-        report = {"buy_sell_intents": []}
+        runtime = SimpleNamespace(client=object(), now_utc=datetime(2026, 8, 4, tzinfo=timezone.utc))
+        report = {"buy_sell_intents": [], "error_summary": {"errors": []}, "status": "ok"}
         state = {}
         balances = {"ETHUSDT": 2.0}
         prices = {"ETHUSDT": 100.0}
@@ -55,7 +219,11 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertGreaterEqual(len(observed["notifications"]), 1)
 
     def test_execute_trend_sells_executes_sell_and_updates_runtime_state(self):
-        runtime = SimpleNamespace(client=object())
+        action_authorizations = []
+        runtime = SimpleNamespace(
+            client=object(),
+            action_authorizer=lambda **action: action_authorizations.append(action),
+        )
         report = {"buy_sell_intents": []}
         state = {}
         balances = {"ETHUSDT": 2.0}
@@ -102,12 +270,18 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertEqual(report["buy_sell_intents"][0]["reason"], "rotated_out")
         self.assertEqual(observed["asset_checks"][0][0], "ETH")
         self.assertEqual(observed["client_calls"][0][0], "order_market_sell")
+        self.assertEqual(action_authorizations[0]["action_class"], "trend_sell")
+        self.assertEqual(action_authorizations[0]["payload"], observed["client_calls"][0][1])
         self.assertEqual(observed["actions"], [("ETHUSDT", "sell", "20260329")])
         self.assertEqual(observed["persist_reasons"], ["trend_sell:ETHUSDT"])
         self.assertGreaterEqual(len(observed["notifications"]), 1)
 
     def test_execute_trend_buys_executes_buy_and_updates_runtime_state(self):
-        runtime = SimpleNamespace(client=object())
+        action_authorizations = []
+        runtime = SimpleNamespace(
+            client=object(),
+            action_authorizer=lambda **action: action_authorizations.append(action),
+        )
         report = {"buy_sell_intents": [], "gating_summary": {}, "gating_events": []}
         state = {}
         balances = {"ETHUSDT": 0.0}
@@ -155,6 +329,10 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertEqual(report["buy_sell_intents"][0]["budget"], 200.0)
         self.assertEqual(observed["asset_checks"][0][0], "USDT")
         self.assertEqual(observed["client_calls"][0][0], "order_market_buy")
+        self.assertEqual(action_authorizations[0]["action_class"], "trend_buy")
+        self.assertEqual(action_authorizations[0]["method_name"], "order_market_buy")
+        self.assertEqual(action_authorizations[0]["payload"], observed["client_calls"][0][1])
+        self.assertEqual(action_authorizations[0]["u_total"], 500.0)
         self.assertEqual(observed["actions"], [("ETHUSDT", "buy", "20260329")])
         self.assertEqual(observed["persist_reasons"], ["trend_buy:ETHUSDT"])
         self.assertGreaterEqual(len(observed["notifications"]), 1)
