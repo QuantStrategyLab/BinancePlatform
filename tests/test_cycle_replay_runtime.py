@@ -137,7 +137,23 @@ class CycleReplayRuntimeTests(unittest.TestCase):
             now_utc=FIXTURE_TIME,
         )
         if include_release_identity:
-            runtime.trend_pool_payload["runtime_evidence_identity"] = valid_release_identity()
+            identity = valid_release_identity()
+            symbol_map = runtime.trend_pool_payload["symbol_map"]
+            legacy_payload = {
+                **runtime.trend_pool_payload,
+                "symbols": symbol_map,
+                "symbol_map": symbol_map,
+            }
+            exact_text = json.dumps(legacy_payload, separators=(", ", ": "))
+            identity["artifacts"]["live_pool_legacy"]["sha256"] = hashlib.sha256(
+                exact_text.encode("utf-8")
+            ).hexdigest()
+            runtime.trend_pool_payload["runtime_evidence_identity"] = identity
+            runtime.trend_pool_payload["live_pool_legacy_exact_bytes"] = {
+                "contract_version": "qsl.crypto_live_pool_legacy_exact_bytes.v1",
+                "encoding": "utf-8",
+                "utf8_text": exact_text,
+            }
         trend_pool_patch = contextlib.nullcontext()
         if static_fallback:
             static_universe = dict(runtime.trend_pool_payload["symbol_map"])

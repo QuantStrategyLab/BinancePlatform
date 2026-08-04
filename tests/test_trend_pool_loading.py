@@ -97,6 +97,34 @@ from crypto_strategies.strategies.crypto_live_pool_rotation.core import allocate
 from crypto_strategies.strategies.crypto_live_pool_rotation.rotation import refresh_rotation_pool
 
 
+EXACT_BYTES_CONTRACT_VERSION = "qsl.crypto_live_pool_legacy_exact_bytes.v1"
+
+
+def bind_exact_legacy_artifact(payload, *, exact_text=None):
+    if exact_text is None:
+        symbol_map = payload["symbol_map"]
+        exact_payload = {
+            "as_of_date": payload["as_of_date"],
+            "version": payload["version"],
+            "mode": payload["mode"],
+            "pool_size": payload["pool_size"],
+            "symbols": {symbol: symbol_map[symbol] for symbol in payload["symbols"]},
+            "symbol_map": {symbol: symbol_map[symbol] for symbol in payload["symbols"]},
+            "source_project": payload["source_project"],
+        }
+        exact_text = "\n" + json.dumps(exact_payload, separators=(", ", ": ")) + "\n"
+    payload["live_pool_legacy_exact_bytes"] = {
+        "contract_version": EXACT_BYTES_CONTRACT_VERSION,
+        "encoding": "utf-8",
+        "utf8_text": exact_text,
+    }
+    exact_bytes = exact_text.encode("utf-8")
+    payload["runtime_evidence_identity"]["artifacts"]["live_pool_legacy"]["sha256"] = (
+        hashlib.sha256(exact_bytes).hexdigest()
+    )
+    return payload
+
+
 def build_payload(as_of_date="2026-03-10", *, mode="core_major"):
     symbol_map = {
         "ETHUSDT": {"base_asset": "ETH"},
@@ -129,7 +157,7 @@ def build_payload(as_of_date="2026-03-10", *, mode="core_major"):
             )
         },
     }
-    return payload
+    return bind_exact_legacy_artifact(payload)
 
 
 class TrendPoolLoadingTests(unittest.TestCase):
@@ -156,6 +184,95 @@ class TrendPoolLoadingTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["payload"]["runtime_evidence_identity"], payload["runtime_evidence_identity"])
         self.assertEqual(result["payload"]["release_identity_sha256"], expected)
+
+    def test_validate_trend_pool_payload_rejects_missing_exact_legacy_artifact(self):
+        payload = build_payload()
+        payload.pop("live_pool_legacy_exact_bytes")
+
+        result = main.validate_trend_pool_payload(
+            payload,
+            source_label="test",
+            now_utc=datetime(2026, 3, 14, tzinfo=timezone.utc),
+            max_age_days=30,
+            acceptable_modes=["core_major"],
+            expected_pool_size=5,
+            enforce_freshness=True,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("exact bytes", " ".join(result["errors"]))
+
+    def test_validate_trend_pool_payload_rejects_exact_byte_mutation(self):
+        payload = build_payload()
+        payload["live_pool_legacy_exact_bytes"]["utf8_text"] += "\n"
+
+        result = main.validate_trend_pool_payload(
+            payload,
+            source_label="test",
+            now_utc=datetime(2026, 3, 14, tzinfo=timezone.utc),
+            max_age_days=30,
+            acceptable_modes=["core_major"],
+            expected_pool_size=5,
+            enforce_freshness=True,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("digest", " ".join(result["errors"]))
+
+    def test_validate_trend_pool_payload_rejects_invalid_exact_legacy_artifact(self):
+        cases = {
+            "invalid_utf8": b"\xff",
+            "invalid_json": "{",
+            "nan": '{"value": NaN}',
+            "infinity": '{"value": Infinity}',
+            "negative_infinity": '{"value": -Infinity}',
+            "non_object": "[]",
+            "empty_object": "{}",
+        }
+        for label, invalid_value in cases.items():
+            with self.subTest(label=label):
+                payload = build_payload()
+                raw_bytes = (
+                    invalid_value
+                    if isinstance(invalid_value, bytes)
+                    else invalid_value.encode("utf-8")
+                )
+                payload["live_pool_legacy_exact_bytes"]["utf8_text"] = invalid_value
+                payload["runtime_evidence_identity"]["artifacts"]["live_pool_legacy"][
+                    "sha256"
+                ] = hashlib.sha256(raw_bytes).hexdigest()
+
+                result = main.validate_trend_pool_payload(
+                    payload,
+                    source_label="test",
+                    now_utc=datetime(2026, 3, 14, tzinfo=timezone.utc),
+                    max_age_days=30,
+                    acceptable_modes=["core_major"],
+                    expected_pool_size=5,
+                    enforce_freshness=True,
+                )
+
+                self.assertFalse(result["ok"])
+                self.assertIn("exact bytes", " ".join(result["errors"]))
+
+    def test_validate_trend_pool_payload_rejects_top_level_pool_mutation(self):
+        payload = build_payload()
+        payload["symbols"][0] = "ADAUSDT"
+        payload["symbol_map"].pop("ETHUSDT")
+        payload["symbol_map"]["ADAUSDT"] = {"base_asset": "ADA"}
+
+        result = main.validate_trend_pool_payload(
+            payload,
+            source_label="test",
+            now_utc=datetime(2026, 3, 14, tzinfo=timezone.utc),
+            max_age_days=30,
+            acceptable_modes=["core_major"],
+            expected_pool_size=5,
+            enforce_freshness=True,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("convenience", " ".join(result["errors"]))
 
     def test_validate_trend_pool_payload_rejects_missing_release_identity(self):
         payload = build_payload()
@@ -192,6 +309,7 @@ class TrendPoolLoadingTests(unittest.TestCase):
     def test_validate_trend_pool_payload_preserves_ordered_symbols_in_symbol_map(self):
         payload = build_payload()
         payload["symbols"] = ["BCHUSDT", "ETHUSDT", "LTCUSDT", "SOLUSDT", "XRPUSDT"]
+        bind_exact_legacy_artifact(payload)
 
         result = main.validate_trend_pool_payload(
             payload,

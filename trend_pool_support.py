@@ -18,6 +18,7 @@ _RUNTIME_IDENTITY_ARTIFACTS = frozenset(
     {"live_pool", "live_pool_legacy", "latest_ranking", "latest_universe"}
 )
 _RUNTIME_IDENTITY_PROFILE = "crypto_live_pool_rotation"
+_LEGACY_EXACT_BYTES_CONTRACT_VERSION = "qsl.crypto_live_pool_legacy_exact_bytes.v1"
 
 
 def _canonical_sha256(value):
@@ -28,6 +29,70 @@ def _canonical_sha256(value):
         allow_nan=False,
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _reject_non_standard_json_constant(value):
+    raise ValueError(f"non-standard JSON constant is not allowed: {value}")
+
+
+def _validate_exact_legacy_artifact(payload, identity):
+    errors = []
+    handoff = payload.get("live_pool_legacy_exact_bytes") if isinstance(payload, dict) else None
+    if not isinstance(handoff, dict):
+        return {}, ["live_pool_legacy exact bytes handoff must be an object"]
+    if handoff.get("contract_version") != _LEGACY_EXACT_BYTES_CONTRACT_VERSION:
+        errors.append("live_pool_legacy exact bytes contract version mismatch")
+    if handoff.get("encoding") != "utf-8":
+        errors.append("live_pool_legacy exact bytes encoding must be utf-8")
+
+    exact_text = handoff.get("utf8_text")
+    exact_bytes = None
+    if not isinstance(exact_text, str):
+        errors.append("live_pool_legacy exact bytes must contain UTF-8 text")
+    else:
+        try:
+            exact_bytes = exact_text.encode("utf-8")
+        except UnicodeEncodeError:
+            errors.append("live_pool_legacy exact bytes must contain valid UTF-8 text")
+
+    artifacts = identity.get("artifacts") if isinstance(identity, dict) else None
+    legacy_identity = artifacts.get("live_pool_legacy") if isinstance(artifacts, dict) else None
+    expected_digest = legacy_identity.get("sha256") if isinstance(legacy_identity, dict) else None
+    if exact_bytes is not None and hashlib.sha256(exact_bytes).hexdigest() != expected_digest:
+        errors.append("live_pool_legacy exact bytes digest mismatch")
+
+    exact_payload = None
+    if exact_bytes is not None:
+        try:
+            parsed = json.loads(
+                exact_text,
+                parse_constant=_reject_non_standard_json_constant,
+            )
+        except (TypeError, ValueError):
+            errors.append("live_pool_legacy exact bytes must contain valid JSON")
+        else:
+            if not isinstance(parsed, dict):
+                errors.append("live_pool_legacy exact bytes must contain a JSON object")
+            else:
+                exact_payload = parsed
+
+    if exact_payload is not None:
+        exact_symbols = exact_payload.get("symbols")
+        exact_symbol_map = exact_payload.get("symbol_map")
+        if not isinstance(exact_symbols, dict) or not exact_symbols:
+            errors.append("live_pool_legacy exact bytes symbols must be a non-empty object")
+        if not isinstance(exact_symbol_map, dict) or exact_symbol_map != exact_symbols:
+            errors.append("live_pool_legacy exact bytes symbol_map mismatch")
+        if isinstance(exact_symbols, dict):
+            if payload.get("symbols") != list(exact_symbols):
+                errors.append("live_pool_legacy exact bytes symbols convenience mismatch")
+            if payload.get("symbol_map") != exact_symbols:
+                errors.append("live_pool_legacy exact bytes symbol_map convenience mismatch")
+        for field in ("as_of_date", "version", "mode", "pool_size", "source_project"):
+            if payload.get(field) != exact_payload.get(field):
+                errors.append(f"live_pool_legacy exact bytes {field} convenience mismatch")
+
+    return exact_payload or {}, errors
 
 
 def validate_runtime_evidence_identity(identity, *, payload):
@@ -285,6 +350,14 @@ def validate_trend_pool_payload(
         },
     )
     errors.extend(identity_errors)
+    exact_payload, exact_payload_errors = _validate_exact_legacy_artifact(
+        payload or {},
+        runtime_evidence_identity,
+    )
+    errors.extend(exact_payload_errors)
+    if exact_payload:
+        symbol_map = parse_trend_universe_mapping(exact_payload)
+        symbols = extract_trend_pool_symbols(exact_payload, symbol_map)
 
     ordered_symbol_map = {
         symbol: symbol_map[symbol]
@@ -302,6 +375,15 @@ def validate_trend_pool_payload(
         "source_project": source_project,
         "runtime_evidence_identity": runtime_evidence_identity,
         "release_identity_sha256": release_identity_sha256,
+        "live_pool_legacy_exact_bytes": {
+            "contract_version": _LEGACY_EXACT_BYTES_CONTRACT_VERSION,
+            "encoding": "utf-8",
+            "utf8_text": (
+                (payload or {}).get("live_pool_legacy_exact_bytes", {}).get("utf8_text", "")
+                if isinstance((payload or {}).get("live_pool_legacy_exact_bytes"), dict)
+                else ""
+            ),
+        },
     }
 
     return {
