@@ -128,7 +128,13 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
             def get_simple_earn_flexible_product_position(self, *, asset):
                 return {"rows": [{"productId": "earn-1", "totalAmount": "5.0"}]}
 
-        runtime = SimpleNamespace(client=Client(), dry_run=False)
+        action_authorizations = []
+        runtime = SimpleNamespace(
+            client=Client(),
+            dry_run=False,
+            action_cash_usdt=25.0,
+            action_authorizer=lambda **action: action_authorizations.append(action),
+        )
         report = {"redemption_subscription_intents": [], "order_authorization": {"outcome": "APPROVE"}}
         observed = {"calls": [], "logs": [], "notifications": [], "sleep": []}
 
@@ -150,6 +156,9 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
         self.assertTrue(available)
         self.assertEqual(report["redemption_subscription_intents"][0]["action"], "redeem")
         self.assertEqual(observed["calls"][0][0], "redeem_simple_earn_flexible_product")
+        self.assertEqual(action_authorizations[0]["action_class"], "earn_asset_availability_redeem")
+        self.assertEqual(action_authorizations[0]["payload"], observed["calls"][0][1])
+        self.assertEqual(action_authorizations[0]["u_total"], 25.0)
         self.assertEqual(observed["sleep"], [3])
         self.assertEqual(observed["notifications"], [])
         self.assertEqual(len(observed["logs"]), 1)
@@ -162,7 +171,12 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
             def get_simple_earn_flexible_product_list(self, *, asset):
                 return {"rows": [{"productId": "earn-1"}]}
 
-        runtime = SimpleNamespace(client=Client())
+        action_authorizations = []
+        runtime = SimpleNamespace(
+            client=Client(),
+            action_cash_usdt=150.0,
+            action_authorizer=lambda **action: action_authorizations.append(action),
+        )
         report = {"redemption_subscription_intents": [], "order_authorization": {"outcome": "APPROVE"}}
         observed = {"calls": [], "logs": []}
 
@@ -181,6 +195,8 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
         self.assertEqual(report["redemption_subscription_intents"][0]["action"], "subscribe")
         self.assertEqual(report["redemption_subscription_intents"][0]["amount"], 50.0)
         self.assertEqual(observed["calls"][0][0], "subscribe_simple_earn_flexible_product")
+        self.assertEqual(action_authorizations[0]["action_class"], "earn_buffer_subscribe")
+        self.assertEqual(action_authorizations[0]["payload"], observed["calls"][0][1])
         self.assertEqual(len(observed["logs"]), 1)
 
     def test_ensure_runtime_client_marks_report_aborted_after_retries(self):

@@ -167,6 +167,7 @@ def apply_account_risk_gate(
     run_id: str,
     mandate_provenance: Mapping[str, Any],
     market_data: Mapping[str, Any],
+    action_context: Mapping[str, Any] | None = None,
 ) -> AccountGateResult:
     """Call the QPK ACCOUNT gate and bind its receipt to the current release/run."""
     member = dict(decision.diagnostics.get("member_risk_assessment", {}))
@@ -195,9 +196,28 @@ def apply_account_risk_gate(
         and float(mandate_provenance.get("effective_exposure_cap", 0.0) or 0.0) > 0.0
         and bool(mandate_provenance.get("allowed_nonzero_assets"))
     )
-    outcome = "APPROVE" if exact_binding and capital_authority else "REJECT"
+    action = dict(action_context or {})
+    action_sequence = action.get("action_sequence")
+    action_class = action.get("action_class")
+    method_name = action.get("method_name")
+    effect_type = action.get("effect_type")
+    payload = action.get("payload")
+    valid_action = (
+        isinstance(action_sequence, int)
+        and not isinstance(action_sequence, bool)
+        and action_sequence > 0
+        and all(isinstance(value, str) and value.strip() for value in (action_class, method_name, effect_type))
+        and isinstance(payload, Mapping)
+    )
+    try:
+        canonical_payload_sha256 = _canonical_sha256(payload) if valid_action else ""
+    except (TypeError, ValueError):
+        canonical_payload_sha256 = ""
+        valid_action = False
+    cap_outcome = "APPROVE" if exact_binding and capital_authority else "REJECT"
+    outcome = cap_outcome if action_context is None or valid_action else "REJECT"
     cap_assessment = {
-        "outcome": outcome,
+        "outcome": cap_outcome,
         "mandate_id": str(mandate_provenance.get("mandate_id", "")),
         "mandate_version": str(mandate_provenance.get("mandate_version", "")),
         "mandate_authority_receipt_sha256": str(mandate_provenance.get("authority_receipt_sha256", "")),
@@ -209,9 +229,15 @@ def apply_account_risk_gate(
         "account_assessment_sha256": str(account.get("assessment_sha256", "")),
     }
     authorization = {
-        "contract_version": "qsl.binance_order_authorization.v1",
+        "contract_version": "qsl.binance_order_authorization.v2",
         "outcome": outcome,
         "run_id": str(run_id),
+        "authorization_kind": "ACTION" if valid_action else "PRELIMINARY",
+        "action_sequence": action_sequence if valid_action else 0,
+        "action_class": str(action_class or ""),
+        "method_name": str(method_name or ""),
+        "effect_type": str(effect_type or ""),
+        "canonical_payload_sha256": canonical_payload_sha256,
         "decision_digest_sha256": decision_digest,
         "release_identity_sha256": str(release_identity_sha256),
         "account_snapshot_sha256": snapshot_digest,
@@ -364,6 +390,7 @@ class LoadedStrategyRuntime:
         release_identity: Mapping[str, Any] | None = None,
         release_identity_sha256: str = "",
         run_id: str = "",
+        action_context: Mapping[str, Any] | None = None,
     ) -> StrategyEvaluationResult:
         runtime_config = dict(self.runtime_overrides)
         runtime_config.update(
@@ -436,6 +463,7 @@ class LoadedStrategyRuntime:
             run_id=run_id,
             mandate_provenance=mandate_provenance,
             market_data=dict(ctx.market_data or {}),
+            action_context=action_context,
         )
         return StrategyEvaluationResult(
             decision=account_gate.decision,

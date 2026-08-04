@@ -22,6 +22,7 @@ def execute_strategy_cycle(
     append_trend_pool_source_logs,
     capture_market_snapshot,
     compute_portfolio_allocation,
+    refresh_action_authorization=None,
     build_balance_snapshot,
     maybe_reset_daily_state,
     maybe_rebase_daily_state_for_balance_change,
@@ -108,6 +109,22 @@ def execute_strategy_cycle(
 
         report["total_equity_usdt"] = total_equity
         report["trend_equity_usdt"] = trend_val_equity
+
+        if refresh_action_authorization is not None:
+            runtime.action_authorizer = lambda **action: refresh_action_authorization(
+                runtime,
+                report,
+                state,
+                runtime_trend_universe,
+                trend_indicators,
+                btc_snapshot,
+                prices,
+                balances,
+                fuel_val,
+                allow_new_trend_entries=allow_new_trend_entries,
+                allow_pool_refresh=not trend_pool_resolution["degraded"],
+                **action,
+            )
 
         now_utc = runtime.now_utc
         today_utc = now_utc.strftime("%Y-%m-%d")
@@ -200,6 +217,7 @@ def execute_strategy_cycle(
             log_buffer,
         )
 
+        runtime.action_cash_usdt = float(u_total)
         manage_usdt_earn_buffer_runtime(
             runtime,
             report,
@@ -237,6 +255,7 @@ def execute_strategy_cycle(
         except Exception:
             pass
     finally:
+        runtime.action_authorizer = None
         report["log_lines"] = list(log_buffer)
         finalize_notification_delivery(report)
         try_record_platform_execution(
@@ -325,6 +344,7 @@ def run_live_cycle(
                 member_risk_assessment=report.get("member_risk_assessment", {}),
                 account_risk_assessment=report.get("account_risk_assessment", {}),
                 cap_assessment=report.get("cap_assessment", {}),
+                order_authorization=report.get("order_authorization", {}),
                 strategy_stop_evaluation=report.get("strategy_stop_evaluation", {}),
                 account_breaker_evaluation=report.get("account_breaker_evaluation", {}),
                 execution_gate_outcome=str(report.get("order_authorization", {}).get("outcome", "REJECT")),

@@ -815,6 +815,7 @@ def _resolve_strategy_evaluation(
     *,
     allow_new_trend_entries=True,
     allow_pool_refresh=True,
+    action_context=None,
 ):
     account_metrics = STRATEGY_RUNTIME.compute_account_metrics(
         runtime_trend_universe,
@@ -840,7 +841,60 @@ def _resolve_strategy_evaluation(
         release_identity=getattr(runtime, "release_identity", {}),
         release_identity_sha256=getattr(runtime, "release_identity_sha256", ""),
         run_id=str(runtime.run_id),
+        action_context=action_context,
     )
+
+
+def _refresh_action_authorization(
+    runtime,
+    report,
+    state,
+    runtime_trend_universe,
+    trend_indicators,
+    btc_snapshot,
+    prices,
+    balances,
+    fuel_val,
+    *,
+    allow_new_trend_entries,
+    allow_pool_refresh,
+    action_class,
+    method_name,
+    payload,
+    effect_type,
+    u_total,
+):
+    runtime.authorization_sequence += 1
+    evaluation = _resolve_strategy_evaluation(
+        runtime,
+        state,
+        runtime_trend_universe,
+        trend_indicators,
+        btc_snapshot,
+        prices,
+        balances,
+        u_total,
+        fuel_val,
+        allow_new_trend_entries=allow_new_trend_entries,
+        allow_pool_refresh=allow_pool_refresh,
+        action_context={
+            "action_sequence": runtime.authorization_sequence,
+            "action_class": action_class,
+            "method_name": method_name,
+            "effect_type": effect_type,
+            "payload": dict(payload),
+        },
+    )
+    diagnostics = dict(evaluation.decision.diagnostics or {})
+    for field_name in (
+        "member_risk_assessment",
+        "account_risk_assessment",
+        "cap_assessment",
+        "strategy_stop_evaluation",
+        "order_authorization",
+    ):
+        report[field_name] = dict(diagnostics.get(field_name, {}))
+    return evaluation.decision
 
 
 def _resolve_strategy_plan(
@@ -1195,6 +1249,7 @@ def execute_cycle(runtime):
             append_trend_pool_source_logs=_append_trend_pool_source_logs,
             capture_market_snapshot=_capture_market_snapshot,
             compute_portfolio_allocation=_compute_portfolio_allocation,
+            refresh_action_authorization=_refresh_action_authorization,
             build_balance_snapshot=_build_balance_snapshot,
             maybe_reset_daily_state=_maybe_reset_daily_state,
             maybe_rebase_daily_state_for_balance_change=_maybe_rebase_daily_state_for_balance_change,

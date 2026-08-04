@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import timezone
 
-from runtime_support import record_gating_event
+from runtime_support import authorize_runtime_action, record_gating_event
 
 
 _ACCOUNT_BREAKER_POLICY_ID = "binance.account_daily_loss_breaker"
@@ -213,15 +213,26 @@ def run_daily_circuit_breaker(
                     f"{translate_fn('qty_zero_msg')}",
                 )
                 continue
+            runtime.action_cash_usdt = float(u_total)
             if not ensure_asset_available_fn(runtime, report, config["base_asset"], qty, log_buffer):
                 raise RuntimeError(
                     translate_fn("asset_unavailable_for_circuit_breaker_sell", asset=config["base_asset"])
                 )
+            payload = {"symbol": symbol, "quantity": qty}
+            authorize_runtime_action(
+                runtime,
+                report,
+                action_class="account_breaker_sell",
+                method_name="order_market_sell",
+                payload=payload,
+                effect_type="order_sell",
+                u_total=u_total,
+            )
             runtime_call_client_fn(
                 runtime,
                 report,
                 method_name="order_market_sell",
-                payload={"symbol": symbol, "quantity": qty},
+                payload=payload,
                 effect_type="order_sell",
             )
             report["buy_sell_intents"].append(
@@ -343,17 +354,28 @@ def execute_trend_sells(
                     f"{translate_fn('qty_zero_msg')}",
                 )
                 continue
+            runtime.action_cash_usdt = float(u_total)
             if not ensure_asset_available_fn(runtime, report, config["base_asset"], qty, log_buffer):
                 raise RuntimeError(translate_fn("asset_unavailable_for_trend_sell", asset=config["base_asset"]))
+            payload = {
+                "symbol": symbol,
+                "quantity": qty,
+                "newClientOrderId": next_order_id_fn(runtime, "T_SELL", symbol),
+            }
+            authorize_runtime_action(
+                runtime,
+                report,
+                action_class="trend_sell",
+                method_name="order_market_sell",
+                payload=payload,
+                effect_type="order_sell",
+                u_total=u_total,
+            )
             runtime_call_client_fn(
                 runtime,
                 report,
                 method_name="order_market_sell",
-                payload={
-                    "symbol": symbol,
-                    "quantity": qty,
-                    "newClientOrderId": next_order_id_fn(runtime, "T_SELL", symbol),
-                },
+                payload=payload,
                 effect_type="order_sell",
             )
             balances[symbol] = max(0.0, balances[symbol] - qty)
@@ -463,17 +485,28 @@ def execute_trend_buys(
                     f"{translate_fn('qty_zero_msg')}",
                 )
                 continue
+            runtime.action_cash_usdt = float(u_total)
             if not ensure_asset_available_fn(runtime, report, "USDT", usdt_cost, log_buffer):
                 raise RuntimeError(translate_fn("usdt_unavailable_for_trend_buy"))
+            payload = {
+                "symbol": symbol,
+                "quantity": qty,
+                "newClientOrderId": next_order_id_fn(runtime, "T_BUY", symbol),
+            }
+            authorize_runtime_action(
+                runtime,
+                report,
+                action_class="trend_buy",
+                method_name="order_market_buy",
+                payload=payload,
+                effect_type="order_buy",
+                u_total=u_total,
+            )
             runtime_call_client_fn(
                 runtime,
                 report,
                 method_name="order_market_buy",
-                payload={
-                    "symbol": symbol,
-                    "quantity": qty,
-                    "newClientOrderId": next_order_id_fn(runtime, "T_BUY", symbol),
-                },
+                payload=payload,
                 effect_type="order_buy",
             )
             set_symbol_trade_state_fn(
@@ -749,17 +782,28 @@ def execute_btc_dca_cycle(
                     f"{translate_fn('qty_zero_msg')}",
                 )
             else:
+                runtime.action_cash_usdt = float(u_total)
                 if not ensure_asset_available_fn(runtime, report, "USDT", buy_cost, log_buffer):
                     raise RuntimeError(translate_fn("usdt_unavailable_for_btc_dca_buy"))
+                payload = {
+                    "symbol": "BTCUSDT",
+                    "quantity": qty,
+                    "newClientOrderId": next_order_id_fn(runtime, "D_BUY", "BTCUSDT"),
+                }
+                authorize_runtime_action(
+                    runtime,
+                    report,
+                    action_class="btc_dca_buy",
+                    method_name="order_market_buy",
+                    payload=payload,
+                    effect_type="order_buy",
+                    u_total=u_total,
+                )
                 runtime_call_client_fn(
                     runtime,
                     report,
                     method_name="order_market_buy",
-                    payload={
-                        "symbol": "BTCUSDT",
-                        "quantity": qty,
-                        "newClientOrderId": next_order_id_fn(runtime, "D_BUY", "BTCUSDT"),
-                    },
+                    payload=payload,
                     effect_type="order_buy",
                 )
                 balances["BTCUSDT"] += qty
@@ -818,17 +862,28 @@ def execute_btc_dca_cycle(
                     f"{translate_fn('qty_zero_msg')}",
                 )
             else:
+                runtime.action_cash_usdt = float(u_total)
                 if not ensure_asset_available_fn(runtime, report, "BTC", qty, log_buffer):
                     raise RuntimeError(translate_fn("btc_unavailable_for_dca_sell"))
+                payload = {
+                    "symbol": "BTCUSDT",
+                    "quantity": qty,
+                    "newClientOrderId": next_order_id_fn(runtime, "D_SELL", "BTCUSDT"),
+                }
+                authorize_runtime_action(
+                    runtime,
+                    report,
+                    action_class="btc_dca_sell",
+                    method_name="order_market_sell",
+                    payload=payload,
+                    effect_type="order_sell",
+                    u_total=u_total,
+                )
                 runtime_call_client_fn(
                     runtime,
                     report,
                     method_name="order_market_sell",
-                    payload={
-                        "symbol": "BTCUSDT",
-                        "quantity": qty,
-                        "newClientOrderId": next_order_id_fn(runtime, "D_SELL", "BTCUSDT"),
-                    },
+                    payload=payload,
                     effect_type="order_sell",
                 )
                 balances["BTCUSDT"] = max(0.0, balances["BTCUSDT"] - qty)

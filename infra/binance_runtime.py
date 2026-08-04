@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from runtime_support import authorize_runtime_action
+
 
 def resolve_runtime_btc_snapshot(
     runtime,
@@ -69,7 +71,7 @@ def ensure_asset_available_runtime(
             return True
 
         shortfall = required_amount - spot_free
-        if report.get("order_authorization", {}).get("outcome") != "APPROVE":
+        if not callable(getattr(runtime, "action_authorizer", None)):
             return False
         earn_positions = runtime.client.get_simple_earn_flexible_product_position(asset=asset)
         if earn_positions and "rows" in earn_positions and len(earn_positions["rows"]) > 0:
@@ -85,11 +87,21 @@ def ensure_asset_available_runtime(
                     "amount": float(redeem_amt),
                     "reason": "asset_availability",
                 }
+                payload = {"productId": product_id, "amount": redeem_amt}
+                authorize_runtime_action(
+                    runtime,
+                    report,
+                    action_class="earn_asset_availability_redeem",
+                    method_name="redeem_simple_earn_flexible_product",
+                    payload=payload,
+                    effect_type="earn_redeem",
+                    u_total=getattr(runtime, "action_cash_usdt", 0.0),
+                )
                 runtime_call_client_fn(
                     runtime,
                     report,
                     method_name="redeem_simple_earn_flexible_product",
-                    payload={"productId": product_id, "amount": redeem_amt},
+                    payload=payload,
                     effect_type="earn_redeem",
                 )
                 report["redemption_subscription_intents"].append(intent)
@@ -122,7 +134,7 @@ def manage_usdt_earn_buffer_runtime(
     spot_free_override=None,
 ):
     try:
-        if report.get("order_authorization", {}).get("outcome") != "APPROVE":
+        if not callable(getattr(runtime, "action_authorizer", None)):
             return
         asset = "USDT"
         if spot_free_override is None:
@@ -138,11 +150,21 @@ def manage_usdt_earn_buffer_runtime(
         if spot_free > target_buffer + 5.0:
             excess = round(spot_free - target_buffer, 4)
             if excess >= 0.1:
+                payload = {"productId": product_id, "amount": excess}
+                authorize_runtime_action(
+                    runtime,
+                    report,
+                    action_class="earn_buffer_subscribe",
+                    method_name="subscribe_simple_earn_flexible_product",
+                    payload=payload,
+                    effect_type="earn_subscribe",
+                    u_total=getattr(runtime, "action_cash_usdt", 0.0),
+                )
                 runtime_call_client_fn(
                     runtime,
                     report,
                     method_name="subscribe_simple_earn_flexible_product",
-                    payload={"productId": product_id, "amount": excess},
+                    payload=payload,
                     effect_type="earn_subscribe",
                 )
                 report["redemption_subscription_intents"].append(
@@ -162,11 +184,21 @@ def manage_usdt_earn_buffer_runtime(
                 earn_free = float(earn_positions["rows"][0]["totalAmount"])
                 if earn_free > 0:
                     redeem_amt = round(min(shortfall, earn_free), 8)
+                    payload = {"productId": product_id, "amount": redeem_amt}
+                    authorize_runtime_action(
+                        runtime,
+                        report,
+                        action_class="earn_buffer_redeem",
+                        method_name="redeem_simple_earn_flexible_product",
+                        payload=payload,
+                        effect_type="earn_redeem",
+                        u_total=getattr(runtime, "action_cash_usdt", 0.0),
+                    )
                     runtime_call_client_fn(
                         runtime,
                         report,
                         method_name="redeem_simple_earn_flexible_product",
-                        payload={"productId": product_id, "amount": redeem_amt},
+                        payload=payload,
                         effect_type="earn_redeem",
                     )
                     report["redemption_subscription_intents"].append(

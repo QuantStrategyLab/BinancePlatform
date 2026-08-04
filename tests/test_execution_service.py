@@ -219,7 +219,11 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertGreaterEqual(len(observed["notifications"]), 1)
 
     def test_execute_trend_sells_executes_sell_and_updates_runtime_state(self):
-        runtime = SimpleNamespace(client=object())
+        action_authorizations = []
+        runtime = SimpleNamespace(
+            client=object(),
+            action_authorizer=lambda **action: action_authorizations.append(action),
+        )
         report = {"buy_sell_intents": []}
         state = {}
         balances = {"ETHUSDT": 2.0}
@@ -266,12 +270,18 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertEqual(report["buy_sell_intents"][0]["reason"], "rotated_out")
         self.assertEqual(observed["asset_checks"][0][0], "ETH")
         self.assertEqual(observed["client_calls"][0][0], "order_market_sell")
+        self.assertEqual(action_authorizations[0]["action_class"], "trend_sell")
+        self.assertEqual(action_authorizations[0]["payload"], observed["client_calls"][0][1])
         self.assertEqual(observed["actions"], [("ETHUSDT", "sell", "20260329")])
         self.assertEqual(observed["persist_reasons"], ["trend_sell:ETHUSDT"])
         self.assertGreaterEqual(len(observed["notifications"]), 1)
 
     def test_execute_trend_buys_executes_buy_and_updates_runtime_state(self):
-        runtime = SimpleNamespace(client=object())
+        action_authorizations = []
+        runtime = SimpleNamespace(
+            client=object(),
+            action_authorizer=lambda **action: action_authorizations.append(action),
+        )
         report = {"buy_sell_intents": [], "gating_summary": {}, "gating_events": []}
         state = {}
         balances = {"ETHUSDT": 0.0}
@@ -319,6 +329,10 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertEqual(report["buy_sell_intents"][0]["budget"], 200.0)
         self.assertEqual(observed["asset_checks"][0][0], "USDT")
         self.assertEqual(observed["client_calls"][0][0], "order_market_buy")
+        self.assertEqual(action_authorizations[0]["action_class"], "trend_buy")
+        self.assertEqual(action_authorizations[0]["method_name"], "order_market_buy")
+        self.assertEqual(action_authorizations[0]["payload"], observed["client_calls"][0][1])
+        self.assertEqual(action_authorizations[0]["u_total"], 500.0)
         self.assertEqual(observed["actions"], [("ETHUSDT", "buy", "20260329")])
         self.assertEqual(observed["persist_reasons"], ["trend_buy:ETHUSDT"])
         self.assertGreaterEqual(len(observed["notifications"]), 1)

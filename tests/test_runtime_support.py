@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import sys
 import unittest
@@ -16,11 +18,13 @@ if str(QPK_SRC) not in sys.path:
 from runtime_support import (
     ExecutionRuntime,
     build_runtime_evidence_aggregate,
+    build_runtime_evidence_aggregate_v2,
     build_execution_report,
     finalize_notification_delivery,
     record_gating_event,
     runtime_notify,
     validate_runtime_evidence_aggregate,
+    validate_runtime_evidence_aggregate_v2,
     runtime_call_client,
 )
 from quant_platform_kit.common.runtime_target import build_runtime_target
@@ -28,8 +32,138 @@ from quant_platform_kit.common.runtime_target import build_runtime_target
 
 class TestBuildExecutionReport(unittest.TestCase):
     @staticmethod
-    def risk_assessment(scope, assessment_sha256):
-        return {
+    def action_authorization_report(runtime, *, payload, method_name="order_market_buy", effect_type="order_buy"):
+        runtime.authorization_sequence = 1
+        report = build_execution_report(runtime)
+        report.update({
+            "release_identity_sha256": "5" * 64,
+            "member_risk_assessment": {
+                "scope": "MEMBER",
+                "outcome": "APPROVE",
+                "decision_digest_sha256": "c" * 64,
+                "assessment_sha256": "1" * 64,
+            },
+            "account_risk_assessment": {
+                "scope": "ACCOUNT",
+                "outcome": "APPROVE",
+                "decision_digest_sha256": "c" * 64,
+                "portfolio_snapshot_digest_sha256": "d" * 64,
+                "assessment_sha256": "2" * 64,
+            },
+        })
+        authorization = {
+            "contract_version": "qsl.binance_order_authorization.v2",
+            "outcome": "APPROVE",
+            "run_id": str(runtime.run_id),
+            "authorization_kind": "ACTION",
+            "action_sequence": 1,
+            "action_class": "btc_dca_buy",
+            "method_name": method_name,
+            "effect_type": effect_type,
+            "canonical_payload_sha256": hashlib.sha256(
+                json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+            ).hexdigest(),
+            "decision_digest_sha256": "c" * 64,
+            "release_identity_sha256": "5" * 64,
+            "account_snapshot_sha256": "d" * 64,
+            "member_assessment_sha256": "1" * 64,
+            "account_assessment_sha256": "2" * 64,
+            "mandate_authority_receipt_sha256": "b" * 64,
+            "mandate_scope": "PAPER",
+        }
+        authorization["authorization_sha256"] = hashlib.sha256(
+            json.dumps(authorization, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        ).hexdigest()
+        report["order_authorization"] = authorization
+        return report
+
+    def test_runtime_call_client_consumes_exact_action_authorization_once(self):
+        payload = {"symbol": "BTCUSDT", "quantity": 0.001}
+        runtime = ExecutionRuntime(dry_run=True, run_id="synthetic-run")
+        report = self.action_authorization_report(runtime, payload=payload)
+
+        result = runtime_call_client(
+            runtime,
+            report,
+            method_name="order_market_buy",
+            payload=payload,
+            effect_type="order_buy",
+        )
+
+        self.assertEqual(result["status"], "suppressed")
+        self.assertEqual(report["order_authorization"]["authorization_kind"], "ACTION")
+        with self.assertRaises(RuntimeError):
+            runtime_call_client(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload=payload,
+                effect_type="order_buy",
+            )
+
+    def test_runtime_call_client_rejects_action_binding_mismatches(self):
+        payload = {"symbol": "BTCUSDT", "quantity": 0.001}
+        variants = (
+            ("method", "order_market_sell", payload, "order_buy"),
+            ("effect", "order_market_buy", payload, "order_sell"),
+            ("payload", "order_market_buy", {"symbol": "BTCUSDT", "quantity": 0.002}, "order_buy"),
+        )
+        for label, method_name, call_payload, effect_type in variants:
+            with self.subTest(label=label):
+                runtime = ExecutionRuntime(dry_run=True, run_id=f"synthetic-{label}")
+                report = self.action_authorization_report(runtime, payload=payload)
+                with self.assertRaises(RuntimeError):
+                    runtime_call_client(
+                        runtime,
+                        report,
+                        method_name=method_name,
+                        payload=call_payload,
+                        effect_type=effect_type,
+                    )
+
+    def test_runtime_call_client_rejects_stale_decision_and_snapshot_bindings(self):
+        payload = {"symbol": "BTCUSDT", "quantity": 0.001}
+        variants = (
+            ("stale_sequence", lambda runtime, _report: setattr(runtime, "authorization_sequence", 2)),
+            ("decision", lambda _runtime, report: report["account_risk_assessment"].update(
+                decision_digest_sha256="e" * 64
+            )),
+            ("snapshot", lambda _runtime, report: report["account_risk_assessment"].update(
+                portfolio_snapshot_digest_sha256="e" * 64
+            )),
+        )
+        for label, mutate in variants:
+            with self.subTest(label=label):
+                runtime = ExecutionRuntime(dry_run=True, run_id=f"synthetic-{label}")
+                report = self.action_authorization_report(runtime, payload=payload)
+                mutate(runtime, report)
+                with self.assertRaises(RuntimeError):
+                    runtime_call_client(
+                        runtime,
+                        report,
+                        method_name="order_market_buy",
+                        payload=payload,
+                        effect_type="order_buy",
+                    )
+
+    @staticmethod
+    def canonical_sha256(value):
+        return hashlib.sha256(
+            json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        ).hexdigest()
+
+    @classmethod
+    def risk_assessment(
+        cls,
+        scope,
+        *,
+        outcome="REJECT",
+        mandate_scope="RESEARCH_ONLY",
+        effective_exposure_cap=0.0,
+        decision_digest_sha256="c" * 64,
+        portfolio_snapshot_digest_sha256="d" * 64,
+    ):
+        assessment = {
             "contract_version": "qsl.risk_gate_assessment.v1",
             "scope": scope,
             "evaluated_at": "2026-08-04T00:00:00Z",
@@ -39,16 +173,17 @@ class TestBuildExecutionReport(unittest.TestCase):
             "mandate_id": "binance_crypto_research_only_v1",
             "mandate_version": "2026-08-04.1",
             "mandate_authority_receipt_sha256": "b" * 64,
-            "mandate_scope": "RESEARCH_ONLY",
-            "decision_digest_sha256": "c" * 64,
-            "portfolio_snapshot_digest_sha256": "d" * 64,
-            "effective_exposure_cap": 0.0,
+            "mandate_scope": mandate_scope,
+            "decision_digest_sha256": decision_digest_sha256,
+            "portfolio_snapshot_digest_sha256": portfolio_snapshot_digest_sha256,
+            "effective_exposure_cap": effective_exposure_cap,
             "observed_effective_exposure": 0.0,
-            "proposed_effective_exposure": 0.0,
-            "outcome": "REJECT",
-            "reason_codes": ("budget_authority_exceeded",),
-            "assessment_sha256": assessment_sha256,
+            "proposed_effective_exposure": 0.25 if outcome == "APPROVE" else 0.0,
+            "outcome": outcome,
+            "reason_codes": () if outcome == "APPROVE" else ("budget_authority_exceeded",),
         }
+        assessment["assessment_sha256"] = cls.canonical_sha256(assessment)
+        return assessment
 
     @staticmethod
     def v2_release_identity():
@@ -68,31 +203,93 @@ class TestBuildExecutionReport(unittest.TestCase):
             },
         }
 
-    def test_v2_aggregate_builds_deterministic_redacted_missing_receipt(self):
-        from runtime_support import build_runtime_evidence_aggregate_v2, validate_runtime_evidence_aggregate_v2
-
-        cap = {
-            "outcome": "REJECT",
-            "decision_digest_sha256": "c" * 64,
-            "release_identity_sha256": "5" * 64,
-            "account_snapshot_sha256": "d" * 64,
-            "account_assessment_sha256": "2" * 64,
-            "mandate_authority_receipt_sha256": "b" * 64,
-            "order_authorization_sha256": "6" * 64,
+    @classmethod
+    def v2_chain_inputs(cls, *, outcome="REJECT"):
+        mandate_scope = "PAPER" if outcome == "APPROVE" else "RESEARCH_ONLY"
+        effective_exposure_cap = 0.5 if outcome == "APPROVE" else 0.0
+        member = cls.risk_assessment(
+            "MEMBER",
+            outcome=outcome,
+            mandate_scope=mandate_scope,
+            effective_exposure_cap=effective_exposure_cap,
+        )
+        account = cls.risk_assessment(
+            "ACCOUNT",
+            outcome=outcome,
+            mandate_scope=mandate_scope,
+            effective_exposure_cap=effective_exposure_cap,
+        )
+        release_identity = cls.v2_release_identity()
+        authorization = {
+            "contract_version": "qsl.binance_order_authorization.v2",
+            "outcome": outcome,
+            "run_id": "synthetic",
+            "authorization_kind": "ACTION",
+            "action_sequence": 1,
+            "action_class": "btc_dca_buy",
+            "method_name": "order_market_buy",
+            "effect_type": "order_buy",
+            "canonical_payload_sha256": "9" * 64,
+            "decision_digest_sha256": account["decision_digest_sha256"],
+            "release_identity_sha256": cls.canonical_sha256(release_identity),
+            "account_snapshot_sha256": account["portfolio_snapshot_digest_sha256"],
+            "member_assessment_sha256": member["assessment_sha256"],
+            "account_assessment_sha256": account["assessment_sha256"],
+            "mandate_authority_receipt_sha256": account["mandate_authority_receipt_sha256"],
+            "mandate_scope": account["mandate_scope"],
         }
-        kwargs = {
+        authorization["authorization_sha256"] = cls.canonical_sha256(authorization)
+        cap = {
+            "outcome": outcome,
+            "mandate_id": account["mandate_id"],
+            "mandate_version": account["mandate_version"],
+            "mandate_authority_receipt_sha256": account["mandate_authority_receipt_sha256"],
+            "mandate_scope": account["mandate_scope"],
+            "effective_exposure_cap": account["effective_exposure_cap"],
+            "decision_digest_sha256": account["decision_digest_sha256"],
+            "release_identity_sha256": cls.canonical_sha256(release_identity),
+            "account_snapshot_sha256": account["portfolio_snapshot_digest_sha256"],
+            "account_assessment_sha256": account["assessment_sha256"],
+            "qpk_source_revision": account["qpk_source_revision"],
+            "order_authorization_sha256": authorization["authorization_sha256"],
+        }
+        return {
             "produced_at": "2026-08-04T00:00:00Z",
             "run_id": "synthetic",
             "producer_revision": "f" * 40,
-            "release_identity": self.v2_release_identity(),
-            "member_risk_assessment": self.risk_assessment("MEMBER", "1" * 64),
-            "account_risk_assessment": self.risk_assessment("ACCOUNT", "2" * 64),
+            "release_identity": release_identity,
+            "member_risk_assessment": member,
+            "account_risk_assessment": account,
             "cap_assessment": cap,
+            "order_authorization": authorization,
             "strategy_stop_evaluation": {"evaluated": True, "outcome": "CLEAR"},
             "account_breaker_evaluation": {"evaluated": True, "outcome": "CLEAR"},
-            "execution_gate_outcome": "REJECT",
+            "execution_gate_outcome": outcome,
             "reconciliation": {"status": "MISSING"},
         }
+
+    @classmethod
+    def resign_aggregate(cls, aggregate):
+        aggregate["aggregate_sha256"] = cls.canonical_sha256(
+            {key: value for key, value in aggregate.items() if key != "aggregate_sha256"}
+        )
+
+    @classmethod
+    def resign_assessment(cls, assessment):
+        assessment["assessment_sha256"] = cls.canonical_sha256(
+            {key: value for key, value in assessment.items() if key != "assessment_sha256"}
+        )
+
+    @classmethod
+    def resign_authorization(cls, aggregate):
+        authorization = aggregate["order_authorization"]
+        authorization["authorization_sha256"] = cls.canonical_sha256(
+            {key: value for key, value in authorization.items() if key != "authorization_sha256"}
+        )
+        aggregate["cap_assessment"]["order_authorization_sha256"] = authorization["authorization_sha256"]
+
+    def test_v2_aggregate_builds_deterministic_redacted_missing_receipt(self):
+        kwargs = self.v2_chain_inputs()
 
         first = build_runtime_evidence_aggregate_v2(**kwargs)
         second = build_runtime_evidence_aggregate_v2(**kwargs)
@@ -100,7 +297,177 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertTrue(validate_runtime_evidence_aggregate_v2(first)["ok"])
         self.assertEqual(first["reconciliation"], {"status": "MISSING"})
+        self.assertEqual(first["order_authorization"], kwargs["order_authorization"])
         self.assertNotIn("positions", str(first))
+
+    def test_v2_aggregate_validates_synthetic_future_authority_approve_chain(self):
+        aggregate = build_runtime_evidence_aggregate_v2(**self.v2_chain_inputs(outcome="APPROVE"))
+
+        self.assertTrue(validate_runtime_evidence_aggregate_v2(aggregate)["ok"])
+        self.assertEqual(aggregate["execution_gate_outcome"], "APPROVE")
+
+    def test_v2_aggregate_validates_preliminary_reject_and_fail_closed_action_reject(self):
+        preliminary = self.v2_chain_inputs()
+        preliminary_authorization = preliminary["order_authorization"]
+        preliminary_authorization.update(
+            authorization_kind="PRELIMINARY",
+            action_sequence=0,
+            action_class="",
+            method_name="",
+            effect_type="",
+            canonical_payload_sha256="",
+        )
+        preliminary_authorization["authorization_sha256"] = self.canonical_sha256(
+            {
+                key: value
+                for key, value in preliminary_authorization.items()
+                if key != "authorization_sha256"
+            }
+        )
+        preliminary["cap_assessment"]["order_authorization_sha256"] = preliminary_authorization[
+            "authorization_sha256"
+        ]
+
+        approved_risk = self.v2_chain_inputs(outcome="APPROVE")
+        approved_risk["order_authorization"]["outcome"] = "REJECT"
+        approved_risk["order_authorization"]["authorization_sha256"] = self.canonical_sha256(
+            {
+                key: value
+                for key, value in approved_risk["order_authorization"].items()
+                if key != "authorization_sha256"
+            }
+        )
+        approved_risk["cap_assessment"]["order_authorization_sha256"] = approved_risk["order_authorization"][
+            "authorization_sha256"
+        ]
+        approved_risk["execution_gate_outcome"] = "REJECT"
+
+        self.assertTrue(validate_runtime_evidence_aggregate_v2(build_runtime_evidence_aggregate_v2(**preliminary))["ok"])
+        self.assertTrue(validate_runtime_evidence_aggregate_v2(build_runtime_evidence_aggregate_v2(**approved_risk))["ok"])
+
+    def test_v2_aggregate_rejects_contradictory_execution_gate_before_signing(self):
+        kwargs = self.v2_chain_inputs()
+        kwargs["execution_gate_outcome"] = "APPROVE"
+
+        with self.assertRaises(ValueError):
+            build_runtime_evidence_aggregate_v2(**kwargs)
+
+    def test_v2_aggregate_rejects_stale_risk_assessment_digest(self):
+        aggregate = build_runtime_evidence_aggregate_v2(**self.v2_chain_inputs())
+        aggregate["member_risk_assessment"]["decision_digest_sha256"] = "e" * 64
+        self.resign_aggregate(aggregate)
+
+        self.assertFalse(validate_runtime_evidence_aggregate_v2(aggregate)["ok"])
+
+    def test_v2_aggregate_rejects_member_account_cross_assessment_splice(self):
+        shared_fields = (
+            "policy_id",
+            "policy_version",
+            "qpk_source_revision",
+            "mandate_id",
+            "mandate_version",
+            "mandate_authority_receipt_sha256",
+            "mandate_scope",
+            "decision_digest_sha256",
+            "portfolio_snapshot_digest_sha256",
+            "effective_exposure_cap",
+        )
+        for field_name in shared_fields:
+            with self.subTest(field_name=field_name):
+                aggregate = build_runtime_evidence_aggregate_v2(**self.v2_chain_inputs())
+                member = aggregate["member_risk_assessment"]
+                member[field_name] = 0.25 if field_name == "effective_exposure_cap" else (
+                    "e" * 64 if field_name.endswith("sha256") else "changed"
+                )
+                self.resign_assessment(member)
+                aggregate["order_authorization"]["member_assessment_sha256"] = member["assessment_sha256"]
+                self.resign_authorization(aggregate)
+                self.resign_aggregate(aggregate)
+
+                self.assertFalse(validate_runtime_evidence_aggregate_v2(aggregate)["ok"])
+
+    def test_v2_aggregate_rejects_cap_chain_mismatches(self):
+        cap_fields = (
+            "decision_digest_sha256",
+            "release_identity_sha256",
+            "account_snapshot_sha256",
+            "account_assessment_sha256",
+            "mandate_id",
+            "mandate_version",
+            "mandate_authority_receipt_sha256",
+            "mandate_scope",
+            "effective_exposure_cap",
+            "qpk_source_revision",
+            "order_authorization_sha256",
+        )
+        for field_name in cap_fields:
+            with self.subTest(field_name=field_name):
+                aggregate = build_runtime_evidence_aggregate_v2(**self.v2_chain_inputs())
+                aggregate["cap_assessment"][field_name] = (
+                    0.25 if field_name == "effective_exposure_cap" else (
+                        "e" * 64 if field_name.endswith("sha256") else "changed"
+                    )
+                )
+                self.resign_aggregate(aggregate)
+
+                self.assertFalse(validate_runtime_evidence_aggregate_v2(aggregate)["ok"])
+
+    def test_v2_aggregate_rejects_authorization_chain_mismatches(self):
+        authorization_fields = (
+            "run_id",
+            "decision_digest_sha256",
+            "release_identity_sha256",
+            "account_snapshot_sha256",
+            "member_assessment_sha256",
+            "account_assessment_sha256",
+            "mandate_authority_receipt_sha256",
+            "mandate_scope",
+        )
+        for field_name in authorization_fields:
+            with self.subTest(field_name=field_name):
+                aggregate = build_runtime_evidence_aggregate_v2(**self.v2_chain_inputs())
+                aggregate["order_authorization"][field_name] = (
+                    "e" * 64 if field_name.endswith("sha256") else "changed"
+                )
+                self.resign_authorization(aggregate)
+                self.resign_aggregate(aggregate)
+
+                self.assertFalse(validate_runtime_evidence_aggregate_v2(aggregate)["ok"])
+
+    def test_v2_aggregate_rejects_stale_action_binding_digest(self):
+        action_fields = (
+            "action_sequence",
+            "action_class",
+            "method_name",
+            "effect_type",
+            "canonical_payload_sha256",
+        )
+        for field_name in action_fields:
+            with self.subTest(field_name=field_name):
+                aggregate = build_runtime_evidence_aggregate_v2(**self.v2_chain_inputs())
+                aggregate["order_authorization"][field_name] = (
+                    2 if field_name == "action_sequence" else (
+                        "e" * 64 if field_name.endswith("sha256") else "changed"
+                    )
+                )
+                self.resign_aggregate(aggregate)
+
+                self.assertFalse(validate_runtime_evidence_aggregate_v2(aggregate)["ok"])
+
+    def test_v2_aggregate_rejects_missing_or_aliased_singletons(self):
+        variants = (
+            ("missing_member", lambda value: value.pop("member_risk_assessment")),
+            ("missing_authorization", lambda value: value.pop("order_authorization")),
+            ("member_alias", lambda value: value.update(member_risk_assessments=[])),
+            ("authorization_alias", lambda value: value.update(authorization=value["order_authorization"])),
+        )
+        for label, mutate in variants:
+            with self.subTest(label=label):
+                aggregate = build_runtime_evidence_aggregate_v2(**self.v2_chain_inputs())
+                mutate(aggregate)
+                self.resign_aggregate(aggregate)
+
+                self.assertFalse(validate_runtime_evidence_aggregate_v2(aggregate)["ok"])
 
     def test_runtime_call_client_blocks_missing_current_account_binding(self):
         client = Mock()
@@ -119,8 +486,6 @@ class TestBuildExecutionReport(unittest.TestCase):
         client.order_market_buy.assert_not_called()
 
     def test_v2_aggregate_is_redacted_missing_only_and_rejects_matched(self):
-        from runtime_support import build_runtime_evidence_aggregate_v2
-
         with self.assertRaises(ValueError):
             build_runtime_evidence_aggregate_v2(
                 produced_at="2026-08-04T00:00:00Z",
@@ -130,6 +495,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 member_risk_assessment={"scope": "MEMBER", "outcome": "REJECT", "assessment_sha256": "1" * 64},
                 account_risk_assessment={"scope": "ACCOUNT", "outcome": "REJECT", "assessment_sha256": "2" * 64},
                 cap_assessment={"outcome": "REJECT", "positions": []},
+                order_authorization={},
                 strategy_stop_evaluation={"evaluated": True, "outcome": "CLEAR"},
                 account_breaker_evaluation={"evaluated": True, "outcome": "CLEAR"},
                 execution_gate_outcome="REJECT",
