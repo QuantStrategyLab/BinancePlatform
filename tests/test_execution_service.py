@@ -1,5 +1,7 @@
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from application.execution_service import (
     execute_btc_dca_cycle,
@@ -11,9 +13,67 @@ from application.execution_service import (
 
 
 class ExecutionServiceTests(unittest.TestCase):
+    def test_run_daily_circuit_breaker_emits_clear_evaluation_receipt(self):
+        report = {"buy_sell_intents": [], "error_summary": {"errors": []}, "status": "ok"}
+
+        triggered = run_daily_circuit_breaker(
+            SimpleNamespace(client=object(), now_utc=datetime(2026, 8, 4, tzinfo=timezone.utc)),
+            report,
+            {},
+            {},
+            {},
+            100.0,
+            {},
+            0.0,
+            -0.05,
+            [],
+            format_qty_fn=Mock(),
+            runtime_notify_fn=Mock(),
+            ensure_asset_available_fn=Mock(),
+            runtime_call_client_fn=Mock(),
+            set_symbol_trade_state_fn=Mock(),
+            runtime_set_trade_state_fn=Mock(),
+            build_balance_snapshot_fn=Mock(),
+            translate_fn=lambda key, **kwargs: key,
+        )
+
+        self.assertFalse(triggered)
+        self.assertEqual(report["account_breaker_evaluation"]["outcome"], "CLEAR")
+        self.assertEqual(report["account_breaker_evaluation"]["action_result"]["attempted_count"], 0)
+
+    def test_run_daily_circuit_breaker_treats_zero_quantity_as_failed_action(self):
+        report = {"buy_sell_intents": [], "error_summary": {"errors": []}, "status": "ok"}
+
+        run_daily_circuit_breaker(
+            SimpleNamespace(client=object(), now_utc=datetime(2026, 8, 4, tzinfo=timezone.utc)),
+            report,
+            {},
+            {"ETHUSDT": {"base_asset": "ETH"}},
+            {"ETHUSDT": 1.0},
+            0.0,
+            {"ETHUSDT": 100.0},
+            -0.10,
+            -0.05,
+            [],
+            format_qty_fn=lambda *_args: 0.0,
+            runtime_notify_fn=Mock(),
+            ensure_asset_available_fn=Mock(),
+            runtime_call_client_fn=Mock(),
+            set_symbol_trade_state_fn=Mock(),
+            runtime_set_trade_state_fn=Mock(),
+            build_balance_snapshot_fn=Mock(return_value={}),
+            translate_fn=lambda key, **kwargs: key,
+        )
+
+        action_result = report["account_breaker_evaluation"]["action_result"]
+        self.assertEqual(action_result["status"], "FAILED")
+        self.assertEqual(action_result["attempted_count"], 1)
+        self.assertEqual(action_result["failed_count"], 1)
+        self.assertEqual(report["status"], "error")
+
     def test_run_daily_circuit_breaker_liquidates_and_latches_state(self):
-        runtime = SimpleNamespace(client=object())
-        report = {"buy_sell_intents": []}
+        runtime = SimpleNamespace(client=object(), now_utc=datetime(2026, 8, 4, tzinfo=timezone.utc))
+        report = {"buy_sell_intents": [], "error_summary": {"errors": []}, "status": "ok"}
         state = {}
         balances = {"ETHUSDT": 2.0}
         prices = {"ETHUSDT": 100.0}

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 
 from quant_platform_kit.common.runtime_reports import persist_runtime_report
 from quant_platform_kit.strategy_lifecycle.performance_monitor import try_record_platform_execution
 from runtime_logging import RuntimeLogContext, emit_runtime_log
-from runtime_support import finalize_notification_delivery
+from runtime_support import build_runtime_evidence_aggregate_v2, finalize_notification_delivery
 
 
 def execute_strategy_cycle(
@@ -37,7 +38,7 @@ def execute_strategy_cycle(
     translate_fn,
     traceback_module,
 ):
-    circuit_breaker_pct = -0.05
+    circuit_breaker_pct = 0.0
     min_bnb_value, buy_bnb_amount = 10.0, 15.0
     cycle_settings = load_cycle_execution_settings()
     btc_status_report_interval_hours = cycle_settings.btc_status_report_interval_hours
@@ -56,6 +57,11 @@ def execute_strategy_cycle(
 
         state, trend_pool_resolution, runtime_trend_universe, allow_new_trend_entries = cycle_state
         append_trend_pool_source_logs(log_buffer, trend_pool_resolution, allow_new_trend_entries)
+
+        report["release_identity"] = dict(trend_pool_resolution.get("runtime_evidence_identity", {}))
+        report["release_identity_sha256"] = str(trend_pool_resolution.get("release_identity_sha256", ""))
+        runtime.release_identity = dict(report["release_identity"])
+        runtime.release_identity_sha256 = report["release_identity_sha256"]
 
         report["upstream_pool_symbols"] = list(runtime_trend_universe.keys())
         if trend_pool_resolution["degraded"]:
@@ -88,6 +94,15 @@ def execute_strategy_cycle(
             trend_indicators,
             btc_snapshot,
         )
+        risk_evidence = allocation.pop("_risk_evidence", {})
+        for field_name in (
+            "member_risk_assessment",
+            "account_risk_assessment",
+            "cap_assessment",
+            "strategy_stop_evaluation",
+            "order_authorization",
+        ):
+            report[field_name] = dict(risk_evidence.get(field_name, {}))
         total_equity = allocation["total_equity"]
         trend_val_equity = allocation["trend_val"]
 
@@ -112,10 +127,6 @@ def execute_strategy_cycle(
         daily_pnl, trend_daily_pnl = compute_daily_pnls(state, total_equity, trend_val_equity)
         append_portfolio_report(log_buffer, allocation, fuel_val, daily_pnl, trend_daily_pnl, btc_snapshot)
 
-        if state.get("is_circuit_broken"):
-            log_buffer.insert(0, translate_fn("circuit_breaker_latched_line", total_equity=total_equity))
-            return report
-
         if run_daily_circuit_breaker(
             runtime,
             report,
@@ -128,6 +139,8 @@ def execute_strategy_cycle(
             circuit_breaker_pct,
             log_buffer,
         ):
+            if state.get("is_circuit_broken"):
+                log_buffer.insert(0, translate_fn("circuit_breaker_latched_line", total_equity=total_equity))
             return report
 
         u_total = execute_trend_rotation(
@@ -296,6 +309,27 @@ def run_live_cycle(
     )
     report = execute_cycle(runtime)
     output_printer("\n".join(report.get("log_lines", [])))
+    produced_at_value = getattr(runtime, "now_utc", None) or datetime.now(timezone.utc)
+    produced_at = produced_at_value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    try:
+        report["runtime_evidence_aggregate"] = build_runtime_evidence_aggregate_v2(
+            produced_at=produced_at,
+            run_id=str(report.get("run_id") or getattr(runtime, "run_id", "")),
+            producer_revision=str(getattr(runtime, "producer_revision", "")),
+            release_identity=report.get("release_identity", {}),
+            member_risk_assessment=report.get("member_risk_assessment", {}),
+            account_risk_assessment=report.get("account_risk_assessment", {}),
+            cap_assessment=report.get("cap_assessment", {}),
+            strategy_stop_evaluation=report.get("strategy_stop_evaluation", {}),
+            account_breaker_evaluation=report.get("account_breaker_evaluation", {}),
+            execution_gate_outcome=str(report.get("order_authorization", {}).get("outcome", "REJECT")),
+            reconciliation={"status": "MISSING"},
+        )
+    except Exception as aggregate_exc:
+        report["status"] = "error"
+        report.setdefault("error_summary", {}).setdefault("errors", []).append(
+            {"stage": "runtime_evidence_aggregate", "message": str(aggregate_exc)}
+        )
     report_path = report_writer(report)
     persisted_local_path = report_path
     persisted_cloud_uri = None
@@ -309,6 +343,11 @@ def run_live_cycle(
         persisted_local_path = persisted.local_path or report_path
         persisted_cloud_uri = persisted.cloud_uri
     except Exception as persist_exc:
+        report["status"] = "error"
+        report.setdefault("error_summary", {}).setdefault("errors", []).append(
+            {"stage": "runtime_report_persist", "message": str(persist_exc)}
+        )
+        report_path = report_writer(report)
         output_printer(f"failed to persist archived execution report: {persist_exc}")
     report_status = str(report.get("status", "unknown"))
     status_event = {

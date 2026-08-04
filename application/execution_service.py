@@ -2,7 +2,42 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import timezone
+
 from runtime_support import record_gating_event
+
+
+_ACCOUNT_BREAKER_POLICY_ID = "binance.account_daily_loss_breaker"
+_ACCOUNT_BREAKER_POLICY_VERSION = "binance_crypto_research_only_v1.2026-08-04.1"
+
+
+def _canonical_sha256(value):
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
+
+
+def _breaker_evaluation(runtime, *, trend_daily_pnl, threshold, outcome, action_result):
+    evaluated_at = runtime.now_utc.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return {
+        "evaluated": True,
+        "policy_id": _ACCOUNT_BREAKER_POLICY_ID,
+        "policy_version": _ACCOUNT_BREAKER_POLICY_VERSION,
+        "evaluated_at": evaluated_at,
+        "observed_loss_ratio": float(trend_daily_pnl),
+        "snapshot_digest_sha256": _canonical_sha256({"observed_loss_ratio": float(trend_daily_pnl)}),
+        "policy_digest_sha256": _canonical_sha256(
+            {
+                "policy_id": _ACCOUNT_BREAKER_POLICY_ID,
+                "policy_version": _ACCOUNT_BREAKER_POLICY_VERSION,
+                "threshold": float(threshold),
+            }
+        ),
+        "outcome": outcome,
+        "action_result": action_result,
+    }
 
 
 def _safe_float(value, default=0.0):
@@ -115,8 +150,43 @@ def run_daily_circuit_breaker(
     build_balance_snapshot_fn,
     translate_fn,
 ):
-    if trend_daily_pnl > circuit_breaker_pct:
+    latched = bool(state.get("is_circuit_broken"))
+    if not latched and trend_daily_pnl > circuit_breaker_pct:
+        report["account_breaker_evaluation"] = _breaker_evaluation(
+            runtime,
+            trend_daily_pnl=trend_daily_pnl,
+            threshold=circuit_breaker_pct,
+            outcome="CLEAR",
+            action_result={
+                "status": "NOT_REQUIRED",
+                "attempted_count": 0,
+                "succeeded_count": 0,
+                "failed_count": 0,
+                "actions_digest_sha256": _canonical_sha256([]),
+            },
+        )
         return False
+
+    action_results = []
+    attempted_count = 0
+    succeeded_count = 0
+    failed_count = 0
+    if latched:
+        report["account_breaker_evaluation"] = _breaker_evaluation(
+            runtime,
+            trend_daily_pnl=trend_daily_pnl,
+            threshold=circuit_breaker_pct,
+            outcome="TRIGGERED",
+            action_result={
+                "status": "BLOCKED",
+                "attempted_count": 0,
+                "succeeded_count": 0,
+                "failed_count": 0,
+                "actions_digest_sha256": _canonical_sha256([]),
+            },
+        )
+        report["circuit_breaker_triggered"] = True
+        return True
 
     for symbol, config in runtime_trend_universe.items():
         tradable_qty = balances[symbol]
@@ -130,17 +200,11 @@ def run_daily_circuit_breaker(
             )
             continue
         qty = format_qty_fn(runtime.client, symbol, tradable_qty)
-        report["buy_sell_intents"].append(
-            {
-                "category": "trend",
-                "action": "sell",
-                "symbol": symbol,
-                "reason": "daily_circuit_breaker",
-                "quantity": float(qty),
-            }
-        )
+        attempted_count += 1
         try:
             if qty <= 0:
+                failed_count += 1
+                action_results.append({"symbol": symbol, "status": "failed"})
                 runtime_notify_fn(
                     runtime,
                     report,
@@ -159,14 +223,27 @@ def run_daily_circuit_breaker(
                 payload={"symbol": symbol, "quantity": qty},
                 effect_type="order_sell",
             )
+            report["buy_sell_intents"].append(
+                {
+                    "category": "trend",
+                    "action": "sell",
+                    "symbol": symbol,
+                    "reason": "daily_circuit_breaker",
+                    "quantity": float(qty),
+                }
+            )
             balances[symbol] = max(0.0, balances[symbol] - qty)
             u_total += qty * prices[symbol]
+            succeeded_count += 1
+            action_results.append({"symbol": symbol, "status": "succeeded"})
             set_symbol_trade_state_fn(
                 state,
                 symbol,
                 {"is_holding": False, "entry_price": 0.0, "highest_price": 0.0},
             )
         except Exception as exc:
+            failed_count += 1
+            action_results.append({"symbol": symbol, "status": "failed"})
             runtime_notify_fn(
                 runtime,
                 report,
@@ -177,6 +254,29 @@ def run_daily_circuit_breaker(
     state.update({"is_circuit_broken": True})
     state["last_balance_snapshot"] = build_balance_snapshot_fn(runtime_trend_universe, balances, u_total)
     report["circuit_breaker_triggered"] = True
+    action_status = "COMPLETED"
+    if failed_count and succeeded_count:
+        action_status = "PARTIAL"
+    elif failed_count:
+        action_status = "FAILED"
+    report["account_breaker_evaluation"] = _breaker_evaluation(
+        runtime,
+        trend_daily_pnl=trend_daily_pnl,
+        threshold=circuit_breaker_pct,
+        outcome="TRIGGERED",
+        action_result={
+            "status": action_status,
+            "attempted_count": attempted_count,
+            "succeeded_count": succeeded_count,
+            "failed_count": failed_count,
+            "actions_digest_sha256": _canonical_sha256(action_results),
+        },
+    )
+    if failed_count:
+        report["status"] = "error"
+        report.setdefault("error_summary", {}).setdefault("errors", []).append(
+            {"stage": "account_breaker", "message": "Protective action failed."}
+        )
     runtime_set_trade_state_fn(runtime, report, state, reason="daily_circuit_breaker")
     runtime_notify_fn(
         runtime,

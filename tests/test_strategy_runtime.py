@@ -20,10 +20,44 @@ if "requests" not in sys.modules:
     sys.modules["requests"] = requests_module
 
 from quant_platform_kit import PortfolioSnapshot
-from quant_platform_kit.strategy_contracts import StrategyManifest, StrategyRuntimeAdapter
+from quant_platform_kit.strategy_contracts import StrategyDecision, StrategyManifest, StrategyRuntimeAdapter
 
 
 class StrategyRuntimeTests(unittest.TestCase):
+    def test_account_gate_uses_qpk_and_never_authorizes_research_only_mandate(self):
+        from strategy_runtime import apply_account_risk_gate, build_binance_research_mandate
+
+        decision = StrategyDecision(positions=(), budgets=(), diagnostics={
+            "member_risk_assessment": {
+                "scope": "MEMBER",
+                "outcome": "APPROVE",
+                "decision_digest_sha256": "1" * 64,
+                "assessment_sha256": "2" * 64,
+            }
+        })
+        assessment = SimpleNamespace(
+            scope="ACCOUNT",
+            outcome="APPROVE",
+            decision_digest_sha256="1" * 64,
+            portfolio_snapshot_digest_sha256="3" * 64,
+            assessment_sha256="4" * 64,
+            effective_exposure_cap=0.0,
+            mandate_scope="RESEARCH_ONLY",
+        )
+        qpk_result = SimpleNamespace(decision=decision, assessment=assessment)
+
+        with patch("strategy_runtime.qpk_assess_with_evidence", return_value=qpk_result) as assess:
+            result = apply_account_risk_gate(
+                decision,
+                portfolio_snapshot={"as_of": "2026-08-04T00:00:00Z"},
+                release_identity_sha256="5" * 64,
+                run_id="synthetic-run",
+                mandate_provenance=build_binance_research_mandate(),
+                market_data={},
+            )
+
+        self.assertEqual(assess.call_args.kwargs["scope"], "ACCOUNT")
+        self.assertEqual(result.order_authorization["outcome"], "REJECT")
     def test_load_strategy_runtime_exposes_explicit_artifact_contract(self):
         try:
             from strategy_runtime import load_strategy_runtime

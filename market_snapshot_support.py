@@ -28,15 +28,12 @@ def capture_market_snapshot(
     bnb_price = float(runtime.client.get_avg_price(symbol=bnb_fuel_symbol)["price"])
     dynamic_usdt_buffer = max(50.0, min(u_total * 0.05, 300.0))
 
-    if bnb_total * bnb_price < min_bnb_value and u_total >= buy_bnb_amount:
-        report["buy_sell_intents"].append(
-            {
-                "category": "fuel",
-                "action": "buy",
-                "symbol": bnb_fuel_symbol,
-                "quote_order_qty": buy_bnb_amount,
-            }
-        )
+    authorization = report.get("order_authorization", {})
+    if (
+        bnb_total * bnb_price < min_bnb_value
+        and u_total >= buy_bnb_amount
+        and authorization.get("outcome") == "APPROVE"
+    ):
         try:
             if not ensure_asset_available_fn(runtime, report, "USDT", buy_bnb_amount, log_buffer):
                 raise RuntimeError(t("usdt_spot_buffer_unavailable_for_bnb_top_up"))
@@ -46,6 +43,14 @@ def capture_market_snapshot(
                 method_name="order_market_buy",
                 payload={"symbol": bnb_fuel_symbol, "quoteOrderQty": buy_bnb_amount},
                 effect_type="order_buy",
+            )
+            report["buy_sell_intents"].append(
+                {
+                    "category": "fuel",
+                    "action": "buy",
+                    "symbol": bnb_fuel_symbol,
+                    "quote_order_qty": buy_bnb_amount,
+                }
             )
             u_total -= buy_bnb_amount
             bnb_total += (buy_bnb_amount * 0.995) / bnb_price

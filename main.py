@@ -7,6 +7,8 @@ helpers, and live service adapters live in dedicated modules.
 
 import json
 import os
+import re
+import subprocess
 import sys
 import time
 import traceback
@@ -717,12 +719,24 @@ def get_tradable_qty(symbol, total_qty, prices, min_bnb_value):
 # 3. Core strategy
 # ==========================================
 def build_live_runtime(now_utc=None):
-    return rc_build_live_runtime(
+    runtime = rc_build_live_runtime(
         now_utc=now_utc,
         state_loader=get_trade_state,
         state_writer=set_trade_state,
         notifier=lambda **kwargs: send_tg_msg(kwargs["token"], kwargs["chat_id"], kwargs["text"]),
     )
+    try:
+        revision = subprocess.run(
+            ["git", "rev-parse", "HEAD^{commit}"],
+            cwd=Path(__file__).resolve().parent,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        revision = ""
+    runtime.producer_revision = revision if re.fullmatch(r"[0-9a-f]{40}", revision) else ""
+    return runtime
 
 
 def _set_runtime_trend_universe(resolved_trend_universe):
@@ -823,6 +837,9 @@ def _resolve_strategy_evaluation(
         allow_rotation_refresh=allow_pool_refresh,
         get_symbol_trade_state_fn=get_symbol_trade_state,
         set_symbol_trade_state_fn=set_symbol_trade_state,
+        release_identity=getattr(runtime, "release_identity", {}),
+        release_identity_sha256=getattr(runtime, "release_identity_sha256", ""),
+        run_id=str(runtime.run_id),
     )
 
 
@@ -874,10 +891,19 @@ def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, pri
         u_total,
         fuel_val,
     )
-    return map_decision_to_allocation(
+    allocation = map_decision_to_allocation(
         evaluation.decision,
         account_metrics=evaluation.account_metrics,
     )
+    diagnostics = dict(evaluation.decision.diagnostics or {})
+    allocation["_risk_evidence"] = {
+        "member_risk_assessment": dict(diagnostics.get("member_risk_assessment", {})),
+        "account_risk_assessment": dict(diagnostics.get("account_risk_assessment", {})),
+        "cap_assessment": dict(diagnostics.get("cap_assessment", {})),
+        "strategy_stop_evaluation": dict(diagnostics.get("strategy_stop_evaluation", {})),
+        "order_authorization": dict(diagnostics.get("order_authorization", {})),
+    }
+    return allocation
 
 
 def _build_balance_snapshot(runtime_trend_universe, balances, u_total):

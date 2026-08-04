@@ -1,5 +1,7 @@
 import json
+import hashlib
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -10,6 +12,75 @@ from strategy_artifact_support import (
     get_strategy_artifact_env,
     get_strategy_artifact_int,
 )
+
+
+_RUNTIME_IDENTITY_ARTIFACTS = frozenset(
+    {"live_pool", "live_pool_legacy", "latest_ranking", "latest_universe"}
+)
+_RUNTIME_IDENTITY_PROFILE = "crypto_live_pool_rotation"
+
+
+def _canonical_sha256(value):
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def validate_runtime_evidence_identity(identity, *, payload):
+    errors = []
+    if not isinstance(identity, dict):
+        return {}, "", ["runtime_evidence_identity must be an object"]
+    required = (
+        "strategy_profile",
+        "mode",
+        "source_revision",
+        "input_timestamp",
+        "artifact_contract",
+        "artifact_version",
+        "artifacts",
+    )
+    for field in required:
+        if field not in identity:
+            errors.append(f"runtime_evidence_identity missing field: {field}")
+    if errors:
+        return {}, "", errors
+
+    if identity.get("strategy_profile") != _RUNTIME_IDENTITY_PROFILE:
+        errors.append("runtime_evidence_identity strategy_profile mismatch")
+    if identity.get("mode") != payload.get("mode"):
+        errors.append("runtime_evidence_identity mode mismatch")
+    source_revision = identity.get("source_revision")
+    if not isinstance(source_revision, str) or not re.fullmatch(r"[0-9a-f]{40}", source_revision):
+        errors.append("runtime_evidence_identity source_revision must be a lowercase git SHA")
+    expected_timestamp = f"{payload.get('as_of_date')}T00:00:00Z"
+    if identity.get("input_timestamp") != expected_timestamp:
+        errors.append("runtime_evidence_identity input_timestamp mismatch")
+    artifact_contract = identity.get("artifact_contract")
+    if not isinstance(artifact_contract, str) or not artifact_contract.strip():
+        errors.append("runtime_evidence_identity artifact_contract must be non-empty")
+    declared_contract = payload.get("artifact_contract_version")
+    if declared_contract and artifact_contract != declared_contract:
+        errors.append("runtime_evidence_identity artifact_contract mismatch")
+    if identity.get("artifact_version") != payload.get("version"):
+        errors.append("runtime_evidence_identity artifact_version mismatch")
+
+    artifacts = identity.get("artifacts")
+    if not isinstance(artifacts, dict) or set(artifacts) != _RUNTIME_IDENTITY_ARTIFACTS:
+        errors.append("runtime_evidence_identity artifacts must contain the exact four release artifacts")
+    else:
+        for name, artifact in artifacts.items():
+            if not isinstance(artifact, dict) or not isinstance(artifact.get("sha256"), str) or not re.fullmatch(
+                r"[0-9a-f]{64}", artifact["sha256"]
+            ):
+                errors.append(f"runtime_evidence_identity artifacts.{name}.sha256 is invalid")
+    if errors:
+        return {}, "", errors
+    normalized = json.loads(json.dumps(identity, sort_keys=True, allow_nan=False))
+    return normalized, _canonical_sha256(normalized), []
 
 
 def infer_base_asset(symbol):
@@ -204,6 +275,17 @@ def validate_trend_pool_payload(
         source_project = "unknown"
         warnings.append(t("source_project_missing_unknown"))
 
+    runtime_evidence_identity, release_identity_sha256, identity_errors = validate_runtime_evidence_identity(
+        (payload or {}).get("runtime_evidence_identity"),
+        payload={
+            "as_of_date": as_of_date.isoformat() if as_of_date is not None else "",
+            "version": version,
+            "mode": mode,
+            "artifact_contract_version": (payload or {}).get("artifact_contract_version"),
+        },
+    )
+    errors.extend(identity_errors)
+
     ordered_symbol_map = {
         symbol: symbol_map[symbol]
         for symbol in symbols
@@ -218,6 +300,8 @@ def validate_trend_pool_payload(
         "symbols": symbols,
         "symbol_map": ordered_symbol_map,
         "source_project": source_project,
+        "runtime_evidence_identity": runtime_evidence_identity,
+        "release_identity_sha256": release_identity_sha256,
     }
 
     return {
@@ -361,6 +445,8 @@ def build_trend_pool_resolution(validated_payload, *, source_kind, degraded, now
         "version": payload["version"],
         "mode": payload["mode"],
         "source_project": payload["source_project"],
+        "runtime_evidence_identity": payload["runtime_evidence_identity"],
+        "release_identity_sha256": payload["release_identity_sha256"],
     }
 
 
@@ -390,6 +476,8 @@ def build_static_trend_pool_resolution(*, now_utc=None, messages=None, static_tr
         "symbols": list(static_trend_universe.keys()),
         "symbol_map": {symbol: meta.copy() for symbol, meta in static_trend_universe.items()},
         "source_project": "BinancePlatform",
+        "runtime_evidence_identity": {},
+        "release_identity_sha256": "",
     }
     return {
         "source_kind": "static",
@@ -407,4 +495,6 @@ def build_static_trend_pool_resolution(*, now_utc=None, messages=None, static_tr
         "version": payload["version"],
         "mode": payload["mode"],
         "source_project": payload["source_project"],
+        "runtime_evidence_identity": {},
+        "release_identity_sha256": "",
     }

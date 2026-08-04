@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from infra.binance_runtime import (
     ensure_asset_available_runtime,
@@ -11,6 +12,35 @@ from infra.binance_runtime import (
 
 
 class BinanceRuntimeInfraTests(unittest.TestCase):
+    def test_earn_mutations_are_not_attempted_without_account_binding(self):
+        runtime_calls = Mock()
+        runtime = SimpleNamespace(
+            client=SimpleNamespace(
+                get_asset_balance=lambda **_kwargs: {"free": "0"},
+                get_simple_earn_flexible_product_position=lambda **_kwargs: {
+                    "rows": [{"productId": "synthetic", "totalAmount": "10"}]
+                },
+            ),
+            dry_run=True,
+        )
+        report = {"redemption_subscription_intents": []}
+
+        result = ensure_asset_available_runtime(
+            runtime,
+            report,
+            "USDT",
+            5.0,
+            [],
+            runtime_call_client_fn=runtime_calls,
+            append_log_fn=Mock(),
+            runtime_notify_fn=Mock(),
+            translate_fn=lambda key, **kwargs: key,
+            sleep_fn=Mock(),
+        )
+
+        self.assertFalse(result)
+        runtime_calls.assert_not_called()
+        self.assertEqual(report["redemption_subscription_intents"], [])
     def test_resolve_runtime_btc_snapshot_prefers_injected_snapshot(self):
         runtime = SimpleNamespace(client=object(), btc_market_snapshot={"ahr999": 0.8})
 
@@ -99,7 +129,7 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
                 return {"rows": [{"productId": "earn-1", "totalAmount": "5.0"}]}
 
         runtime = SimpleNamespace(client=Client(), dry_run=False)
-        report = {"redemption_subscription_intents": []}
+        report = {"redemption_subscription_intents": [], "order_authorization": {"outcome": "APPROVE"}}
         observed = {"calls": [], "logs": [], "notifications": [], "sleep": []}
 
         available = ensure_asset_available_runtime(
@@ -133,7 +163,7 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
                 return {"rows": [{"productId": "earn-1"}]}
 
         runtime = SimpleNamespace(client=Client())
-        report = {"redemption_subscription_intents": []}
+        report = {"redemption_subscription_intents": [], "order_authorization": {"outcome": "APPROVE"}}
         observed = {"calls": [], "logs": []}
 
         manage_usdt_earn_buffer_runtime(

@@ -2,6 +2,8 @@ import sys
 import types
 import unittest
 import os
+import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -103,7 +105,7 @@ def build_payload(as_of_date="2026-03-10", *, mode="core_major"):
         "LTCUSDT": {"base_asset": "LTC"},
         "BCHUSDT": {"base_asset": "BCH"},
     }
-    return {
+    payload = {
         "as_of_date": as_of_date,
         "version": f"{as_of_date}-{mode}",
         "mode": mode,
@@ -112,9 +114,65 @@ def build_payload(as_of_date="2026-03-10", *, mode="core_major"):
         "symbol_map": symbol_map,
         "source_project": "crypto-live-pool-pipelines",
     }
+    payload["runtime_evidence_identity"] = {
+        "strategy_profile": "crypto_live_pool_rotation",
+        "mode": mode,
+        "source_revision": "a" * 40,
+        "input_timestamp": f"{as_of_date}T00:00:00Z",
+        "artifact_contract": "qsl.crypto_live_pool.artifact_manifest.v1",
+        "artifact_version": payload["version"],
+        "artifacts": {
+            name: {"sha256": character * 64}
+            for name, character in zip(
+                ("live_pool", "live_pool_legacy", "latest_ranking", "latest_universe"),
+                "1234",
+            )
+        },
+    }
+    return payload
 
 
 class TrendPoolLoadingTests(unittest.TestCase):
+    def test_validate_trend_pool_payload_preserves_and_digests_release_identity(self):
+        payload = build_payload()
+
+        result = main.validate_trend_pool_payload(
+            payload,
+            source_label="test",
+            now_utc=datetime(2026, 3, 14, tzinfo=timezone.utc),
+            max_age_days=30,
+            acceptable_modes=["core_major"],
+            expected_pool_size=5,
+            enforce_freshness=True,
+        )
+
+        expected = hashlib.sha256(
+            json.dumps(
+                payload["runtime_evidence_identity"],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["payload"]["runtime_evidence_identity"], payload["runtime_evidence_identity"])
+        self.assertEqual(result["payload"]["release_identity_sha256"], expected)
+
+    def test_validate_trend_pool_payload_rejects_missing_release_identity(self):
+        payload = build_payload()
+        payload.pop("runtime_evidence_identity")
+
+        result = main.validate_trend_pool_payload(
+            payload,
+            source_label="test",
+            now_utc=datetime(2026, 3, 14, tzinfo=timezone.utc),
+            max_age_days=30,
+            acceptable_modes=["core_major"],
+            expected_pool_size=5,
+            enforce_freshness=True,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertIn("runtime_evidence_identity", " ".join(result["errors"]))
     def test_validate_trend_pool_payload_rejects_stale_payload(self):
         payload = build_payload(as_of_date="2026-01-01")
 

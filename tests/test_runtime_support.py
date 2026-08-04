@@ -1,6 +1,7 @@
 import os
 import sys
 import unittest
+from unittest.mock import Mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,11 +21,120 @@ from runtime_support import (
     record_gating_event,
     runtime_notify,
     validate_runtime_evidence_aggregate,
+    runtime_call_client,
 )
 from quant_platform_kit.common.runtime_target import build_runtime_target
 
 
 class TestBuildExecutionReport(unittest.TestCase):
+    @staticmethod
+    def risk_assessment(scope, assessment_sha256):
+        return {
+            "contract_version": "qsl.risk_gate_assessment.v1",
+            "scope": scope,
+            "evaluated_at": "2026-08-04T00:00:00Z",
+            "policy_id": "qpk.risk_gate",
+            "policy_version": "v1",
+            "qpk_source_revision": "a" * 40,
+            "mandate_id": "binance_crypto_research_only_v1",
+            "mandate_version": "2026-08-04.1",
+            "mandate_authority_receipt_sha256": "b" * 64,
+            "mandate_scope": "RESEARCH_ONLY",
+            "decision_digest_sha256": "c" * 64,
+            "portfolio_snapshot_digest_sha256": "d" * 64,
+            "effective_exposure_cap": 0.0,
+            "observed_effective_exposure": 0.0,
+            "proposed_effective_exposure": 0.0,
+            "outcome": "REJECT",
+            "reason_codes": ("budget_authority_exceeded",),
+            "assessment_sha256": assessment_sha256,
+        }
+
+    @staticmethod
+    def v2_release_identity():
+        return {
+            "strategy_profile": "crypto_live_pool_rotation",
+            "mode": "core_major",
+            "source_revision": "e" * 40,
+            "input_timestamp": "2026-08-04T00:00:00Z",
+            "artifact_contract": "qsl.crypto_live_pool.artifact_manifest.v1",
+            "artifact_version": "2026-08-04-core_major",
+            "artifacts": {
+                name: {"sha256": character * 64}
+                for name, character in zip(
+                    ("live_pool", "live_pool_legacy", "latest_ranking", "latest_universe"),
+                    "1234",
+                )
+            },
+        }
+
+    def test_v2_aggregate_builds_deterministic_redacted_missing_receipt(self):
+        from runtime_support import build_runtime_evidence_aggregate_v2, validate_runtime_evidence_aggregate_v2
+
+        cap = {
+            "outcome": "REJECT",
+            "decision_digest_sha256": "c" * 64,
+            "release_identity_sha256": "5" * 64,
+            "account_snapshot_sha256": "d" * 64,
+            "account_assessment_sha256": "2" * 64,
+            "mandate_authority_receipt_sha256": "b" * 64,
+            "order_authorization_sha256": "6" * 64,
+        }
+        kwargs = {
+            "produced_at": "2026-08-04T00:00:00Z",
+            "run_id": "synthetic",
+            "producer_revision": "f" * 40,
+            "release_identity": self.v2_release_identity(),
+            "member_risk_assessment": self.risk_assessment("MEMBER", "1" * 64),
+            "account_risk_assessment": self.risk_assessment("ACCOUNT", "2" * 64),
+            "cap_assessment": cap,
+            "strategy_stop_evaluation": {"evaluated": True, "outcome": "CLEAR"},
+            "account_breaker_evaluation": {"evaluated": True, "outcome": "CLEAR"},
+            "execution_gate_outcome": "REJECT",
+            "reconciliation": {"status": "MISSING"},
+        }
+
+        first = build_runtime_evidence_aggregate_v2(**kwargs)
+        second = build_runtime_evidence_aggregate_v2(**kwargs)
+
+        self.assertEqual(first, second)
+        self.assertTrue(validate_runtime_evidence_aggregate_v2(first)["ok"])
+        self.assertEqual(first["reconciliation"], {"status": "MISSING"})
+        self.assertNotIn("positions", str(first))
+
+    def test_runtime_call_client_blocks_missing_current_account_binding(self):
+        client = Mock()
+        runtime = ExecutionRuntime(client=client, dry_run=False)
+        report = build_execution_report(runtime)
+
+        with self.assertRaises(RuntimeError):
+            runtime_call_client(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload={"symbol": "BTCUSDT", "quoteOrderQty": 1.0},
+                effect_type="order_buy",
+            )
+
+        client.order_market_buy.assert_not_called()
+
+    def test_v2_aggregate_is_redacted_missing_only_and_rejects_matched(self):
+        from runtime_support import build_runtime_evidence_aggregate_v2
+
+        with self.assertRaises(ValueError):
+            build_runtime_evidence_aggregate_v2(
+                produced_at="2026-08-04T00:00:00Z",
+                run_id="synthetic",
+                producer_revision="a" * 40,
+                release_identity=self.v2_release_identity(),
+                member_risk_assessment={"scope": "MEMBER", "outcome": "REJECT", "assessment_sha256": "1" * 64},
+                account_risk_assessment={"scope": "ACCOUNT", "outcome": "REJECT", "assessment_sha256": "2" * 64},
+                cap_assessment={"outcome": "REJECT", "positions": []},
+                strategy_stop_evaluation={"evaluated": True, "outcome": "CLEAR"},
+                account_breaker_evaluation={"evaluated": True, "outcome": "CLEAR"},
+                execution_gate_outcome="REJECT",
+                reconciliation={"status": "MATCHED"},
+            )
     @staticmethod
     def runtime_evidence_inputs():
         return {

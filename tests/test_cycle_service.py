@@ -9,6 +9,41 @@ from application.cycle_service import execute_strategy_cycle, run_live_cycle, wr
 
 
 class CycleServiceTests(unittest.TestCase):
+    def test_run_live_cycle_attaches_v2_aggregate_before_durable_persist(self):
+        runtime = SimpleNamespace(
+            runtime_target=None,
+            strategy_profile="crypto_live_pool_rotation",
+            strategy_display_name="",
+            strategy_display_name_localized="",
+            run_id="synthetic-run",
+            dry_run=True,
+            producer_revision="a" * 40,
+        )
+        report = {
+            "status": "ok",
+            "run_id": runtime.run_id,
+            "log_lines": [],
+            "error_summary": {"errors": []},
+        }
+        written = []
+
+        with patch(
+            "application.cycle_service.build_runtime_evidence_aggregate_v2",
+            return_value={"contract_version": "qsl.runtime_evidence_aggregate.v2"},
+        ) as builder, patch(
+            "application.cycle_service.persist_runtime_report",
+            return_value=SimpleNamespace(local_path="/tmp/report.json", cloud_uri=None),
+        ) as persist:
+            run_live_cycle(
+                runtime_builder=lambda: runtime,
+                execute_cycle=lambda _runtime: report,
+                output_printer=lambda _line: None,
+                report_writer=lambda current: written.append(dict(current)) or "/tmp/report.json",
+            )
+
+        builder.assert_called_once()
+        self.assertEqual(written[0]["runtime_evidence_aggregate"]["contract_version"], "qsl.runtime_evidence_aggregate.v2")
+        self.assertIn("runtime_evidence_aggregate", persist.call_args.args[0])
     def test_write_execution_report_persists_json(self):
         report = {"status": "ok", "log_lines": ["hello"], "value": 1}
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -55,7 +90,7 @@ class CycleServiceTests(unittest.TestCase):
         self.assertEqual(observed["built"], 1)
         self.assertEqual(len(observed["printed"]), 3)
         self.assertEqual(observed["printed"][1], "line-1\nline-2")
-        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["status"], "error")
         self.assertEqual(payload["log_lines"], ["line-1", "line-2"])
 
     def test_run_live_cycle_emits_structured_runtime_events(self):
@@ -96,7 +131,7 @@ class CycleServiceTests(unittest.TestCase):
                     ),
                 )
 
-        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["status"], "error")
         self.assertEqual(len(observed["printed"]), 3)
         start_log = json.loads(observed["printed"][0])
         end_log = json.loads(observed["printed"][2])
@@ -105,8 +140,8 @@ class CycleServiceTests(unittest.TestCase):
         self.assertEqual(start_log["strategy_display_name"], "Crypto Live Pool Rotation")
         self.assertEqual(start_log["strategy_display_name_localized"], "加密领涨轮动")
         self.assertEqual(start_log["run_id"], "run-001")
-        self.assertEqual(end_log["event"], "strategy_cycle_completed")
-        self.assertEqual(end_log["status"], "ok")
+        self.assertEqual(end_log["event"], "strategy_cycle_failed")
+        self.assertEqual(end_log["status"], "error")
 
     def test_run_live_cycle_uses_shared_runtime_report_archive(self):
         observed = {}
@@ -151,9 +186,9 @@ class CycleServiceTests(unittest.TestCase):
                         ),
                     )
 
-        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["status"], "error")
         self.assertEqual(persisted_path, output_path)
-        self.assertEqual(observed["status"], "ok")
+        self.assertEqual(observed["status"], "error")
         self.assertEqual(observed["kwargs"]["output_path"], output_path)
         self.assertEqual(observed["kwargs"]["cloud_prefix_uri"], "gs://demo-bucket/runtime-reports")
         self.assertEqual(observed["kwargs"]["project_id"], "demo-project")

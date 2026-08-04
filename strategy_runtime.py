@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import os
+import hashlib
+import json
+import re
+from dataclasses import asdict, is_dataclass
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from quant_platform_kit import PortfolioSnapshot, Position, build_strategy_evaluation_inputs
+from quant_platform_kit.risk.gate import assess_with_evidence as qpk_assess_with_evidence
 from quant_platform_kit.strategy_contracts import (
     StrategyContext,
     StrategyDecision,
@@ -26,6 +31,8 @@ DEFAULT_LOCAL_TREND_POOL_ARTIFACT = Path(__file__).resolve().parent / "artifacts
 # Ensure artifacts directory exists so local-fallback path never fails with FileNotFoundError
 DEFAULT_LOCAL_TREND_POOL_ARTIFACT.parent.mkdir(parents=True, exist_ok=True)
 DEFAULT_TREND_POOL_SIZE = 5
+BINANCE_RESEARCH_MANDATE_RECEIPT_SHA256 = "246c39b8023b25f913bf1e67dc175005955a7102f3727dfc1bd8e981cf8128ee"
+QPK_RISK_SOURCE_REVISION = "b371322b948e4298920a7d8613b155245dcd5f8d"
 COMBO_RUNTIME_ENV_OVERRIDES: tuple[tuple[str, str, str], ...] = (
     ("BTC_WEIGHT", "btc_weight", "ratio"),
     ("TREND_WEIGHT", "trend_weight", "ratio"),
@@ -101,6 +108,140 @@ class StrategyEvaluationResult:
     decision: StrategyDecision
     account_metrics: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class AccountGateResult:
+    decision: StrategyDecision
+    member_risk_assessment: Mapping[str, Any]
+    account_risk_assessment: Mapping[str, Any]
+    cap_assessment: Mapping[str, Any]
+    order_authorization: Mapping[str, Any]
+
+
+def _canonical_sha256(value: Mapping[str, Any]) -> str:
+    encoded = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def build_binance_research_mandate() -> dict[str, Any]:
+    """Return the immutable zero-cap authority object; it can never authorize an order."""
+    return {
+        "mandate_id": "binance_crypto_research_only_v1",
+        "mandate_version": "2026-08-04.1",
+        "authority_receipt_sha256": BINANCE_RESEARCH_MANDATE_RECEIPT_SHA256,
+        "authority_scope": "RESEARCH_ONLY",
+        "strategy_profile": "crypto_live_pool_rotation",
+        "account_mode": "single_strategy_account_v1",
+        "effective_at": "2026-08-04T04:27:55Z",
+        "expires_at": "2026-09-03T15:59:59Z",
+        "max_snapshot_age_seconds": 300,
+        "effective_exposure_cap": 0.0,
+        "loss_budget": 0.0,
+        "product_caps": 0.0,
+        "nominal_caps": 0.0,
+        "product_leverage_factors": {},
+        "allowed_nonzero_assets": [],
+        "source_revision": QPK_RISK_SOURCE_REVISION,
+    }
+
+
+def _assessment_payload(value: Any) -> dict[str, Any]:
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, Mapping):
+        return dict(value)
+    return dict(vars(value))
+
+
+def apply_account_risk_gate(
+    decision: StrategyDecision,
+    *,
+    portfolio_snapshot: Any,
+    release_identity_sha256: str,
+    run_id: str,
+    mandate_provenance: Mapping[str, Any],
+    market_data: Mapping[str, Any],
+) -> AccountGateResult:
+    """Call the QPK ACCOUNT gate and bind its receipt to the current release/run."""
+    member = dict(decision.diagnostics.get("member_risk_assessment", {}))
+    result = qpk_assess_with_evidence(
+        decision,
+        portfolio_snapshot,
+        scope="ACCOUNT",
+        mandate_provenance=mandate_provenance,
+        market_data=market_data,
+    )
+    account = _assessment_payload(result.assessment)
+    decision_digest = str(account.get("decision_digest_sha256", ""))
+    snapshot_digest = str(account.get("portfolio_snapshot_digest_sha256", ""))
+    release_digest_valid = bool(re.fullmatch(r"[0-9a-f]{64}", str(release_identity_sha256)))
+    exact_binding = (
+        member.get("scope") == "MEMBER"
+        and member.get("outcome") == "APPROVE"
+        and account.get("scope") == "ACCOUNT"
+        and account.get("outcome") == "APPROVE"
+        and member.get("decision_digest_sha256") == decision_digest
+        and release_digest_valid
+        and bool(snapshot_digest)
+    )
+    capital_authority = (
+        mandate_provenance.get("authority_scope") in {"PAPER", "LIVE"}
+        and float(mandate_provenance.get("effective_exposure_cap", 0.0) or 0.0) > 0.0
+        and bool(mandate_provenance.get("allowed_nonzero_assets"))
+    )
+    outcome = "APPROVE" if exact_binding and capital_authority else "REJECT"
+    cap_assessment = {
+        "outcome": outcome,
+        "mandate_id": str(mandate_provenance.get("mandate_id", "")),
+        "mandate_version": str(mandate_provenance.get("mandate_version", "")),
+        "mandate_authority_receipt_sha256": str(mandate_provenance.get("authority_receipt_sha256", "")),
+        "mandate_scope": str(mandate_provenance.get("authority_scope", "")),
+        "effective_exposure_cap": float(mandate_provenance.get("effective_exposure_cap", 0.0) or 0.0),
+        "decision_digest_sha256": decision_digest,
+        "release_identity_sha256": str(release_identity_sha256),
+        "account_snapshot_sha256": snapshot_digest,
+        "account_assessment_sha256": str(account.get("assessment_sha256", "")),
+    }
+    authorization = {
+        "contract_version": "qsl.binance_order_authorization.v1",
+        "outcome": outcome,
+        "run_id": str(run_id),
+        "decision_digest_sha256": decision_digest,
+        "release_identity_sha256": str(release_identity_sha256),
+        "account_snapshot_sha256": snapshot_digest,
+        "member_assessment_sha256": str(member.get("assessment_sha256", "")),
+        "account_assessment_sha256": str(account.get("assessment_sha256", "")),
+        "mandate_authority_receipt_sha256": str(mandate_provenance.get("authority_receipt_sha256", "")),
+        "mandate_scope": str(mandate_provenance.get("authority_scope", "")),
+    }
+    authorization["authorization_sha256"] = _canonical_sha256(authorization)
+    cap_assessment["qpk_source_revision"] = str(mandate_provenance.get("source_revision", ""))
+    cap_assessment["order_authorization_sha256"] = authorization["authorization_sha256"]
+    gated_decision = StrategyDecision(
+        positions=result.decision.positions if outcome == "APPROVE" else (),
+        budgets=result.decision.budgets if outcome == "APPROVE" else (),
+        risk_flags=tuple(result.decision.risk_flags or ()) + (("rejected:account_gate",) if outcome == "REJECT" else ()),
+        diagnostics={
+            **dict(result.decision.diagnostics or {}),
+            "member_risk_assessment": member,
+            "account_risk_assessment": account,
+            "cap_assessment": cap_assessment,
+            "order_authorization": authorization,
+        },
+    )
+    return AccountGateResult(
+        decision=gated_decision,
+        member_risk_assessment=member,
+        account_risk_assessment=account,
+        cap_assessment=cap_assessment,
+        order_authorization=authorization,
+    )
 
 
 @dataclass(frozen=True)
@@ -195,6 +336,12 @@ class LoadedStrategyRuntime:
                 "cash_available_for_trading": float(account_metrics["cash_usdt"]),
                 "trend_value": float(account_metrics["trend_value"]),
                 "dca_value": float(account_metrics["dca_value"]),
+                "observed_effective_exposure": (
+                    (float(account_metrics["trend_value"]) + float(account_metrics["dca_value"]))
+                    / float(account_metrics["total_equity"])
+                    if float(account_metrics["total_equity"]) > 0.0
+                    else 0.0
+                ),
             },
         )
 
@@ -214,6 +361,9 @@ class LoadedStrategyRuntime:
         allow_rotation_refresh: bool = True,
         get_symbol_trade_state_fn: Callable[..., Any] | None = None,
         set_symbol_trade_state_fn: Callable[..., Any] | None = None,
+        release_identity: Mapping[str, Any] | None = None,
+        release_identity_sha256: str = "",
+        run_id: str = "",
     ) -> StrategyEvaluationResult:
         runtime_config = dict(self.runtime_overrides)
         runtime_config.update(
@@ -263,6 +413,7 @@ class LoadedStrategyRuntime:
             runtime_config=runtime_config,
             capabilities={"platform": BINANCE_PLATFORM},
         )
+        mandate_provenance = build_binance_research_mandate()
         ctx = StrategyContext(
             as_of=ctx.as_of,
             market_data=ctx.market_data,
@@ -270,11 +421,24 @@ class LoadedStrategyRuntime:
             state=ctx.state,
             runtime_config=ctx.runtime_config,
             capabilities=ctx.capabilities,
-            artifacts={"trend_pool_contract": self.artifact_contract},
+            artifacts={
+                "trend_pool_contract": self.artifact_contract,
+                "runtime_evidence_identity": dict(release_identity or {}),
+                "release_identity_sha256": str(release_identity_sha256),
+                "mandate_provenance": mandate_provenance,
+            },
         )
         decision = self.entrypoint.evaluate(ctx)
+        account_gate = apply_account_risk_gate(
+            decision,
+            portfolio_snapshot=portfolio_snapshot,
+            release_identity_sha256=release_identity_sha256,
+            run_id=run_id,
+            mandate_provenance=mandate_provenance,
+            market_data=dict(ctx.market_data or {}),
+        )
         return StrategyEvaluationResult(
-            decision=decision,
+            decision=account_gate.decision,
             account_metrics=dict(account_metrics),
             metadata={
                 "strategy_profile": self.profile,
@@ -282,6 +446,10 @@ class LoadedStrategyRuntime:
                     self.profile,
                     platform_id=BINANCE_PLATFORM,
                 ).display_name,
+                "member_risk_assessment": dict(account_gate.member_risk_assessment),
+                "account_risk_assessment": dict(account_gate.account_risk_assessment),
+                "cap_assessment": dict(account_gate.cap_assessment),
+                "order_authorization": dict(account_gate.order_authorization),
             },
         )
 

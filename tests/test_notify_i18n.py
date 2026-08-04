@@ -210,8 +210,14 @@ class NotifyI18nTests(unittest.TestCase):
         report = {"buy_sell_intents": []}
         log_buffer = []
         side_effect_calls = []
+        notifications = []
 
         with patch.dict(os.environ, {"NOTIFY_LANG": "zh"}, clear=False):
+            translator = build_translator(os.environ["NOTIFY_LANG"])
+            report["order_authorization"] = {
+                "outcome": "REJECT",
+                "diagnostic": f"{translator('bnb_top_up_failed')}：已阻止，缺少账户/订单授权",
+            }
             capture_market_snapshot(
                 runtime,
                 report,
@@ -227,14 +233,19 @@ class NotifyI18nTests(unittest.TestCase):
                 }[asset],
                 ensure_asset_available_fn=lambda runtime, report, asset, amount, log_buffer: True,
                 runtime_call_client_fn=lambda runtime, report, **kwargs: side_effect_calls.append(kwargs),
-                runtime_notify_fn=lambda runtime, report, message: self.fail(f"unexpected notification: {message}"),
+                runtime_notify_fn=lambda runtime, report, message: notifications.append(message),
                 append_log_fn=lambda buffer, message: buffer.append(message),
                 resolve_btc_snapshot_fn=lambda runtime, btc_price, log_buffer: {"ahr999": 0.8, "zscore": 1.2},
                 resolve_trend_indicators_fn=lambda runtime: {"ETHUSDT": {"score": 1.0}},
             )
 
-        self.assertEqual(side_effect_calls[0]["method_name"], "order_market_buy")
-        self.assertIn("BNB 补仓已完成", "".join(log_buffer))
+        self.assertEqual(side_effect_calls, [])
+        self.assertEqual(report["buy_sell_intents"], [])
+        self.assertEqual(notifications, [])
+        self.assertEqual(log_buffer, [])
+        self.assertIn("BNB 补仓失败", report["order_authorization"]["diagnostic"])
+        self.assertIn("已阻止", report["order_authorization"]["diagnostic"])
+        self.assertIn("账户/订单授权", report["order_authorization"]["diagnostic"])
 
 
 if __name__ == "__main__":
