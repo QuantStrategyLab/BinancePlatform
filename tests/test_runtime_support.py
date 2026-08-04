@@ -14,15 +14,90 @@ if str(QPK_SRC) not in sys.path:
 
 from runtime_support import (
     ExecutionRuntime,
+    build_runtime_evidence_aggregate,
     build_execution_report,
     finalize_notification_delivery,
     record_gating_event,
     runtime_notify,
+    validate_runtime_evidence_aggregate,
 )
 from quant_platform_kit.common.runtime_target import build_runtime_target
 
 
 class TestBuildExecutionReport(unittest.TestCase):
+    @staticmethod
+    def runtime_evidence_inputs():
+        return {
+            "release_identity": {
+                "strategy_profile": "crypto_live_pool_rotation",
+                "mode": "core_major",
+                "source_revision": "a" * 40,
+                "input_timestamp": "2026-03-13T00:00:00Z",
+                "artifact_contract": "crypto_live_pool_rotation.live_pool.v1",
+                "artifact_version": "2026-03-13-core_major",
+                "artifacts": {"live_pool": {"sha256": "b" * 64}},
+            },
+            "risk_engine": {"outcome": "APPROVE", "policy_version": "bootstrap_small_account_v2"},
+            "effective_exposure_cap": {
+                "value": 0.5,
+                "mandate_version": "bootstrap_small_account_v2",
+                "source": "approved_risk_mandate",
+            },
+            "stop_breaker_evaluation": {
+                "stop_evaluated": True,
+                "breaker_evaluated": True,
+                "outcome": "CLEAR",
+                "policy_version": "bootstrap_small_account_v2",
+            },
+            "reconciliation": {"status": "MISSING"},
+        }
+
+    def test_runtime_evidence_aggregate_is_redacted_and_static_only(self):
+        aggregate = build_runtime_evidence_aggregate(**self.runtime_evidence_inputs())
+
+        self.assertTrue(validate_runtime_evidence_aggregate(aggregate)["ok"])
+        self.assertFalse(aggregate["verified_active"])
+        self.assertFalse(aggregate["fills_verified"])
+        self.assertFalse(aggregate["capital_use_verified"])
+        self.assertNotIn("orders", str(aggregate))
+
+    def test_runtime_evidence_aggregate_fails_closed_for_risk_reconciliation_and_sensitive_fields(self):
+        aggregate = build_runtime_evidence_aggregate(**self.runtime_evidence_inputs())
+        aggregate["risk_engine"]["outcome"] = "REJECT"
+        aggregate["reconciliation"] = {"status": "MATCHED"}
+        aggregate["positions"] = [{"symbol": "BTCUSDT"}]
+        aggregate["release_identity"]["headers"] = {"authorization": "redacted"}
+
+        validation = validate_runtime_evidence_aggregate(aggregate)
+
+        self.assertFalse(validation["ok"])
+        self.assertIn("runtime_evidence_aggregate risk_engine.outcome must be APPROVE", validation["errors"])
+        self.assertIn(
+            "runtime_evidence_aggregate reconciliation.MATCHED requires durable_receipt_sha256",
+            validation["errors"],
+        )
+        self.assertIn("runtime_evidence_aggregate contains forbidden field: positions", validation["errors"])
+        self.assertIn("runtime_evidence_aggregate contains forbidden field: headers", validation["errors"])
+
+    def test_runtime_evidence_aggregate_rejects_static_matched_reconciliation(self):
+        matched_inputs = self.runtime_evidence_inputs()
+        matched_inputs["reconciliation"] = {
+            "status": "MATCHED",
+            "durable_receipt_sha256": "c" * 64,
+            "identity_sha256": "d" * 64,
+        }
+        mismatched_inputs = self.runtime_evidence_inputs()
+        mismatched_inputs["reconciliation"] = {
+            "status": "MISMATCHED",
+            "durable_receipt_sha256": "c" * 64,
+            "identity_sha256": "d" * 64,
+            "observed_identity_sha256": "e" * 64,
+        }
+
+        with self.assertRaisesRegex(ValueError, "MATCHED is not valid for static acceptance"):
+            build_runtime_evidence_aggregate(**matched_inputs)
+        self.assertTrue(validate_runtime_evidence_aggregate(build_runtime_evidence_aggregate(**mismatched_inputs))["ok"])
+
     def test_report_contains_enrichment_fields(self):
         runtime = ExecutionRuntime(dry_run=True, run_id="test-001")
         report = build_execution_report(runtime)
