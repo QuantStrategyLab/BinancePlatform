@@ -185,11 +185,18 @@ class CycleReplayRuntimeTests(unittest.TestCase):
 
         self.assertEqual(first["report"], second["report"])
         self.assertEqual(canonical_digest(first["report"]), canonical_digest(second["report"]))
-        self.assertEqual(first["report"]["selected_symbols"]["active_trend_pool"], [])
-        self.assertEqual(first["report"]["selected_symbols"]["selected_candidates"], [])
+        self.assertEqual(
+            first["report"]["selected_symbols"]["active_trend_pool"],
+            ["ETHUSDT", "SOLUSDT", "XRPUSDT", "LTCUSDT", "BCHUSDT"],
+        )
+        self.assertEqual(first["report"]["selected_symbols"]["selected_candidates"], ["ETHUSDT", "SOLUSDT"])
+        self.assertEqual(first["report"]["selected_symbols"], second["report"]["selected_symbols"])
         self.assertEqual(first["report"]["buy_sell_intents"], [])
         self.assertEqual(first["report"]["btc_dca_intents"], [])
         self.assertEqual(first["report"]["redemption_subscription_intents"], [])
+        self.assertEqual(first["client"].side_effect_calls, [])
+        self.assertEqual(first["state_store"].write_calls, [])
+        self.assertEqual(first["report"]["side_effect_summary"]["executed_call_count"], 0)
         first_identity = runtime_evidence_identity(first["report"])
         self.assertEqual(first_identity, runtime_evidence_identity(second["report"]))
         self.assertEqual(first_identity["account_risk_assessment"]["scope"], "ACCOUNT")

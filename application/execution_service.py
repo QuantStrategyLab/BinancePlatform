@@ -151,7 +151,7 @@ def run_daily_circuit_breaker(
     translate_fn,
 ):
     latched = bool(state.get("is_circuit_broken"))
-    if not latched and trend_daily_pnl > circuit_breaker_pct:
+    if not latched and trend_daily_pnl >= circuit_breaker_pct:
         report["account_breaker_evaluation"] = _breaker_evaluation(
             runtime,
             trend_daily_pnl=trend_daily_pnl,
