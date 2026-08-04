@@ -135,7 +135,7 @@ def execute_strategy_cycle(
             balances,
             u_total,
             prices,
-            trend_daily_pnl,
+            daily_pnl,
             circuit_breaker_pct,
             log_buffer,
         ):
@@ -311,25 +311,30 @@ def run_live_cycle(
     output_printer("\n".join(report.get("log_lines", [])))
     produced_at_value = getattr(runtime, "now_utc", None) or datetime.now(timezone.utc)
     produced_at = produced_at_value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    try:
-        report["runtime_evidence_aggregate"] = build_runtime_evidence_aggregate_v2(
-            produced_at=produced_at,
-            run_id=str(report.get("run_id") or getattr(runtime, "run_id", "")),
-            producer_revision=str(getattr(runtime, "producer_revision", "")),
-            release_identity=report.get("release_identity", {}),
-            member_risk_assessment=report.get("member_risk_assessment", {}),
-            account_risk_assessment=report.get("account_risk_assessment", {}),
-            cap_assessment=report.get("cap_assessment", {}),
-            strategy_stop_evaluation=report.get("strategy_stop_evaluation", {}),
-            account_breaker_evaluation=report.get("account_breaker_evaluation", {}),
-            execution_gate_outcome=str(report.get("order_authorization", {}).get("outcome", "REJECT")),
-            reconciliation={"status": "MISSING"},
-        )
-    except Exception as aggregate_exc:
-        report["status"] = "error"
-        report.setdefault("error_summary", {}).setdefault("errors", []).append(
-            {"stage": "runtime_evidence_aggregate", "message": str(aggregate_exc)}
-        )
+    static_degraded_without_identity = (
+        report.get("degraded_mode_level") == "static"
+        and report.get("release_identity") == {}
+    )
+    if not static_degraded_without_identity:
+        try:
+            report["runtime_evidence_aggregate"] = build_runtime_evidence_aggregate_v2(
+                produced_at=produced_at,
+                run_id=str(report.get("run_id") or getattr(runtime, "run_id", "")),
+                producer_revision=str(getattr(runtime, "producer_revision", "")),
+                release_identity=report.get("release_identity", {}),
+                member_risk_assessment=report.get("member_risk_assessment", {}),
+                account_risk_assessment=report.get("account_risk_assessment", {}),
+                cap_assessment=report.get("cap_assessment", {}),
+                strategy_stop_evaluation=report.get("strategy_stop_evaluation", {}),
+                account_breaker_evaluation=report.get("account_breaker_evaluation", {}),
+                execution_gate_outcome=str(report.get("order_authorization", {}).get("outcome", "REJECT")),
+                reconciliation={"status": "MISSING"},
+            )
+        except Exception as aggregate_exc:
+            report["status"] = "error"
+            report.setdefault("error_summary", {}).setdefault("errors", []).append(
+                {"stage": "runtime_evidence_aggregate", "message": str(aggregate_exc)}
+            )
     report_path = report_writer(report)
     persisted_local_path = report_path
     persisted_cloud_uri = None

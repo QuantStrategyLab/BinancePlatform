@@ -81,6 +81,8 @@ for path in (PLATFORM_KIT_SRC, CRYPTO_STRATEGIES_SRC):
 
 import main
 import run_cycle_replay
+from application.cycle_service import run_live_cycle
+from trend_pool_support import build_static_trend_pool_resolution
 
 
 FIXTURE_TIME = datetime(2026, 3, 15, 0, 0, tzinfo=timezone.utc)
@@ -128,7 +130,7 @@ def runtime_evidence_identity(report):
 
 
 class CycleReplayRuntimeTests(unittest.TestCase):
-    def run_cycle(self, *, run_id, include_release_identity=False):
+    def run_cycle(self, *, run_id, include_release_identity=False, static_fallback=False):
         runtime, client, state_store, notifier = run_cycle_replay.build_replay_runtime(
             run_id=run_id,
             dry_run=True,
@@ -136,18 +138,60 @@ class CycleReplayRuntimeTests(unittest.TestCase):
         )
         if include_release_identity:
             runtime.trend_pool_payload["runtime_evidence_identity"] = valid_release_identity()
+        trend_pool_patch = contextlib.nullcontext()
+        if static_fallback:
+            static_universe = dict(runtime.trend_pool_payload["symbol_map"])
+            runtime.trend_pool_payload = None
+            resolution = build_static_trend_pool_resolution(
+                now_utc=runtime.now_utc,
+                messages=["forced static fallback"],
+                static_trend_universe=static_universe,
+            )
+            trend_pool_patch = patch(
+                "main.load_trend_universe_from_live_pool",
+                return_value=(resolution["symbol_map"], resolution),
+            )
         output_buffer = io.StringIO()
         with (
             patch("quant_platform_kit.risk.gate._utc_now", return_value=RISK_EVALUATION_TIME),
+            trend_pool_patch,
             contextlib.redirect_stdout(output_buffer),
         ):
             report = main.execute_cycle(runtime)
         return {
             "report": report,
+            "runtime": runtime,
             "client": client,
             "state_store": state_store,
             "notifier": notifier,
         }
+
+    def test_static_degraded_fallback_persists_without_v2_aggregate_or_orders(self):
+        result = self.run_cycle(run_id="static-degraded", static_fallback=True)
+        written = []
+
+        with patch(
+            "application.cycle_service.persist_runtime_report",
+            return_value=types.SimpleNamespace(local_path="/tmp/static-report.json", cloud_uri=None),
+        ):
+            report, _ = run_live_cycle(
+                runtime_builder=lambda: result["runtime"],
+                execute_cycle=lambda _runtime: result["report"],
+                output_printer=lambda _line: None,
+                report_writer=lambda current: written.append(dict(current)) or "/tmp/static-report.json",
+            )
+
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["degraded_mode_level"], "static")
+        self.assertEqual(report["release_identity"], {})
+        self.assertNotIn("runtime_evidence_aggregate", report)
+        self.assertEqual(runtime_evidence_identity(report)["reconciliation"], {"status": "MISSING"})
+        self.assertEqual(report["buy_sell_intents"], [])
+        self.assertEqual(report["btc_dca_intents"], [])
+        self.assertEqual(report["redemption_subscription_intents"], [])
+        self.assertEqual(result["client"].side_effect_calls, [])
+        self.assertEqual(result["state_store"].write_calls, [])
+        self.assertNotIn("runtime_evidence_aggregate", written[0])
 
     def test_dry_run_produces_no_real_side_effects(self):
         result = self.run_cycle(run_id="dry-run-regression")

@@ -1,3 +1,4 @@
+import hashlib
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -45,6 +46,11 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertEqual(state, {})
         self.assertEqual(report["account_breaker_evaluation"]["outcome"], "CLEAR")
         self.assertEqual(report["account_breaker_evaluation"]["action_result"]["status"], "NOT_REQUIRED")
+        self.assertEqual(report["account_breaker_evaluation"]["observed_loss_ratio"], 0.0)
+        self.assertEqual(
+            report["account_breaker_evaluation"]["snapshot_digest_sha256"],
+            hashlib.sha256(b'{"account_daily_pnl":0.0}').hexdigest(),
+        )
         runtime_notify_fn.assert_not_called()
         runtime_call_client_fn.assert_not_called()
         runtime_set_trade_state_fn.assert_not_called()
@@ -78,6 +84,12 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertTrue(triggered)
         self.assertTrue(state["is_circuit_broken"])
         self.assertEqual(report["account_breaker_evaluation"]["outcome"], "TRIGGERED")
+        self.assertEqual(report["account_breaker_evaluation"]["observed_metric"], "account_daily_pnl")
+        self.assertEqual(report["account_breaker_evaluation"]["observed_loss_ratio"], -0.01)
+        self.assertEqual(
+            report["account_breaker_evaluation"]["snapshot_digest_sha256"],
+            hashlib.sha256(b'{"account_daily_pnl":-0.01}').hexdigest(),
+        )
 
         latched_report = {"buy_sell_intents": [], "error_summary": {"errors": []}, "status": "ok"}
         latched = run_daily_circuit_breaker(

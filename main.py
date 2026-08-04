@@ -972,7 +972,7 @@ def _run_daily_circuit_breaker(
     balances,
     u_total,
     prices,
-    trend_daily_pnl,
+    account_daily_pnl,
     circuit_breaker_pct,
     log_buffer,
 ):
@@ -984,7 +984,7 @@ def _run_daily_circuit_breaker(
         balances,
         u_total,
         prices,
-        trend_daily_pnl,
+        account_daily_pnl,
         circuit_breaker_pct,
         log_buffer,
         format_qty_fn=format_qty,

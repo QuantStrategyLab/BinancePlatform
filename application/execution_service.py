@@ -19,15 +19,16 @@ def _canonical_sha256(value):
     ).hexdigest()
 
 
-def _breaker_evaluation(runtime, *, trend_daily_pnl, threshold, outcome, action_result):
+def _breaker_evaluation(runtime, *, account_daily_pnl, threshold, outcome, action_result):
     evaluated_at = runtime.now_utc.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     return {
         "evaluated": True,
         "policy_id": _ACCOUNT_BREAKER_POLICY_ID,
         "policy_version": _ACCOUNT_BREAKER_POLICY_VERSION,
         "evaluated_at": evaluated_at,
-        "observed_loss_ratio": float(trend_daily_pnl),
-        "snapshot_digest_sha256": _canonical_sha256({"observed_loss_ratio": float(trend_daily_pnl)}),
+        "observed_metric": "account_daily_pnl",
+        "observed_loss_ratio": float(account_daily_pnl),
+        "snapshot_digest_sha256": _canonical_sha256({"account_daily_pnl": float(account_daily_pnl)}),
         "policy_digest_sha256": _canonical_sha256(
             {
                 "policy_id": _ACCOUNT_BREAKER_POLICY_ID,
@@ -137,7 +138,7 @@ def run_daily_circuit_breaker(
     balances,
     u_total,
     prices,
-    trend_daily_pnl,
+    account_daily_pnl,
     circuit_breaker_pct,
     log_buffer,
     *,
@@ -151,10 +152,10 @@ def run_daily_circuit_breaker(
     translate_fn,
 ):
     latched = bool(state.get("is_circuit_broken"))
-    if not latched and trend_daily_pnl >= circuit_breaker_pct:
+    if not latched and account_daily_pnl >= circuit_breaker_pct:
         report["account_breaker_evaluation"] = _breaker_evaluation(
             runtime,
-            trend_daily_pnl=trend_daily_pnl,
+            account_daily_pnl=account_daily_pnl,
             threshold=circuit_breaker_pct,
             outcome="CLEAR",
             action_result={
@@ -174,7 +175,7 @@ def run_daily_circuit_breaker(
     if latched:
         report["account_breaker_evaluation"] = _breaker_evaluation(
             runtime,
-            trend_daily_pnl=trend_daily_pnl,
+            account_daily_pnl=account_daily_pnl,
             threshold=circuit_breaker_pct,
             outcome="TRIGGERED",
             action_result={
@@ -261,7 +262,7 @@ def run_daily_circuit_breaker(
         action_status = "FAILED"
     report["account_breaker_evaluation"] = _breaker_evaluation(
         runtime,
-        trend_daily_pnl=trend_daily_pnl,
+        account_daily_pnl=account_daily_pnl,
         threshold=circuit_breaker_pct,
         outcome="TRIGGERED",
         action_result={
@@ -282,7 +283,7 @@ def run_daily_circuit_breaker(
         runtime,
         report,
         f"{translate_fn('circuit_breaker')}\n"
-        f"{translate_fn('circuit_msg', pnl=f'{trend_daily_pnl:.2%}')}",
+        f"account_daily_pnl={account_daily_pnl:.2%}",
     )
     return True
 
