@@ -1,5 +1,6 @@
 import hashlib
 import os
+import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -11,6 +12,23 @@ from quant_platform_kit.common.runtime_reports import build_runtime_report_base
 # Binance rate limits (public API: 1200 weight/min, order placement: 50 orders/10s)
 _BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC = 0.25  # max ~4 orders/sec
 _LAST_API_CALL_TS: float = 0.0
+RUNTIME_EVIDENCE_CONTRACT_VERSION = "qsl.runtime_evidence_aggregate.v1"
+RECONCILIATION_STATUSES = frozenset({"MISSING", "MATCHED", "MISMATCHED"})
+_RUNTIME_EVIDENCE_FORBIDDEN_FIELDS = frozenset(
+    {
+        "api_key",
+        "api_secret",
+        "authorization",
+        "balances",
+        "credentials",
+        "headers",
+        "orders",
+        "positions",
+        "provider_rows",
+        "secret",
+        "token",
+    }
+)
 
 
 def _rate_limit_pause():
@@ -20,6 +38,200 @@ def _rate_limit_pause():
     if elapsed < _BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC:
         time.sleep(_BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC - elapsed)
     _LAST_API_CALL_TS = time.monotonic()
+
+
+def _is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"[0-9a-f]{64}", value.strip()))
+
+
+def _is_git_revision(value: Any) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"[0-9a-f]{40}", value.strip()))
+
+
+def _is_utc_timestamp(value: Any) -> bool:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def _append_missing_fields(payload: Mapping[str, Any], fields: tuple[str, ...], errors: list[str], label: str) -> None:
+    for field_name in fields:
+        if field_name not in payload:
+            errors.append(f"{label} missing field: {field_name}")
+
+
+def _append_forbidden_field_errors(value: Any, errors: list[str]) -> None:
+    if isinstance(value, Mapping):
+        for field, nested_value in value.items():
+            if str(field).lower() in _RUNTIME_EVIDENCE_FORBIDDEN_FIELDS:
+                errors.append(f"runtime_evidence_aggregate contains forbidden field: {field}")
+            _append_forbidden_field_errors(nested_value, errors)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _append_forbidden_field_errors(item, errors)
+
+
+def _validate_release_identity(identity: Any, errors: list[str]) -> None:
+    label = "runtime_evidence_aggregate release_identity"
+    if not isinstance(identity, Mapping):
+        errors.append(f"{label} must be an object")
+        return
+    _append_missing_fields(
+        identity,
+        (
+            "strategy_profile",
+            "mode",
+            "source_revision",
+            "input_timestamp",
+            "artifact_contract",
+            "artifact_version",
+            "artifacts",
+        ),
+        errors,
+        label,
+    )
+    for field_name in ("strategy_profile", "mode", "artifact_contract", "artifact_version"):
+        if not isinstance(identity.get(field_name), str) or not identity[field_name].strip():
+            errors.append(f"{label} {field_name} must be a non-empty string")
+    if not _is_git_revision(identity.get("source_revision")):
+        errors.append(f"{label} source_revision must be a 40-character lowercase git SHA")
+    if not _is_utc_timestamp(identity.get("input_timestamp")):
+        errors.append(f"{label} input_timestamp must be a UTC timestamp")
+    artifacts = identity.get("artifacts")
+    if not isinstance(artifacts, Mapping) or not artifacts:
+        errors.append(f"{label} artifacts must be a non-empty object")
+        return
+    for artifact_name, artifact in artifacts.items():
+        if not isinstance(artifact_name, str) or not artifact_name.strip() or not isinstance(artifact, Mapping):
+            errors.append(f"{label} artifacts must contain named objects")
+            continue
+        if not _is_sha256(artifact.get("sha256")):
+            errors.append(f"{label} artifacts.{artifact_name}.sha256 must be a SHA-256 digest")
+
+
+def _validate_reconciliation(reconciliation: Any, errors: list[str]) -> None:
+    label = "runtime_evidence_aggregate reconciliation"
+    if not isinstance(reconciliation, Mapping):
+        errors.append(f"{label} must be an object")
+        return
+    status = reconciliation.get("status")
+    if status not in RECONCILIATION_STATUSES:
+        errors.append(f"{label} status must be one of MISSING, MATCHED, MISMATCHED")
+        return
+    if status == "MATCHED":
+        for field in ("durable_receipt_sha256", "identity_sha256"):
+            if not _is_sha256(reconciliation.get(field)):
+                errors.append(f"{label}.MATCHED requires {field}")
+        errors.append(f"{label}.MATCHED is not valid for static acceptance")
+    elif status == "MISMATCHED":
+        for field in ("durable_receipt_sha256", "identity_sha256", "observed_identity_sha256"):
+            if not _is_sha256(reconciliation.get(field)):
+                errors.append(f"{label}.MISMATCHED requires {field}")
+        if reconciliation.get("identity_sha256") == reconciliation.get("observed_identity_sha256"):
+            errors.append(f"{label}.MISMATCHED identity digests must differ")
+
+
+def validate_runtime_evidence_aggregate(aggregate: Any) -> dict[str, Any]:
+    """Validate a redacted, static-only runtime evidence aggregate."""
+    errors: list[str] = []
+    label = "runtime_evidence_aggregate"
+    if not isinstance(aggregate, Mapping):
+        return {"ok": False, "errors": [f"{label} must be an object"]}
+
+    _append_forbidden_field_errors(aggregate, errors)
+    _append_missing_fields(
+        aggregate,
+        (
+            "contract_version",
+            "release_identity",
+            "risk_engine",
+            "effective_exposure_cap",
+            "stop_breaker_evaluation",
+            "reconciliation",
+            "static_validation_only",
+            "execution_permitted",
+            "verified_active",
+            "fills_verified",
+            "capital_use_verified",
+        ),
+        errors,
+        label,
+    )
+    if aggregate.get("contract_version") != RUNTIME_EVIDENCE_CONTRACT_VERSION:
+        errors.append(f"{label} contract_version must be {RUNTIME_EVIDENCE_CONTRACT_VERSION}")
+    _validate_release_identity(aggregate.get("release_identity"), errors)
+
+    risk_engine = aggregate.get("risk_engine")
+    if not isinstance(risk_engine, Mapping):
+        errors.append(f"{label} risk_engine must be an object")
+    else:
+        if risk_engine.get("outcome") != "APPROVE":
+            errors.append(f"{label} risk_engine.outcome must be APPROVE")
+        if not isinstance(risk_engine.get("policy_version"), str) or not risk_engine["policy_version"].strip():
+            errors.append(f"{label} risk_engine.policy_version must be a non-empty string")
+
+    cap = aggregate.get("effective_exposure_cap")
+    if not isinstance(cap, Mapping):
+        errors.append(f"{label} effective_exposure_cap must be an object")
+    else:
+        value = cap.get("value")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 1:
+            errors.append(f"{label} effective_exposure_cap.value must be in (0, 1]")
+        for field in ("mandate_version", "source"):
+            if not isinstance(cap.get(field), str) or not cap[field].strip():
+                errors.append(f"{label} effective_exposure_cap.{field} must be a non-empty string")
+
+    stop_breaker = aggregate.get("stop_breaker_evaluation")
+    if not isinstance(stop_breaker, Mapping):
+        errors.append(f"{label} stop_breaker_evaluation must be an object")
+    else:
+        if stop_breaker.get("stop_evaluated") is not True:
+            errors.append(f"{label} stop_breaker_evaluation.stop_evaluated must be true")
+        if stop_breaker.get("breaker_evaluated") is not True:
+            errors.append(f"{label} stop_breaker_evaluation.breaker_evaluated must be true")
+        if stop_breaker.get("outcome") != "CLEAR":
+            errors.append(f"{label} stop_breaker_evaluation.outcome must be CLEAR")
+        if not isinstance(stop_breaker.get("policy_version"), str) or not stop_breaker["policy_version"].strip():
+            errors.append(f"{label} stop_breaker_evaluation.policy_version must be a non-empty string")
+
+    _validate_reconciliation(aggregate.get("reconciliation"), errors)
+    for field in ("static_validation_only", "execution_permitted", "verified_active", "fills_verified", "capital_use_verified"):
+        expected = field == "static_validation_only"
+        if aggregate.get(field) is not expected:
+            errors.append(f"{label} {field} must be {str(expected).lower()} for static acceptance")
+    return {"ok": not errors, "errors": errors}
+
+
+def build_runtime_evidence_aggregate(
+    *,
+    release_identity: Mapping[str, Any],
+    risk_engine: Mapping[str, Any],
+    effective_exposure_cap: Mapping[str, Any],
+    stop_breaker_evaluation: Mapping[str, Any],
+    reconciliation: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build a fail-closed aggregate that cannot claim runtime activity."""
+    aggregate = {
+        "contract_version": RUNTIME_EVIDENCE_CONTRACT_VERSION,
+        "release_identity": dict(release_identity),
+        "risk_engine": dict(risk_engine),
+        "effective_exposure_cap": dict(effective_exposure_cap),
+        "stop_breaker_evaluation": dict(stop_breaker_evaluation),
+        "reconciliation": dict(reconciliation),
+        "static_validation_only": True,
+        "execution_permitted": False,
+        "verified_active": False,
+        "fills_verified": False,
+        "capital_use_verified": False,
+    }
+    validation = validate_runtime_evidence_aggregate(aggregate)
+    if not validation["ok"]:
+        raise ValueError("Runtime evidence aggregate validation failed: " + "; ".join(validation["errors"]))
+    return aggregate
 
 
 @dataclass
