@@ -131,7 +131,7 @@ def run_daily_circuit_breaker(
     if trend_daily_pnl > circuit_breaker_pct:
         return False
     if _block_unapproved_execution(report, decision, category="daily_circuit_breaker"):
-        return False
+        return True
 
     for symbol, config in runtime_trend_universe.items():
         tradable_qty = balances[symbol]

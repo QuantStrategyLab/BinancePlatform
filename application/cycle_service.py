@@ -7,6 +7,7 @@ import os
 
 from quant_platform_kit.common.runtime_reports import persist_runtime_report
 from quant_platform_kit.strategy_lifecycle.performance_monitor import try_record_platform_execution
+from decision_mapper import has_execution_authority
 from runtime_logging import RuntimeLogContext, emit_runtime_log
 from runtime_support import finalize_notification_delivery
 
@@ -66,7 +67,7 @@ def execute_strategy_cycle(
             report,
             runtime_trend_universe,
             log_buffer,
-            min_bnb_value,
+            float("-inf"),
             buy_bnb_amount,
         )
         u_total = market_snapshot["u_total"]
@@ -88,6 +89,22 @@ def execute_strategy_cycle(
             trend_indicators,
             btc_snapshot,
         )
+        if has_execution_authority(allocation.get("execution_decision")):
+            market_snapshot = capture_market_snapshot(
+                runtime,
+                report,
+                runtime_trend_universe,
+                log_buffer,
+                min_bnb_value,
+                buy_bnb_amount,
+            )
+            u_total = market_snapshot["u_total"]
+            fuel_val = market_snapshot["fuel_val"]
+            dynamic_usdt_buffer = market_snapshot["dynamic_usdt_buffer"]
+            prices = market_snapshot["prices"]
+            balances = market_snapshot["balances"]
+            btc_snapshot = market_snapshot["btc_snapshot"]
+            trend_indicators = market_snapshot["trend_indicators"]
         total_equity = allocation["total_equity"]
         trend_val_equity = allocation["trend_val"]
 

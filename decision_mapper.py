@@ -2,15 +2,28 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
+from quant_platform_kit.risk.contracts import CandidateRiskIdentity
+from quant_platform_kit.risk.gate import (
+    _FALLBACK_MAX_SNAPSHOT_AGE_SECONDS_V1,
+    _canonical_digest,
+    _decision_metrics,
+    _parse_utc_timestamp,
+)
 from quant_platform_kit.strategy_contracts import StrategyDecision
 
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
-def _approved_scoped_assessment(value: Any, *, scope: str) -> Mapping[str, Any] | None:
+def _approved_scoped_assessment(
+    value: Any,
+    *,
+    scope: str,
+    now: datetime,
+) -> Mapping[str, Any] | None:
     """Accept only serialized QPK approval evidence; never infer or recompute risk authority."""
     if not isinstance(value, Mapping):
         return None
@@ -34,6 +47,12 @@ def _approved_scoped_assessment(value: Any, *, scope: str) -> Mapping[str, Any] 
     for field in ("contract_version", "evaluated_at", "policy_id", "policy_version"):
         if not isinstance(value.get(field), str) or not value[field].strip():
             return None
+    evaluated_at = _parse_utc_timestamp(value["evaluated_at"])
+    if evaluated_at is None:
+        return None
+    age_seconds = (now - evaluated_at).total_seconds()
+    if not 0.0 <= age_seconds <= _FALLBACK_MAX_SNAPSHOT_AGE_SECONDS_V1:
+        return None
     return value
 
 
@@ -46,19 +65,34 @@ def has_execution_authority(decision: StrategyDecision | None) -> bool:
         return False
     if any(str(flag).startswith("rejected:") for flag in decision.risk_flags):
         return False
+    now = datetime.now(timezone.utc)
     member = _approved_scoped_assessment(
         diagnostics.get("member_risk_assessment"),
         scope="MEMBER",
+        now=now,
     )
     account = _approved_scoped_assessment(
         diagnostics.get("account_risk_assessment"),
         scope="ACCOUNT",
+        now=now,
     )
     if member is None or account is None:
         return False
-    return all(
-        member[field] == account[field]
-        for field in ("candidate_identity_sha256", "decision_digest_sha256")
+    candidate_identity = diagnostics.get("candidate_risk_identity")
+    if not isinstance(candidate_identity, CandidateRiskIdentity):
+        return False
+    try:
+        decision_payload, _, _ = _decision_metrics(decision, total_equity=None)
+        decision_digest = _canonical_digest(decision_payload)
+    except (TypeError, ValueError):
+        return False
+    return (
+        member["candidate_identity_sha256"]
+        == account["candidate_identity_sha256"]
+        == candidate_identity.candidate_sha256
+        and member["decision_digest_sha256"]
+        == account["decision_digest_sha256"]
+        == decision_digest
     )
 
 

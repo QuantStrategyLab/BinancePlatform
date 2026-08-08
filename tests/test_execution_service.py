@@ -1,6 +1,9 @@
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
+from unittest.mock import patch
 
+from application.cycle_service import execute_strategy_cycle
 from application.execution_service import (
     execute_btc_dca_cycle,
     execute_trend_buys,
@@ -9,23 +12,41 @@ from application.execution_service import (
     run_daily_circuit_breaker,
 )
 from decision_mapper import map_strategy_decision_to_rotation_plan
+from market_snapshot_support import capture_market_snapshot
+from quant_platform_kit.risk.contracts import CandidateRiskIdentity
+from quant_platform_kit.risk.gate import _canonical_digest, _decision_metrics
 from quant_platform_kit.strategy_contracts import StrategyDecision
 
 
-def _risk_assessment(scope, *, outcome="APPROVE", candidate_sha="a" * 64, decision_sha="b" * 64):
+_CANDIDATE_IDENTITY = CandidateRiskIdentity(
+    strategy_profile="crypto_live_pool_rotation",
+    account_mode="single_strategy_account_v1",
+    strategy_revision="1" * 40,
+    runner_revision="2" * 40,
+    config_sha256="3" * 64,
+    input_manifest_sha256="4" * 64,
+    authority_receipt_sha256="5" * 64,
+)
+
+
+def _utc_now_text():
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _risk_assessment(scope, *, outcome="APPROVE", candidate_sha=None, decision_sha):
     return {
         "contract_version": "qsl.risk_gate_assessment.v1",
         "scope": scope,
-        "evaluated_at": "2026-08-07T00:00:00Z",
-        "policy_id": "qsl.risk_gate",
+        "evaluated_at": _utc_now_text(),
+        "policy_id": "qpk.risk_gate",
         "policy_version": "v1",
-        "mandate_authority_receipt_sha256": "c" * 64,
-        "candidate_identity_sha256": candidate_sha,
+        "mandate_authority_receipt_sha256": "7" * 64,
+        "candidate_identity_sha256": candidate_sha or _CANDIDATE_IDENTITY.candidate_sha256,
         "decision_digest_sha256": decision_sha,
-        "portfolio_snapshot_digest_sha256": "d" * 64,
+        "portfolio_snapshot_digest_sha256": "8" * 64,
         "outcome": outcome,
         "reason_codes": () if outcome == "APPROVE" else ("rejected",),
-        "assessment_sha256": "e" * 64,
+        "assessment_sha256": "9" * 64,
     }
 
 
@@ -34,17 +55,10 @@ def _decision_with_authority(
     risk_gate="APPROVE",
     member="APPROVE",
     account="APPROVE",
-    account_candidate_sha="a" * 64,
+    account_candidate_sha=None,
 ):
-    return StrategyDecision(
+    decision = StrategyDecision(
         diagnostics={
-            "risk_gate": risk_gate,
-            "member_risk_assessment": _risk_assessment("MEMBER", outcome=member),
-            "account_risk_assessment": _risk_assessment(
-                "ACCOUNT",
-                outcome=account,
-                candidate_sha=account_candidate_sha,
-            ),
             "trend_pool": ("ETHUSDT",),
             "rotation_candidates": {
                 "ETHUSDT": {"weight": 1.0, "relative_score": 1.5, "abs_momentum": 0.4},
@@ -53,6 +67,27 @@ def _decision_with_authority(
             "planned_trend_buys": {"ETHUSDT": 320.0},
             "sell_reasons": {"ETHUSDT": "stale_rotated_out"},
         }
+    )
+    payload, _, _ = _decision_metrics(decision, total_equity=None)
+    decision_sha = _canonical_digest(payload)
+    return StrategyDecision(
+        positions=decision.positions,
+        budgets=decision.budgets,
+        risk_flags=decision.risk_flags,
+        diagnostics={
+            **dict(decision.diagnostics),
+            "risk_gate": risk_gate,
+            "candidate_risk_identity": _CANDIDATE_IDENTITY,
+            "member_risk_assessment": _risk_assessment(
+                "MEMBER", outcome=member, decision_sha=decision_sha
+            ),
+            "account_risk_assessment": _risk_assessment(
+                "ACCOUNT",
+                outcome=account,
+                candidate_sha=account_candidate_sha,
+                decision_sha=decision_sha,
+            ),
+        },
     )
 
 
@@ -120,9 +155,108 @@ class ExecutionServiceTests(unittest.TestCase):
             translate_fn=lambda key, **_kwargs: key,
         )
 
-        self.assertFalse(result)
+        self.assertTrue(result)
         self.assertEqual(report["buy_sell_intents"], [])
         self.assertEqual(observed_client_calls, [])
+
+    def test_cycle_gates_bnb_top_up_until_execution_authority_is_approved(self):
+        cases = {
+            "missing": None,
+            "rejected": _decision_with_authority(account="REJECT"),
+            "mismatched": _decision_with_authority(account_candidate_sha="f" * 64),
+        }
+
+        for name, decision in cases.items():
+            with self.subTest(name=name):
+                capture_calls, order_client_calls = self._run_fuel_gate_cycle(decision)
+
+                self.assertEqual(capture_calls, [(float("-inf"), 15.0)])
+                self.assertEqual(order_client_calls, [])
+
+    def test_cycle_allows_bnb_top_up_only_after_approved_execution_authority(self):
+        capture_calls, order_client_calls = self._run_fuel_gate_cycle(_decision_with_authority())
+
+        self.assertEqual(capture_calls, [(float("-inf"), 15.0), (10.0, 15.0)])
+        self.assertEqual(order_client_calls, ["order_market_buy"])
+
+    def _run_fuel_gate_cycle(self, decision):
+        capture_calls = []
+        order_client_calls = []
+
+        def capture_snapshot(current_runtime, report, universe, logs, min_bnb_value, buy_bnb_amount):
+            capture_calls.append((min_bnb_value, buy_bnb_amount))
+            return capture_market_snapshot(
+                current_runtime,
+                report,
+                universe,
+                logs,
+                min_bnb_value,
+                buy_bnb_amount,
+                get_total_balance_fn=lambda _client, asset, **_kwargs: 1000.0
+                if asset == "USDT"
+                else 0.0,
+                ensure_asset_available_fn=lambda *_args: True,
+                runtime_call_client_fn=lambda _runtime, _report, method_name, **_kwargs: (
+                    order_client_calls.append(method_name)
+                ),
+                runtime_notify_fn=lambda *_args: None,
+                append_log_fn=lambda *_args: None,
+                resolve_btc_snapshot_fn=lambda *_args: {},
+                resolve_trend_indicators_fn=lambda *_args: {},
+            )
+
+        runtime = SimpleNamespace(
+            client=SimpleNamespace(get_avg_price=lambda **_kwargs: {"price": "100.0"}),
+            dry_run=True,
+            now_utc=datetime.now(timezone.utc),
+            print_traceback=False,
+            tg_token="",
+            tg_chat_id="",
+        )
+        with patch("application.cycle_service.try_record_platform_execution"):
+            execute_strategy_cycle(
+                runtime,
+                build_execution_report=lambda _runtime: {
+                    "status": "ok",
+                    "log_lines": [],
+                    "buy_sell_intents": [],
+                },
+                ensure_runtime_client=lambda *_args: True,
+                load_cycle_execution_settings=lambda: SimpleNamespace(
+                    btc_status_report_interval_hours=24,
+                    allow_new_trend_entries_on_degraded=False,
+                ),
+                load_cycle_state=lambda *_args: (
+                    {"is_circuit_broken": True},
+                    {"degraded": False},
+                    {"ETHUSDT": {"base_asset": "ETH"}},
+                    True,
+                ),
+                append_trend_pool_source_logs=lambda *_args: None,
+                capture_market_snapshot=capture_snapshot,
+                compute_portfolio_allocation=lambda *_args: {
+                    "total_equity": 1000.0,
+                    "trend_val": 0.0,
+                    "execution_decision": decision,
+                },
+                build_balance_snapshot=lambda *_args: {},
+                maybe_reset_daily_state=lambda *_args: None,
+                maybe_rebase_daily_state_for_balance_change=lambda *_args: False,
+                compute_daily_pnls=lambda *_args: (0.0, 0.0),
+                append_portfolio_report=lambda *_args: None,
+                run_daily_circuit_breaker=lambda *_args, **_kwargs: False,
+                execute_trend_rotation=lambda *_args, **_kwargs: 1000.0,
+                execute_btc_dca_cycle=lambda *_args, **_kwargs: 1000.0,
+                manage_usdt_earn_buffer_runtime=lambda *_args, **_kwargs: None,
+                maybe_send_periodic_btc_status_report=lambda *_args, **_kwargs: None,
+                runtime_set_trade_state=lambda *_args, **_kwargs: None,
+                append_report_error=lambda *_args, **_kwargs: None,
+                runtime_notify=lambda *_args: None,
+                translate_fn=lambda key, **_kwargs: key,
+                traceback_module=SimpleNamespace(print_exc=lambda: None),
+            )
+
+        return capture_calls, order_client_calls
 
     def test_btc_dca_identity_mismatch_makes_zero_order_client_calls(self):
         report = {"btc_dca_intents": [], "gating_summary": {}, "gating_events": []}
