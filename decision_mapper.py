@@ -1,9 +1,65 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
 from quant_platform_kit.strategy_contracts import StrategyDecision
+
+
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _approved_scoped_assessment(value: Any, *, scope: str) -> Mapping[str, Any] | None:
+    """Accept only serialized QPK approval evidence; never infer or recompute risk authority."""
+    if not isinstance(value, Mapping):
+        return None
+    reason_codes = value.get("reason_codes")
+    if (
+        value.get("scope") != scope
+        or value.get("outcome") != "APPROVE"
+        or not isinstance(reason_codes, (list, tuple))
+        or reason_codes
+    ):
+        return None
+    for field in (
+        "mandate_authority_receipt_sha256",
+        "candidate_identity_sha256",
+        "decision_digest_sha256",
+        "portfolio_snapshot_digest_sha256",
+        "assessment_sha256",
+    ):
+        if not isinstance(value.get(field), str) or not _SHA256_PATTERN.fullmatch(value[field]):
+            return None
+    for field in ("contract_version", "evaluated_at", "policy_id", "policy_version"):
+        if not isinstance(value.get(field), str) or not value[field].strip():
+            return None
+    return value
+
+
+def has_execution_authority(decision: StrategyDecision | None) -> bool:
+    """Require matching QPK RiskEngine, MEMBER, and ACCOUNT approval evidence."""
+    if not isinstance(decision, StrategyDecision):
+        return False
+    diagnostics = decision.diagnostics
+    if not isinstance(diagnostics, Mapping) or diagnostics.get("risk_gate") != "APPROVE":
+        return False
+    if any(str(flag).startswith("rejected:") for flag in decision.risk_flags):
+        return False
+    member = _approved_scoped_assessment(
+        diagnostics.get("member_risk_assessment"),
+        scope="MEMBER",
+    )
+    account = _approved_scoped_assessment(
+        diagnostics.get("account_risk_assessment"),
+        scope="ACCOUNT",
+    )
+    if member is None or account is None:
+        return False
+    return all(
+        member[field] == account[field]
+        for field in ("candidate_identity_sha256", "decision_digest_sha256")
+    )
 
 
 def _budget_map(decision: StrategyDecision) -> dict[str, float]:
@@ -28,28 +84,40 @@ def map_strategy_decision_to_allocation(
     account_metrics: Mapping[str, Any],
 ) -> dict[str, float]:
     diagnostics = dict(decision.diagnostics)
-    budgets = _budget_map(decision)
-    positions = _position_weight_map(decision)
-    trend_target_ratio = float(
-        diagnostics.get(
-            "trend_target_ratio",
-            sum(weight for symbol, weight in positions.items() if symbol != "BTCUSDT"),
+    authorized = has_execution_authority(decision)
+    budgets = _budget_map(decision) if authorized else {}
+    positions = _position_weight_map(decision) if authorized else {}
+    trend_target_ratio = (
+        float(
+            diagnostics.get(
+                "trend_target_ratio",
+                sum(weight for symbol, weight in positions.items() if symbol != "BTCUSDT"),
+            )
         )
+        if authorized
+        else 0.0
     )
     return {
         "total_equity": float(account_metrics["total_equity"]),
         "trend_val": float(account_metrics["trend_value"]),
         "dca_val": float(account_metrics["dca_value"]),
-        "btc_target_ratio": float(diagnostics.get("btc_target_ratio", positions.get("BTCUSDT", 0.0))),
+        "btc_target_ratio": (
+            float(diagnostics.get("btc_target_ratio", positions.get("BTCUSDT", 0.0)))
+            if authorized
+            else 0.0
+        ),
         "trend_target_ratio": trend_target_ratio,
         "trend_usdt_pool": float(budgets.get("trend_rotation_pool", 0.0)),
         "dca_usdt_pool": float(budgets.get("btc_core_dca_pool", 0.0)),
-        "btc_base_order_usdt": float(diagnostics.get("btc_base_order_usdt", 0.0)),
+        "btc_base_order_usdt": (
+            float(diagnostics.get("btc_base_order_usdt", 0.0)) if authorized else 0.0
+        ),
     }
 
 
 def map_strategy_decision_to_rotation_plan(decision: StrategyDecision) -> dict[str, Any]:
     diagnostics = dict(decision.diagnostics)
+    authorized = has_execution_authority(decision)
     metadata = diagnostics.get("metadata") if isinstance(diagnostics.get("metadata"), Mapping) else {}
     combo_meta = metadata.get("combo") if isinstance(metadata.get("combo"), Mapping) else {}
     selected_candidates = {
@@ -59,20 +127,24 @@ def map_strategy_decision_to_rotation_plan(decision: StrategyDecision) -> dict[s
             "abs_momentum": float(payload.get("abs_momentum", 0.0)),
         }
         for symbol, payload in dict(diagnostics.get("rotation_candidates", {})).items()
-    }
+    } if authorized else {}
     planned_trend_buys = {
         str(symbol): float(amount)
         for symbol, amount in dict(diagnostics.get("planned_trend_buys", {})).items()
-    }
+    } if authorized else {}
     sell_reasons = {
         str(symbol): str(reason)
         for symbol, reason in dict(diagnostics.get("sell_reasons", {})).items()
         if str(reason)
-    }
+    } if authorized else {}
     return {
         "active_trend_pool": list(diagnostics.get("trend_pool", ())),
         "selected_candidates": selected_candidates,
-        "eligible_buy_symbols": [str(symbol) for symbol in diagnostics.get("eligible_buy_symbols", ())],
+        "eligible_buy_symbols": (
+            [str(symbol) for symbol in diagnostics.get("eligible_buy_symbols", ())]
+            if authorized
+            else []
+        ),
         "planned_trend_buys": planned_trend_buys,
         "sell_reasons": sell_reasons,
         "rotation_pool_source_version": diagnostics.get("rotation_pool_source_version"),

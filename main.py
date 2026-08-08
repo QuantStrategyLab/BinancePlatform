@@ -874,10 +874,12 @@ def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, pri
         u_total,
         fuel_val,
     )
-    return map_decision_to_allocation(
+    allocation = map_decision_to_allocation(
         evaluation.decision,
         account_metrics=evaluation.account_metrics,
     )
+    allocation["execution_decision"] = evaluation.decision
+    return allocation
 
 
 def _build_balance_snapshot(runtime_trend_universe, balances, u_total):
@@ -949,6 +951,8 @@ def _run_daily_circuit_breaker(
     trend_daily_pnl,
     circuit_breaker_pct,
     log_buffer,
+    *,
+    decision=None,
 ):
     return app_run_daily_circuit_breaker(
         runtime,
@@ -961,6 +965,7 @@ def _run_daily_circuit_breaker(
         trend_daily_pnl,
         circuit_breaker_pct,
         log_buffer,
+        decision=decision,
         format_qty_fn=format_qty,
         runtime_notify_fn=runtime_notify,
         ensure_asset_available_fn=ensure_asset_available_runtime,
@@ -1128,6 +1133,8 @@ def _execute_btc_dca_cycle(
     btc_base_order_usdt,
     today_id_str,
     log_buffer,
+    *,
+    decision=None,
 ):
     return app_execute_btc_dca_cycle(
         runtime,
@@ -1144,6 +1151,7 @@ def _execute_btc_dca_cycle(
         btc_base_order_usdt,
         today_id_str,
         log_buffer,
+        decision=decision,
         append_log_fn=append_log,
         translate_fn=t,
         format_qty_fn=format_qty,

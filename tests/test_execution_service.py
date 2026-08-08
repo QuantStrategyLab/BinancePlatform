@@ -8,9 +8,156 @@ from application.execution_service import (
     execute_trend_sells,
     run_daily_circuit_breaker,
 )
+from decision_mapper import map_strategy_decision_to_rotation_plan
+from quant_platform_kit.strategy_contracts import StrategyDecision
+
+
+def _risk_assessment(scope, *, outcome="APPROVE", candidate_sha="a" * 64, decision_sha="b" * 64):
+    return {
+        "contract_version": "qsl.risk_gate_assessment.v1",
+        "scope": scope,
+        "evaluated_at": "2026-08-07T00:00:00Z",
+        "policy_id": "qsl.risk_gate",
+        "policy_version": "v1",
+        "mandate_authority_receipt_sha256": "c" * 64,
+        "candidate_identity_sha256": candidate_sha,
+        "decision_digest_sha256": decision_sha,
+        "portfolio_snapshot_digest_sha256": "d" * 64,
+        "outcome": outcome,
+        "reason_codes": () if outcome == "APPROVE" else ("rejected",),
+        "assessment_sha256": "e" * 64,
+    }
+
+
+def _decision_with_authority(
+    *,
+    risk_gate="APPROVE",
+    member="APPROVE",
+    account="APPROVE",
+    account_candidate_sha="a" * 64,
+):
+    return StrategyDecision(
+        diagnostics={
+            "risk_gate": risk_gate,
+            "member_risk_assessment": _risk_assessment("MEMBER", outcome=member),
+            "account_risk_assessment": _risk_assessment(
+                "ACCOUNT",
+                outcome=account,
+                candidate_sha=account_candidate_sha,
+            ),
+            "trend_pool": ("ETHUSDT",),
+            "rotation_candidates": {
+                "ETHUSDT": {"weight": 1.0, "relative_score": 1.5, "abs_momentum": 0.4},
+            },
+            "eligible_buy_symbols": ("ETHUSDT",),
+            "planned_trend_buys": {"ETHUSDT": 320.0},
+            "sell_reasons": {"ETHUSDT": "stale_rotated_out"},
+        }
+    )
 
 
 class ExecutionServiceTests(unittest.TestCase):
+    def test_trend_rotation_reject_never_reaches_order_helpers(self):
+        runtime = SimpleNamespace(now_utc="2026-08-07T00:00:00Z")
+        report = {
+            "selected_symbols": {"active_trend_pool": [], "selected_candidates": []},
+            "gating_summary": {},
+            "gating_events": [],
+        }
+        rejected = _decision_with_authority(risk_gate="REJECT")
+        plan = {**map_strategy_decision_to_rotation_plan(rejected), "decision": rejected}
+        observed_order_client_calls = []
+
+        result = execute_trend_rotation(
+            runtime,
+            report,
+            {},
+            {"ETHUSDT": {"base_asset": "ETH"}},
+            {"ETHUSDT": {}},
+            {},
+            {"ETHUSDT": 100.0},
+            {"ETHUSDT": 1.0},
+            1000.0,
+            0.0,
+            [],
+            "20260807",
+            True,
+            True,
+            resolve_strategy_plan=lambda *_args, **_kwargs: plan,
+            append_rotation_summary=lambda *_args: None,
+            execute_trend_sells=lambda *_args: observed_order_client_calls.append("sell") or 1000.0,
+            execute_trend_buys=lambda *_args: observed_order_client_calls.append("buy") or 1000.0,
+            append_trend_symbol_status=lambda *_args: None,
+            official_trend_pool_symbols=["ETHUSDT"],
+        )
+
+        self.assertEqual(result, 1000.0)
+        self.assertEqual(observed_order_client_calls, [])
+
+    def test_daily_breaker_account_reject_makes_zero_order_client_calls(self):
+        report = {"buy_sell_intents": [], "gating_summary": {}, "gating_events": []}
+        observed_client_calls = []
+
+        result = run_daily_circuit_breaker(
+            SimpleNamespace(client=object()),
+            report,
+            {},
+            {"ETHUSDT": {"base_asset": "ETH"}},
+            {"ETHUSDT": 2.0},
+            50.0,
+            {"ETHUSDT": 100.0},
+            -0.10,
+            -0.05,
+            [],
+            decision=_decision_with_authority(account="REJECT"),
+            format_qty_fn=lambda *_args: 1.5,
+            runtime_notify_fn=lambda *_args: None,
+            ensure_asset_available_fn=lambda *_args: True,
+            runtime_call_client_fn=lambda *_args, **_kwargs: observed_client_calls.append("sell"),
+            set_symbol_trade_state_fn=lambda *_args: None,
+            runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
+            build_balance_snapshot_fn=lambda *_args: {},
+            translate_fn=lambda key, **_kwargs: key,
+        )
+
+        self.assertFalse(result)
+        self.assertEqual(report["buy_sell_intents"], [])
+        self.assertEqual(observed_client_calls, [])
+
+    def test_btc_dca_identity_mismatch_makes_zero_order_client_calls(self):
+        report = {"btc_dca_intents": [], "gating_summary": {}, "gating_events": []}
+        observed_client_calls = []
+
+        result = execute_btc_dca_cycle(
+            SimpleNamespace(client=object()),
+            report,
+            {},
+            {"BTCUSDT": 0.1},
+            {"BTCUSDT": 50_000.0},
+            1000.0,
+            20_000.0,
+            300.0,
+            5000.0,
+            {"ahr999": 0.4, "zscore": 0.0, "sell_trigger": 3.5},
+            0.25,
+            50.0,
+            "20260807",
+            [],
+            decision=_decision_with_authority(account_candidate_sha="f" * 64),
+            append_log_fn=lambda *_args: None,
+            translate_fn=lambda key, **_kwargs: key,
+            format_qty_fn=lambda *_args: 1.0,
+            ensure_asset_available_fn=lambda *_args: True,
+            runtime_call_client_fn=lambda *_args, **_kwargs: observed_client_calls.append("buy"),
+            next_order_id_fn=lambda *_args: "unused",
+            runtime_notify_fn=lambda *_args: None,
+            runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
+        )
+
+        self.assertEqual(result, 1000.0)
+        self.assertEqual(report["btc_dca_intents"], [])
+        self.assertEqual(observed_client_calls, [])
+
     def test_run_daily_circuit_breaker_liquidates_and_latches_state(self):
         runtime = SimpleNamespace(client=object())
         report = {"buy_sell_intents": []}
@@ -30,6 +177,7 @@ class ExecutionServiceTests(unittest.TestCase):
             -0.10,
             -0.05,
             [],
+            decision=_decision_with_authority(),
             format_qty_fn=lambda _client, _symbol, qty: round(qty - 0.5, 4),
             runtime_notify_fn=lambda _runtime, _report, text: observed["notifications"].append(text),
             ensure_asset_available_fn=lambda _runtime, _report, asset, amount, _log_buffer: observed["asset_checks"].append((asset, amount)) or True,
@@ -207,6 +355,7 @@ class ExecutionServiceTests(unittest.TestCase):
 
         plans = [
             {
+                "decision": _decision_with_authority(),
                 "active_trend_pool": ["ETHUSDT"],
                 "selected_candidates": {"ETHUSDT": {"weight": 1.0, "relative_score": 1.5}},
                 "combo_diagnostics": {"regime_tier": "hard", "effective_btc_weight": 0.25},
@@ -215,6 +364,7 @@ class ExecutionServiceTests(unittest.TestCase):
                 "sell_reasons": {"ETHUSDT": "rotated_out"},
             },
             {
+                "decision": _decision_with_authority(),
                 "active_trend_pool": ["ETHUSDT"],
                 "selected_candidates": {"ETHUSDT": {"weight": 1.0, "relative_score": 1.5}},
                 "eligible_buy_symbols": ["ETHUSDT"],
@@ -293,6 +443,7 @@ class ExecutionServiceTests(unittest.TestCase):
         btc_snapshot = {"regime_on": True, "btc_roc20": 0.10, "btc_roc60": 0.08, "btc_roc120": 0.06}
         plans = [
             {
+                "decision": _decision_with_authority(),
                 "active_trend_pool": ["ETHUSDT"],
                 "selected_candidates": {},
                 "eligible_buy_symbols": [],
@@ -300,6 +451,7 @@ class ExecutionServiceTests(unittest.TestCase):
                 "sell_reasons": {},
             },
             {
+                "decision": _decision_with_authority(),
                 "active_trend_pool": ["ETHUSDT"],
                 "selected_candidates": {},
                 "eligible_buy_symbols": [],
@@ -368,6 +520,7 @@ class ExecutionServiceTests(unittest.TestCase):
             50.0,
             "20260329",
             log_buffer,
+            decision=_decision_with_authority(),
             append_log_fn=lambda buffer, message: buffer.append(message),
             translate_fn=lambda key, **_kwargs: key,
             format_qty_fn=lambda _client, _symbol, qty: round(qty, 6),
@@ -413,6 +566,7 @@ class ExecutionServiceTests(unittest.TestCase):
             50.0,
             "20260329",
             log_buffer,
+            decision=_decision_with_authority(),
             append_log_fn=lambda buffer, message: buffer.append(message),
             translate_fn=lambda key, **_kwargs: key,
             format_qty_fn=lambda _client, _symbol, qty: round(qty, 6),
@@ -453,6 +607,7 @@ class ExecutionServiceTests(unittest.TestCase):
             50.0,
             "20260329",
             [],
+            decision=_decision_with_authority(),
             append_log_fn=lambda *_args: None,
             translate_fn=lambda key, **_kwargs: key,
             format_qty_fn=lambda *_args: 0.0,

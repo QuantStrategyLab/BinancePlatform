@@ -127,6 +127,7 @@ def execute_strategy_cycle(
             trend_daily_pnl,
             circuit_breaker_pct,
             log_buffer,
+            decision=allocation.get("execution_decision"),
         ):
             return report
 
@@ -185,6 +186,7 @@ def execute_strategy_cycle(
             btc_base_order_usdt,
             today_id_str,
             log_buffer,
+            decision=post_trade_allocation.get("execution_decision"),
         )
 
         manage_usdt_earn_buffer_runtime(

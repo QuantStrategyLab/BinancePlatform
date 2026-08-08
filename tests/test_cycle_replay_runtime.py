@@ -103,7 +103,9 @@ class CycleReplayRuntimeTests(unittest.TestCase):
         self.assertEqual(result["state_store"].write_calls, [])
         self.assertEqual(report["side_effect_summary"]["executed_call_count"], 0)
         self.assertGreater(report["side_effect_summary"]["suppressed_call_count"], 0)
-        self.assertGreaterEqual(len(report["buy_sell_intents"]), 2)
+        self.assertEqual(report["buy_sell_intents"], [])
+        self.assertEqual(report["btc_dca_intents"], [])
+        self.assertEqual(report["gating_summary"]["execution_authority_not_approved"], 2)
         self.assertGreaterEqual(len(report["redemption_subscription_intents"]), 1)
 
     def test_fixed_input_produces_deterministic_execution_report(self):
@@ -115,15 +117,11 @@ class CycleReplayRuntimeTests(unittest.TestCase):
             first["report"]["selected_symbols"]["active_trend_pool"],
             ["ETHUSDT", "SOLUSDT", "XRPUSDT", "LTCUSDT", "BCHUSDT"],
         )
-        trend_buy_symbols = [
-            intent["symbol"]
-            for intent in first["report"]["buy_sell_intents"]
-            if intent["category"] == "trend" and intent["action"] == "buy"
-        ]
-        self.assertEqual(trend_buy_symbols, ["ETHUSDT", "SOLUSDT"])
-        self.assertEqual(first["report"]["btc_dca_intents"][0]["action"], "buy")
+        self.assertEqual(first["report"]["buy_sell_intents"], [])
+        self.assertEqual(first["report"]["btc_dca_intents"], [])
+        self.assertEqual(first["report"]["gating_summary"]["execution_authority_not_approved"], 2)
         self.assertEqual(first["report"]["redemption_subscription_intents"][0]["action"], "subscribe")
-        self.assertAlmostEqual(first["report"]["redemption_subscription_intents"][0]["amount"], 71.5)
+        self.assertAlmostEqual(first["report"]["redemption_subscription_intents"][0]["amount"], 950.0)
 
     def test_state_load_failure_aborts_execution_safely(self):
         runtime, client, state_store, _ = run_cycle_replay.build_replay_runtime(

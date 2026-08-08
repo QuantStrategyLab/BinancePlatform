@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decision_mapper import has_execution_authority
 from runtime_support import record_gating_event
 
 
@@ -19,6 +20,17 @@ def _is_missing(value) -> bool:
         return value != value
     except Exception:
         return False
+
+
+def _block_unapproved_execution(report, decision, *, category) -> bool:
+    if has_execution_authority(decision):
+        return False
+    record_gating_event(
+        report,
+        gate="execution_authority_not_approved",
+        category=category,
+    )
+    return True
 
 
 def build_trend_candidate_filter_diagnostics(
@@ -106,6 +118,7 @@ def run_daily_circuit_breaker(
     circuit_breaker_pct,
     log_buffer,
     *,
+    decision=None,
     format_qty_fn,
     runtime_notify_fn,
     ensure_asset_available_fn,
@@ -116,6 +129,8 @@ def run_daily_circuit_breaker(
     translate_fn,
 ):
     if trend_daily_pnl > circuit_breaker_pct:
+        return False
+    if _block_unapproved_execution(report, decision, category="daily_circuit_breaker"):
         return False
 
     for symbol, config in runtime_trend_universe.items():
@@ -448,6 +463,23 @@ def execute_trend_rotation(
         report.setdefault("diagnostics", {})["combo"] = combo_diagnostics
     report["selected_symbols"]["active_trend_pool"] = list(active_trend_pool)
     report["selected_symbols"]["selected_candidates"] = list(selected_candidates.keys())
+    if _block_unapproved_execution(report, strategy_plan.get("decision"), category="trend_rotation"):
+        report["selected_symbols"]["selected_candidates"] = []
+        append_rotation_summary(
+            log_buffer,
+            official_trend_pool_symbols,
+            active_trend_pool,
+            {},
+        )
+        append_trend_symbol_status(
+            log_buffer,
+            runtime_trend_universe,
+            prices,
+            trend_indicators,
+            state,
+            btc_snapshot,
+        )
+        return u_total
     if not selected_candidates:
         record_gating_event(
             report,
@@ -498,6 +530,12 @@ def execute_trend_rotation(
     selected_candidates = dict(post_sell_plan["selected_candidates"])
     eligible_buy_symbols = list(post_sell_plan["eligible_buy_symbols"])
     planned_trend_buys = dict(post_sell_plan["planned_trend_buys"])
+    if _block_unapproved_execution(
+        report,
+        post_sell_plan.get("decision"),
+        category="trend_rotation",
+    ):
+        return u_total
     if selected_candidates and not eligible_buy_symbols:
         record_gating_event(
             report,
@@ -567,6 +605,7 @@ def execute_btc_dca_cycle(
     today_id_str,
     log_buffer,
     *,
+    decision=None,
     append_log_fn,
     translate_fn,
     format_qty_fn,
@@ -576,6 +615,8 @@ def execute_btc_dca_cycle(
     runtime_notify_fn,
     runtime_set_trade_state_fn,
 ):
+    if _block_unapproved_execution(report, decision, category="btc_dca"):
+        return u_total
     if dca_usdt_pool <= 10 and dca_val <= 10:
         record_gating_event(
             report,

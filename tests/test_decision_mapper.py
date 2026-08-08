@@ -14,6 +14,31 @@ from decision_mapper import map_strategy_decision_to_allocation, map_strategy_de
 from quant_platform_kit.strategy_contracts import BudgetIntent, PositionTarget, StrategyDecision
 
 
+def _risk_assessment(scope, *, outcome="APPROVE", candidate_sha="a" * 64, decision_sha="b" * 64):
+    return {
+        "contract_version": "qsl.risk_gate_assessment.v1",
+        "scope": scope,
+        "evaluated_at": "2026-08-07T00:00:00Z",
+        "policy_id": "qsl.risk_gate",
+        "policy_version": "v1",
+        "mandate_authority_receipt_sha256": "c" * 64,
+        "candidate_identity_sha256": candidate_sha,
+        "decision_digest_sha256": decision_sha,
+        "portfolio_snapshot_digest_sha256": "d" * 64,
+        "outcome": outcome,
+        "reason_codes": () if outcome == "APPROVE" else ("rejected",),
+        "assessment_sha256": "e" * 64,
+    }
+
+
+def _approved_authority_diagnostics():
+    return {
+        "risk_gate": "APPROVE",
+        "member_risk_assessment": _risk_assessment("MEMBER"),
+        "account_risk_assessment": _risk_assessment("ACCOUNT"),
+    }
+
+
 class DecisionMapperTests(unittest.TestCase):
     def test_map_strategy_decision_to_allocation_uses_budgets_and_diagnostics(self):
         decision = StrategyDecision(
@@ -26,6 +51,7 @@ class DecisionMapperTests(unittest.TestCase):
                 BudgetIntent(name="trend_rotation_pool", amount=400.0),
             ),
             diagnostics={
+                **_approved_authority_diagnostics(),
                 "btc_target_ratio": 0.3,
                 "trend_target_ratio": 0.7,
                 "btc_base_order_usdt": 50.0,
@@ -51,6 +77,7 @@ class DecisionMapperTests(unittest.TestCase):
     def test_map_strategy_decision_to_rotation_plan_uses_unified_diagnostics(self):
         decision = StrategyDecision(
             diagnostics={
+                **_approved_authority_diagnostics(),
                 "trend_pool": ("ETHUSDT", "SOLUSDT"),
                 "metadata": {
                     "combo": {
@@ -100,6 +127,79 @@ class DecisionMapperTests(unittest.TestCase):
                 "gross_exposure": 0.25,
             },
         )
+
+    def test_execution_intents_fail_closed_without_matching_scoped_approvals(self):
+        base_diagnostics = {
+            **_approved_authority_diagnostics(),
+            "btc_target_ratio": 0.3,
+            "trend_target_ratio": 0.7,
+            "btc_base_order_usdt": 50.0,
+            "trend_pool": ("ETHUSDT", "SOLUSDT"),
+            "rotation_candidates": {
+                "ETHUSDT": {"weight": 0.6, "relative_score": 1.2, "abs_momentum": 0.3},
+            },
+            "eligible_buy_symbols": ("ETHUSDT",),
+            "planned_trend_buys": {"ETHUSDT": 320.0},
+            "sell_reasons": {"SOLUSDT": "stale_rotated_out"},
+        }
+        cases = {
+            "risk_engine_reject_with_stale_diagnostics": {
+                **base_diagnostics,
+                "risk_gate": "REJECT",
+            },
+            "risk_engine_missing": {
+                key: value for key, value in base_diagnostics.items() if key != "risk_gate"
+            },
+            "member_reject": {
+                **base_diagnostics,
+                "member_risk_assessment": _risk_assessment("MEMBER", outcome="REJECT"),
+            },
+            "member_missing": {
+                key: value for key, value in base_diagnostics.items() if key != "member_risk_assessment"
+            },
+            "account_reject": {
+                **base_diagnostics,
+                "account_risk_assessment": _risk_assessment("ACCOUNT", outcome="REJECT"),
+            },
+            "account_missing": {
+                key: value for key, value in base_diagnostics.items() if key != "account_risk_assessment"
+            },
+            "candidate_identity_mismatch": {
+                **base_diagnostics,
+                "account_risk_assessment": _risk_assessment("ACCOUNT", candidate_sha="f" * 64),
+            },
+            "decision_identity_mismatch": {
+                **base_diagnostics,
+                "account_risk_assessment": _risk_assessment("ACCOUNT", decision_sha="f" * 64),
+            },
+        }
+
+        for name, diagnostics in cases.items():
+            with self.subTest(name=name):
+                decision = StrategyDecision(
+                    positions=(PositionTarget(symbol="ETHUSDT", target_weight=0.4),),
+                    budgets=(BudgetIntent(name="trend_rotation_pool", amount=400.0),),
+                    diagnostics=diagnostics,
+                )
+                allocation = map_strategy_decision_to_allocation(
+                    decision,
+                    account_metrics={
+                        "total_equity": 10000.0,
+                        "trend_value": 3500.0,
+                        "dca_value": 1800.0,
+                    },
+                )
+                plan = map_strategy_decision_to_rotation_plan(decision)
+
+                self.assertEqual(allocation["btc_target_ratio"], 0.0)
+                self.assertEqual(allocation["trend_target_ratio"], 0.0)
+                self.assertEqual(allocation["trend_usdt_pool"], 0.0)
+                self.assertEqual(allocation["dca_usdt_pool"], 0.0)
+                self.assertEqual(allocation["btc_base_order_usdt"], 0.0)
+                self.assertEqual(plan["selected_candidates"], {})
+                self.assertEqual(plan["eligible_buy_symbols"], [])
+                self.assertEqual(plan["planned_trend_buys"], {})
+                self.assertEqual(plan["sell_reasons"], {})
 
 
 if __name__ == "__main__":
