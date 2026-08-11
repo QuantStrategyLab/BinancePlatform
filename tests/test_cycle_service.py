@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -199,7 +200,8 @@ class CycleServiceTests(unittest.TestCase):
             load_cycle_state=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not load state")),
             append_trend_pool_source_logs=lambda *_args, **_kwargs: None,
             capture_market_snapshot=lambda *_args, **_kwargs: None,
-            compute_portfolio_allocation=lambda *_args, **_kwargs: None,
+            execute_bnb_fuel_top_up=lambda *_args, **_kwargs: None,
+            resolve_strategy_plan=lambda *_args, **_kwargs: None,
             build_balance_snapshot=lambda *_args, **_kwargs: {},
             maybe_reset_daily_state=lambda *_args, **_kwargs: None,
             maybe_rebase_daily_state_for_balance_change=lambda *_args, **_kwargs: False,
@@ -238,7 +240,8 @@ class CycleServiceTests(unittest.TestCase):
             load_cycle_state=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
             append_trend_pool_source_logs=lambda *_args, **_kwargs: None,
             capture_market_snapshot=lambda *_args, **_kwargs: None,
-            compute_portfolio_allocation=lambda *_args, **_kwargs: None,
+            execute_bnb_fuel_top_up=lambda *_args, **_kwargs: None,
+            resolve_strategy_plan=lambda *_args, **_kwargs: None,
             build_balance_snapshot=lambda *_args, **_kwargs: {},
             maybe_reset_daily_state=lambda *_args, **_kwargs: None,
             maybe_rebase_daily_state_for_balance_change=lambda *_args, **_kwargs: False,
@@ -257,6 +260,83 @@ class CycleServiceTests(unittest.TestCase):
         )
         self.assertEqual(report["status"], "error")
         self.assertEqual(observed["errors"], [("execute_cycle", "boom")])
+
+    def test_execute_strategy_cycle_stops_all_execution_callbacks_without_authority(self):
+        runtime = SimpleNamespace(
+            dry_run=True,
+            print_traceback=False,
+            now_utc=datetime(2026, 3, 29, tzinfo=timezone.utc),
+            tg_token="",
+            tg_chat_id="",
+            strategy_profile="crypto_live_pool_rotation",
+        )
+        observed = {"breaker": 0, "trend": 0, "dca": 0, "earn": 0}
+
+        report = execute_strategy_cycle(
+            runtime,
+            build_execution_report=lambda _runtime: {"status": "ok", "log_lines": []},
+            ensure_runtime_client=lambda *_args, **_kwargs: True,
+            load_cycle_execution_settings=lambda: SimpleNamespace(
+                btc_status_report_interval_hours=24,
+                allow_new_trend_entries_on_degraded=False,
+            ),
+            load_cycle_state=lambda *_args, **_kwargs: (
+                {},
+                {"degraded": False},
+                {"ETHUSDT": {"base_asset": "ETH"}},
+                True,
+            ),
+            append_trend_pool_source_logs=lambda *_args, **_kwargs: None,
+            capture_market_snapshot=lambda *_args, **_kwargs: {
+                "u_total": 500.0,
+                "fuel_val": 20.0,
+                "dynamic_usdt_buffer": 50.0,
+                "prices": {"BTCUSDT": 50_000.0, "ETHUSDT": 100.0},
+                "balances": {"BTCUSDT": 0.01, "ETHUSDT": 1.0},
+                "btc_snapshot": {"ahr999": 0.7, "zscore": 0.0, "sell_trigger": 3.5},
+                "trend_indicators": {"ETHUSDT": {}},
+            },
+            execute_bnb_fuel_top_up=lambda *_args, **_kwargs: (500.0, 20.0),
+            resolve_strategy_plan=lambda *_args, **_kwargs: {
+                "allocation": {
+                    "total_equity": 1_120.0,
+                    "trend_val": 100.0,
+                    "dca_val": 500.0,
+                    "btc_target_ratio": 0.25,
+                    "trend_target_ratio": 0.25,
+                    "trend_usdt_pool": 100.0,
+                    "dca_usdt_pool": 100.0,
+                    "btc_base_order_usdt": 50.0,
+                },
+                "execution_authority": None,
+            },
+            build_balance_snapshot=lambda *_args, **_kwargs: {},
+            maybe_reset_daily_state=lambda *_args, **_kwargs: None,
+            maybe_rebase_daily_state_for_balance_change=lambda *_args, **_kwargs: False,
+            compute_daily_pnls=lambda *_args, **_kwargs: (0.0, 0.0),
+            append_portfolio_report=lambda *_args, **_kwargs: None,
+            run_daily_circuit_breaker=lambda *_args, **_kwargs: observed.__setitem__(
+                "breaker", observed["breaker"] + 1
+            ) or False,
+            execute_trend_rotation=lambda *_args, **_kwargs: observed.__setitem__(
+                "trend", observed["trend"] + 1
+            ) or 500.0,
+            execute_btc_dca_cycle=lambda *_args, **_kwargs: observed.__setitem__(
+                "dca", observed["dca"] + 1
+            ) or 500.0,
+            manage_usdt_earn_buffer_runtime=lambda *_args, **_kwargs: observed.__setitem__(
+                "earn", observed["earn"] + 1
+            ),
+            maybe_send_periodic_btc_status_report=lambda *_args, **_kwargs: None,
+            runtime_set_trade_state=lambda *_args, **_kwargs: None,
+            append_report_error=lambda *_args, **_kwargs: None,
+            runtime_notify=lambda *_args, **_kwargs: None,
+            translate_fn=lambda key, **_kwargs: key,
+            traceback_module=SimpleNamespace(print_exc=lambda: None),
+        )
+
+        self.assertEqual(report["status"], "aborted")
+        self.assertEqual(observed, {"breaker": 0, "trend": 0, "dca": 0, "earn": 0})
 
 
 if __name__ == "__main__":

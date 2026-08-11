@@ -35,6 +35,7 @@ from live_services import (
 )
 from market_snapshot_support import (
     capture_market_snapshot as ms_capture_market_snapshot,
+    execute_bnb_fuel_top_up as ms_execute_bnb_fuel_top_up,
 )
 from runtime_support import (
     ExecutionRuntime as _ExecutionRuntime,
@@ -788,6 +789,20 @@ def _capture_market_snapshot(runtime, report, runtime_trend_universe, log_buffer
     )
 
 
+def _execute_bnb_fuel_top_up(runtime, report, market_snapshot, log_buffer, *, execution_authority):
+    return ms_execute_bnb_fuel_top_up(
+        runtime,
+        report,
+        market_snapshot,
+        log_buffer,
+        execution_authority=execution_authority,
+        ensure_asset_available_fn=ensure_asset_available_runtime,
+        runtime_call_client_fn=runtime_call_client,
+        runtime_notify_fn=runtime_notify,
+        append_log_fn=append_log,
+    )
+
+
 def _resolve_strategy_evaluation(
     runtime,
     state,
@@ -823,6 +838,8 @@ def _resolve_strategy_evaluation(
         allow_rotation_refresh=allow_pool_refresh,
         get_symbol_trade_state_fn=get_symbol_trade_state,
         set_symbol_trade_state_fn=set_symbol_trade_state,
+        mandate_provenance=getattr(runtime, "mandate_provenance", None),
+        candidate_identity=getattr(runtime, "candidate_risk_identity", None),
     )
 
 
@@ -853,12 +870,17 @@ def _resolve_strategy_plan(
         allow_new_trend_entries=allow_new_trend_entries,
         allow_pool_refresh=allow_pool_refresh,
     )
-    strategy_plan = map_decision_to_rotation_plan(evaluation.decision)
+    strategy_plan = map_decision_to_rotation_plan(
+        evaluation.decision,
+        execution_authority=evaluation.execution_authority,
+    )
     strategy_plan["allocation"] = map_decision_to_allocation(
         evaluation.decision,
         account_metrics=evaluation.account_metrics,
+        execution_authority=evaluation.execution_authority,
     )
     strategy_plan["decision"] = evaluation.decision
+    strategy_plan["execution_authority"] = evaluation.execution_authority
     return strategy_plan
 
 
@@ -877,6 +899,7 @@ def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, pri
     return map_decision_to_allocation(
         evaluation.decision,
         account_metrics=evaluation.account_metrics,
+        execution_authority=evaluation.execution_authority,
     )
 
 
@@ -949,6 +972,8 @@ def _run_daily_circuit_breaker(
     trend_daily_pnl,
     circuit_breaker_pct,
     log_buffer,
+    *,
+    execution_authority,
 ):
     return app_run_daily_circuit_breaker(
         runtime,
@@ -961,6 +986,7 @@ def _run_daily_circuit_breaker(
         trend_daily_pnl,
         circuit_breaker_pct,
         log_buffer,
+        execution_authority=execution_authority,
         format_qty_fn=format_qty,
         runtime_notify_fn=runtime_notify,
         ensure_asset_available_fn=ensure_asset_available_runtime,
@@ -994,6 +1020,8 @@ def _execute_trend_sells(
     u_total,
     log_buffer,
     today_id_str,
+    *,
+    execution_authority,
 ):
     return app_execute_trend_sells(
         runtime,
@@ -1006,6 +1034,7 @@ def _execute_trend_sells(
         u_total,
         log_buffer,
         today_id_str,
+        execution_authority=execution_authority,
         should_skip_duplicate_trend_action_fn=should_skip_duplicate_trend_action,
         append_log_fn=append_log,
         translate_fn=t,
@@ -1032,6 +1061,8 @@ def _execute_trend_buys(
     u_total,
     log_buffer,
     today_id_str,
+    *,
+    execution_authority,
 ):
     return app_execute_trend_buys(
         runtime,
@@ -1045,6 +1076,7 @@ def _execute_trend_buys(
         u_total,
         log_buffer,
         today_id_str,
+        execution_authority=execution_authority,
         should_skip_duplicate_trend_action_fn=should_skip_duplicate_trend_action,
         append_log_fn=append_log,
         translate_fn=t,
@@ -1088,6 +1120,9 @@ def _execute_trend_rotation(
     today_id_str,
     allow_new_trend_entries,
     allow_pool_refresh,
+    *,
+    strategy_plan,
+    execution_authority,
 ):
     return app_execute_trend_rotation(
         runtime,
@@ -1104,7 +1139,8 @@ def _execute_trend_rotation(
         today_id_str,
         allow_new_trend_entries,
         allow_pool_refresh,
-        resolve_strategy_plan=lambda *args, **kwargs: _resolve_strategy_plan(runtime, *args, **kwargs),
+        execution_authority=execution_authority,
+        resolve_strategy_plan=lambda *_args, **_kwargs: strategy_plan,
         append_rotation_summary=_append_rotation_summary,
         execute_trend_sells=_execute_trend_sells,
         execute_trend_buys=_execute_trend_buys,
@@ -1128,6 +1164,8 @@ def _execute_btc_dca_cycle(
     btc_base_order_usdt,
     today_id_str,
     log_buffer,
+    *,
+    execution_authority,
 ):
     return app_execute_btc_dca_cycle(
         runtime,
@@ -1144,6 +1182,7 @@ def _execute_btc_dca_cycle(
         btc_base_order_usdt,
         today_id_str,
         log_buffer,
+        execution_authority=execution_authority,
         append_log_fn=append_log,
         translate_fn=t,
         format_qty_fn=format_qty,
@@ -1168,7 +1207,8 @@ def execute_cycle(runtime):
             load_cycle_state=_load_cycle_state,
             append_trend_pool_source_logs=_append_trend_pool_source_logs,
             capture_market_snapshot=_capture_market_snapshot,
-            compute_portfolio_allocation=_compute_portfolio_allocation,
+            execute_bnb_fuel_top_up=_execute_bnb_fuel_top_up,
+            resolve_strategy_plan=_resolve_strategy_plan,
             build_balance_snapshot=_build_balance_snapshot,
             maybe_reset_daily_state=_maybe_reset_daily_state,
             maybe_rebase_daily_state_for_balance_change=_maybe_rebase_daily_state_for_balance_change,
