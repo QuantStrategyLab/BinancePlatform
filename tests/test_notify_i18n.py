@@ -197,7 +197,7 @@ class NotifyI18nTests(unittest.TestCase):
         self.assertIn("趋势池来源", log_lines[0])
         self.assertTrue(any("暂停新的趋势买入" in line for line in log_lines))
 
-    def test_capture_market_snapshot_uses_chinese_bnb_log_when_notify_lang_is_zh(self):
+    def test_capture_market_snapshot_defers_bnb_top_up_until_authorized(self):
         runtime = SimpleNamespace(
             client=FakeClient(
                 {
@@ -212,7 +212,7 @@ class NotifyI18nTests(unittest.TestCase):
         side_effect_calls = []
 
         with patch.dict(os.environ, {"NOTIFY_LANG": "zh"}, clear=False):
-            capture_market_snapshot(
+            snapshot = capture_market_snapshot(
                 runtime,
                 report,
                 {"ETHUSDT": {"base_asset": "ETH"}},
@@ -233,8 +233,10 @@ class NotifyI18nTests(unittest.TestCase):
                 resolve_trend_indicators_fn=lambda runtime: {"ETHUSDT": {"score": 1.0}},
             )
 
-        self.assertEqual(side_effect_calls[0]["method_name"], "order_market_buy")
-        self.assertIn("BNB 补仓已完成", "".join(log_buffer))
+        self.assertTrue(snapshot["bnb_top_up_required"])
+        self.assertEqual(snapshot["bnb_top_up_amount"], 30.0)
+        self.assertEqual(side_effect_calls, [])
+        self.assertNotIn("BNB 补仓已完成", "".join(log_buffer))
 
 
 if __name__ == "__main__":
