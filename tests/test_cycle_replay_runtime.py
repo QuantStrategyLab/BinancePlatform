@@ -121,9 +121,10 @@ class CycleReplayRuntimeTests(unittest.TestCase):
             if intent["category"] == "trend" and intent["action"] == "buy"
         ]
         self.assertEqual(trend_buy_symbols, ["ETHUSDT", "SOLUSDT"])
-        self.assertEqual(first["report"]["btc_dca_intents"][0]["action"], "buy")
+        self.assertEqual(first["report"]["btc_dca_intents"], [])
+        self.assertEqual(first["report"]["gating_summary"]["btc_dca_pool_too_small"], 1)
         self.assertEqual(first["report"]["redemption_subscription_intents"][0]["action"], "subscribe")
-        self.assertAlmostEqual(first["report"]["redemption_subscription_intents"][0]["amount"], 71.5)
+        self.assertAlmostEqual(first["report"]["redemption_subscription_intents"][0]["amount"], 95.5)
 
     def test_state_load_failure_aborts_execution_safely(self):
         runtime, client, state_store, _ = run_cycle_replay.build_replay_runtime(
