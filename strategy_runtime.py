@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from quant_platform_kit import PortfolioSnapshot, Position, build_strategy_evaluation_inputs
-from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 from quant_platform_kit.strategy_contracts import (
     StrategyContext,
     StrategyDecision,
@@ -18,7 +17,6 @@ from quant_platform_kit.strategy_contracts import (
 )
 
 from crypto_strategies import get_platform_runtime_adapter
-from decision_mapper import ExecutionAuthority, build_execution_authority
 from strategy_loader import load_strategy_entrypoint_for_profile
 from strategy_registry import BINANCE_PLATFORM, resolve_strategy_metadata
 from trend_pool_support import get_default_live_pool_candidates as tp_get_default_live_pool_candidates
@@ -103,8 +101,6 @@ class StrategyEvaluationResult:
     decision: StrategyDecision
     account_metrics: Mapping[str, Any] = field(default_factory=dict)
     metadata: Mapping[str, Any] = field(default_factory=dict)
-    portfolio_snapshot: PortfolioSnapshot | None = None
-    execution_authority: ExecutionAuthority | None = None
 
 
 @dataclass(frozen=True)
@@ -188,15 +184,9 @@ class LoadedStrategyRuntime:
                     market_value=market_value,
                 )
             )
-        total_equity = float(account_metrics["total_equity"])
-        observed_effective_exposure = (
-            sum(float(position.market_value or 0.0) for position in positions) / total_equity
-            if total_equity > 0.0
-            else float("nan")
-        )
         return PortfolioSnapshot(
             as_of=as_of,
-            total_equity=total_equity,
+            total_equity=float(account_metrics["total_equity"]),
             buying_power=float(account_metrics["cash_usdt"]),
             cash_balance=float(account_metrics["cash_usdt"]),
             positions=tuple(positions),
@@ -205,7 +195,6 @@ class LoadedStrategyRuntime:
                 "cash_available_for_trading": float(account_metrics["cash_usdt"]),
                 "trend_value": float(account_metrics["trend_value"]),
                 "dca_value": float(account_metrics["dca_value"]),
-                "observed_effective_exposure": observed_effective_exposure,
             },
         )
 
@@ -225,8 +214,6 @@ class LoadedStrategyRuntime:
         allow_rotation_refresh: bool = True,
         get_symbol_trade_state_fn: Callable[..., Any] | None = None,
         set_symbol_trade_state_fn: Callable[..., Any] | None = None,
-        mandate_provenance: Mapping[str, Any] | None = None,
-        candidate_identity: CandidateRiskIdentity | None = None,
     ) -> StrategyEvaluationResult:
         runtime_config = dict(self.runtime_overrides)
         runtime_config.update(
@@ -276,11 +263,6 @@ class LoadedStrategyRuntime:
             runtime_config=runtime_config,
             capabilities={"platform": BINANCE_PLATFORM},
         )
-        artifacts: dict[str, Any] = {"trend_pool_contract": self.artifact_contract}
-        if isinstance(mandate_provenance, Mapping):
-            artifacts["mandate_provenance"] = mandate_provenance
-        if type(candidate_identity) is CandidateRiskIdentity:
-            artifacts["candidate_risk_identity"] = candidate_identity
         ctx = StrategyContext(
             as_of=ctx.as_of,
             market_data=ctx.market_data,
@@ -288,21 +270,12 @@ class LoadedStrategyRuntime:
             state=ctx.state,
             runtime_config=ctx.runtime_config,
             capabilities=ctx.capabilities,
-            artifacts=artifacts,
+            artifacts={"trend_pool_contract": self.artifact_contract},
         )
         decision = self.entrypoint.evaluate(ctx)
-        execution_authority = build_execution_authority(
-            decision,
-            portfolio_snapshot=portfolio_snapshot,
-            mandate_provenance=mandate_provenance,
-            candidate_identity=candidate_identity,
-            market_data=ctx.market_data,
-        )
         return StrategyEvaluationResult(
             decision=decision,
             account_metrics=dict(account_metrics),
-            portfolio_snapshot=portfolio_snapshot,
-            execution_authority=execution_authority,
             metadata={
                 "strategy_profile": self.profile,
                 "strategy_display_name": resolve_strategy_metadata(

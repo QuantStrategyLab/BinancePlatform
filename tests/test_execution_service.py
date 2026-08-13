@@ -1,6 +1,5 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from application.execution_service import (
     execute_btc_dca_cycle,
@@ -10,18 +9,8 @@ from application.execution_service import (
     run_daily_circuit_breaker,
 )
 
-APPROVED_AUTHORITY = object()
-
 
 class ExecutionServiceTests(unittest.TestCase):
-    def setUp(self):
-        patcher = patch(
-            "application.execution_service.is_execution_authority_valid",
-            side_effect=lambda authority: authority is APPROVED_AUTHORITY,
-        )
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
     def test_run_daily_circuit_breaker_liquidates_and_latches_state(self):
         runtime = SimpleNamespace(client=object())
         report = {"buy_sell_intents": []}
@@ -41,7 +30,6 @@ class ExecutionServiceTests(unittest.TestCase):
             -0.10,
             -0.05,
             [],
-            execution_authority=APPROVED_AUTHORITY,
             format_qty_fn=lambda _client, _symbol, qty: round(qty - 0.5, 4),
             runtime_notify_fn=lambda _runtime, _report, text: observed["notifications"].append(text),
             ensure_asset_available_fn=lambda _runtime, _report, asset, amount, _log_buffer: observed["asset_checks"].append((asset, amount)) or True,
@@ -93,7 +81,6 @@ class ExecutionServiceTests(unittest.TestCase):
             50.0,
             [],
             "20260329",
-            execution_authority=APPROVED_AUTHORITY,
             should_skip_duplicate_trend_action_fn=lambda *_args: False,
             append_log_fn=lambda _buffer, message: observed["logs"].append(message),
             translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
@@ -147,7 +134,6 @@ class ExecutionServiceTests(unittest.TestCase):
             500.0,
             [],
             "20260329",
-            execution_authority=APPROVED_AUTHORITY,
             should_skip_duplicate_trend_action_fn=lambda *_args: False,
             append_log_fn=lambda _buffer, message: observed["logs"].append(message),
             translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
@@ -189,7 +175,6 @@ class ExecutionServiceTests(unittest.TestCase):
             500.0,
             [],
             "20260329",
-            execution_authority=APPROVED_AUTHORITY,
             should_skip_duplicate_trend_action_fn=lambda *_args: False,
             append_log_fn=lambda *_args: None,
             translate_fn=lambda key, **_kwargs: key,
@@ -242,11 +227,11 @@ class ExecutionServiceTests(unittest.TestCase):
             observed["plan_calls"].append((args, kwargs))
             return plans[len(observed["plan_calls"]) - 1]
 
-        def fake_execute_trend_sells(*_args, **_kwargs):
+        def fake_execute_trend_sells(*_args):
             observed["sell_called"] = True
             return 1150.0
 
-        def fake_execute_trend_buys(*_args, **_kwargs):
+        def fake_execute_trend_buys(*_args):
             observed["buy_plan"] = dict(_args[5])
             return 980.0
 
@@ -265,7 +250,6 @@ class ExecutionServiceTests(unittest.TestCase):
             "20260329",
             True,
             False,
-            execution_authority=APPROVED_AUTHORITY,
             resolve_strategy_plan=fake_resolve_strategy_plan,
             append_rotation_summary=lambda *_args: observed.__setitem__("summary_called", True),
             execute_trend_sells=fake_execute_trend_sells,
@@ -345,11 +329,10 @@ class ExecutionServiceTests(unittest.TestCase):
             "20260329",
             True,
             True,
-            execution_authority=APPROVED_AUTHORITY,
             resolve_strategy_plan=fake_resolve_strategy_plan,
             append_rotation_summary=lambda *_args: None,
-            execute_trend_sells=lambda *_args, **_kwargs: 1000.0,
-            execute_trend_buys=lambda *_args, **_kwargs: 1000.0,
+            execute_trend_sells=lambda *_args: 1000.0,
+            execute_trend_buys=lambda *_args: 1000.0,
             append_trend_symbol_status=lambda *_args: None,
             official_trend_pool_symbols=["ETHUSDT"],
         )
@@ -385,7 +368,6 @@ class ExecutionServiceTests(unittest.TestCase):
             50.0,
             "20260329",
             log_buffer,
-            execution_authority=APPROVED_AUTHORITY,
             append_log_fn=lambda buffer, message: buffer.append(message),
             translate_fn=lambda key, **_kwargs: key,
             format_qty_fn=lambda _client, _symbol, qty: round(qty, 6),
@@ -431,7 +413,6 @@ class ExecutionServiceTests(unittest.TestCase):
             50.0,
             "20260329",
             log_buffer,
-            execution_authority=APPROVED_AUTHORITY,
             append_log_fn=lambda buffer, message: buffer.append(message),
             translate_fn=lambda key, **_kwargs: key,
             format_qty_fn=lambda _client, _symbol, qty: round(qty, 6),
@@ -472,7 +453,6 @@ class ExecutionServiceTests(unittest.TestCase):
             50.0,
             "20260329",
             [],
-            execution_authority=APPROVED_AUTHORITY,
             append_log_fn=lambda *_args: None,
             translate_fn=lambda key, **_kwargs: key,
             format_qty_fn=lambda *_args: 0.0,
@@ -486,84 +466,6 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertEqual(result, 100.0)
         self.assertEqual(report["btc_dca_intents"], [])
         self.assertEqual(report["gating_summary"]["btc_dca_pool_too_small"], 1)
-
-    def test_order_paths_fail_closed_without_typed_authority(self):
-        runtime = SimpleNamespace(client=object())
-        client_calls = []
-
-        def common_call(_runtime, _report, method_name, payload, effect_type):
-            client_calls.append((method_name, payload, effect_type))
-
-        run_daily_circuit_breaker(
-            runtime,
-            {"buy_sell_intents": []},
-            {},
-            {"ETHUSDT": {"base_asset": "ETH"}},
-            {"ETHUSDT": 2.0},
-            50.0,
-            {"ETHUSDT": 100.0},
-            -0.10,
-            -0.05,
-            [],
-            format_qty_fn=lambda *_args: 1.0,
-            runtime_notify_fn=lambda *_args, **_kwargs: None,
-            ensure_asset_available_fn=lambda *_args, **_kwargs: True,
-            runtime_call_client_fn=common_call,
-            set_symbol_trade_state_fn=lambda *_args, **_kwargs: None,
-            runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
-            build_balance_snapshot_fn=lambda *_args, **_kwargs: {},
-            translate_fn=lambda key, **_kwargs: key,
-        )
-        execute_trend_buys(
-            runtime,
-            {"buy_sell_intents": []},
-            {},
-            {"ETHUSDT": {"weight": 0.2, "relative_score": 1.0}},
-            ["ETHUSDT"],
-            {"ETHUSDT": 100.0},
-            {"ETHUSDT": 100.0},
-            {"ETHUSDT": 0.0},
-            500.0,
-            [],
-            "20260329",
-            should_skip_duplicate_trend_action_fn=lambda *_args: False,
-            append_log_fn=lambda *_args: None,
-            translate_fn=lambda key, **_kwargs: key,
-            format_qty_fn=lambda *_args: 1.0,
-            ensure_asset_available_fn=lambda *_args, **_kwargs: True,
-            runtime_call_client_fn=common_call,
-            next_order_id_fn=lambda *_args: "trend-buy",
-            set_symbol_trade_state_fn=lambda *_args, **_kwargs: None,
-            record_trend_action_fn=lambda *_args, **_kwargs: None,
-            runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
-            runtime_notify_fn=lambda *_args, **_kwargs: None,
-        )
-        execute_btc_dca_cycle(
-            runtime,
-            {"btc_dca_intents": [], "gating_summary": {}, "gating_events": []},
-            {},
-            {"BTCUSDT": 0.0},
-            {"BTCUSDT": 50_000.0},
-            500.0,
-            1_000.0,
-            100.0,
-            0.0,
-            {"ahr999": 0.7, "zscore": 0.0, "sell_trigger": 3.5},
-            0.25,
-            50.0,
-            "20260329",
-            [],
-            append_log_fn=lambda *_args: None,
-            translate_fn=lambda key, **_kwargs: key,
-            format_qty_fn=lambda *_args: 0.001,
-            ensure_asset_available_fn=lambda *_args, **_kwargs: True,
-            runtime_call_client_fn=common_call,
-            next_order_id_fn=lambda *_args: "btc-buy",
-            runtime_notify_fn=lambda *_args, **_kwargs: None,
-            runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
-        )
-
-        self.assertEqual(client_calls, [])
 
 
 if __name__ == "__main__":
