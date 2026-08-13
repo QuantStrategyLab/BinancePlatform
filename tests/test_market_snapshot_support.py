@@ -1,8 +1,7 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
 
-from market_snapshot_support import capture_market_snapshot, execute_bnb_fuel_top_up
+from market_snapshot_support import capture_market_snapshot
 
 
 class FakeClient:
@@ -14,7 +13,7 @@ class FakeClient:
 
 
 class MarketSnapshotSupportTests(unittest.TestCase):
-    def test_capture_market_snapshot_never_orders_bnb_before_strategy_authority(self):
+    def test_capture_market_snapshot_handles_bnb_top_up_and_collects_balances(self):
         runtime = SimpleNamespace(
             client=FakeClient(
                 {
@@ -55,15 +54,25 @@ class MarketSnapshotSupportTests(unittest.TestCase):
             resolve_trend_indicators_fn=lambda runtime: {"ETHUSDT": {"score": 1.0}, "SOLUSDT": {"score": 0.5}},
         )
 
-        self.assertEqual(report["buy_sell_intents"], [])
-        self.assertEqual(side_effect_calls, [])
-        self.assertAlmostEqual(snapshot["u_total"], 200.0)
-        self.assertAlmostEqual(snapshot["fuel_val"], 15.0, places=2)
+        self.assertEqual(
+            report["buy_sell_intents"],
+            [
+                {
+                    "category": "fuel",
+                    "action": "buy",
+                    "symbol": "BNBUSDT",
+                    "quote_order_qty": 30.0,
+                }
+            ],
+        )
+        self.assertEqual(side_effect_calls[0]["method_name"], "order_market_buy")
+        self.assertAlmostEqual(snapshot["u_total"], 170.0)
+        self.assertAlmostEqual(snapshot["fuel_val"], 44.85, places=2)
         self.assertEqual(snapshot["prices"]["ETHUSDT"], 2500.0)
         self.assertEqual(snapshot["balances"]["SOLUSDT"], 2.0)
         self.assertEqual(snapshot["balances"]["BTCUSDT"], 0.01)
         self.assertEqual(snapshot["trend_indicators"]["ETHUSDT"]["score"], 1.0)
-        self.assertNotIn("BNB top-up completed", "".join(log_buffer))
+        self.assertIn("BNB top-up completed", "".join(log_buffer))
 
     def test_capture_market_snapshot_raises_when_btc_snapshot_is_missing(self):
         runtime = SimpleNamespace(
@@ -98,51 +107,6 @@ class MarketSnapshotSupportTests(unittest.TestCase):
                 resolve_btc_snapshot_fn=lambda runtime, btc_price, log_buffer: None,
                 resolve_trend_indicators_fn=lambda runtime: {},
             )
-
-    def test_bnb_top_up_requires_validated_authority(self):
-        runtime = SimpleNamespace(client=object())
-        report = {"buy_sell_intents": []}
-        calls = []
-        snapshot = {
-            "u_total": 200.0,
-            "fuel_val": 15.0,
-            "bnb_total": 0.05,
-            "bnb_price": 300.0,
-            "bnb_top_up_required": True,
-            "bnb_top_up_amount": 30.0,
-            "bnb_fuel_symbol": "BNBUSDT",
-        }
-        kwargs = {
-            "ensure_asset_available_fn": lambda *_args, **_kwargs: True,
-            "runtime_call_client_fn": lambda _runtime, _report, **payload: calls.append(payload),
-            "runtime_notify_fn": lambda *_args, **_kwargs: None,
-            "append_log_fn": lambda *_args, **_kwargs: None,
-        }
-
-        no_authority = execute_bnb_fuel_top_up(
-            runtime,
-            report,
-            snapshot,
-            [],
-            execution_authority=None,
-            **kwargs,
-        )
-        self.assertEqual(no_authority, (200.0, 15.0))
-        self.assertEqual(calls, [])
-
-        with patch("market_snapshot_support.is_execution_authority_valid", return_value=True):
-            authorized = execute_bnb_fuel_top_up(
-                runtime,
-                report,
-                snapshot,
-                [],
-                execution_authority=object(),
-                **kwargs,
-            )
-
-        self.assertAlmostEqual(authorized[0], 170.0)
-        self.assertAlmostEqual(authorized[1], 44.85, places=2)
-        self.assertEqual(calls[0]["method_name"], "order_market_buy")
 
 
 if __name__ == "__main__":

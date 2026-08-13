@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from decision_mapper import is_execution_authority_valid
 from runtime_support import record_gating_event
 
 
@@ -107,7 +106,6 @@ def run_daily_circuit_breaker(
     circuit_breaker_pct,
     log_buffer,
     *,
-    execution_authority=None,
     format_qty_fn,
     runtime_notify_fn,
     ensure_asset_available_fn,
@@ -117,8 +115,6 @@ def run_daily_circuit_breaker(
     build_balance_snapshot_fn,
     translate_fn,
 ):
-    if not is_execution_authority_valid(execution_authority):
-        return False
     if trend_daily_pnl > circuit_breaker_pct:
         return False
 
@@ -203,7 +199,6 @@ def execute_trend_sells(
     log_buffer,
     today_id_str,
     *,
-    execution_authority=None,
     should_skip_duplicate_trend_action_fn,
     append_log_fn,
     translate_fn,
@@ -216,8 +211,6 @@ def execute_trend_sells(
     runtime_set_trade_state_fn,
     runtime_notify_fn,
 ):
-    if not is_execution_authority_valid(execution_authority):
-        return u_total
     for symbol, config in runtime_trend_universe.items():
         curr_price = prices[symbol]
         sell_reason = str(sell_reasons.get(symbol, "")).strip()
@@ -303,7 +296,6 @@ def execute_trend_buys(
     log_buffer,
     today_id_str,
     *,
-    execution_authority=None,
     should_skip_duplicate_trend_action_fn,
     append_log_fn,
     translate_fn,
@@ -316,8 +308,6 @@ def execute_trend_buys(
     runtime_set_trade_state_fn,
     runtime_notify_fn,
 ):
-    if not is_execution_authority_valid(execution_authority):
-        return u_total
     for symbol in eligible_buy_symbols:
         curr_price = prices[symbol]
         candidate_meta = selected_candidates[symbol]
@@ -431,7 +421,6 @@ def execute_trend_rotation(
     allow_new_trend_entries,
     allow_pool_refresh,
     *,
-    execution_authority=None,
     resolve_strategy_plan,
     append_rotation_summary,
     execute_trend_sells,
@@ -439,8 +428,6 @@ def execute_trend_rotation(
     append_trend_symbol_status,
     official_trend_pool_symbols,
 ):
-    if not is_execution_authority_valid(execution_authority):
-        return u_total
     strategy_plan = resolve_strategy_plan(
         state,
         runtime_trend_universe,
@@ -494,7 +481,6 @@ def execute_trend_rotation(
         u_total,
         log_buffer,
         today_id_str,
-        execution_authority=execution_authority,
     )
 
     post_sell_plan = resolve_strategy_plan(
@@ -534,7 +520,6 @@ def execute_trend_rotation(
         u_total,
         log_buffer,
         today_id_str,
-        execution_authority=execution_authority,
     )
     append_trend_symbol_status(
         log_buffer,
@@ -582,7 +567,6 @@ def execute_btc_dca_cycle(
     today_id_str,
     log_buffer,
     *,
-    execution_authority=None,
     append_log_fn,
     translate_fn,
     format_qty_fn,
@@ -592,8 +576,6 @@ def execute_btc_dca_cycle(
     runtime_notify_fn,
     runtime_set_trade_state_fn,
 ):
-    if not is_execution_authority_valid(execution_authority):
-        return u_total
     if dca_usdt_pool <= 10 and dca_val <= 10:
         record_gating_event(
             report,

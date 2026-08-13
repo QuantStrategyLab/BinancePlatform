@@ -7,7 +7,6 @@ import os
 
 from quant_platform_kit.common.runtime_reports import persist_runtime_report
 from quant_platform_kit.strategy_lifecycle.performance_monitor import try_record_platform_execution
-from decision_mapper import is_execution_authority_valid
 from runtime_logging import RuntimeLogContext, emit_runtime_log
 from runtime_support import finalize_notification_delivery
 
@@ -21,8 +20,7 @@ def execute_strategy_cycle(
     load_cycle_state,
     append_trend_pool_source_logs,
     capture_market_snapshot,
-    execute_bnb_fuel_top_up,
-    resolve_strategy_plan,
+    compute_portfolio_allocation,
     build_balance_snapshot,
     maybe_reset_daily_state,
     maybe_rebase_daily_state_for_balance_change,
@@ -79,38 +77,22 @@ def execute_strategy_cycle(
         btc_snapshot = market_snapshot["btc_snapshot"]
         trend_indicators = market_snapshot["trend_indicators"]
 
-        strategy_plan = resolve_strategy_plan(
+        allocation = compute_portfolio_allocation(
             runtime,
-            state,
             runtime_trend_universe,
-            trend_indicators,
-            btc_snapshot,
-            prices,
             balances,
+            prices,
             u_total,
             fuel_val,
-            allow_new_trend_entries=allow_new_trend_entries,
-            allow_pool_refresh=not trend_pool_resolution["degraded"],
+            state,
+            trend_indicators,
+            btc_snapshot,
         )
-        allocation = strategy_plan["allocation"]
-        execution_authority = strategy_plan.get("execution_authority")
         total_equity = allocation["total_equity"]
         trend_val_equity = allocation["trend_val"]
 
         report["total_equity_usdt"] = total_equity
         report["trend_equity_usdt"] = trend_val_equity
-        if not is_execution_authority_valid(execution_authority):
-            report["status"] = "aborted"
-            report.setdefault("gating_summary", {})["missing_execution_authority"] = 1
-            return report
-
-        u_total, fuel_val = execute_bnb_fuel_top_up(
-            runtime,
-            report,
-            market_snapshot,
-            log_buffer,
-            execution_authority=execution_authority,
-        )
 
         now_utc = runtime.now_utc
         today_utc = now_utc.strftime("%Y-%m-%d")
@@ -145,7 +127,6 @@ def execute_strategy_cycle(
             trend_daily_pnl,
             circuit_breaker_pct,
             log_buffer,
-            execution_authority=execution_authority,
         ):
             return report
 
@@ -164,14 +145,29 @@ def execute_strategy_cycle(
             today_id_str,
             allow_new_trend_entries,
             allow_pool_refresh=not trend_pool_resolution["degraded"],
-            strategy_plan=strategy_plan,
-            execution_authority=execution_authority,
         )
 
-        btc_target_ratio = allocation["btc_target_ratio"]
-        dca_usdt_pool = allocation["dca_usdt_pool"]
-        dca_val = allocation["dca_val"]
-        btc_base_order_usdt = allocation["btc_base_order_usdt"]
+        post_trade_allocation = compute_portfolio_allocation(
+            runtime,
+            runtime_trend_universe,
+            balances,
+            prices,
+            u_total,
+            fuel_val,
+            state,
+            trend_indicators,
+            btc_snapshot,
+        )
+        total_equity = post_trade_allocation["total_equity"]
+        trend_val_equity = post_trade_allocation["trend_val"]
+
+        report["total_equity_usdt"] = total_equity
+        report["trend_equity_usdt"] = trend_val_equity
+
+        btc_target_ratio = post_trade_allocation["btc_target_ratio"]
+        dca_usdt_pool = post_trade_allocation["dca_usdt_pool"]
+        dca_val = post_trade_allocation["dca_val"]
+        btc_base_order_usdt = post_trade_allocation["btc_base_order_usdt"]
         _, trend_daily_pnl = compute_daily_pnls(state, total_equity, trend_val_equity)
 
         u_total = execute_btc_dca_cycle(
@@ -189,7 +185,6 @@ def execute_strategy_cycle(
             btc_base_order_usdt,
             today_id_str,
             log_buffer,
-            execution_authority=execution_authority,
         )
 
         manage_usdt_earn_buffer_runtime(

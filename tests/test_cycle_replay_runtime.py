@@ -97,27 +97,33 @@ class CycleReplayRuntimeTests(unittest.TestCase):
         result = self.run_cycle(run_id="dry-run-regression")
         report = result["report"]
 
-        self.assertEqual(report["status"], "aborted")
+        self.assertEqual(report["status"], "ok")
         self.assertTrue(report["dry_run"])
         self.assertEqual(result["client"].side_effect_calls, [])
         self.assertEqual(result["state_store"].write_calls, [])
         self.assertEqual(report["side_effect_summary"]["executed_call_count"], 0)
-        self.assertEqual(report["buy_sell_intents"], [])
-        self.assertEqual(report["btc_dca_intents"], [])
-        self.assertEqual(report["redemption_subscription_intents"], [])
+        self.assertGreater(report["side_effect_summary"]["suppressed_call_count"], 0)
+        self.assertGreaterEqual(len(report["buy_sell_intents"]), 2)
+        self.assertGreaterEqual(len(report["redemption_subscription_intents"]), 1)
 
     def test_fixed_input_produces_deterministic_execution_report(self):
         first = self.run_cycle(run_id="deterministic-report")
         second = self.run_cycle(run_id="deterministic-report")
 
         self.assertEqual(first["report"], second["report"])
-        self.assertEqual(first["report"]["status"], "aborted")
-        self.assertEqual(first["report"]["selected_symbols"]["active_trend_pool"], [])
-        self.assertEqual(first["report"]["selected_symbols"]["selected_candidates"], [])
-        self.assertEqual(first["report"]["buy_sell_intents"], [])
-        self.assertEqual(first["report"]["btc_dca_intents"], [])
-        self.assertEqual(first["report"]["redemption_subscription_intents"], [])
-        self.assertEqual(first["client"].side_effect_calls, [])
+        self.assertEqual(
+            first["report"]["selected_symbols"]["active_trend_pool"],
+            ["ETHUSDT", "SOLUSDT", "XRPUSDT", "LTCUSDT", "BCHUSDT"],
+        )
+        trend_buy_symbols = [
+            intent["symbol"]
+            for intent in first["report"]["buy_sell_intents"]
+            if intent["category"] == "trend" and intent["action"] == "buy"
+        ]
+        self.assertEqual(trend_buy_symbols, ["ETHUSDT", "SOLUSDT"])
+        self.assertEqual(first["report"]["btc_dca_intents"][0]["action"], "buy")
+        self.assertEqual(first["report"]["redemption_subscription_intents"][0]["action"], "subscribe")
+        self.assertAlmostEqual(first["report"]["redemption_subscription_intents"][0]["amount"], 71.5)
 
     def test_state_load_failure_aborts_execution_safely(self):
         runtime, client, state_store, _ = run_cycle_replay.build_replay_runtime(
