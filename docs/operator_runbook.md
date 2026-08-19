@@ -65,6 +65,7 @@ The monthly execution pool is locked to the accepted upstream `version` / `as_of
 - GitHub Actions no longer owns the hourly cadence for runtime execution in this repo.
 - Production cadence should come from one external scheduler, for example VPS cron calling the GitHub Actions dispatch API.
 - The VPS dispatch guard retries bounded transient failures such as network errors and GitHub `500`/`502`/`503`/`504`, but still alerts immediately for configuration and permission failures.
+- Runtime Heartbeat writes a structured `qsl.runtime_heartbeat_assessment.v1` record to its workflow log. A completed Runtime failure is still escalated immediately, while one missing external dispatch is recorded as `DEFERRED`; it only alerts after `RUNTIME_HEARTBEAT_MAX_CONSECUTIVE_MISSES` expected intervals (default: two). A recent in-progress dispatch is `PARKED` until it completes.
 - Repository variable changes are consumed by the next externally scheduled dispatch; they do not reconfigure the VPS scheduler cadence.
 - Avoid overlapping dispatches from multiple schedulers or from a second manual run while the current runtime job is still in progress.
 

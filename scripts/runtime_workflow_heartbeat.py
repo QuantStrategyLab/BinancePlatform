@@ -17,6 +17,7 @@ from typing import Any
 _GITHUB_API_MAX_ATTEMPTS = 4
 _GITHUB_API_MAX_RETRY_DELAY_SECONDS = 30.0
 _RETRYABLE_HTTP_STATUSES = frozenset({429, 500, 502, 503, 504})
+_ASSESSMENT_SCHEMA = "qsl.runtime_heartbeat_assessment.v1"
 
 
 def _split_values(raw: str | None) -> list[str]:
@@ -30,6 +31,32 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if not value:
         return default
     return value in {"1", "true", "yes", "y", "on"}
+
+
+def _positive_float_from_env(name: str, default: float) -> float:
+    raw_value = (os.environ.get(name) or "").strip()
+    if not raw_value:
+        return default
+    try:
+        value = float(raw_value)
+    except ValueError as exc:
+        raise SystemExit(f"{name} must be a positive number") from exc
+    if value <= 0:
+        raise SystemExit(f"{name} must be a positive number")
+    return value
+
+
+def _positive_int_from_env(name: str, default: int) -> int:
+    raw_value = (os.environ.get(name) or "").strip()
+    if not raw_value:
+        return default
+    try:
+        value = int(raw_value)
+    except ValueError as exc:
+        raise SystemExit(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise SystemExit(f"{name} must be a positive integer")
+    return value
 
 
 def _parse_timestamp(value: Any) -> dt.datetime | None:
@@ -190,6 +217,115 @@ def _list_runtime_runs(
     return _dedupe_and_sort_runs([*workflow_runs, *repository_runs])
 
 
+def _run_summary(run: dict[str, Any] | None) -> dict[str, Any] | None:
+    if run is None:
+        return None
+    return {
+        "run_number": run.get("run_number"),
+        "status": run.get("status"),
+        "conclusion": run.get("conclusion"),
+        "created_at": run.get("created_at"),
+        "updated_at": run.get("updated_at"),
+        "html_url": run.get("html_url"),
+    }
+
+
+def _assess_runtime_heartbeat(
+    *,
+    runs: list[dict[str, Any]],
+    now: dt.datetime,
+    lookback_hours: float,
+    expected_interval_hours: float,
+    max_consecutive_misses: int,
+) -> dict[str, Any]:
+    """Classify a runtime observation without treating one late dispatch as failed.
+
+    A completed runtime failure remains an immediate alert.  An absent new
+    dispatch is only escalated after the last successful run has missed the
+    configured number of expected cadence intervals.  The returned record is
+    intentionally JSON-safe so the workflow log is an audit trail of both the
+    query and the state transition.
+    """
+
+    normalized_now = now.astimezone(dt.timezone.utc)
+    recent_since = normalized_now - dt.timedelta(hours=lookback_hours)
+    sorted_runs = _dedupe_and_sort_runs(runs)
+    latest_run = sorted_runs[0] if sorted_runs else None
+    latest_success = next(
+        (
+            run
+            for run in sorted_runs
+            if run.get("status") == "completed" and run.get("conclusion") == "success"
+        ),
+        None,
+    )
+    recent_runs = [
+        run
+        for run in sorted_runs
+        if (created_at := _parse_timestamp(run.get("created_at"))) and created_at >= recent_since
+    ]
+    recent_success = [
+        run
+        for run in recent_runs
+        if run.get("status") == "completed" and run.get("conclusion") == "success"
+    ]
+    latest_created_at = _parse_timestamp(latest_run.get("created_at")) if latest_run else None
+    latest_success_at = _parse_timestamp(latest_success.get("created_at")) if latest_success else None
+
+    assessment: dict[str, Any] = {
+        "schema": _ASSESSMENT_SCHEMA,
+        "observed_at": normalized_now.isoformat().replace("+00:00", "Z"),
+        "status": "healthy",
+        "reason": "recent_success",
+        "query": {
+            "lookback_hours": lookback_hours,
+            "expected_interval_hours": expected_interval_hours,
+            "max_consecutive_misses": max_consecutive_misses,
+            "runs_returned": len(sorted_runs),
+            "recent_runs": len(recent_runs),
+        },
+        "latest_run": _run_summary(latest_run),
+        "latest_success": _run_summary(latest_success),
+        "consecutive_misses": 0,
+    }
+
+    if (
+        latest_run
+        and latest_created_at
+        and latest_created_at >= recent_since
+        and latest_run.get("status") == "completed"
+        and latest_run.get("conclusion") != "success"
+    ):
+        assessment.update(status="alert", reason="latest_runtime_completed_unsuccessfully")
+        return assessment
+
+    if recent_success:
+        return assessment
+
+    if (
+        latest_run
+        and latest_created_at
+        and latest_created_at >= recent_since
+        and latest_run.get("status") != "completed"
+    ):
+        assessment.update(status="parked", reason="runtime_dispatch_pending")
+        return assessment
+
+    if latest_success_at is None:
+        assessment.update(status="alert", reason="no_successful_runtime_run_observed")
+        return assessment
+
+    elapsed_hours = max(0.0, (normalized_now - latest_success_at).total_seconds() / 3600)
+    consecutive_misses = int(elapsed_hours // expected_interval_hours)
+    assessment["consecutive_misses"] = consecutive_misses
+    if consecutive_misses < max_consecutive_misses:
+        assessment.update(status="deferred", reason="awaiting_dispatch_confirmation")
+        return assessment
+
+    assessment.update(status="alert", reason="consecutive_runtime_dispatches_missing")
+    return assessment
+
+
 def _send_telegram(message: str) -> bool:
     token = os.environ.get("TG_TOKEN") or os.environ.get("TELEGRAM_TOKEN")
     chats = _split_values(os.environ.get("GLOBAL_TELEGRAM_CHAT_ID"))
@@ -230,12 +366,13 @@ def main() -> int:
     workflow = os.environ.get("RUNTIME_HEARTBEAT_WORKFLOW") or "main.yml"
     branch = os.environ.get("RUNTIME_HEARTBEAT_BRANCH") or "main"
     name = os.environ.get("RUNTIME_HEARTBEAT_NAME") or "Binance Runtime"
-    lookback_hours = float(os.environ.get("RUNTIME_HEARTBEAT_LOOKBACK_HOURS") or "2.5")
-    per_page = int(os.environ.get("RUNTIME_HEARTBEAT_RUNS_TO_SCAN") or "30")
+    lookback_hours = _positive_float_from_env("RUNTIME_HEARTBEAT_LOOKBACK_HOURS", 2.5)
+    expected_interval_hours = _positive_float_from_env("RUNTIME_HEARTBEAT_EXPECTED_INTERVAL_HOURS", 1.0)
+    max_consecutive_misses = _positive_int_from_env("RUNTIME_HEARTBEAT_MAX_CONSECUTIVE_MISSES", 2)
+    per_page = _positive_int_from_env("RUNTIME_HEARTBEAT_RUNS_TO_SCAN", 30)
     fail_workflow = _env_bool("RUNTIME_HEARTBEAT_FAIL_WORKFLOW_ON_ALERT", True)
 
     now = dt.datetime.now(dt.timezone.utc)
-    since = now - dt.timedelta(hours=lookback_hours)
     runs = _list_runtime_runs(
         repository=repository,
         workflow=workflow,
@@ -243,26 +380,17 @@ def main() -> int:
         branch=branch,
         per_page=per_page,
     )
-    recent_runs = []
-    for run in runs:
-        created_at = _parse_timestamp(run.get("created_at"))
-        if created_at and created_at >= since:
-            recent_runs.append(run)
+    assessment = _assess_runtime_heartbeat(
+        runs=runs,
+        now=now,
+        lookback_hours=lookback_hours,
+        expected_interval_hours=expected_interval_hours,
+        max_consecutive_misses=max_consecutive_misses,
+    )
+    print(json.dumps(assessment, sort_keys=True))
 
-    successful_runs = [run for run in recent_runs if run.get("status") == "completed" and run.get("conclusion") == "success"]
-    latest_run = recent_runs[0] if recent_runs else None
-    issues = []
-    if not recent_runs:
-        issues.append(f"no Runtime workflow_dispatch run found in the last {lookback_hours:g} hours")
-    if not successful_runs:
-        issues.append(f"no successful Runtime workflow run found in the last {lookback_hours:g} hours")
-    if latest_run and latest_run.get("status") == "completed" and latest_run.get("conclusion") != "success":
-        issues.append(
-            f"latest Runtime run completed with conclusion={latest_run.get('conclusion') or '<none>'}"
-        )
-
-    if not issues:
-        latest_success = successful_runs[0]
+    if assessment["status"] == "healthy":
+        latest_success = assessment["latest_success"] or {}
         print(
             "Runtime workflow heartbeat OK: "
             f"run={latest_success.get('run_number')} "
@@ -271,6 +399,32 @@ def main() -> int:
         )
         return 0
 
+    if assessment["status"] in {"parked", "deferred"}:
+        print(
+            "Runtime workflow heartbeat "
+            f"{assessment['status'].upper()}: reason={assessment['reason']} "
+            f"consecutive_misses={assessment['consecutive_misses']}"
+        )
+        return 0
+
+    latest_run = assessment["latest_run"]
+    issues = []
+    if assessment["reason"] == "latest_runtime_completed_unsuccessfully":
+        issues.append(
+            "latest Runtime run completed with "
+            f"conclusion={latest_run.get('conclusion') or '<none>'}"
+        )
+    elif assessment["reason"] == "no_successful_runtime_run_observed":
+        issues.append(
+            "no successful Runtime workflow run was returned by the auditable "
+            "GitHub Actions query"
+        )
+    else:
+        issues.append(
+            "Runtime workflow dispatches have been missing for "
+            f"{assessment['consecutive_misses']} consecutive expected intervals "
+            f"(threshold={max_consecutive_misses})"
+        )
     lines = [
         f"[Runtime Workflow Heartbeat] {name}",
         f"Lookback: {lookback_hours:g} hours",
