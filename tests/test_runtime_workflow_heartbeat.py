@@ -15,7 +15,95 @@ def _timestamp(minutes_ago: int) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
+def _runtime_run(
+    *,
+    created_at: dt.datetime,
+    status: str = "completed",
+    conclusion: str | None = "success",
+    run_number: int = 1,
+) -> dict[str, object]:
+    return {
+        "id": run_number,
+        "run_number": run_number,
+        "status": status,
+        "conclusion": conclusion,
+        "created_at": created_at.isoformat().replace("+00:00", "Z"),
+        "html_url": f"https://github.com/QuantStrategyLab/BinancePlatform/actions/runs/{run_number}",
+    }
+
+
 class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
+    def test_single_missing_dispatch_is_deferred_with_auditable_assessment(self) -> None:
+        now = dt.datetime(2026, 8, 20, 12, 0, tzinfo=dt.timezone.utc)
+        result = heartbeat._assess_runtime_heartbeat(
+            runs=[_runtime_run(created_at=now - dt.timedelta(hours=1.5))],
+            now=now,
+            lookback_hours=1.0,
+            expected_interval_hours=1.0,
+            max_consecutive_misses=2,
+        )
+
+        self.assertEqual(result["schema"], "qsl.runtime_heartbeat_assessment.v1")
+        self.assertEqual(result["status"], "deferred")
+        self.assertEqual(result["reason"], "awaiting_dispatch_confirmation")
+        self.assertEqual(result["consecutive_misses"], 1)
+        self.assertEqual(result["query"]["runs_returned"], 1)
+
+    def test_missing_dispatches_escalate_only_after_threshold(self) -> None:
+        now = dt.datetime(2026, 8, 20, 12, 0, tzinfo=dt.timezone.utc)
+        result = heartbeat._assess_runtime_heartbeat(
+            runs=[_runtime_run(created_at=now - dt.timedelta(hours=2.1))],
+            now=now,
+            lookback_hours=1.0,
+            expected_interval_hours=1.0,
+            max_consecutive_misses=2,
+        )
+
+        self.assertEqual(result["status"], "alert")
+        self.assertEqual(result["reason"], "consecutive_runtime_dispatches_missing")
+        self.assertEqual(result["consecutive_misses"], 2)
+
+    def test_latest_completed_runtime_failure_remains_an_immediate_alert(self) -> None:
+        now = dt.datetime(2026, 8, 20, 12, 0, tzinfo=dt.timezone.utc)
+        result = heartbeat._assess_runtime_heartbeat(
+            runs=[
+                _runtime_run(
+                    created_at=now - dt.timedelta(minutes=15),
+                    conclusion="failure",
+                    run_number=2,
+                ),
+                _runtime_run(created_at=now - dt.timedelta(hours=1), run_number=1),
+            ],
+            now=now,
+            lookback_hours=1.0,
+            expected_interval_hours=1.0,
+            max_consecutive_misses=2,
+        )
+
+        self.assertEqual(result["status"], "alert")
+        self.assertEqual(result["reason"], "latest_runtime_completed_unsuccessfully")
+
+    def test_recent_pending_dispatch_is_parked_not_alerted(self) -> None:
+        now = dt.datetime(2026, 8, 20, 12, 0, tzinfo=dt.timezone.utc)
+        result = heartbeat._assess_runtime_heartbeat(
+            runs=[
+                _runtime_run(
+                    created_at=now - dt.timedelta(minutes=10),
+                    status="in_progress",
+                    conclusion=None,
+                    run_number=2,
+                ),
+                _runtime_run(created_at=now - dt.timedelta(hours=2), run_number=1),
+            ],
+            now=now,
+            lookback_hours=1.0,
+            expected_interval_hours=1.0,
+            max_consecutive_misses=2,
+        )
+
+        self.assertEqual(result["status"], "parked")
+        self.assertEqual(result["reason"], "runtime_dispatch_pending")
+
     def test_github_request_retries_service_unavailable(self) -> None:
         class FakeResponse:
             def __enter__(self) -> FakeResponse:
