@@ -1,0 +1,34 @@
+{
+  "schema_version": "qsl.oci_jit_shadow_attestations.v1",
+  "evidence_source": "oci_read_only_export",
+  "collection_complete": true,
+  "resource_identifiers_recorded": false,
+  "network": {
+    "subnet_is_private": true,
+    "instance_assigns_public_ip": false,
+    "nat_gateway_state": "AVAILABLE",
+    "reserved_public_ip_state": "ASSIGNED",
+    "private_subnet_routes_through_nat": true,
+    "inbound_rules_present": false
+  },
+  "identity": {
+    "instance_principal_enabled": true,
+    "dynamic_group_scoped_to_compartment": true,
+    "dynamic_group_scoped_to_defined_tag": true,
+    "launcher_scope_is_defined_tag_only": true,
+    "launcher_can_read_broker_secret": false,
+    "launcher_can_manage_network": false,
+    "launcher_can_manage_iam": false,
+    "runtime_can_read_broker_secret": false,
+    "runtime_can_write_evidence": true,
+    "runtime_can_manage_compute": false,
+    "runtime_can_manage_iam": false,
+    "runtime_can_manage_vault": false
+  },
+  "compute": {
+    "capacity_type": "ON_DEMAND",
+    "custom_image_is_pinned": true,
+    "runner_assignment": "ONE_JOB",
+    "boot_volume_delete_on_termination": true
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": "qsl.oci_jit_shadow_inventory.v1",
+  "collected_at": "2026-08-23T12:00:00Z",
+  "collection_complete": true,
+  "instances": [
+    {
+      "id": "ocid1.instance.oc1.example.orphan",
+      "created_at": "2026-08-23T10:00:00Z",
+      "lifecycle_state": "RUNNING",
+      "candidate_tag_matches": true
+    }
+  ],
+  "boot_volumes": [
+    {
+      "id": "ocid1.bootvolume.oc1.example.orphan",
+      "created_at": "2026-08-23T10:00:00Z",
+      "lifecycle_state": "AVAILABLE",
+      "candidate_tag_matches": true,
+      "attached_instance_id": null
+    }
+  ],
+  "vnic_attachments": [],
+  "github_runners": [
+    {
+      "id": "999999",
+      "created_at": "2026-08-23T10:00:00Z",
+      "status": "offline",
+      "candidate_tag_matches": true
+    }
+  ]
+}

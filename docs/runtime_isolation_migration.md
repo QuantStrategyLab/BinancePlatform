@@ -97,6 +97,14 @@ compartment, current instance/VNIC, route table, and allowlisted egress ownershi
 outside public artifacts. Confirm the new reserved NAT address and OCI IAM
 policy before choosing an image or Vault implementation.
 
+The first implementation batch now lives under `infra/oci-jit-shadow/`. Its
+committed contract and preflight script render the bounded launch/terminate
+lifecycle, validate redacted private-subnet/NAT/reserved-IP/defined-tag and
+instance-principal attestations, and fail closed on stale tagged resources. The
+manual workflow has no OCI mutation authority or broker secret and runs the
+same fixed-input no-order fixture. This is deployment readiness evidence only;
+it does not provision the selected architecture or authorize a live cutover.
+
 ### Phase 2 validation evidence
 
 - Host profile run `32644765084`: `PARTIAL`, QEMU VM, no secret value read,
