@@ -52,8 +52,8 @@ Current evidence is:
 | Question | Evidence | Status |
 | --- | --- | --- |
 | Runner registration | GitHub repository API reports `binance-quant-runner`, Linux/X64, online | Confirmed; API did not attest ephemeral mode |
-| Host provider | Rename checklist says Oracle/VPS; runner API does not expose provider | `UNVERIFIED` until host profile runs |
-| Network egress | Runbook expects an allowlisted runner address; no checked-in fingerprint exists | `UNVERIFIED` until an operator-configured fingerprint matches |
+| Host provider | Host profile run `32644765084` reports QEMU `Standard PC (i440FX + PIIX, 1996)` | VM confirmed; cloud/VPS provider remains `UNVERIFIED` |
+| Network egress | Host profile did not find an operator-configured expected fingerprint | `UNVERIFIED`; raw address was not recorded |
 | Broker secret source | `main.yml` obtains Binance credentials from GitHub environment secrets | Confirmed |
 | Broker secret scope | Credentials are injected only into the trading strategy step | Confirmed by contract tests |
 
@@ -65,17 +65,46 @@ and the expected allowlisted-address digest, records only `MATCHED` or
 
 ### Candidate decision matrix
 
-| Candidate | Isolation gained | Stable egress | Operational cost | Main residual risk | Selection condition |
+| Candidate | Isolation | Network egress | Secret boundary | Cost and maintenance | Rollback |
 | --- | --- | --- | --- | --- | --- |
-| Ephemeral runner on the same persistent host | One GitHub job per registration, but not a fresh host | Preserves current egress | Low | Host processes, filesystem, Docker daemon, or root compromise can survive runner deregistration | Transitional only; host is rebuilt or runner executes inside a genuinely disposable VM boundary |
-| Independent disposable VPS/VM runner | Fresh VM per execution; keeps GitHub runner compatibility | Reserved/fixed IP is straightforward | Medium | Image/bootstrap, runner-token delivery, log forwarding, and VM teardown must be automated | Prefer when the current runtime needs VM semantics or Binance IP allowlisting dominates |
-| Cloud Run Job | Fresh managed task with separate invoke/runtime identities | Requires Direct VPC egress plus Cloud NAT/static IP | Medium | Container compatibility, NAT cost/configuration, and GCP IAM become new dependencies | Prefer only after no-order container parity and fixed-egress feasibility are proven |
+| Ephemeral runner on the same persistent host | Low/medium: GitHub assigns one job, but the host, root processes, filesystem, and container daemon persist | Keeps the current address | Still enters the persistent host; current GitHub environment secret flow can remain | Lowest incremental cost and simplest bootstrap; host patching and compromise recovery remain | Fast: re-register the old runner, but a compromised host is not a trustworthy rollback target |
+| Independent disposable VPS/VM runner | High when the whole VM is created from a pinned image and destroyed after one job | Reserved/floating IP or a small fixed-egress gateway can preserve allowlisting | JIT runner receives only the live step secret; later move the named broker secret behind short-lived OIDC/cloud identity | Medium cost; image publishing, JIT token delivery, external logs, teardown, and orphan cleanup need automation | Straightforward: stop provisioning new VMs and re-enable the unchanged old path after reconciliation |
+| Cloud Run Job | High managed task isolation with separate invoker/runtime identities | Dynamic by default; fixed egress requires VPC routing, Cloud NAT, and a reserved IP | Secret Manager resource-level access fits naturally; GitHub needs only OIDC invoke authority | Per-run compute is low, but NAT/router/static-IP fixed cost and new GCP/IaC operations may dominate a personal deployment | Straightforward at the trigger level; container, IAM, NAT, and job revision must remain reproducible |
 
-No final target is selected in Phase 2. A same-host ephemeral registration is
-not equivalent to an ephemeral machine and is not the end state. The lowest-risk
-choice is the candidate that passes the same no-order digest, has a verified
-stable egress path, separates invoke/runtime identity, and can be destroyed
-after one execution.
+### Recommendation
+
+Use an **independent disposable VPS/VM JIT runner** as the primary target. It is
+the smallest migration from the current Python/GitHub Actions runtime that also
+creates a real fresh-host boundary and supports Binance IP allowlisting. Build it
+from an immutable image, register it for one job with GitHub's ephemeral/JIT
+mode, forward runner logs externally, and destroy the VM after the terminal
+report is durable.
+
+Treat same-host ephemeral registration as a short transitional hardening step,
+not the final boundary. It prevents a runner from receiving a second GitHub job,
+but cannot remove a compromise from the persistent QEMU host.
+
+Keep Cloud Run Job as the managed alternative. Select it only if a digest-pinned
+container passes the same fixture and forward shadow, and the fixed-egress
+Cloud NAT cost and operational path are explicitly accepted. Existing Firestore
+and GitHub OIDC use is not, by itself, a reason to move execution to Cloud Run.
+
+This recommendation remains pre-provisioning: the egress fingerprint and actual
+VPS provider must be attested before choosing the VM image, reserved-address, or
+Secret Manager implementation.
+
+### Phase 2 validation evidence
+
+- Host profile run `32644765084`: `PARTIAL`, QEMU VM, no secret value read,
+  broker secret references confirmed strategy-step-only, egress `UNVERIFIED`.
+- First parity run `32644766682` safely stopped during temporary-environment
+  setup; the fixture and broker path did not execute. PR #162 corrected the
+  interpreter target without changing live code.
+- Accepted parity run `32644960891`: GitHub-hosted and current-runner reports both
+  recorded `status=ok`, `dry_run=true`, `executed_call_count=0`, and
+  `suppressed_call_count=11`.
+- Both accepted reports produced semantic digest
+  `c52a7cf15079ef3346b6f45bbd3b48aef59c539e868e7780ea9f535e17fee1ed`.
 
 ### Cloud Run candidate control and data planes
 
@@ -167,6 +196,24 @@ dedicated runtime and invoker identities, one task, parallelism one, zero
 platform retries, a bounded timeout, and no broker secret. If a disposable VM
 runner is selected, the equivalent controls are one job per VM, no runner reuse,
 a pinned machine/container image, verified teardown, and external logs.
+
+### Recommended migration sequence
+
+1. Configure the expected allowlisted egress fingerprint and rerun the redacted
+   host profile. Do not record the raw address in workflow artifacts.
+2. Define a pinned disposable-VM image and bootstrap that registers a one-job
+   JIT/ephemeral runner. Forward runner diagnostics before deregistration.
+3. Run the fixed-input no-order fixture on the disposable VM and require the
+   accepted semantic digest above. Destroy the VM and verify it cannot accept a
+   second job.
+4. Run a read-only forward shadow with a separate no-order/no-withdrawal Binance
+   credential and reconcile its decisions against the current runtime.
+5. Rehearse missing report, timeout, duplicate dispatch, state lease, teardown,
+   and orphan-VM failure paths. Platform retries remain disabled.
+6. Only after evidence review, request human approval for an existing-envelope
+   canary. Fence the old scheduler before any candidate can place an order.
+7. Retire the persistent runner and rotate credentials in a later cleanup after
+   the observation and rollback window closes.
 
 ### Phase 3: read-only forward shadow
 
@@ -260,8 +307,12 @@ permission to bypass a triggered circuit breaker or expand the live envelope.
 
 ## Rejected alternatives
 
+- Treating `config.sh --ephemeral` on the existing persistent host as complete
+  isolation: runner deregistration does not erase a compromised machine.
 - Reusing the persistent VPS but deleting the workspace after each run: cleanup
   cannot reliably remove a compromised process, runner service, or host secret.
+- Selecting Cloud Run only because Firestore and GCP OIDC already exist: that
+  ignores container compatibility, fixed-egress NAT, and additional IAM cost.
 - Moving broker secrets to a GitHub-hosted runner: the runner is clean, but its
   outbound IP is unsuitable for a stable Binance allowlist and GitHub would still
   become the broker-secret boundary.
@@ -269,13 +320,18 @@ permission to bypass a triggered circuit breaker or expand the live envelope.
   unnecessary control plane for one bounded personal runtime.
 - Switching live directly to Cloud Run: it skips idempotency, networking,
   reconciliation, and rollback evidence.
+- Building broker credentials into a VM/container image, passing them to fixture
+  jobs, using mutable image tags, enabling platform retries, or running old and
+  new live schedulers concurrently.
 
 ## Official references
 
 - [GitHub self-hosted runners reference](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)
 - [GitHub secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)
+- [GitHub compromised runners](https://docs.github.com/en/actions/concepts/security/compromised-runners)
 - [Google Cloud Run jobs](https://cloud.google.com/run/docs/create-jobs)
 - [Execute Cloud Run jobs](https://cloud.google.com/run/docs/execute/jobs)
 - [Cloud Run Job secrets](https://cloud.google.com/run/docs/configuring/jobs/secrets)
+- [Cloud Run Job service identity](https://cloud.google.com/run/docs/configuring/jobs/service-identity)
 - [Cloud Run static outbound IP](https://cloud.google.com/run/docs/configuring/static-outbound-ip)
 - [Workload Identity Federation for deployment pipelines](https://cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines)
