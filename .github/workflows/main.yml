@@ -28,7 +28,7 @@ jobs:
     environment: binance-runtime
     permissions:
       actions: read
-      contents: write
+      contents: read
       id-token: write
     steps:
       - name: 0. Validate deployment identity configuration
@@ -55,10 +55,10 @@ jobs:
             exit 1
           fi
       - name: 1. Checkout latest code
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: 2. Authenticate to Google Cloud
-        uses: google-github-actions/auth@v3
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
           workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -192,49 +192,17 @@ jobs:
           ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW: ${{ vars.ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW }}
           VALIDATE_ONLY: ${{ github.event.inputs.validate_only || 'false' }}
 
-      - name: 5. Capture execution timestamp
-        id: ts
-        run: echo "ts=$(date -u +%Y-%m-%dT%H%M)" >> "$GITHUB_OUTPUT"
-
-      - name: 6. Push execution log to logs branch
+      - name: 5. Stage execution report for isolated log publisher
         continue-on-error: true
         if: ${{ github.event.inputs.validate_only != 'true' }}
-        run: |
-          LOGS_BRANCH="logs"
-          TS="${{ steps.ts.outputs.ts }}"
-          MONTH="${TS:0:7}"
-          REPORT_FILE="${GITHUB_WORKSPACE}/reports/execution_report.json"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: binance-execution-report-${{ github.run_id }}
+          path: reports/execution_report.json
+          if-no-files-found: warn
+          retention-days: 1
 
-          if [ ! -f "$REPORT_FILE" ]; then
-            echo "No execution report found, skipping log push."
-            exit 0
-          fi
-
-          TMP_DIR=$(mktemp -d)
-          git clone --no-checkout "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${TMP_DIR}/logs-repo"
-          cd "${TMP_DIR}/logs-repo"
-
-          if git ls-remote --exit-code --heads origin "${LOGS_BRANCH}" >/dev/null 2>&1; then
-            git fetch origin "${LOGS_BRANCH}:${LOGS_BRANCH}"
-            git checkout "${LOGS_BRANCH}"
-          else
-            git checkout --orphan "${LOGS_BRANCH}"
-            git rm -rf . >/dev/null 2>&1 || true
-            find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-          fi
-
-          mkdir -p "hourly/${MONTH}"
-          cp "$REPORT_FILE" "hourly/${MONTH}/${TS}.json"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "hourly/${MONTH}/${TS}.json"
-          git commit -m "execution: ${TS}"
-          git push origin "HEAD:${LOGS_BRANCH}"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: 7. Notify Telegram on runtime workflow failure
+      - name: 6. Notify Telegram on runtime workflow failure
         if: ${{ failure() && github.event.inputs.validate_only != 'true' }}
         continue-on-error: true
         run: |
@@ -276,3 +244,59 @@ jobs:
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
+
+  publish-execution-log:
+    name: Publish execution log without broker credentials
+    needs: deploy
+    if: ${{ needs.deploy.result == 'success' && github.event.inputs.validate_only != 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download staged execution report
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: binance-execution-report-${{ github.run_id }}
+          path: reports
+
+      - name: Push execution log to logs branch
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          LOGS_BRANCH="logs"
+          TS="$(date -u +%Y-%m-%dT%H%M)"
+          MONTH="${TS:0:7}"
+          REPORT_FILE="${GITHUB_WORKSPACE}/reports/execution_report.json"
+
+          if [ ! -f "$REPORT_FILE" ]; then
+            echo "No execution report found, skipping log push."
+            exit 0
+          fi
+
+          TMP_DIR=$(mktemp -d)
+          trap 'rm -rf "$TMP_DIR"' EXIT
+          git clone --no-checkout "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${TMP_DIR}/logs-repo"
+          cd "${TMP_DIR}/logs-repo"
+
+          if git ls-remote --exit-code --heads origin "${LOGS_BRANCH}" >/dev/null 2>&1; then
+            git fetch origin "${LOGS_BRANCH}:${LOGS_BRANCH}"
+            git checkout "${LOGS_BRANCH}"
+          else
+            git checkout --orphan "${LOGS_BRANCH}"
+            git rm -rf . >/dev/null 2>&1 || true
+            find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+          fi
+
+          mkdir -p "hourly/${MONTH}"
+          cp "$REPORT_FILE" "hourly/${MONTH}/${TS}.json"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "hourly/${MONTH}/${TS}.json"
+          git commit -m "execution: ${TS}"
+          git push origin "HEAD:${LOGS_BRANCH}"
