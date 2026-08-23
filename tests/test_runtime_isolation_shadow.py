@@ -48,6 +48,7 @@ class RuntimeIsolationShadowWorkflowTests(unittest.TestCase):
         self.assertIn("if: ${{ inputs.include_current_runner }}", current_runner_shadow)
         self.assertIn("runs-on: self-hosted", current_runner_shadow)
         self.assertNotIn("environment:", current_runner_shadow)
+        self.assertIn('--python "$UV_PROJECT_ENVIRONMENT/bin/python"', current_runner_shadow)
         self.assertIn("contents: read", workflow)
         self.assertNotIn("id-token: write", workflow)
         self.assertNotIn("environment:", workflow)
