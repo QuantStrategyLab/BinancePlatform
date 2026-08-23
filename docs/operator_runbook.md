@@ -69,6 +69,17 @@ The monthly execution pool is locked to the accepted upstream `version` / `as_of
 - Repository variable changes are consumed by the next externally scheduled dispatch; they do not reconfigure the VPS scheduler cadence.
 - Avoid overlapping dispatches from multiple schedulers or from a second manual run while the current runtime job is still in progress.
 
+### Runner security boundary
+
+The current production runtime still uses a persistent self-hosted runner. Treat this as a temporary, higher-risk boundary until the runtime moves to an ephemeral runner or an isolated Cloud Run Job:
+
+- dedicate the runner to the dispatch-only `main.yml` runtime; do not run pull-request or untrusted branch jobs on it;
+- restrict the Binance API key to the required trading scope, disable withdrawals, and apply an IP allowlist where the account supports it;
+- keep the `binance-runtime` environment protection and reviewed OIDC identity contract in place;
+- rebuild the runner after suspected compromise instead of trusting cached workspaces or virtual environments.
+
+The broker job has repository read permission only. Successful execution reports are transferred to a separate GitHub-hosted job, which alone receives `contents: write` for the `logs` branch. This prevents the broker credentials and repository write token from sharing one job, but it does not make a persistent runner equivalent to an ephemeral one.
+
 ## Degraded Mode Ladder
 
 Healthy mode:
