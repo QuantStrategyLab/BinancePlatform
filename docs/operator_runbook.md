@@ -80,6 +80,12 @@ The current production runtime still uses a persistent self-hosted runner. Treat
 
 The broker job has repository read permission only. Successful execution reports are transferred to a separate GitHub-hosted job, which alone receives `contents: write` for the `logs` branch. This prevents the broker credentials and repository write token from sharing one job, but it does not make a persistent runner equivalent to an ephemeral one.
 
+The staged replacement architecture, no-order shadow proof, deployment preflight,
+and rollback fence are documented in
+[`runtime_isolation_migration.md`](runtime_isolation_migration.md). That plan is
+informational until a separately reviewed live cutover is approved; the current
+runtime remains authoritative.
+
 ## Degraded Mode Ladder
 
 Healthy mode:
