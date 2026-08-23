@@ -1,0 +1,33 @@
+name: Runtime Isolation Host Profile
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  profile-current-runner:
+    runs-on: self-hosted
+    timeout-minutes: 10
+    steps:
+      - name: Checkout BinancePlatform
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Collect redacted host, egress, and secret-boundary profile
+        env:
+          RUNTIME_EGRESS_CHECK_URL: ${{ vars.BINANCE_RUNTIME_EGRESS_CHECK_URL }}
+          RUNTIME_EXPECTED_EGRESS_SHA256: ${{ vars.BINANCE_RUNTIME_EGRESS_SHA256 }}
+        run: |
+          set -euo pipefail
+          python3 scripts/runtime_isolation_host_probe.py \
+            --workflow .github/workflows/main.yml \
+            --output reports/runtime_isolation_host_profile.json
+
+      - name: Upload redacted host profile
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-isolation-host-profile-${{ github.run_id }}
+          path: reports/runtime_isolation_host_profile.json
+          if-no-files-found: error
+          retention-days: 7

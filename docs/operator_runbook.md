@@ -86,6 +86,21 @@ and rollback fence are documented in
 informational until a separately reviewed live cutover is approved; the current
 runtime remains authoritative.
 
+Before selecting a replacement host, manually run `Runtime Isolation Host
+Profile`. It has repository read permission only, receives no GitHub environment,
+OIDC token, or secret, and writes a redacted artifact. Provider or network fields
+that cannot be proven remain `UNVERIFIED`. To verify the current Binance
+allowlisted egress without publishing the address, configure both
+`BINANCE_RUNTIME_EGRESS_CHECK_URL` and `BINANCE_RUNTIME_EGRESS_SHA256`; the
+workflow records only whether they match.
+
+`Runtime Isolation Shadow Fixture` always runs the portable no-order fixture on
+a clean GitHub-hosted runner. Set `include_current_runner=true` only outside the
+live scheduling window to run the same fixture on the current self-hosted runner
+and compare semantic report digests. Neither job references Binance credentials,
+the `binance-runtime` environment, or Google OIDC. Passing proves fixture parity,
+not live readiness or host ephemerality.
+
 ## Degraded Mode Ladder
 
 Healthy mode:

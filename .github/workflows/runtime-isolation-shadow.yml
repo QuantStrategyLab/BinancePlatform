@@ -2,6 +2,12 @@ name: Runtime Isolation Shadow Fixture
 
 on:
   workflow_dispatch:
+    inputs:
+      include_current_runner:
+        description: "Also replay the no-order fixture on the current self-hosted runner"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -57,16 +63,110 @@ jobs:
           BINANCE_DRY_RUN: "true"
         run: |
           set -euo pipefail
-          uv run --no-sync python run_cycle_replay.py \
-            --run-id "isolation-shadow-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --output reports/runtime_isolation_shadow.json
-          uv run --no-sync python scripts/assert_no_order_shadow_report.py \
-            reports/runtime_isolation_shadow.json
+          uv run --no-sync python scripts/run_isolation_shadow_fixture.py \
+            --output reports/runtime_isolation_shadow.json \
+            --digest-output reports/runtime_isolation_shadow.sha256
 
       - name: Upload redacted shadow report
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: runtime-isolation-shadow-${{ github.run_id }}
-          path: reports/runtime_isolation_shadow.json
+          name: runtime-isolation-shadow-github-${{ github.run_id }}
+          path: |
+            reports/runtime_isolation_shadow.json
+            reports/runtime_isolation_shadow.sha256
           if-no-files-found: error
           retention-days: 7
+
+  current-runner-shadow:
+    if: ${{ inputs.include_current_runner }}
+    runs-on: self-hosted
+    timeout-minutes: 20
+    steps:
+      - name: Checkout BinancePlatform
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Resolve pinned dependency refs
+        id: refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          qpk_ref="$(grep -Eo 'QuantPlatformKit\.git@[0-9a-f]+' pyproject.toml | head -n1 | sed 's/.*@//')"
+          strategies_ref="$(grep -Eo 'CryptoStrategies\.git@[0-9a-f]+' pyproject.toml | head -n1 | sed 's/.*@//')"
+          test -n "$qpk_ref"
+          test -n "$strategies_ref"
+          echo "qpk_ref=$qpk_ref" >> "$GITHUB_OUTPUT"
+          echo "strategies_ref=$strategies_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout QuantPlatformKit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: QuantStrategyLab/QuantPlatformKit
+          ref: ${{ steps.refs.outputs.qpk_ref }}
+          path: external/QuantPlatformKit
+
+      - name: Checkout CryptoStrategies
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: QuantStrategyLab/CryptoStrategies
+          ref: ${{ steps.refs.outputs.strategies_ref }}
+          path: external/CryptoStrategies
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Install locked runtime in the job temp directory
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/binance-isolation-shadow-venv
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check uv==0.11.6
+          uv sync --frozen --no-dev
+          uv pip install --no-deps -e external/QuantPlatformKit -e external/CryptoStrategies
+
+      - name: Run current-runner fixed-input no-order replay
+        env:
+          BINANCE_DRY_RUN: "true"
+          UV_PROJECT_ENVIRONMENT: ${{ runner.temp }}/binance-isolation-shadow-venv
+        run: |
+          set -euo pipefail
+          uv run --no-sync python scripts/run_isolation_shadow_fixture.py \
+            --output reports/runtime_isolation_shadow.json \
+            --digest-output reports/runtime_isolation_shadow.sha256
+
+      - name: Upload redacted current-runner shadow report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-isolation-shadow-current-runner-${{ github.run_id }}
+          path: |
+            reports/runtime_isolation_shadow.json
+            reports/runtime_isolation_shadow.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  compare-shadow-digests:
+    if: ${{ inputs.include_current_runner }}
+    needs: [fixed-input-shadow, current-runner-shadow]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Download GitHub-hosted shadow evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runtime-isolation-shadow-github-${{ github.run_id }}
+          path: reports/github
+
+      - name: Download current-runner shadow evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: runtime-isolation-shadow-current-runner-${{ github.run_id }}
+          path: reports/current-runner
+
+      - name: Compare semantic report digests
+        run: |
+          set -euo pipefail
+          cmp \
+            reports/github/runtime_isolation_shadow.sha256 \
+            reports/current-runner/runtime_isolation_shadow.sha256
+          echo "GitHub-hosted and current-runner no-order shadow digests match."
