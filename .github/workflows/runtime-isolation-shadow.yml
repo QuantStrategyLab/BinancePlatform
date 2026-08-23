@@ -1,0 +1,72 @@
+name: Runtime Isolation Shadow Fixture
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fixed-input-shadow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout BinancePlatform
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Resolve pinned dependency refs
+        id: refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          qpk_ref="$(grep -Eo 'QuantPlatformKit\.git@[0-9a-f]+' pyproject.toml | head -n1 | sed 's/.*@//')"
+          strategies_ref="$(grep -Eo 'CryptoStrategies\.git@[0-9a-f]+' pyproject.toml | head -n1 | sed 's/.*@//')"
+          test -n "$qpk_ref"
+          test -n "$strategies_ref"
+          echo "qpk_ref=$qpk_ref" >> "$GITHUB_OUTPUT"
+          echo "strategies_ref=$strategies_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout QuantPlatformKit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: QuantStrategyLab/QuantPlatformKit
+          ref: ${{ steps.refs.outputs.qpk_ref }}
+          path: external/QuantPlatformKit
+
+      - name: Checkout CryptoStrategies
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: QuantStrategyLab/CryptoStrategies
+          ref: ${{ steps.refs.outputs.strategies_ref }}
+          path: external/CryptoStrategies
+
+      - name: Setup Python
+        uses: actions/setup-python@82c7e631bb3cdc910f68e0081d67478d79c6982d # v6
+        with:
+          python-version: "3.11"
+
+      - name: Install locked runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check uv==0.11.6
+          uv sync --frozen --no-dev
+          uv pip install --no-deps -e external/QuantPlatformKit -e external/CryptoStrategies
+
+      - name: Run fixed-input no-order replay
+        env:
+          BINANCE_DRY_RUN: "true"
+        run: |
+          set -euo pipefail
+          uv run --no-sync python run_cycle_replay.py \
+            --run-id "isolation-shadow-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --output reports/runtime_isolation_shadow.json
+          uv run --no-sync python scripts/assert_no_order_shadow_report.py \
+            reports/runtime_isolation_shadow.json
+
+      - name: Upload redacted shadow report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: runtime-isolation-shadow-${{ github.run_id }}
+          path: reports/runtime_isolation_shadow.json
+          if-no-files-found: error
+          retention-days: 7
