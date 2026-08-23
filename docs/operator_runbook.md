@@ -86,6 +86,14 @@ and rollback fence are documented in
 informational until a separately reviewed live cutover is approved; the current
 runtime remains authoritative.
 
+The current host is operator-attested as a user-owned Oracle Cloud Compute
+instance. The preferred future boundary is a separate on-demand OCI instance
+launched from a pinned custom image, registered as a one-job JIT runner, routed
+from a private subnet through an OCI NAT gateway with a reserved public IP, and
+terminated with its boot volume after durable evidence. This is a migration
+decision only: no OCI resource, Vault secret, allowlist entry, or live route has
+been created or changed.
+
 Before selecting a replacement host, manually run `Runtime Isolation Host
 Profile`. It has repository read permission only, receives no GitHub environment,
 OIDC token, or secret, and writes a redacted artifact. Provider or network fields

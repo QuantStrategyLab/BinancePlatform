@@ -9,21 +9,21 @@ credentials.
 
 The current `main.yml` workflow remains the production path until a separately
 reviewed cutover change is approved. Phase 1 is a fixed-input, no-order shadow
-replay on a clean GitHub-hosted runner. Phase 2 is deployment-neutral discovery
-and replay parity: it must identify the existing boundary before choosing an
-ephemeral runner host or Cloud Run.
+replay on a clean GitHub-hosted runner. Phase 2 identified the existing boundary
+and selected an Oracle Cloud disposable-instance direction without provisioning
+it.
 
 ## Current architecture
 
 The current runtime is dispatched through GitHub Actions and runs on the
-`binance-quant-runner` self-hosted runner. The GitHub repository runner API
-confirms only that it is an online Linux/X64 runner; it does not expose whether
-the host is GCE, OCI, or another VPS/VM. The repository rename checklist records
-the deployment as Oracle/VPS, but that remains documentation evidence rather
-than a fresh host attestation. The broker job checks out the repository,
-authenticates to Google Cloud through GitHub OIDC, builds or reuses a local
-dependency environment, and injects the Binance credentials only into the
-strategy step.
+`binance-quant-runner` self-hosted runner on a user-owned **Oracle Cloud
+Infrastructure Compute instance**. This is an operator-attested deployment
+fact. The GitHub repository runner API independently confirms an online
+Linux/X64 runner, and the redacted host profile reports a QEMU VM; neither API
+nor DMI alone identifies the OCI tenancy or instance OCID. The broker job checks
+out the repository, authenticates to Google Cloud through GitHub OIDC, builds or
+reuses a local dependency environment, and injects the Binance credentials only
+into the strategy step.
 
 Recent hardening already provides useful boundaries:
 
@@ -43,16 +43,17 @@ and does not recommend persistent runners for that purpose.
 ## Phase 2 decision gate
 
 Do not select Cloud Run merely because the runtime uses Google Cloud for state.
-The current runner may be an ordinary VPS with an already allowlisted stable
-egress address. Phase 2 first records the host provider, runner registration
-mode, network-egress match, and secret source without reading any secret value.
+The current runner is an ordinary Oracle Cloud VPS/VM with an existing network
+path. Phase 2 records the host boundary, network-egress match, and secret source
+without reading any secret value, then compares Oracle-native isolation with a
+cross-cloud Cloud Run migration.
 
 Current evidence is:
 
 | Question | Evidence | Status |
 | --- | --- | --- |
 | Runner registration | GitHub repository API reports `binance-quant-runner`, Linux/X64, online | Confirmed; API did not attest ephemeral mode |
-| Host provider | Host profile run `32644765084` reports QEMU `Standard PC (i440FX + PIIX, 1996)` | VM confirmed; cloud/VPS provider remains `UNVERIFIED` |
+| Host provider | Operator attests Oracle Cloud; host profile run `32644765084` reports QEMU `Standard PC (i440FX + PIIX, 1996)` | OCI deployment confirmed by operator; exact instance OCID remains unrecorded |
 | Network egress | Host profile did not find an operator-configured expected fingerprint | `UNVERIFIED`; raw address was not recorded |
 | Broker secret source | `main.yml` obtains Binance credentials from GitHub environment secrets | Confirmed |
 | Broker secret scope | Credentials are injected only into the trading strategy step | Confirmed by contract tests |
@@ -67,31 +68,34 @@ and the expected allowlisted-address digest, records only `MATCHED` or
 
 | Candidate | Isolation | Network egress | Secret boundary | Cost and maintenance | Rollback |
 | --- | --- | --- | --- | --- | --- |
-| Ephemeral runner on the same persistent host | Low/medium: GitHub assigns one job, but the host, root processes, filesystem, and container daemon persist | Keeps the current address | Still enters the persistent host; current GitHub environment secret flow can remain | Lowest incremental cost and simplest bootstrap; host patching and compromise recovery remain | Fast: re-register the old runner, but a compromised host is not a trustworthy rollback target |
-| Independent disposable VPS/VM runner | High when the whole VM is created from a pinned image and destroyed after one job | Reserved/floating IP or a small fixed-egress gateway can preserve allowlisting | JIT runner receives only the live step secret; later move the named broker secret behind short-lived OIDC/cloud identity | Medium cost; image publishing, JIT token delivery, external logs, teardown, and orphan cleanup need automation | Straightforward: stop provisioning new VMs and re-enable the unchanged old path after reconciliation |
-| Cloud Run Job | High managed task isolation with separate invoker/runtime identities | Dynamic by default; fixed egress requires VPC routing, Cloud NAT, and a reserved IP | Secret Manager resource-level access fits naturally; GitHub needs only OIDC invoke authority | Per-run compute is low, but NAT/router/static-IP fixed cost and new GCP/IaC operations may dominate a personal deployment | Straightforward at the trigger level; container, IAM, NAT, and job revision must remain reproducible |
+| Ephemeral runner on the same Oracle instance | Low/medium: GitHub assigns one job, but the OCI instance, root processes, filesystem, and container daemon persist | Keeps the current OCI public address and Binance allowlist unchanged | Current GitHub environment secret flow can remain, but every run still enters the persistent host | Lowest incremental cost and simplest bootstrap; no meaningful host-compromise containment | Fast operational rollback, but a suspected host compromise requires instance replacement before reuse |
+| Independent disposable OCI Compute JIT runner | High when a whole on-demand instance is launched from a pinned custom image and terminated with its boot volume after one job | Put the runner in a private subnet behind an OCI NAT gateway with a reserved public IP; the instance needs no inbound public IP | Use an OCI instance principal in a tightly matched dynamic group to read one OCI Vault secret version; never bake GitHub or Binance credentials into the image | Pay for right-sized Compute and boot volume only while provisioned, plus image/storage/network resources; launcher, log export, timeout cleanup, and orphan detection require automation | Stop creating instances, wait for/terminate the candidate, reconcile, then restore the unchanged old Oracle runner; reserved NAT IP remains stable |
+| Cloud Run Job | High managed task isolation with separate GCP invoker/runtime identities | Dynamic by default; fixed egress requires GCP Direct VPC egress, Cloud NAT, and a reserved IP separate from the current OCI path | Google Secret Manager fits naturally, but moves the broker-secret and execution boundary into a second cloud | Per-run compute can be small, but GCP NAT/static networking, image registry, IAM, and cross-cloud operations add fixed complexity | Trigger rollback is simple; job revision, IAM, NAT, secret version, and old OCI ownership still need reconciliation |
 
 ### Recommendation
 
-Use an **independent disposable VPS/VM JIT runner** as the primary target. It is
-the smallest migration from the current Python/GitHub Actions runtime that also
-creates a real fresh-host boundary and supports Binance IP allowlisting. Build it
-from an immutable image, register it for one job with GitHub's ephemeral/JIT
-mode, forward runner logs externally, and destroy the VM after the terminal
-report is durable.
+Use an **independent disposable OCI Compute JIT runner** as the primary target.
+It is the smallest migration from the current Oracle-hosted Python/GitHub Actions
+runtime that also creates a real fresh-host boundary. Build it from an immutable
+OCI custom image, launch an on-demand right-sized flexible instance in a private
+subnet, register it for one job with GitHub's ephemeral/JIT mode, route outbound
+traffic through an OCI NAT gateway with a reserved public IP, forward runner
+logs externally, and terminate the instance **and boot volume** after the
+terminal report is durable.
 
 Treat same-host ephemeral registration as a short transitional hardening step,
 not the final boundary. It prevents a runner from receiving a second GitHub job,
-but cannot remove a compromise from the persistent QEMU host.
+but cannot remove a compromise from the persistent Oracle/QEMU instance.
 
 Keep Cloud Run Job as the managed alternative. Select it only if a digest-pinned
 container passes the same fixture and forward shadow, and the fixed-egress
 Cloud NAT cost and operational path are explicitly accepted. Existing Firestore
 and GitHub OIDC use is not, by itself, a reason to move execution to Cloud Run.
 
-This recommendation remains pre-provisioning: the egress fingerprint and actual
-VPS provider must be attested before choosing the VM image, reserved-address, or
-Secret Manager implementation.
+This recommendation remains pre-provisioning: record the OCI tenancy, region,
+compartment, current instance/VNIC, route table, and allowlisted egress ownership
+outside public artifacts. Confirm the new reserved NAT address and OCI IAM
+policy before choosing an image or Vault implementation.
 
 ### Phase 2 validation evidence
 
@@ -105,6 +109,53 @@ Secret Manager implementation.
   `suppressed_call_count=11`.
 - Both accepted reports produced semantic digest
   `c52a7cf15079ef3346b6f45bbd3b48aef59c539e868e7780ea9f535e17fee1ed`.
+
+### Preferred OCI control and data planes
+
+```text
+trusted provisioning controller
+  -> OCI launcher identity (launch/get/terminate only; no Vault secret read)
+  -> launch one on-demand instance from a pinned custom-image OCID
+       -> private subnet, no inbound public IP
+       -> defined security tag: BinanceRuntimeCandidate
+       -> short-lived GitHub JIT registration, one job only
+       -> OCI NAT gateway with a reserved public IP
+       -> OCI instance principal / narrowly matched dynamic group
+            -> read one named OCI Vault secret bundle version
+            -> write external runner/runtime evidence
+       -> existing Google WIF path for bounded Firestore access
+  -> terminal evidence and reconciliation
+  -> runner deregistration
+  -> terminate instance with boot volume deletion
+```
+
+Launcher and runtime permissions must be separate. The launcher may create,
+inspect, and terminate only tagged candidate instances and attach approved
+network/image resources. It must not read the Binance secret. The instance
+principal may read only the named secret bundle and required evidence/state
+resources; it must not create instances, edit dynamic groups or policies, change
+the NAT gateway, or manage Vault secrets.
+
+Use an OCI dynamic-group matching rule constrained by the dedicated compartment
+and a defined security tag, not all instances in the tenancy. The custom image
+must contain no runner registration, GitHub token, OCI user key, Binance key, or
+secret material. Deliver only the short-lived GitHub JIT registration to the new
+instance bootstrap; retrieve the broker secret at runtime with the instance
+principal.
+
+OCI supports reserved public IPs on NAT gateways. This lets disposable private
+instances keep a stable Binance-visible source address without exposing SSH or a
+public address on each runner. A new NAT address must remain no-order until a
+human verifies it and updates the Binance allowlist. Never let old and new live
+paths place orders merely because both addresses are temporarily allowlisted.
+
+Use on-demand capacity for the trading candidate. OCI preemptible instances can
+be reclaimed and provide only a short termination warning, which is unsuitable
+for an order/reconciliation boundary. Right-size a flexible shape and terminate
+it promptly; explicitly request boot-volume deletion because OCI otherwise
+preserves the boot volume by default. Secret Management itself is listed as
+free, but Vault/key choices, custom images, boot volumes, Compute, and networking
+must be checked with the tenancy's OCI cost estimator before provisioning.
 
 ### Cloud Run candidate control and data planes
 
@@ -180,8 +231,9 @@ or live readiness.
 ### Phase 2: deployment-neutral discovery and fixture parity (this change)
 
 - Collect a redacted current-runner profile without OIDC or secret access.
-- Mark host provider, registration mode, or egress as `UNVERIFIED` rather than
-  guessing from the GCP project or legacy documentation.
+- Record the operator-attested Oracle deployment separately from machine
+  evidence. Keep the exact OCI resource identity, runner registration mode, and
+  egress `UNVERIFIED` until each is attested without publishing sensitive data.
 - Run the same portable fixed-input fixture on the GitHub-hosted runner and,
   optionally, the current self-hosted runner.
 - Require `dry_run=true`, zero executed calls, no state writes, and a matching
@@ -199,21 +251,35 @@ a pinned machine/container image, verified teardown, and external logs.
 
 ### Recommended migration sequence
 
-1. Configure the expected allowlisted egress fingerprint and rerun the redacted
-   host profile. Do not record the raw address in workflow artifacts.
-2. Define a pinned disposable-VM image and bootstrap that registers a one-job
-   JIT/ephemeral runner. Forward runner diagnostics before deregistration.
-3. Run the fixed-input no-order fixture on the disposable VM and require the
-   accepted semantic digest above. Destroy the VM and verify it cannot accept a
-   second job.
-4. Run a read-only forward shadow with a separate no-order/no-withdrawal Binance
-   credential and reconcile its decisions against the current runtime.
-5. Rehearse missing report, timeout, duplicate dispatch, state lease, teardown,
-   and orphan-VM failure paths. Platform retries remain disabled.
-6. Only after evidence review, request human approval for an existing-envelope
-   canary. Fence the old scheduler before any candidate can place an order.
-7. Retire the persistent runner and rotate credentials in a later cleanup after
-   the observation and rollback window closes.
+1. Inventory the existing Oracle instance, VNIC, subnet, route table, public IP,
+   OCI compartment, and Binance allowlist ownership. Configure the expected
+   egress fingerprint and rerun the redacted host profile; do not publish the raw
+   address or OCIDs in workflow artifacts.
+2. Define a separate OCI candidate compartment/private subnet, reserved NAT
+   public IP, NSG/security-list rules, launcher identity, tagged dynamic group,
+   runtime policy, Vault secret contract, and external log/evidence destination
+   as reviewed IaC. Do not apply it in the documentation phase.
+3. Build a pinned OCI custom image without secrets or runner registration.
+   Launch one on-demand instance and deliver a short-lived GitHub JIT token. The
+   candidate must have no inbound public IP and no broker secret for fixture
+   shadow.
+4. Run the fixed-input no-order fixture and require the accepted semantic digest
+   above. Forward runner diagnostics, terminate the instance with boot-volume
+   deletion, and verify the registration cannot accept a second job.
+5. Run a read-only forward shadow through the reserved OCI NAT address with a
+   separate no-order/no-withdrawal Binance credential retrieved by instance
+   principal from OCI Vault. Reconcile decisions against the current runtime.
+6. Rehearse missing report, timeout, duplicate dispatch, state lease, launcher
+   failure, teardown failure, orphan instance/volume, NAT outage, Vault outage,
+   and runner deregistration failure. Platform retries remain disabled.
+7. Only after evidence review, have a human add/confirm the candidate NAT address
+   in the Binance allowlist and approve an existing-envelope canary. Fence the
+   old scheduler before any candidate can place an order.
+8. Roll back by disabling new provisioning, terminating the candidate after
+   reconciliation, and restoring the unchanged old Oracle path. Do not reassign
+   addresses or rotate secrets during incident evidence collection.
+9. Retire the persistent runner, remove the old allowlisted address, and rotate
+   credentials only in a later cleanup after the observation window closes.
 
 ### Phase 3: read-only forward shadow
 
@@ -273,6 +339,16 @@ All common items below are mandatory before provisioning any candidate:
       parallelism one, `maxRetries: 0`, and a bounded timeout.
 - [ ] Disposable VM, if selected, uses a one-job JIT/ephemeral registration,
       external runner logs, and verified VM destruction.
+- [ ] OCI candidate is an on-demand instance launched from a pinned custom-image
+      OCID in a private subnet; preemptible capacity is prohibited.
+- [ ] OCI candidate egresses only through a NAT gateway with a reviewed reserved
+      public IP; the runner itself has no inbound public IP.
+- [ ] OCI launcher and runtime instance-principal policies are separate; the
+      runtime dynamic group is constrained by compartment and defined tag.
+- [ ] OCI custom image, bootstrap metadata, logs, and terminal artifact contain
+      no GitHub, Binance, OCI user-key, or Vault secret value.
+- [ ] OCI termination deletes the candidate boot volume and an orphan scanner
+      detects instances, volumes, VNICs, and runner registrations left behind.
 - [ ] Firestore lease prevents overlapping old/new runtime cycles.
 - [ ] Static outbound IP is observed from the job and allowlisted at Binance.
 - [ ] Binance key has withdrawals disabled and the smallest required trade scope.
@@ -296,8 +372,9 @@ During live canary or cutover:
    durable execution report. Do not start the old path while ownership is
    ambiguous.
 3. Mark the candidate parked and revoke its invoker binding or runner
-   registration. Do not delete evidence or secret versions during incident
-   response.
+   registration. For OCI, block new launches and terminate the disposable
+   instance only after runner/runtime logs are durable. Do not delete evidence or
+   secret versions during incident response.
 4. Re-enable the old dispatch path only after the execution lease is cleared and
    the broker state matches the expected portfolio.
 5. Record the rollback reason and require a new canary decision before retrying.
@@ -309,6 +386,12 @@ permission to bypass a triggered circuit breaker or expand the live envelope.
 
 - Treating `config.sh --ephemeral` on the existing persistent host as complete
   isolation: runner deregistration does not erase a compromised machine.
+- Using an OCI preemptible instance for the live execution boundary: OCI may
+  reclaim it with only a short warning during order or reconciliation work.
+- Baking the GitHub JIT token, OCI user API key, or Binance credential into the
+  OCI custom image or cloud-init metadata.
+- Reassigning the old runner's public IP as an automatic cutover mechanism:
+  address ownership does not fence schedulers or reconcile broker state.
 - Reusing the persistent VPS but deleting the workspace after each run: cleanup
   cannot reliably remove a compromised process, runner service, or host secret.
 - Selecting Cloud Run only because Firestore and GCP OIDC already exist: that
@@ -329,6 +412,15 @@ permission to bypass a triggered circuit breaker or expand the live envelope.
 - [GitHub self-hosted runners reference](https://docs.github.com/en/actions/reference/runners/self-hosted-runners)
 - [GitHub secure use reference](https://docs.github.com/en/actions/reference/security/secure-use)
 - [GitHub compromised runners](https://docs.github.com/en/actions/concepts/security/compromised-runners)
+- [OCI Compute instances](https://docs.oracle.com/en-us/iaas/Content/Compute/Tasks/instances.htm)
+- [OCI custom images](https://docs.oracle.com/en-us/iaas/Content/Compute/Tasks/managingcustomimages.htm)
+- [OCI instance termination and boot volumes](https://docs.oracle.com/en-us/iaas/Content/Compute/Tasks/terminatinginstance.htm)
+- [OCI preemptible instances](https://docs.oracle.com/en-us/iaas/Content/Compute/Concepts/preemptible.htm)
+- [OCI reserved public IP addresses](https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/managingpublicIPs.htm)
+- [OCI NAT gateway creation](https://docs.oracle.com/en-us/iaas/Content/Network/Tasks/nat-create.htm)
+- [OCI instance principals and dynamic groups](https://docs.oracle.com/en-us/iaas/Content/Identity/Tasks/callingservicesfrominstances.htm)
+- [OCI Secret Management](https://docs.oracle.com/en-us/iaas/Content/secret-management/Concepts/manage-secrets.htm)
+- [OCI Secret Management pricing](https://www.oracle.com/security/cloud-security/secrets/)
 - [Google Cloud Run jobs](https://cloud.google.com/run/docs/create-jobs)
 - [Execute Cloud Run jobs](https://cloud.google.com/run/docs/execute/jobs)
 - [Cloud Run Job secrets](https://cloud.google.com/run/docs/configuring/jobs/secrets)
