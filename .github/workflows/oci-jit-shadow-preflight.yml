@@ -1,0 +1,123 @@
+name: OCI JIT Shadow Preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      require_ready:
+        description: "Fail unless all redacted OCI variables and attestations are configured"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  preflight-and-no-order-shadow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout BinancePlatform
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Setup Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Render redacted non-applying OCI lifecycle plan
+        env:
+          OCI_JIT_REGION: ${{ vars.OCI_JIT_REGION }}
+          OCI_JIT_COMPARTMENT_OCID: ${{ vars.OCI_JIT_COMPARTMENT_OCID }}
+          OCI_JIT_AVAILABILITY_DOMAIN: ${{ vars.OCI_JIT_AVAILABILITY_DOMAIN }}
+          OCI_JIT_SUBNET_OCID: ${{ vars.OCI_JIT_SUBNET_OCID }}
+          OCI_JIT_NAT_GATEWAY_OCID: ${{ vars.OCI_JIT_NAT_GATEWAY_OCID }}
+          OCI_JIT_RESERVED_PUBLIC_IP_OCID: ${{ vars.OCI_JIT_RESERVED_PUBLIC_IP_OCID }}
+          OCI_JIT_IMAGE_OCID: ${{ vars.OCI_JIT_IMAGE_OCID }}
+          OCI_JIT_SHAPE: ${{ vars.OCI_JIT_SHAPE }}
+          OCI_JIT_RUNNER_GROUP: ${{ vars.OCI_JIT_RUNNER_GROUP }}
+          OCI_JIT_DEFINED_TAG_NAMESPACE: ${{ vars.OCI_JIT_DEFINED_TAG_NAMESPACE }}
+          OCI_JIT_DEFINED_TAG_KEY: ${{ vars.OCI_JIT_DEFINED_TAG_KEY }}
+          OCI_JIT_DEFINED_TAG_VALUE: ${{ vars.OCI_JIT_DEFINED_TAG_VALUE }}
+          OCI_JIT_RUNTIME_DYNAMIC_GROUP_OCID: ${{ vars.OCI_JIT_RUNTIME_DYNAMIC_GROUP_OCID }}
+          OCI_JIT_RUNTIME_POLICY_OCID: ${{ vars.OCI_JIT_RUNTIME_POLICY_OCID }}
+          OCI_JIT_LAUNCHER_PRINCIPAL_OCID: ${{ vars.OCI_JIT_LAUNCHER_PRINCIPAL_OCID }}
+          OCI_JIT_EVIDENCE_BUCKET_NAME: ${{ vars.OCI_JIT_EVIDENCE_BUCKET_NAME }}
+          OCI_JIT_ATTESTATIONS_JSON: ${{ vars.OCI_JIT_ATTESTATIONS_JSON }}
+          REQUIRE_READY: ${{ inputs.require_ready }}
+        run: |
+          set -euo pipefail
+          args=(
+            preflight
+            --contract infra/oci-jit-shadow/contract.json
+            --attestations-env OCI_JIT_ATTESTATIONS_JSON
+            --output reports/oci_jit_shadow_preflight.json
+          )
+          if [[ "$REQUIRE_READY" == "true" ]]; then
+            args+=(--require-ready)
+          fi
+          python scripts/oci_jit_shadow_preflight.py "${args[@]}"
+
+      - name: Exercise fail-closed orphan audit contract
+        run: |
+          set -euo pipefail
+          python scripts/oci_jit_shadow_preflight.py audit-orphans \
+            --contract infra/oci-jit-shadow/contract.json \
+            --inventory tests/fixtures/oci_jit_shadow/clean_inventory.json \
+            --output reports/oci_jit_shadow_orphan_audit.json \
+            --require-ready
+
+      - name: Resolve pinned dependency refs
+        id: refs
+        shell: bash
+        run: |
+          set -euo pipefail
+          qpk_ref="$(grep -Eo 'QuantPlatformKit\.git@[0-9a-f]+' pyproject.toml | head -n1 | sed 's/.*@//')"
+          strategies_ref="$(grep -Eo 'CryptoStrategies\.git@[0-9a-f]+' pyproject.toml | head -n1 | sed 's/.*@//')"
+          test -n "$qpk_ref"
+          test -n "$strategies_ref"
+          echo "qpk_ref=$qpk_ref" >> "$GITHUB_OUTPUT"
+          echo "strategies_ref=$strategies_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout QuantPlatformKit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: QuantStrategyLab/QuantPlatformKit
+          ref: ${{ steps.refs.outputs.qpk_ref }}
+          path: external/QuantPlatformKit
+
+      - name: Checkout CryptoStrategies
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: QuantStrategyLab/CryptoStrategies
+          ref: ${{ steps.refs.outputs.strategies_ref }}
+          path: external/CryptoStrategies
+
+      - name: Install locked runtime
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check uv==0.11.6
+          uv sync --frozen --no-dev
+          uv pip install --no-deps -e external/QuantPlatformKit -e external/CryptoStrategies
+
+      - name: Run fixed-input no-order replay
+        env:
+          BINANCE_DRY_RUN: "true"
+        run: |
+          set -euo pipefail
+          uv run --no-sync python scripts/run_isolation_shadow_fixture.py \
+            --output reports/oci_jit_shadow_report.json \
+            --digest-output reports/oci_jit_shadow_report.sha256
+
+      - name: Upload redacted preflight and shadow evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: oci-jit-shadow-preflight-${{ github.run_id }}
+          path: |
+            reports/oci_jit_shadow_preflight.json
+            reports/oci_jit_shadow_orphan_audit.json
+            reports/oci_jit_shadow_report.json
+            reports/oci_jit_shadow_report.sha256
+          if-no-files-found: warn
+          retention-days: 7

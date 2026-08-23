@@ -109,6 +109,16 @@ and compare semantic report digests. Neither job references Binance credentials,
 the `binance-runtime` environment, or Google OIDC. Passing proves fixture parity,
 not live readiness or host ephemerality.
 
+`OCI JIT Shadow Preflight` implements the next non-applying preparation step. It
+checks the committed private-subnet, reserved-NAT, defined-tag,
+instance-principal, one-job runner, and delete-on-termination contract; reports
+which operator-owned OCI repository variables are still missing; exercises the
+fail-closed orphan audit; and reruns the no-order fixture. It has no OCI OIDC,
+broker secret, environment, or mutation authority. The required variables and
+redacted attestation format are listed in
+[`infra/oci-jit-shadow/README.md`](../infra/oci-jit-shadow/README.md). A clean
+fixture audit proves the checker, not the absence of real OCI or GitHub orphans.
+
 ## Degraded Mode Ladder
 
 Healthy mode:

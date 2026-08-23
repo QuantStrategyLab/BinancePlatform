@@ -1,0 +1,86 @@
+{
+  "schema_version": "qsl.oci_jit_shadow_contract.v1",
+  "deployment_mode": "no_order_shadow",
+  "apply_authorized": false,
+  "required_repository_variables": [
+    "OCI_JIT_REGION",
+    "OCI_JIT_COMPARTMENT_OCID",
+    "OCI_JIT_AVAILABILITY_DOMAIN",
+    "OCI_JIT_SUBNET_OCID",
+    "OCI_JIT_NAT_GATEWAY_OCID",
+    "OCI_JIT_RESERVED_PUBLIC_IP_OCID",
+    "OCI_JIT_IMAGE_OCID",
+    "OCI_JIT_SHAPE",
+    "OCI_JIT_RUNNER_GROUP",
+    "OCI_JIT_DEFINED_TAG_NAMESPACE",
+    "OCI_JIT_DEFINED_TAG_KEY",
+    "OCI_JIT_DEFINED_TAG_VALUE",
+    "OCI_JIT_RUNTIME_DYNAMIC_GROUP_OCID",
+    "OCI_JIT_RUNTIME_POLICY_OCID",
+    "OCI_JIT_LAUNCHER_PRINCIPAL_OCID",
+    "OCI_JIT_EVIDENCE_BUCKET_NAME",
+    "OCI_JIT_ATTESTATIONS_JSON"
+  ],
+  "network": {
+    "private_subnet_required": true,
+    "assign_public_ip": false,
+    "nat_gateway_required": true,
+    "reserved_public_ip_required": true,
+    "inbound_rules_allowed": false
+  },
+  "compute": {
+    "capacity_type": "ON_DEMAND",
+    "runner_assignment": "ONE_JOB",
+    "pinned_custom_image_required": true,
+    "max_instance_age_minutes": 60,
+    "delete_boot_volume_on_termination": true
+  },
+  "identity": {
+    "instance_principal_required": true,
+    "dynamic_group_requires_compartment": true,
+    "dynamic_group_requires_defined_tag": true,
+    "launcher_scope_defined_tag_only": true,
+    "launcher_can_read_broker_secret": false,
+    "launcher_can_manage_network": false,
+    "launcher_can_manage_iam": false,
+    "runtime_can_read_broker_secret": false,
+    "runtime_can_write_evidence": true,
+    "runtime_can_manage_compute": false,
+    "runtime_can_manage_iam": false,
+    "runtime_can_manage_vault": false
+  },
+  "shadow": {
+    "broker_secret_allowed": false,
+    "github_oidc_allowed": false,
+    "dry_run_required": true,
+    "executed_call_count_required": 0,
+    "platform_retries": 0
+  },
+  "cleanup": {
+    "delete_boot_volume": true,
+    "deregister_runner": true,
+    "orphan_states": [
+      "RUNNING",
+      "STARTING",
+      "STOPPED",
+      "STOPPING"
+    ],
+    "orphan_resource_types": [
+      "instance",
+      "boot_volume",
+      "vnic_attachment",
+      "github_runner"
+    ]
+  },
+  "planned_operations": [
+    "validate_configuration",
+    "validate_read_only_oci_attestations",
+    "launch_tagged_private_instance",
+    "register_one_job_jit_runner",
+    "run_no_order_shadow",
+    "persist_redacted_terminal_evidence",
+    "deregister_runner",
+    "terminate_instance_with_boot_volume_deletion",
+    "audit_orphans"
+  ]
+}
