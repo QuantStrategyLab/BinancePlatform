@@ -94,11 +94,14 @@ class WatchdogWorkflowTests(unittest.TestCase):
             text,
         )
         preflight = text.index("- name: Validate deployment identity configuration")
-        checkout = text.index("- uses: actions/checkout@v6")
+        checkout = text.index("- uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6")
         auth = text.index("- name: Authenticate to Google Cloud")
         self.assertLess(preflight, checkout)
         self.assertLess(preflight, auth)
-        self.assertIn("uses: google-github-actions/auth@v3", text)
+        self.assertIn(
+            "uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3",
+            text,
+        )
         self.assertIn("workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}", text)
         self.assertIn("service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}", text)
         self.assertIn("WATCHDOG_MAX_AGE_SECONDS: ${{ vars.WATCHDOG_MAX_AGE_SECONDS || '4500' }}", text)
