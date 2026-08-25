@@ -163,6 +163,28 @@ class MainRuntimeErrorNotificationTests(unittest.TestCase):
             ):
                 self.assertFalse(main._notify_runtime_error(RuntimeError("boom")))
 
+    def test_runtime_error_notification_prefers_qsl_global_telegram_chat_id(self):
+        observed = {}
+
+        def fake_send_tg_msg(token, chat_id, _text):
+            observed["token"] = token
+            observed["chat_id"] = chat_id
+            return True
+
+        with patch.dict(
+            os.environ,
+            {
+                "TG_TOKEN": "token-1",
+                "QSL_GLOBAL_TELEGRAM_CHAT_ID": "qsl-chat-id",
+                "GLOBAL_TELEGRAM_CHAT_ID": "legacy-chat-id",
+            },
+            clear=False,
+        ):
+            with patch.object(main, "send_tg_msg", fake_send_tg_msg):
+                self.assertTrue(main._notify_runtime_error(RuntimeError("boom")))
+
+        self.assertEqual(observed, {"token": "token-1", "chat_id": "qsl-chat-id"})
+
 
 if __name__ == "__main__":
     unittest.main()
