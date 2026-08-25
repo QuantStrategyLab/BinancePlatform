@@ -230,6 +230,41 @@ class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
             with patch.object(heartbeat.urllib.request, "urlopen", return_value=FakeResponse()):
                 self.assertFalse(heartbeat._send_telegram("heartbeat failed"))
 
+    def test_send_telegram_prefers_qsl_global_telegram_chat_id(self) -> None:
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+            def read(self):
+                return b'{"ok":true}'
+
+        observed = {}
+
+        def fake_urlopen(request, timeout):
+            observed["body"] = request.data.decode("utf-8")
+            observed["timeout"] = timeout
+            return FakeResponse()
+
+        with patch.dict(
+            os.environ,
+            {
+                "TG_TOKEN": "token-1",
+                "QSL_GLOBAL_TELEGRAM_CHAT_ID": "qsl-chat-id",
+                "GLOBAL_TELEGRAM_CHAT_ID": "legacy-chat-id",
+            },
+            clear=True,
+        ):
+            with patch.object(heartbeat.urllib.request, "urlopen", side_effect=fake_urlopen):
+                self.assertTrue(heartbeat._send_telegram("heartbeat failed"))
+
+        self.assertIn("chat_id=qsl-chat-id", observed["body"])
+        self.assertNotIn("legacy-chat-id", observed["body"])
+
 
 if __name__ == "__main__":
     unittest.main()

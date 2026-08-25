@@ -147,6 +147,22 @@ class RuntimeConfigSupportTests(unittest.TestCase):
 
         self.assertEqual(runtime.tg_chat_id, "shared-chat-id")
 
+    def test_build_live_runtime_prefers_qsl_global_telegram_chat_id(self):
+        with patch.dict(
+            os.environ,
+            {
+                "BINANCE_API_KEY": "api-key",
+                "BINANCE_API_SECRET": "api-secret",
+                "TG_TOKEN": "tg-token",
+                "QSL_GLOBAL_TELEGRAM_CHAT_ID": "qsl-chat-id",
+                "GLOBAL_TELEGRAM_CHAT_ID": "legacy-chat-id",
+            },
+            clear=False,
+        ):
+            runtime = build_live_runtime()
+
+        self.assertEqual(runtime.tg_chat_id, "qsl-chat-id")
+
     def test_build_live_runtime_uses_runtime_target_json(self):
         runtime_target = {
             "platform_id": "binance",

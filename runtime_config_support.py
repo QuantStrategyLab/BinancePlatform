@@ -142,7 +142,7 @@ def build_live_runtime(
         api_key=os.getenv("BINANCE_API_KEY", ""),
         api_secret=os.getenv("BINANCE_API_SECRET", ""),
         tg_token=os.getenv("TG_TOKEN", ""),
-        tg_chat_id=os.getenv("GLOBAL_TELEGRAM_CHAT_ID", ""),
+        tg_chat_id=os.getenv("QSL_GLOBAL_TELEGRAM_CHAT_ID") or os.getenv("GLOBAL_TELEGRAM_CHAT_ID", ""),
         state_loader=state_loader,
         state_writer=state_writer,
         notifier=notifier,

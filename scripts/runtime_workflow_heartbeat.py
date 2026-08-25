@@ -328,7 +328,7 @@ def _assess_runtime_heartbeat(
 
 def _send_telegram(message: str) -> bool:
     token = os.environ.get("TG_TOKEN") or os.environ.get("TELEGRAM_TOKEN")
-    chats = _split_values(os.environ.get("GLOBAL_TELEGRAM_CHAT_ID"))
+    chats = _split_values(os.environ.get("QSL_GLOBAL_TELEGRAM_CHAT_ID") or os.environ.get("GLOBAL_TELEGRAM_CHAT_ID"))
     if not token or not chats:
         print("Telegram heartbeat notification skipped: target is not configured.", file=sys.stderr)
         return False

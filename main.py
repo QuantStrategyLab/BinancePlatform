@@ -449,7 +449,7 @@ def _runtime_error_notification_message(exc):
 
 def _notify_runtime_error(exc):
     token = os.getenv("TG_TOKEN", "")
-    chat_id = os.getenv("GLOBAL_TELEGRAM_CHAT_ID", "")
+    chat_id = os.getenv("QSL_GLOBAL_TELEGRAM_CHAT_ID") or os.getenv("GLOBAL_TELEGRAM_CHAT_ID", "")
     if not token or not chat_id:
         print("Binance runtime error notification skipped: no Telegram target configured.")
         return False
