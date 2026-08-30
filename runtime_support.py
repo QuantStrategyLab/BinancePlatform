@@ -252,6 +252,7 @@ class ExecutionRuntime:
     state_writer: Optional[Callable[[dict[str, Any]], Any]] = None
     notifier: Optional[Callable[..., Any]] = None
     runtime_target: Any = None
+    standard_execution_permitted: bool = True
     trend_pool_payload: Optional[dict[str, Any]] = None
     btc_market_snapshot: Optional[dict[str, Any]] = None
     trend_indicator_snapshots: Optional[dict[str, Any]] = None
@@ -289,6 +290,7 @@ def build_execution_report(runtime):
         "status": "ok",
         "run_id": str(runtime.run_id),
         "dry_run": bool(runtime.dry_run),
+        "standard_execution_permitted": bool(getattr(runtime, "standard_execution_permitted", True)),
         "selected_symbols": {
             "active_trend_pool": [],
             "selected_candidates": [],
@@ -462,7 +464,7 @@ def finalize_notification_delivery(report):
 def runtime_set_trade_state(runtime, report, state, *, reason):
     payload = {"reason": str(reason)}
     report["state_write_intents"].append(payload)
-    if runtime.dry_run:
+    if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
         record_side_effect(runtime, report, effect_type="state_write", target="firestore", payload=payload, executed=False)
         return
     if runtime.state_writer is None:
@@ -473,7 +475,7 @@ def runtime_set_trade_state(runtime, report, state, *, reason):
 
 def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                         max_retries: int = 3, retry_base_sec: float = 1.0):
-    if runtime.dry_run:
+    if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
         record_side_effect(
             runtime, report, effect_type=effect_type,
             target=method_name, payload=dict(payload), executed=False,

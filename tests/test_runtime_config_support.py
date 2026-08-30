@@ -192,6 +192,42 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         self.assertEqual(runtime.runtime_target.service_name, "binance-platform")
         self.assertEqual(runtime.runtime_target.strategy_profile, DEFAULT_STRATEGY_PROFILE)
 
+    def test_live_continuity_paused_state_suppresses_standard_execution(self):
+        runtime_target = {
+            "platform_id": "binance",
+            "strategy_profile": DEFAULT_STRATEGY_PROFILE,
+            "dry_run_only": False,
+            "execution_mode": "live",
+            "deployment_selector": "default",
+            "account_selector": ["default"],
+            "account_scope": "default",
+            "service_name": "binance-platform",
+            "live_continuity": {
+                "state": "PAUSED",
+                "baseline_kind": "legacy_authorized",
+                "baseline_id": "binance-lkg-20260830",
+                "baseline_target_sha256": "a" * 64,
+                "captured_at": "2026-08-30",
+            },
+        }
+        from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
+
+        runtime_target["live_continuity"]["baseline_target_sha256"] = runtime_target_fingerprint(runtime_target)
+        with patch.dict(
+            os.environ,
+            {
+                "RUNTIME_TARGET_JSON": json.dumps(runtime_target),
+                "STRATEGY_PROFILE": DEFAULT_STRATEGY_PROFILE,
+                "BINANCE_DRY_RUN": "false",
+                "RUNTIME_TARGET_ENABLED": "true",
+            },
+            clear=True,
+        ):
+            runtime = build_live_runtime()
+
+        self.assertFalse(runtime.dry_run)
+        self.assertFalse(runtime.standard_execution_permitted)
+
     def test_runtime_target_and_legacy_dry_run_variable_must_match(self):
         runtime_target = {
             "platform_id": "binance",

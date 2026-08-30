@@ -45,6 +45,11 @@ def execute_strategy_cycle(
 
     report = build_execution_report(runtime)
     log_buffer = []
+    if not getattr(runtime, "standard_execution_permitted", True):
+        report["execution_blocked_reason"] = "runtime_target_disabled"
+        log_buffer.append(
+            "Runtime target disables standard execution; monitoring continues and all order/state-write calls are suppressed."
+        )
 
     try:
         if not ensure_runtime_client(runtime, report):

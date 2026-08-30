@@ -10,6 +10,7 @@ from quant_platform_kit.common.runtime_target import (
     build_runtime_target,
     resolve_runtime_target_from_env,
 )
+from quant_platform_kit.common.live_continuity import runtime_target_permits_standard_execution
 
 from notify_i18n_support import build_strategy_display_name, build_translator, get_notify_lang
 from runtime_support import ExecutionRuntime
@@ -50,6 +51,7 @@ class CycleExecutionSettings:
     strategy_display_name_localized: str
     strategy_domain: str
     runtime_target: RuntimeTarget
+    runtime_target_enabled: bool
 
 
 def load_cycle_execution_settings() -> CycleExecutionSettings:
@@ -75,6 +77,10 @@ def load_cycle_execution_settings() -> CycleExecutionSettings:
         strategy_display_name_localized=strategy_display_name_localized,
         strategy_domain=strategy_definition.domain,
         runtime_target=runtime_target,
+        runtime_target_enabled=(
+            get_env_bool("RUNTIME_TARGET_ENABLED", default=True)
+            and runtime_target_permits_standard_execution(runtime_target)
+        ),
     )
 
 
@@ -147,4 +153,5 @@ def build_live_runtime(
         state_writer=state_writer,
         notifier=notifier,
         runtime_target=cycle_settings.runtime_target,
+        standard_execution_permitted=cycle_settings.runtime_target_enabled,
     )
