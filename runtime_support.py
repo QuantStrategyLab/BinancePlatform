@@ -8,6 +8,12 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from quant_platform_kit.common.runtime_reports import build_runtime_report_base
+from application.execution_receipt_adapter import (
+    record_order_failure,
+    record_order_response,
+    record_order_submission_attempt,
+    record_order_transport_uncertainty,
+)
 
 # Binance rate limits (public API: 1200 weight/min, order placement: 50 orders/10s)
 _BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC = 0.25  # max ~4 orders/sec
@@ -484,6 +490,9 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
     if runtime.client is None:
         raise RuntimeError("runtime.client is not configured")
 
+    is_order_call = str(effect_type or "").startswith("order_")
+    if is_order_call:
+        record_order_submission_attempt(report)
     _rate_limit_pause()
     last_error = None
     for attempt in range(max_retries + 1):
@@ -493,9 +502,13 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 runtime, report, effect_type=effect_type,
                 target=method_name, payload=dict(payload), executed=True,
             )
+            if is_order_call:
+                record_order_response(report, response)
             return response
         except Exception as exc:
             last_error = exc
+            if is_order_call:
+                record_order_transport_uncertainty(report)
             if attempt < max_retries:
                 delay = retry_base_sec * (2 ** attempt)
                 time.sleep(delay)
@@ -507,6 +520,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
         payload={"payload": dict(payload), "error": str(last_error), "retries": max_retries},
         executed=False,
     )
+    if is_order_call:
+        record_order_failure(report)
     raise RuntimeError(
         f"Binance API call {method_name} failed after {max_retries} retries"
     ) from last_error

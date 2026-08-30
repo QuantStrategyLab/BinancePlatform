@@ -7,6 +7,7 @@ import os
 
 from quant_platform_kit.common.runtime_reports import persist_runtime_report
 from quant_platform_kit.strategy_lifecycle.performance_monitor import try_record_platform_execution
+from application.execution_receipt_adapter import attach_execution_receipt_from_report
 from runtime_logging import RuntimeLogContext, emit_runtime_log
 from runtime_support import finalize_notification_delivery
 
@@ -231,6 +232,7 @@ def execute_strategy_cycle(
     finally:
         report["log_lines"] = list(log_buffer)
         finalize_notification_delivery(report)
+        attach_execution_receipt_from_report(report)
         try_record_platform_execution(
             str(getattr(runtime, "strategy_profile", "") or ""),
             {

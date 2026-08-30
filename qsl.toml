@@ -9,7 +9,7 @@ expires_at = "2026-09-30"
 next_action = "keep uv.lock current and maintain QPK/CryptoStrategies pin consistency"
 
 [qsl.requires]
-quant_platform_kit = "d420441d0e96a020e333ec678ee88f5d964bbb43"
+quant_platform_kit = "b567acd52a6afa6caca3e35648d4347a1ce13ab1"
 crypto_strategies = "ef78312d7653095f585c4f75d45bf765bedc2751"
 
 [qsl.compat]
