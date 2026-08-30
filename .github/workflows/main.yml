@@ -16,6 +16,9 @@ env:
   GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
   GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
   GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+  # This is the one operator-facing stop control.  A missing value fails
+  # closed; the reviewed repository variable is explicitly set to true.
+  RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED || 'false' }}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref_name }}
@@ -26,11 +29,27 @@ jobs:
     runs-on: self-hosted
     timeout-minutes: 60
     environment: binance-runtime
+    outputs:
+      runtime_target_enabled: ${{ steps.runtime-target-control.outputs.enabled }}
     permissions:
       actions: read
       contents: read
       id-token: write
     steps:
+      - name: 0. Validate runtime target control
+        id: runtime-target-control
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${RUNTIME_TARGET_ENABLED,,}" in
+            true|false) ;;
+            *)
+              echo "::error::RUNTIME_TARGET_ENABLED must be true or false."
+              exit 1
+              ;;
+          esac
+          echo "enabled=${RUNTIME_TARGET_ENABLED,,}" >> "$GITHUB_OUTPUT"
+
       - name: 0. Validate deployment identity configuration
         shell: bash
         run: |
@@ -55,9 +74,11 @@ jobs:
             exit 1
           fi
       - name: 1. Checkout latest code
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' }}
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: 2. Authenticate to Google Cloud
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' }}
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
@@ -68,6 +89,7 @@ jobs:
           cleanup_credentials: true
 
       - name: 3. Prepare or update dependency environment
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' }}
         run: |
           set -euo pipefail
           LOCK_FILE="uv.lock"
@@ -147,6 +169,7 @@ jobs:
           fi
 
       - name: 4. Run trading strategy
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' }}
         run: |
           set -euo pipefail
           if [ "${VALIDATE_ONLY:-false}" = "true" ]; then
@@ -192,9 +215,13 @@ jobs:
           ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW: ${{ vars.ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW }}
           VALIDATE_ONLY: ${{ github.event.inputs.validate_only || 'false' }}
 
+      - name: Confirm target is intentionally disabled
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'false' }}
+        run: echo "Runtime target is disabled; broker strategy was intentionally not invoked."
+
       - name: 5. Stage execution report for isolated log publisher
         continue-on-error: true
-        if: ${{ github.event.inputs.validate_only != 'true' }}
+        if: ${{ github.event.inputs.validate_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: binance-execution-report-${{ github.run_id }}
@@ -203,7 +230,7 @@ jobs:
           retention-days: 1
 
       - name: 6. Notify Telegram on runtime workflow failure
-        if: ${{ failure() && github.event.inputs.validate_only != 'true' }}
+        if: ${{ failure() && github.event.inputs.validate_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -248,7 +275,7 @@ jobs:
   publish-execution-log:
     name: Publish execution log without broker credentials
     needs: deploy
-    if: ${{ needs.deploy.result == 'success' && github.event.inputs.validate_only != 'true' }}
+    if: ${{ needs.deploy.result == 'success' && needs.deploy.outputs.runtime_target_enabled == 'true' && github.event.inputs.validate_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

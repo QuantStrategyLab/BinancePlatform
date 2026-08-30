@@ -69,6 +69,32 @@ The monthly execution pool is locked to the accepted upstream `version` / `as_of
 - Repository variable changes are consumed by the next externally scheduled dispatch; they do not reconfigure the VPS scheduler cadence.
 - Avoid overlapping dispatches from multiple schedulers or from a second manual run while the current runtime job is still in progress.
 
+### Runtime target control and lifecycle evidence
+
+`RUNTIME_TARGET_ENABLED` is the single operator control for this target.  It
+must be the literal `true` or `false`; a missing value fails closed.  The
+reviewed production repository variable is explicitly set to `true` so this
+control does not silently change the established paper-runtime behaviour.
+
+- When it is `false`, `main.yml` finishes without checkout, cloud
+  authentication, dependency installation, strategy startup, broker-secret
+  injection, report publication, or a failure notification.  The existing
+  external scheduler may still dispatch the workflow, but that dispatch is a
+  harmless no-op.
+- When it is `true`, the existing mode declared by `RUNTIME_TARGET_JSON`
+  remains authoritative.  This control neither changes `paper`/`live`, nor
+  changes a strategy profile, leverage, or any order parameter.
+- `Runtime Target Lifecycle` is an hourly GitHub-hosted, read-only workflow.
+  It checks the GitHub runtime dispatch and a scoped Binance execution report
+  in Cloud Storage, then publishes only sanitized status to the central
+  QuantRuntimeSettings lifecycle endpoint.  It never starts the self-hosted
+  runner, contacts Binance, or changes this control.
+- A disabled target is reported as intentionally disabled, not as a failed
+  broker or a successful execution.  A missing report, unavailable monitor,
+  malformed target declaration, or failed runtime dispatch is parked for
+  operator review; none of those states can automatically re-enable the
+  target.
+
 ### Runner security boundary
 
 The current production runtime still uses a persistent self-hosted runner. Treat this as a temporary, higher-risk boundary until the runtime moves to an ephemeral runner or an isolated Cloud Run Job:

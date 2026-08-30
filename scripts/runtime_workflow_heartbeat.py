@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+from pathlib import Path
 import sys
 import time
 import urllib.error
@@ -31,6 +32,32 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if not value:
         return default
     return value in {"1", "true", "yes", "y", "on"}
+
+
+def _runtime_target_enabled() -> bool:
+    """Return the explicit runtime-target control state.
+
+    The platform historically had no such control, so an absent value retains
+    the established runtime behaviour.  A malformed value is handled by the
+    deployment preflight; treating it as enabled here avoids falsely claiming
+    a stopped target when the runner could still execute.
+    """
+
+    raw = (os.environ.get("RUNTIME_TARGET_ENABLED") or "").strip().lower()
+    if not raw:
+        return True
+    return raw not in {"0", "false", "no", "n", "off"}
+
+
+def _write_assessment(assessment: dict[str, Any]) -> None:
+    """Optionally persist the bounded result for another read-only workflow."""
+
+    raw_path = (os.environ.get("RUNTIME_HEARTBEAT_OUTPUT_PATH") or "").strip()
+    if not raw_path:
+        return
+    path = Path(raw_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(assessment, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _positive_float_from_env(name: str, default: float) -> float:
@@ -360,9 +387,6 @@ def _send_telegram(message: str) -> bool:
 
 def main() -> int:
     repository = os.environ.get("GITHUB_REPOSITORY") or "QuantStrategyLab/BinancePlatform"
-    token = os.environ.get("GITHUB_TOKEN")
-    if not token:
-        raise SystemExit("GITHUB_TOKEN is required")
     workflow = os.environ.get("RUNTIME_HEARTBEAT_WORKFLOW") or "main.yml"
     branch = os.environ.get("RUNTIME_HEARTBEAT_BRANCH") or "main"
     name = os.environ.get("RUNTIME_HEARTBEAT_NAME") or "Binance Runtime"
@@ -372,14 +396,44 @@ def main() -> int:
     per_page = _positive_int_from_env("RUNTIME_HEARTBEAT_RUNS_TO_SCAN", 30)
     fail_workflow = _env_bool("RUNTIME_HEARTBEAT_FAIL_WORKFLOW_ON_ALERT", True)
 
+    if not _runtime_target_enabled():
+        assessment = {
+            "schema": _ASSESSMENT_SCHEMA,
+            "observed_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "status": "not_applicable",
+            "reason": "runtime_target_disabled",
+            "query": {"runs_returned": 0},
+        }
+        _write_assessment(assessment)
+        print(json.dumps(assessment, sort_keys=True))
+        print("Runtime workflow heartbeat skipped: runtime target is disabled")
+        return 0
+
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        raise SystemExit("GITHUB_TOKEN is required")
+
     now = dt.datetime.now(dt.timezone.utc)
-    runs = _list_runtime_runs(
-        repository=repository,
-        workflow=workflow,
-        token=token,
-        branch=branch,
-        per_page=per_page,
-    )
+    try:
+        runs = _list_runtime_runs(
+            repository=repository,
+            workflow=workflow,
+            token=token,
+            branch=branch,
+            per_page=per_page,
+        )
+    except Exception as exc:  # noqa: BLE001
+        assessment = {
+            "schema": _ASSESSMENT_SCHEMA,
+            "observed_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "status": "unavailable",
+            "reason": "github_actions_query_unavailable",
+            "query": {"runs_returned": 0},
+            "error_type": type(exc).__name__,
+        }
+        _write_assessment(assessment)
+        print(json.dumps(assessment, sort_keys=True))
+        return 1 if fail_workflow else 0
     assessment = _assess_runtime_heartbeat(
         runs=runs,
         now=now,
@@ -387,6 +441,7 @@ def main() -> int:
         expected_interval_hours=expected_interval_hours,
         max_consecutive_misses=max_consecutive_misses,
     )
+    _write_assessment(assessment)
     print(json.dumps(assessment, sort_keys=True))
 
     if assessment["status"] == "healthy":

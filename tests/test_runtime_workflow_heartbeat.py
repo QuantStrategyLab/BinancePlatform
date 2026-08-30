@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+from pathlib import Path
 import urllib.error
 import unittest
 from unittest.mock import patch
@@ -33,6 +34,47 @@ def _runtime_run(
 
 
 class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
+    def test_lifecycle_workflow_has_no_broker_authority_and_uses_pinned_actions(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github"
+            / "workflows"
+            / "runtime-target-lifecycle.yml"
+        ).read_text(encoding="utf-8")
+        action_lines = [line.strip() for line in workflow.splitlines() if "uses:" in line]
+
+        self.assertNotIn("BINANCE_API_KEY", workflow)
+        self.assertNotIn("BINANCE_API_SECRET", workflow)
+        self.assertNotIn("contents: write", workflow)
+        self.assertIn("id-token: write", workflow)
+        self.assertIn("source-id: binance.runtime-target-lifecycle", workflow)
+        self.assertIn("EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}", workflow)
+        self.assertTrue(action_lines)
+        self.assertTrue(all("@" in line and len(line.rsplit("@", 1)[1].split()[0]) == 40 for line in action_lines))
+
+    def test_disabled_target_skips_github_api_lookup_and_writes_assessment(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"RUNTIME_TARGET_ENABLED": "false"},
+            clear=True,
+        ):
+            with patch.object(heartbeat, "_github_request") as request:
+                self.assertEqual(heartbeat.main(), 0)
+
+        request.assert_not_called()
+
+    def test_github_api_outage_is_reported_as_unavailable_when_non_failing(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "GITHUB_TOKEN": "token-1",
+                "RUNTIME_HEARTBEAT_FAIL_WORKFLOW_ON_ALERT": "false",
+            },
+            clear=True,
+        ):
+            with patch.object(heartbeat, "_list_runtime_runs", side_effect=OSError("network unavailable")):
+                self.assertEqual(heartbeat.main(), 0)
+
     def test_single_missing_dispatch_is_deferred_with_auditable_assessment(self) -> None:
         now = dt.datetime(2026, 8, 20, 12, 0, tzinfo=dt.timezone.utc)
         result = heartbeat._assess_runtime_heartbeat(
