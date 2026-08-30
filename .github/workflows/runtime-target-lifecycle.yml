@@ -1,0 +1,129 @@
+name: Runtime Target Lifecycle
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "47 * * * *"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish Binance target state (read-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}
+      RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED || 'false' }}
+      EXECUTION_REPORT_GCS_URI: ${{ vars.EXECUTION_REPORT_GCS_URI }}
+      EXECUTION_EVIDENCE_SYNC_URL: ${{ vars.EXECUTION_EVIDENCE_SYNC_URL }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Resolve bounded runtime target metadata
+        id: target
+        run: python scripts/runtime_target_lifecycle_status.py
+
+      - name: Check Runtime workflow heartbeat
+        id: workflow-heartbeat
+        if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUNTIME_HEARTBEAT_NAME: BinancePlatform Runtime
+          RUNTIME_HEARTBEAT_WORKFLOW: main.yml
+          RUNTIME_HEARTBEAT_LOOKBACK_HOURS: ${{ vars.RUNTIME_HEARTBEAT_LOOKBACK_HOURS || '2.5' }}
+          RUNTIME_HEARTBEAT_EXPECTED_INTERVAL_HOURS: ${{ vars.RUNTIME_HEARTBEAT_EXPECTED_INTERVAL_HOURS || '1' }}
+          RUNTIME_HEARTBEAT_MAX_CONSECUTIVE_MISSES: ${{ vars.RUNTIME_HEARTBEAT_MAX_CONSECUTIVE_MISSES || '2' }}
+          RUNTIME_HEARTBEAT_FAIL_WORKFLOW_ON_ALERT: "false"
+          RUNTIME_HEARTBEAT_OUTPUT_PATH: ${{ runner.temp }}/runtime-workflow-heartbeat.json
+        run: |
+          set -euo pipefail
+          python scripts/runtime_workflow_heartbeat.py
+          test -s "$RUNTIME_HEARTBEAT_OUTPUT_PATH"
+          echo "path=$RUNTIME_HEARTBEAT_OUTPUT_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Validate read-only GCP identity configuration
+        if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in GCP_PROJECT_ID GCP_WORKLOAD_IDENTITY_PROVIDER GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Required repository variable ${name} is not configured."
+              exit 1
+            fi
+          done
+          readonly EXPECTED_OIDC_IDENTITY_SHA256="68e87a5dc1bbe2e41af33d526514034246c6487fb7b716596cc75fe1c739a6b9"
+          actual_oidc_identity_sha256="$(
+            printf '%s\0%s\0%s' \
+              "$GCP_PROJECT_ID" \
+              "$GCP_WORKLOAD_IDENTITY_PROVIDER" \
+              "$GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT" |
+              sha256sum |
+              awk '{print $1}'
+          )"
+          if [ "$actual_oidc_identity_sha256" != "$EXPECTED_OIDC_IDENTITY_SHA256" ]; then
+            echo "::error::Repository OIDC identity variables do not match the reviewed identity contract."
+            exit 1
+          fi
+
+      - name: Authenticate read-only report monitor to Google Cloud
+        if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      - name: Check recent execution report
+        id: execution-heartbeat
+        if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
+        env:
+          RUNTIME_HEARTBEAT_NAME: BinancePlatform execution reports
+          RUNTIME_HEARTBEAT_REPORT_PLATFORM: binance
+          RUNTIME_HEARTBEAT_STRATEGY_PROFILE: crypto_live_pool_rotation
+          RUNTIME_HEARTBEAT_SERVICE_NAME: binance-platform
+          RUNTIME_HEARTBEAT_LOOKBACK_HOURS: ${{ vars.RUNTIME_HEARTBEAT_LOOKBACK_HOURS || '2.5' }}
+          RUNTIME_HEARTBEAT_FAIL_WORKFLOW_ON_ALERT: "false"
+          RUNTIME_HEARTBEAT_OUTPUT_PATH: ${{ runner.temp }}/execution-report-heartbeat.json
+        run: |
+          set -euo pipefail
+          python scripts/execution_report_heartbeat.py
+          test -s "$RUNTIME_HEARTBEAT_OUTPUT_PATH"
+          echo "path=$RUNTIME_HEARTBEAT_OUTPUT_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Map read-only observations to shared lifecycle checks
+        id: monitoring
+        env:
+          CONFIGURED_STATE: ${{ steps.target.outputs.configured_state }}
+          CONFIGURATION_GUARD: ${{ steps.target.outputs.runtime_guard }}
+          WORKFLOW_HEARTBEAT_PATH: ${{ steps.workflow-heartbeat.outputs.path }}
+          EXECUTION_HEARTBEAT_PATH: ${{ steps.execution-heartbeat.outputs.path }}
+        run: python scripts/runtime_target_lifecycle_monitoring.py
+
+      - name: Publish target lifecycle snapshot
+        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-target-lifecycle@6d71e785dbf21bac6c829a1fc72f3a4492d36f54
+        with:
+          source-id: binance.runtime-target-lifecycle
+          target-id: ${{ steps.target.outputs.target_id }}
+          platform: binance
+          configured-state: ${{ steps.target.outputs.configured_state }}
+          execution-mode: ${{ steps.target.outputs.execution_mode }}
+          runtime-guard: ${{ steps.monitoring.outputs.runtime_guard }}
+          execution-heartbeat: ${{ steps.monitoring.outputs.execution_heartbeat }}
+          sync-url: ${{ env.EXECUTION_EVIDENCE_SYNC_URL }}
+        env:
+          EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}
