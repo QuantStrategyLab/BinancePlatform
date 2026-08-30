@@ -18,6 +18,7 @@ from runtime_support import (
     build_execution_report,
     finalize_notification_delivery,
     record_gating_event,
+    runtime_call_client,
     runtime_notify,
     validate_runtime_evidence_aggregate,
 )
@@ -129,6 +130,35 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertEqual(report["strategy_profile"], "crypto_live_pool_rotation")
         self.assertIn("buy_sell_intents", report)
         self.assertIn("log_lines", report)
+
+    def test_runtime_target_disable_suppresses_client_side_effects_without_dry_run(self):
+        observed = {"calls": 0}
+
+        class Client:
+            def create_order(self, **_kwargs):
+                observed["calls"] += 1
+                return {"status": "unexpected"}
+
+        runtime = ExecutionRuntime(
+            dry_run=False,
+            run_id="target-disabled",
+            client=Client(),
+            standard_execution_permitted=False,
+        )
+        report = build_execution_report(runtime)
+
+        result = runtime_call_client(
+            runtime,
+            report,
+            method_name="create_order",
+            payload={"symbol": "BTCUSDT"},
+            effect_type="order",
+        )
+
+        self.assertEqual(result["status"], "suppressed")
+        self.assertEqual(observed["calls"], 0)
+        self.assertEqual(report["side_effect_summary"]["suppressed_call_count"], 1)
+        self.assertFalse(report["standard_execution_permitted"])
 
     def test_report_uses_runtime_target_service_identity(self):
         runtime_target = build_runtime_target(
