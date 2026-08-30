@@ -105,6 +105,17 @@ jobs:
           test -s "$RUNTIME_HEARTBEAT_OUTPUT_PATH"
           echo "path=$RUNTIME_HEARTBEAT_OUTPUT_PATH" >> "$GITHUB_OUTPUT"
 
+      - name: Publish read-only runtime execution evidence
+        if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.execution-heartbeat.outcome == 'success' }}
+        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-execution-evidence@813ba38c4adb759e143503c8e6b70715090391cc
+        with:
+          source-id: runtime-reports-binance
+          report-platform: binance
+          report-prefix: ${{ vars.RUNTIME_HEARTBEAT_GCS_URIS || vars.EXECUTION_REPORT_GCS_URI }}
+          sync-url: ${{ env.EXECUTION_EVIDENCE_SYNC_URL }}
+        env:
+          EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}
+
       - name: Map read-only observations to shared lifecycle checks
         id: monitoring
         env:
