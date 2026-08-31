@@ -44,6 +44,13 @@ def test_reconciliation_run_does_not_try_to_publish_a_regular_execution_report()
     assert "github.event.inputs.reconcile_only != 'true'" in log_job
 
 
+def test_reconciliation_artifact_retention_matches_repository_policy() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    reconciliation_step = workflow[workflow.index("      - name: 5b. Retain redacted reconciliation candidate") :]
+
+    assert "retention-days: 7" in reconciliation_step
+
+
 def test_oidc_and_notification_workflows_pin_remote_actions() -> None:
     for path in (WATCHDOG_WORKFLOW, HEARTBEAT_WORKFLOW):
         workflow = path.read_text(encoding="utf-8")
