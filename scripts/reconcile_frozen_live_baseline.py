@@ -6,6 +6,8 @@ cannot fall through into a strategy cycle.  It is suitable only for a private,
 authenticated operator workflow; stdout contains no broker rows or credentials.
 """
 
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import json
@@ -13,6 +15,14 @@ import os
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
+
+# GitHub Actions invokes this file directly, which otherwise makes only the
+# ``scripts/`` directory importable.  Add the reviewed repository root before
+# importing application code; this does not change broker behaviour or grant
+# an execution path.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from application.broker_reconciliation import (
     BinanceReconciliationReadError,
