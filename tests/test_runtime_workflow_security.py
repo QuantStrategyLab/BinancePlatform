@@ -37,6 +37,13 @@ def test_broker_job_cannot_write_repository_contents() -> None:
     assert "actions/download-artifact@" in log_job
 
 
+def test_reconciliation_run_does_not_try_to_publish_a_regular_execution_report() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    log_job = _job_block(workflow, "publish-execution-log")
+
+    assert "github.event.inputs.reconcile_only != 'true'" in log_job
+
+
 def test_oidc_and_notification_workflows_pin_remote_actions() -> None:
     for path in (WATCHDOG_WORKFLOW, HEARTBEAT_WORKFLOW):
         workflow = path.read_text(encoding="utf-8")

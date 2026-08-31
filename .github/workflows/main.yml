@@ -298,7 +298,7 @@ jobs:
   publish-execution-log:
     name: Publish execution log without broker credentials
     needs: deploy
-    if: ${{ needs.deploy.result == 'success' && needs.deploy.outputs.runtime_target_enabled == 'true' && github.event.inputs.validate_only != 'true' }}
+    if: ${{ needs.deploy.result == 'success' && needs.deploy.outputs.runtime_target_enabled == 'true' && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
