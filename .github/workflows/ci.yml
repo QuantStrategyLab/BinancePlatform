@@ -105,5 +105,7 @@ jobs:
       - name: Run unit tests
         # Pytest also discovers this repository's unittest suites.  Use one
         # runner so reconciliation and recovery tests written in pytest style
-        # cannot silently be omitted from the protected CI check.
-        run: uv run --no-sync python -m pytest -q
+        # cannot silently be omitted from the protected CI check.  Restrict
+        # discovery to this repository: editable dependencies keep their own
+        # test suites and may expose same-named helper modules.
+        run: PYTHONPATH=. uv run --no-sync python -m pytest -q tests
