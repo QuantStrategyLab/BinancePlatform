@@ -126,7 +126,7 @@ jobs:
         run: python scripts/runtime_target_lifecycle_monitoring.py
 
       - name: Publish target lifecycle snapshot
-        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-target-lifecycle@6d71e785dbf21bac6c829a1fc72f3a4492d36f54
+        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-target-lifecycle@a87864a5a0eb0d4932af967080eeb6a5e46ebd41
         with:
           source-id: binance.runtime-target-lifecycle
           target-id: ${{ steps.target.outputs.target_id }}
