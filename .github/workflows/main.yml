@@ -8,6 +8,11 @@ on:
         required: false
         default: false
         type: boolean
+      reconcile_only:
+        description: "Run only the read-only frozen-baseline reconciliation collector"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -168,12 +173,19 @@ jobs:
             echo "$CURR_PYTHON_VERSION" > "$PYTHON_VERSION_FILE"
           fi
 
+      # Keep this stable step name: the isolation contract verifies that broker
+      # credentials are scoped only here.  `reconcile_only` exits before
+      # `main.py` and has no order path.
       - name: 4. Run trading strategy
         if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' }}
         run: |
           set -euo pipefail
           if [ "${VALIDATE_ONLY:-false}" = "true" ]; then
             "$VENV_PATH/bin/python" -c "from google.cloud import firestore; client = firestore.Client(); collections = [collection.id for _, collection in zip(range(3), client.collections())]; print(f'Validated Google Cloud auth and Firestore access. project={client.project} sample_collections={collections}')"
+            exit 0
+          fi
+          if [ "${RECONCILE_ONLY:-false}" = "true" ]; then
+            "$VENV_PATH/bin/python" scripts/reconcile_frozen_live_baseline.py --output reports/binance-reconciliation-candidate.json
             exit 0
           fi
           "$VENV_PATH/bin/python" main.py
@@ -213,7 +225,9 @@ jobs:
           ZSCORE_EXIT_RISK_REDUCED_EXPOSURE: ${{ vars.ZSCORE_EXIT_RISK_REDUCED_EXPOSURE }}
           ZSCORE_EXIT_RISK_OFF_EXPOSURE: ${{ vars.ZSCORE_EXIT_RISK_OFF_EXPOSURE }}
           ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW: ${{ vars.ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW }}
+          BINANCE_RECONCILIATION_SYMBOLS: ${{ vars.BINANCE_RECONCILIATION_SYMBOLS }}
           VALIDATE_ONLY: ${{ github.event.inputs.validate_only || 'false' }}
+          RECONCILE_ONLY: ${{ github.event.inputs.reconcile_only || 'false' }}
 
       - name: Confirm target is intentionally disabled
         if: ${{ env.RUNTIME_TARGET_ENABLED == 'false' }}
@@ -221,13 +235,22 @@ jobs:
 
       - name: 5. Stage execution report for isolated log publisher
         continue-on-error: true
-        if: ${{ github.event.inputs.validate_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
+        if: ${{ github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: binance-execution-report-${{ github.run_id }}
           path: reports/execution_report.json
           if-no-files-found: warn
           retention-days: 1
+
+      - name: 5b. Retain redacted reconciliation candidate
+        if: ${{ github.event.inputs.reconcile_only == 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: binance-reconciliation-candidate-${{ github.run_id }}
+          path: reports/binance-reconciliation-candidate.json
+          if-no-files-found: error
+          retention-days: 30
 
       - name: 6. Notify Telegram on runtime workflow failure
         if: ${{ failure() && github.event.inputs.validate_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
