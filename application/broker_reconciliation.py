@@ -31,6 +31,8 @@ _EXPECTED_DIGEST_KEYS = (
     "recent_executions_sha256",
     "local_execution_ledger_sha256",
 )
+_MAX_MY_TRADES_WINDOW_MS = 24 * 60 * 60 * 1000
+_MAX_MY_TRADES_PAGE_SIZE = 1000
 
 
 class BinanceReconciliationReadError(RuntimeError):
@@ -101,6 +103,53 @@ def _normalize_trade(raw: Mapping[str, object]) -> dict[str, object]:
         "time": _text(raw.get("time")),
         "is_buyer": bool(raw.get("isBuyer")),
     }
+
+
+def _collect_bounded_recent_trades(
+    client: Any,
+    *,
+    symbol: str,
+    start_ms: int,
+    end_ms: int,
+) -> list[dict[str, object]]:
+    """Read a finite trade history using only Binance-supported day windows.
+
+    Binance Spot's ``myTrades`` endpoint rejects a ``startTime``/``endTime``
+    span over 24 hours. A recovery candidate needs seven days of evidence, so
+    partition the period into non-overlapping inclusive millisecond windows.
+    A full 1,000-row response is intentionally not paginated by guessing a
+    cursor; that would risk an incomplete ledger, so the candidate fails
+    closed instead.
+    """
+
+    normalized_by_trade_id: dict[tuple[str, str], dict[str, object]] = {}
+    window_start_ms = start_ms
+    while window_start_ms <= end_ms:
+        window_end_ms = min(window_start_ms + _MAX_MY_TRADES_WINDOW_MS, end_ms)
+        try:
+            trades = client.get_my_trades(
+                symbol=symbol,
+                startTime=window_start_ms,
+                endTime=window_end_ms,
+                limit=_MAX_MY_TRADES_PAGE_SIZE,
+            )
+        except Exception as exc:
+            raise BinanceReconciliationReadError("Binance reconciliation could not read recent trades.") from exc
+        if not isinstance(trades, list) or any(not isinstance(item, Mapping) for item in trades):
+            raise BinanceReconciliationReadError("Binance reconciliation received invalid recent trades.")
+        if len(trades) >= _MAX_MY_TRADES_PAGE_SIZE:
+            raise BinanceReconciliationReadError("Binance reconciliation recent trades page is incomplete.")
+        for raw_trade in trades:
+            normalized = _normalize_trade(raw_trade)
+            key = (normalized["symbol"], normalized["trade_id"])
+            existing = normalized_by_trade_id.get(key)
+            if existing is not None and existing != normalized:
+                raise BinanceReconciliationReadError("Binance reconciliation received conflicting recent trade records.")
+            normalized_by_trade_id[key] = normalized
+        # The API's time ranges are inclusive. Move by exactly one
+        # millisecond to avoid querying the boundary twice.
+        window_start_ms = window_end_ms + 1
+    return list(normalized_by_trade_id.values())
 
 
 @dataclass(frozen=True)
@@ -175,22 +224,23 @@ def collect_read_only_reconciliation_observations(
         raise BinanceReconciliationReadError("Binance reconciliation could not read open orders.") from exc
     if not isinstance(open_orders_payload, list) or any(not isinstance(item, Mapping) for item in open_orders_payload):
         raise BinanceReconciliationReadError("Binance reconciliation received invalid open orders.")
-    recent_trades: list[Mapping[str, object]] = []
+    recent_trades: list[dict[str, object]] = []
     for symbol in symbols:
-        try:
-            trades = client.get_my_trades(symbol=symbol, startTime=start_ms, endTime=end_ms)
-        except Exception as exc:
-            raise BinanceReconciliationReadError("Binance reconciliation could not read recent trades.") from exc
-        if not isinstance(trades, list) or any(not isinstance(item, Mapping) for item in trades):
-            raise BinanceReconciliationReadError("Binance reconciliation received invalid recent trades.")
-        recent_trades.extend(trades)
+        recent_trades.extend(
+            _collect_bounded_recent_trades(
+                client,
+                symbol=symbol,
+                start_ms=start_ms,
+                end_ms=end_ms,
+            )
+        )
     return BinanceReconciliationObservations(
         account_scope={"account_uid": account_uid},
         account_identity_match=True,
         positions=normalized_balances,
         cash={"balances": list(normalized_balances)},
         open_orders=_canonical_records([_normalize_order(item) for item in open_orders_payload]),
-        recent_executions=_canonical_records([_normalize_trade(item) for item in recent_trades]),
+        recent_executions=_canonical_records(recent_trades),
         local_execution_ledger=dict(local_execution_ledger),
     )
 

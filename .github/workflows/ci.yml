@@ -103,4 +103,7 @@ jobs:
           uv lock --check
 
       - name: Run unit tests
-        run: uv run --no-sync python -m unittest discover -s tests -v
+        # Pytest also discovers this repository's unittest suites.  Use one
+        # runner so reconciliation and recovery tests written in pytest style
+        # cannot silently be omitted from the protected CI check.
+        run: uv run --no-sync python -m pytest -q
