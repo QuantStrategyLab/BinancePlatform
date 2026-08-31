@@ -250,7 +250,9 @@ jobs:
           name: binance-reconciliation-candidate-${{ github.run_id }}
           path: reports/binance-reconciliation-candidate.json
           if-no-files-found: error
-          retention-days: 30
+          # Repository policy caps Actions artifacts at seven days. Keep the
+          # setting aligned so a successful read-only run is annotation-free.
+          retention-days: 7
 
       - name: 6. Notify Telegram on runtime workflow failure
         if: ${{ failure() && github.event.inputs.validate_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}

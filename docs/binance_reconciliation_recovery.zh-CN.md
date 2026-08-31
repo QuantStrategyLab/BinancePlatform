@@ -11,7 +11,7 @@ workflow，并选择 `reconcile_only=true`。它运行独立的
 时间范围最多 24 小时，因此系统按不重叠的日窗口查询并去重；任一窗口达到 API 的 1,000 条
 上限时会失败关闭，而不会猜测分页而遗漏成交。它同时只读本地执行状态。账户
 UID、余额、订单和成交永不写入日志、报告或 artifact。artifact 只保留
-`binance_reconciliation_candidate.v1` 的摘要和稳定阻断码，保存 30 天。
+`binance_reconciliation_candidate.v1` 的摘要和稳定阻断码，保存 7 天。
 
 若交易所未返回账户 UID、受管交易对未配置、任一读取失败、私有预期摘要不存在或任一摘要
 不一致，运行成功完成为“候选被阻断”，而不是重试、降级或恢复交易。
