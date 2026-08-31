@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -37,9 +38,10 @@ class _Client:
             }
         ]
 
-    def get_my_trades(self, *, symbol, startTime, endTime):
+    def get_my_trades(self, *, symbol, startTime, endTime, limit):
         assert symbol == "BTCUSDT"
         assert startTime < endTime
+        assert limit == 1000
         return [
             {
                 "id": 1,
@@ -104,6 +106,65 @@ def test_missing_exchange_account_identity_fails_closed():
     with pytest.raises(BinanceReconciliationReadError, match="identity"):
         collect_read_only_reconciliation_observations(
             MissingIdentity(), strategy_symbols=("BTCUSDT",), local_execution_ledger={}
+        )
+
+
+def test_recent_trades_are_partitioned_into_day_windows_and_deduplicated():
+    class WindowRecordingClient(_Client):
+        def __init__(self):
+            self.windows = []
+
+        def get_my_trades(self, *, symbol, startTime, endTime, limit):
+            self.windows.append((symbol, startTime, endTime, limit))
+            return [
+                {
+                    "id": 1,
+                    "orderId": 2,
+                    "symbol": symbol,
+                    "qty": "0.02",
+                    "price": "60000",
+                    "commission": "0.00001",
+                    "commissionAsset": "BTC",
+                    "time": 1,
+                    "isBuyer": True,
+                }
+            ]
+
+    client = WindowRecordingClient()
+    observations = collect_read_only_reconciliation_observations(
+        client,
+        strategy_symbols=("BTCUSDT",),
+        local_execution_ledger={},
+        now=datetime(2026, 8, 31, tzinfo=timezone.utc),
+        lookback=timedelta(days=2),
+    )
+
+    assert [window[2] - window[1] for window in client.windows] == [86_400_000, 86_399_999]
+    assert client.windows[1][1] == client.windows[0][2] + 1
+    assert len(observations.recent_executions) == 1
+
+
+def test_full_recent_trades_page_fails_closed_instead_of_guessing_pagination():
+    class FullPageClient(_Client):
+        def get_my_trades(self, *, symbol, startTime, endTime, limit):
+            return [
+                {
+                    "id": index,
+                    "orderId": index,
+                    "symbol": symbol,
+                    "qty": "0.02",
+                    "price": "60000",
+                    "commission": "0.00001",
+                    "commissionAsset": "BTC",
+                    "time": index,
+                    "isBuyer": True,
+                }
+                for index in range(limit)
+            ]
+
+    with pytest.raises(BinanceReconciliationReadError, match="page is incomplete"):
+        collect_read_only_reconciliation_observations(
+            FullPageClient(), strategy_symbols=("BTCUSDT",), local_execution_ledger={}
         )
 
 

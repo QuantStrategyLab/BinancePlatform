@@ -7,7 +7,9 @@ workflow，并选择 `reconcile_only=true`。它运行独立的
 
 运行器只读读取签名账户响应、余额、全部挂单，以及由
 `BINANCE_RECONCILIATION_SYMBOLS` 精确限制的近七日成交；该变量必须覆盖 BTC、当前策略的
-全部趋势候选和 BNB 手续费资产，不能用“查询全历史”替代。它同时只读本地执行状态。账户
+全部趋势候选和 BNB 手续费资产，不能用“查询全历史”替代。Binance Spot 的 `myTrades` 每次
+时间范围最多 24 小时，因此系统按不重叠的日窗口查询并去重；任一窗口达到 API 的 1,000 条
+上限时会失败关闭，而不会猜测分页而遗漏成交。它同时只读本地执行状态。账户
 UID、余额、订单和成交永不写入日志、报告或 artifact。artifact 只保留
 `binance_reconciliation_candidate.v1` 的摘要和稳定阻断码，保存 30 天。
 
