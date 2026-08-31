@@ -35,6 +35,42 @@ from runtime_config_support import load_cycle_execution_settings
 from trade_state_support import build_default_state, normalize_trade_state
 
 
+def _safe_reason_code(exc: Exception) -> str:
+    """Return a stable operational code without exposing broker response text.
+
+    The workflow log is retained as an operational artifact, so it must not
+    include an exception message that might contain an exchange response or
+    account metadata.  Codes let the runtime guard distinguish a transient
+    broker-read problem from an intentionally closed recovery gate.
+    """
+
+    if not isinstance(exc, BinanceReconciliationReadError):
+        return "unexpected_reconciliation_failure"
+
+    message = str(exc).lower()
+    known_codes = (
+        ("only available for a frozen", "runtime_target_not_reconcile_only"),
+        ("private api credentials", "broker_credentials_missing"),
+        ("local execution ledger", "local_execution_ledger_unavailable"),
+        ("explicit managed symbols", "managed_symbols_missing"),
+        ("read-only get_", "broker_read_capability_missing"),
+        ("account identity is unavailable", "account_identity_unavailable"),
+        ("invalid account response", "account_response_invalid"),
+        ("invalid balances", "balances_response_invalid"),
+        ("could not read open orders", "open_orders_read_failed"),
+        ("invalid open orders", "open_orders_response_invalid"),
+        ("could not read recent trades", "recent_trades_read_failed"),
+        ("invalid recent trades", "recent_trades_response_invalid"),
+        ("expected digests are invalid", "expected_digests_invalid"),
+        ("expected digests are incomplete", "expected_digests_incomplete"),
+        ("complete frozen runtime target", "frozen_target_incomplete"),
+    )
+    for needle, code in known_codes:
+        if needle in message:
+            return code
+    return "reconciliation_read_unavailable"
+
+
 def _symbols_from_env() -> tuple[str, ...]:
     raw = str(os.environ.get("BINANCE_RECONCILIATION_SYMBOLS") or "").strip()
     symbols = tuple(dict.fromkeys(item.strip().upper() for item in raw.split(",") if item.strip()))
@@ -92,10 +128,10 @@ def main() -> int:
         print(payload)
         return 0
     except BinanceReconciliationReadError as exc:
-        print(json.dumps({"status": "blocked", "reason": type(exc).__name__}, sort_keys=True))
+        print(json.dumps({"status": "blocked", "reason_code": _safe_reason_code(exc)}, sort_keys=True))
         return 2
     except Exception as exc:
-        print(json.dumps({"status": "blocked", "reason": type(exc).__name__}, sort_keys=True))
+        print(json.dumps({"status": "blocked", "reason_code": _safe_reason_code(exc)}, sort_keys=True))
         return 2
 
 
