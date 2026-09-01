@@ -45,6 +45,11 @@ def _preflight_script(workflow_text: str) -> str:
     return "\n".join(lines)
 
 
+def _job_block(workflow_text: str, job: str) -> str:
+    start = workflow_text.index(f"  {job}:\n")
+    return workflow_text[start:]
+
+
 def _run_preflight(script: str, values: dict[str, str]) -> subprocess.CompletedProcess[str]:
     env = {"PATH": os.environ.get("PATH", "")}
     env.update(values)
@@ -105,6 +110,17 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertIn("workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}", text)
         self.assertIn("service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}", text)
         self.assertIn("WATCHDOG_MAX_AGE_SECONDS: ${{ vars.WATCHDOG_MAX_AGE_SECONDS || '4500' }}", text)
+
+    def test_watchdog_skips_entire_job_when_runtime_target_is_not_explicitly_enabled(self) -> None:
+        text = self.workflow_text
+        job = _job_block(text, "check")
+
+        self.assertIn("RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED || 'false' }}", text)
+        self.assertIn("if: ${{ vars.RUNTIME_TARGET_ENABLED == 'true' }}", job)
+        self.assertLess(
+            job.index("if: ${{ vars.RUNTIME_TARGET_ENABLED == 'true' }}"),
+            job.index("runs-on: ubuntu-latest"),
+        )
 
     def test_oidc_identity_digest_is_fixed_and_shared(self) -> None:
         scripts = (
