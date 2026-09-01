@@ -39,6 +39,7 @@ jobs:
       RUNTIME_HEARTBEAT_MAX_CONSECUTIVE_MISSES: ${{ vars.RUNTIME_HEARTBEAT_MAX_CONSECUTIVE_MISSES || '2' }}
       RUNTIME_HEARTBEAT_FAIL_WORKFLOW_ON_ALERT: ${{ inputs.fail_workflow_on_alert || vars.RUNTIME_HEARTBEAT_FAIL_WORKFLOW_ON_ALERT || 'true' }}
       RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED || 'false' }}
+      NOTIFY_LANG: ${{ vars.NOTIFY_LANG || 'zh' }}
       GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
     steps:
       - name: Checkout repository

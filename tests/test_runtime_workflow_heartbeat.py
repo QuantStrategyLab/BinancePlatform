@@ -34,6 +34,20 @@ def _runtime_run(
 
 
 class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
+    def test_alert_message_uses_configured_chinese_locale(self) -> None:
+        with patch.dict(os.environ, {"NOTIFY_LANG": "zh-CN"}, clear=True):
+            message = heartbeat._format_runtime_workflow_alert(
+                name="BinancePlatform Runtime",
+                lookback_hours=2.5,
+                issues=[heartbeat._notice("workflow_heartbeat_query_failed")],
+                technical_details=["OSError: network unavailable"],
+            )
+
+        self.assertIn("[运行工作流心跳] BinancePlatform Runtime", message)
+        self.assertIn("检查范围：过去 2.5 小时", message)
+        self.assertIn("GitHub Actions 运行记录查询失败", message)
+        self.assertIn("技术详情（原文）：\nOSError: network unavailable", message)
+
     def test_lifecycle_workflow_has_no_broker_authority_and_uses_pinned_actions(self) -> None:
         workflow = (
             Path(__file__).resolve().parents[1]
@@ -51,6 +65,16 @@ class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
         self.assertIn("EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}", workflow)
         self.assertTrue(action_lines)
         self.assertTrue(all("@" in line and len(line.rsplit("@", 1)[1].split()[0]) == 40 for line in action_lines))
+
+    def test_runtime_heartbeat_workflow_passes_notification_locale(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github"
+            / "workflows"
+            / "runtime-heartbeat.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("NOTIFY_LANG: ${{ vars.NOTIFY_LANG || 'zh' }}", workflow)
 
     def test_disabled_target_skips_github_api_lookup_and_writes_assessment(self) -> None:
         with patch.dict(
