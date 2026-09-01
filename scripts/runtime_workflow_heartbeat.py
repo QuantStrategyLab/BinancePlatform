@@ -14,6 +14,12 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+from quant_platform_kit.common.operational_notification_localization import (
+    format_operational_alert,
+    operational_notification_text,
+    resolve_operational_notification_locale,
+)
+
 
 _GITHUB_API_MAX_ATTEMPTS = 4
 _GITHUB_API_MAX_RETRY_DELAY_SECONDS = 30.0
@@ -32,6 +38,41 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if not value:
         return default
     return value in {"1", "true", "yes", "y", "on"}
+
+
+def _notification_locale() -> str:
+    return resolve_operational_notification_locale(os.environ.get("NOTIFY_LANG"))
+
+
+def _notice(key: str, /, **values: object) -> str:
+    return operational_notification_text(_notification_locale(), key, **values)
+
+
+def _heartbeat_workflow_url(repository: str) -> str | None:
+    server_url = (os.environ.get("GITHUB_SERVER_URL") or "").strip().rstrip("/")
+    run_id = (os.environ.get("GITHUB_RUN_ID") or "").strip()
+    return f"{server_url}/{repository}/actions/runs/{run_id}" if server_url and run_id else None
+
+
+def _format_runtime_workflow_alert(
+    *,
+    name: str,
+    lookback_hours: float,
+    issues: list[str],
+    technical_details: list[str] | None = None,
+    latest_runtime_run: list[str] | None = None,
+    workflow_url: str | None = None,
+) -> str:
+    return format_operational_alert(
+        locale=_notification_locale(),
+        alert_type="runtime_workflow_heartbeat",
+        name=name,
+        context={"lookback_hours": f"{lookback_hours:g}"},
+        issues=issues,
+        technical_details=technical_details or [],
+        latest_runtime_run=latest_runtime_run or [],
+        workflow_url=workflow_url,
+    )
 
 
 def _runtime_target_enabled() -> bool:
@@ -433,6 +474,15 @@ def main() -> int:
         }
         _write_assessment(assessment)
         print(json.dumps(assessment, sort_keys=True))
+        message = _format_runtime_workflow_alert(
+            name=name,
+            lookback_hours=lookback_hours,
+            issues=[_notice("workflow_heartbeat_query_failed")],
+            technical_details=[f"{type(exc).__name__}: {exc}"],
+            workflow_url=_heartbeat_workflow_url(repository),
+        )
+        print(message)
+        _send_telegram(message[:3900])
         return 1 if fail_workflow else 0
     assessment = _assess_runtime_heartbeat(
         runs=runs,
@@ -463,41 +513,40 @@ def main() -> int:
         return 0
 
     latest_run = assessment["latest_run"]
-    issues = []
+    issues: list[str] = []
     if assessment["reason"] == "latest_runtime_completed_unsuccessfully":
         issues.append(
-            "latest Runtime run completed with "
-            f"conclusion={latest_run.get('conclusion') or '<none>'}"
+            _notice(
+                "workflow_heartbeat_latest_failed",
+                conclusion=latest_run.get("conclusion") or "<none>",
+            )
         )
     elif assessment["reason"] == "no_successful_runtime_run_observed":
-        issues.append(
-            "no successful Runtime workflow run was returned by the auditable "
-            "GitHub Actions query"
-        )
+        issues.append(_notice("workflow_heartbeat_no_success"))
     else:
         issues.append(
-            "Runtime workflow dispatches have been missing for "
-            f"{assessment['consecutive_misses']} consecutive expected intervals "
-            f"(threshold={max_consecutive_misses})"
+            _notice(
+                "workflow_heartbeat_missing_dispatches",
+                count=assessment["consecutive_misses"],
+                threshold=max_consecutive_misses,
+            )
         )
-    lines = [
-        f"[Runtime Workflow Heartbeat] {name}",
-        f"Lookback: {lookback_hours:g} hours",
-        "Issues:",
-        *[f"- {issue}" for issue in issues],
-    ]
+    latest_runtime_run: list[str] = []
     if latest_run:
-        lines.extend(
+        latest_runtime_run.extend(
             [
-                "Latest Runtime run:",
                 f"- run: #{latest_run.get('run_number')} status={latest_run.get('status')} conclusion={latest_run.get('conclusion')}",
                 f"- created_at: {latest_run.get('created_at')}",
                 f"- url: {latest_run.get('html_url')}",
             ]
         )
-    if os.environ.get("GITHUB_SERVER_URL") and os.environ.get("GITHUB_RUN_ID"):
-        lines.append(f"Heartbeat workflow: {os.environ['GITHUB_SERVER_URL']}/{repository}/actions/runs/{os.environ['GITHUB_RUN_ID']}")
-    message = "\n".join(lines)
+    message = _format_runtime_workflow_alert(
+        name=name,
+        lookback_hours=lookback_hours,
+        issues=issues,
+        latest_runtime_run=latest_runtime_run,
+        workflow_url=_heartbeat_workflow_url(repository),
+    )
     print(message)
     _send_telegram(message[:3900])
     return 1 if fail_workflow else 0
