@@ -70,6 +70,19 @@ def test_heartbeat_secrets_are_only_available_to_check_step() -> None:
     assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in check_step
 
 
+def test_heartbeat_installs_locked_dependencies_before_importing_qpk() -> None:
+    workflow = HEARTBEAT_WORKFLOW.read_text(encoding="utf-8")
+
+    checkout = workflow.index("      - name: Checkout repository")
+    install = workflow.index("      - name: Install locked dependencies")
+    check = workflow.index("      - name: Check recent Runtime workflow success")
+
+    assert checkout < install < check
+    install_step = workflow[install:check]
+    assert "python -m pip install --upgrade pip uv" in install_step
+    assert "uv sync --frozen --no-dev" in install_step
+
+
 def test_lifecycle_workflow_is_read_only_and_uses_pinned_actions() -> None:
     workflow = LIFECYCLE_WORKFLOW.read_text(encoding="utf-8")
     action_lines = [line.strip() for line in workflow.splitlines() if "uses:" in line]
