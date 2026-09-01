@@ -226,7 +226,7 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertNotIn("provider-secret-state-write-error", rendered)
         self.assertEqual(report["side_effect_summary"]["executed_call_count"], 0)
 
-    def test_order_transport_errors_return_reconciled_mapping_without_resubmit(self):
+    def test_order_transport_errors_with_pending_reconciliation_stop_without_resubmit(self):
         for error_type in (TimeoutError, ConnectionError, RequestsTimeout, RequestsConnectionError):
             with self.subTest(error_type=error_type.__name__):
                 observed = []
@@ -243,20 +243,19 @@ class TestBuildExecutionReport(unittest.TestCase):
                 runtime = ExecutionRuntime(dry_run=False, run_id="stable-order", client=Client())
                 report = build_execution_report(runtime)
 
-                result = runtime_call_client(
-                    runtime,
-                    report,
-                    method_name="order_market_buy",
-                    payload={"symbol": "BTCUSDT", "quantity": 0.01},
-                    effect_type="order_buy",
-                    max_retries=1,
-                    retry_base_sec=0,
-                )
+                with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+                    runtime_call_client(
+                        runtime,
+                        report,
+                        method_name="order_market_buy",
+                        payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                        effect_type="order_buy",
+                        max_retries=1,
+                        retry_base_sec=0,
+                    )
 
-                self.assertEqual(result["status"], "NEW")
                 self.assertEqual([call[0] for call in observed], ["submit", "reconcile"])
                 self.assertEqual(observed[0][1], observed[1][2])
-                self.assertEqual(result["clientOrderId"], observed[0][1])
 
     def test_order_reconciliation_none_response_does_not_resubmit(self):
         observed = []
@@ -346,7 +345,7 @@ class TestBuildExecutionReport(unittest.TestCase):
 
         self.assertEqual([call[0] for call in observed], ["submit", "reconcile"])
 
-    def test_order_not_found_resubmits_with_same_logical_identity(self):
+    def test_order_not_found_after_transport_uncertainty_does_not_resubmit(self):
         observed = []
 
         class OrderNotFound(Exception):
@@ -366,21 +365,32 @@ class TestBuildExecutionReport(unittest.TestCase):
         runtime = ExecutionRuntime(dry_run=False, run_id="order-not-found-retry", client=Client())
         report = build_execution_report(runtime)
 
-        result = runtime_call_client(
-            runtime,
-            report,
-            method_name="order_market_buy",
-            payload={"symbol": "BTCUSDT", "quantity": 0.01},
-            effect_type="order_buy",
-            max_retries=1,
-            retry_base_sec=0,
-        )
+        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain") as raised:
+            runtime_call_client(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                effect_type="order_buy",
+                max_retries=1,
+                retry_base_sec=0,
+            )
 
-        rendered = str(result) + str(report)
-        self.assertEqual([call[0] for call in observed], ["submit", "reconcile", "submit"])
+        rendered = "".join(traceback.format_exception(raised.exception)) + str(report)
+        self.assertEqual([call[0] for call in observed], ["submit", "reconcile"])
         self.assertEqual(observed[0][1], observed[1][2])
-        self.assertEqual(observed[0][1], observed[2][1])
-        self.assertEqual(result["status"], "FILLED")
+        self.assertEqual(
+            report["execution_receipt_observation"],
+            {
+                "submission_attempted_count": 1,
+                "broker_acknowledged_count": 0,
+                "partially_filled_count": 0,
+                "filled_count": 0,
+                "transport_uncertain_count": 1,
+                "failed_count": 1,
+            },
+        )
+        self.assertEqual(report["side_effect_summary"], {"executed_call_count": 0, "suppressed_call_count": 1})
         self.assertNotIn("provider-submit-secret", rendered)
         self.assertNotIn("provider-query-secret", rendered)
 
@@ -414,10 +424,8 @@ class TestBuildExecutionReport(unittest.TestCase):
             )
 
         rendered = "".join(traceback.format_exception(raised.exception)) + str(report)
-        self.assertEqual([call[0] for call in observed], ["submit", "reconcile", "submit", "reconcile"])
+        self.assertEqual([call[0] for call in observed], ["submit", "reconcile"])
         self.assertEqual(observed[0][1], observed[1][2])
-        self.assertEqual(observed[0][1], observed[2][1])
-        self.assertEqual(observed[0][1], observed[3][2])
         self.assertNotIn("provider-submit-secret", rendered)
         self.assertNotIn("provider-query-secret", rendered)
 
@@ -502,18 +510,121 @@ class TestBuildExecutionReport(unittest.TestCase):
                 runtime = ExecutionRuntime(dry_run=False, run_id=f"uncertain-{code}", client=Client())
                 report = build_execution_report(runtime)
 
-                result = runtime_call_client(
-                    runtime,
-                    report,
-                    method_name="order_market_buy",
-                    payload={"symbol": "BTCUSDT", "quantity": 0.01},
-                    effect_type="order_buy",
-                    max_retries=0,
-                    retry_base_sec=0,
-                )
+                with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+                    runtime_call_client(
+                        runtime,
+                        report,
+                        method_name="order_market_buy",
+                        payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                        effect_type="order_buy",
+                        max_retries=0,
+                        retry_base_sec=0,
+                    )
 
-                self.assertEqual(result["status"], "NEW")
                 self.assertEqual(observed, ["submit", "reconcile"])
+
+    def test_direct_non_filled_order_statuses_stop_before_callers_update_state(self):
+        for status, expected_observation in (
+            (
+                "NEW",
+                {
+                    "submission_attempted_count": 1,
+                    "broker_acknowledged_count": 1,
+                    "partially_filled_count": 0,
+                    "filled_count": 0,
+                    "transport_uncertain_count": 0,
+                    "failed_count": 0,
+                },
+            ),
+            (
+                "PARTIALLY_FILLED",
+                {
+                    "submission_attempted_count": 1,
+                    "broker_acknowledged_count": 0,
+                    "partially_filled_count": 1,
+                    "filled_count": 0,
+                    "transport_uncertain_count": 0,
+                    "failed_count": 0,
+                },
+            ),
+        ):
+            with self.subTest(status=status):
+                class Client:
+                    def order_market_buy(self, **kwargs):
+                        return {"status": status, "clientOrderId": kwargs["newClientOrderId"]}
+
+                runtime = ExecutionRuntime(dry_run=False, run_id=f"direct-{status}", client=Client())
+                report = build_execution_report(runtime)
+
+                with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+                    runtime_call_client(
+                        runtime,
+                        report,
+                        method_name="order_market_buy",
+                        payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                        effect_type="order_buy",
+                        max_retries=0,
+                        retry_base_sec=0,
+                    )
+
+                self.assertEqual(report["execution_receipt_observation"], expected_observation)
+                self.assertEqual(report["side_effect_summary"], {"executed_call_count": 1, "suppressed_call_count": 0})
+
+    def test_direct_terminal_failure_status_is_not_returned_as_success(self):
+        for status in ("CANCELED", "EXPIRED", "REJECTED"):
+            with self.subTest(status=status):
+                class Client:
+                    def order_market_buy(self, **kwargs):
+                        return {"status": status, "clientOrderId": kwargs["newClientOrderId"]}
+
+                runtime = ExecutionRuntime(dry_run=False, run_id=f"direct-{status}", client=Client())
+                report = build_execution_report(runtime)
+
+                with self.assertRaisesRegex(ClientCallError, "order_submission_failed"):
+                    runtime_call_client(
+                        runtime,
+                        report,
+                        method_name="order_market_buy",
+                        payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                        effect_type="order_buy",
+                        max_retries=0,
+                        retry_base_sec=0,
+                    )
+
+                self.assertEqual(report["execution_receipt_observation"]["failed_count"], 1)
+                self.assertEqual(report["side_effect_summary"], {"executed_call_count": 1, "suppressed_call_count": 0})
+
+    def test_direct_filled_order_records_one_fill_and_returns_success(self):
+        class Client:
+            def order_market_buy(self, **kwargs):
+                return {"status": "FILLED", "clientOrderId": kwargs["newClientOrderId"]}
+
+        runtime = ExecutionRuntime(dry_run=False, run_id="direct-filled", client=Client())
+        report = build_execution_report(runtime)
+
+        result = runtime_call_client(
+            runtime,
+            report,
+            method_name="order_market_buy",
+            payload={"symbol": "BTCUSDT", "quantity": 0.01},
+            effect_type="order_buy",
+            max_retries=0,
+            retry_base_sec=0,
+        )
+
+        self.assertEqual(result["status"], "FILLED")
+        self.assertEqual(
+            report["execution_receipt_observation"],
+            {
+                "submission_attempted_count": 1,
+                "broker_acknowledged_count": 0,
+                "partially_filled_count": 0,
+                "filled_count": 1,
+                "transport_uncertain_count": 0,
+                "failed_count": 0,
+            },
+        )
+        self.assertEqual(report["side_effect_summary"], {"executed_call_count": 1, "suppressed_call_count": 0})
 
     def test_report_uses_runtime_target_service_identity(self):
         runtime_target = build_runtime_target(

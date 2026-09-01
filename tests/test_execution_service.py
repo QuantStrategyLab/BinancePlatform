@@ -197,6 +197,51 @@ class ExecutionServiceTests(unittest.TestCase):
 
         self.assertEqual(observed["symbols"], ["ETHUSDT"])
 
+    def test_non_filled_broker_ack_does_not_update_trend_ledger(self):
+        for status in ("NEW", "PARTIALLY_FILLED"):
+            with self.subTest(status=status):
+                class Client:
+                    def order_market_buy(self, **payload):
+                        return {"status": status, "clientOrderId": payload["newClientOrderId"]}
+
+                runtime = ExecutionRuntime(dry_run=False, run_id=f"pending-{status}", client=Client())
+                report = build_execution_report(runtime)
+                state = {}
+                balances = {"ETHUSDT": 0.0}
+                persisted = []
+
+                with self.assertRaises(OrderReconciliationError):
+                    execute_trend_buys(
+                        runtime,
+                        report,
+                        state,
+                        {"ETHUSDT": {"weight": 1.0, "relative_score": 1.0}},
+                        ["ETHUSDT"],
+                        {"ETHUSDT": 100.0},
+                        {"ETHUSDT": 100.0},
+                        balances,
+                        500.0,
+                        [],
+                        "20260901",
+                        should_skip_duplicate_trend_action_fn=lambda *_args: False,
+                        append_log_fn=lambda *_args: None,
+                        translate_fn=lambda key, **_kwargs: key,
+                        format_qty_fn=lambda *_args: 1.0,
+                        ensure_asset_available_fn=lambda *_args: True,
+                        runtime_call_client_fn=lambda runtime, report, **kwargs: runtime_call_client(
+                            runtime, report, max_retries=0, retry_base_sec=0, **kwargs
+                        ),
+                        next_order_id_fn=lambda *_args: "pending-order-id",
+                        set_symbol_trade_state_fn=lambda *_args: None,
+                        record_trend_action_fn=lambda *_args: None,
+                        runtime_set_trade_state_fn=lambda _runtime, _report, _state, reason: persisted.append(reason),
+                        runtime_notify_fn=lambda *_args: None,
+                    )
+
+                self.assertEqual(balances, {"ETHUSDT": 0.0})
+                self.assertEqual(state, {})
+                self.assertEqual(persisted, [])
+
     def test_run_daily_circuit_breaker_liquidates_and_latches_state(self):
         runtime = SimpleNamespace(client=object())
         report = {"buy_sell_intents": []}

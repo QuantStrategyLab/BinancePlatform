@@ -21,6 +21,8 @@ from application.execution_receipt_adapter import (
 _BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC = 0.25  # max ~4 orders/sec
 _BINANCE_ORDER_TRANSPORT_UNCERTAINTY_CODES = frozenset({-1001, -1006, -1007})
 _BINANCE_ORDER_NOT_FOUND_CODE = -2013
+_BINANCE_ORDER_FILLED_STATUS = "FILLED"
+_BINANCE_ORDER_FAILED_STATUSES = frozenset({"CANCELED", "EXPIRED", "REJECTED"})
 _LAST_API_CALL_TS: float = 0.0
 RUNTIME_EVIDENCE_CONTRACT_VERSION = "qsl.runtime_evidence_aggregate.v1"
 RECONCILIATION_STATUSES = frozenset({"MISSING", "MATCHED", "MISMATCHED"})
@@ -544,11 +546,22 @@ def _reconcile_uncertain_order(client, payload, logical_order_identity):
         response = client.get_order(symbol=symbol, origClientOrderId=logical_order_identity)
     except Exception as exc:
         if _binance_error_code(exc) == _BINANCE_ORDER_NOT_FOUND_CODE:
-            return False, None
+            raise OrderReconciliationError("order_reconciliation_uncertain") from None
         raise OrderReconciliationError("order_reconciliation_uncertain") from None
     if not isinstance(response, Mapping):
         raise OrderReconciliationError("order_reconciliation_uncertain") from None
-    return True, response
+    return response
+
+
+def _require_filled_order_response(response):
+    if not isinstance(response, Mapping):
+        raise OrderReconciliationError("order_reconciliation_uncertain") from None
+    status = str(response.get("status") or "").strip().upper()
+    if status == _BINANCE_ORDER_FILLED_STATUS:
+        return response
+    if status in _BINANCE_ORDER_FAILED_STATUSES:
+        raise ClientCallError("order_submission_failed") from None
+    raise OrderReconciliationError("order_reconciliation_uncertain") from None
 
 
 def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
@@ -573,13 +586,6 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
     for attempt in range(max_retries + 1):
         try:
             response = getattr(runtime.client, method_name)(**client_payload)
-            record_side_effect(
-                runtime, report, effect_type=effect_type,
-                target=method_name, payload=dict(client_payload), executed=True,
-            )
-            if is_order_call:
-                record_order_response(report, response)
-            return response
         except Exception as exc:
             if is_order_call:
                 if not _is_order_transport_uncertainty(exc):
@@ -587,7 +593,7 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                     break
                 record_order_transport_uncertainty(report)
                 try:
-                    order_found, reconciled_response = _reconcile_uncertain_order(
+                    reconciled_response = _reconcile_uncertain_order(
                         runtime.client,
                         client_payload,
                         logical_order_identity,
@@ -607,30 +613,20 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                     )
                     record_order_failure(report)
                     raise
-                if order_found:
-                    record_order_response(report, reconciled_response)
-                    return reconciled_response
-                if attempt < max_retries:
-                    delay = retry_base_sec * (2 ** attempt)
-                    time.sleep(delay)
-                    continue
-                record_side_effect(
-                    runtime,
-                    report,
-                    effect_type=f"{effect_type}_failed",
-                    target=method_name,
-                    payload={
-                        "payload": dict(client_payload),
-                        "reason": "order_reconciliation_uncertain",
-                        "retries": attempt,
-                    },
-                    executed=False,
-                )
-                record_order_failure(report)
-                raise OrderReconciliationError("order_reconciliation_uncertain") from None
+                record_order_response(report, reconciled_response)
+                return _require_filled_order_response(reconciled_response)
             if attempt < max_retries:
                 delay = retry_base_sec * (2 ** attempt)
                 time.sleep(delay)
+        else:
+            record_side_effect(
+                runtime, report, effect_type=effect_type,
+                target=method_name, payload=dict(client_payload), executed=True,
+            )
+            if is_order_call:
+                record_order_response(report, response)
+                return _require_filled_order_response(response)
+            return response
     # All retries exhausted — log and raise
     record_side_effect(
         runtime, report,

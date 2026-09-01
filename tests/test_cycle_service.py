@@ -523,7 +523,7 @@ class CycleServiceTests(unittest.TestCase):
 
         self.assertEqual(
             [symbol for symbol, _order_id in observed["submissions"]],
-            ["ETHUSDT", "ETHUSDT"],
+            ["ETHUSDT"],
         )
         self.assertEqual(len({order_id for _symbol, order_id in observed["submissions"]}), 1)
         self.assertEqual(report["status"], "error")
