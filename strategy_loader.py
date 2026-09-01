@@ -7,7 +7,11 @@ from quant_platform_kit.common.strategies import (
 from quant_platform_kit.strategy_contracts import StrategyEntrypoint
 
 from crypto_strategies import get_platform_runtime_adapter
-from strategy_registry import BINANCE_PLATFORM, resolve_strategy_definition
+from strategy_registry import (
+    BINANCE_PLATFORM,
+    resolve_research_strategy_definition,
+    resolve_strategy_definition,
+)
 
 
 def load_strategy_definition(raw_profile: str | None) -> StrategyDefinition:
@@ -19,6 +23,22 @@ def load_strategy_definition(raw_profile: str | None) -> StrategyDefinition:
 
 def load_strategy_entrypoint_for_profile(raw_profile: str | None) -> StrategyEntrypoint:
     definition = load_strategy_definition(raw_profile)
+    runtime_adapter = get_platform_runtime_adapter(
+        definition.profile,
+        platform_id=BINANCE_PLATFORM,
+    )
+    return load_strategy_entrypoint(
+        definition,
+        platform_id=BINANCE_PLATFORM,
+        available_inputs=runtime_adapter.available_inputs,
+        available_capabilities=runtime_adapter.available_capabilities,
+    )
+
+
+def load_research_strategy_entrypoint_for_profile(raw_profile: str | None) -> StrategyEntrypoint:
+    """Load an eligible catalog entrypoint for replay, never for execution."""
+
+    definition = resolve_research_strategy_definition(raw_profile, platform_id=BINANCE_PLATFORM)
     runtime_adapter = get_platform_runtime_adapter(
         definition.profile,
         platform_id=BINANCE_PLATFORM,

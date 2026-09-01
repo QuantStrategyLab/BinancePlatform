@@ -7,6 +7,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -142,6 +143,10 @@ def build_replay_runtime(
         trend_pool_payload=snapshots["pool_input"],
         btc_market_snapshot=snapshots["market_data"]["btc_snapshot"],
         trend_indicator_snapshots=snapshots["market_data"]["trend_indicators"],
+        research_cycle_settings=SimpleNamespace(
+            btc_status_report_interval_hours=24,
+            allow_new_trend_entries_on_degraded=False,
+        ),
         print_traceback=False,
     )
     return runtime, client, state_store, notifier

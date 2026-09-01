@@ -234,7 +234,11 @@ class StrategyRuntimeTests(unittest.TestCase):
             merged_runtime_config=FakeEntrypoint.manifest.default_config,
         )
 
-        with patch.object(strategy_runtime_module, "resolve_strategy_metadata", return_value=SimpleNamespace(display_name="Crypto Live Pool Rotation")):
+        with patch.object(
+            strategy_runtime_module,
+            "resolve_research_strategy_metadata",
+            return_value=SimpleNamespace(display_name="Crypto Live Pool Rotation"),
+        ):
             evaluation = runtime.evaluate(
                 prices={"BTCUSDT": 60000.0, "ETHUSDT": 3000.0},
                 trend_indicators={"ETHUSDT": {"close": 3000.0}},
@@ -302,7 +306,7 @@ class StrategyRuntimeTests(unittest.TestCase):
         with (
             patch.object(
                 strategy_runtime_module,
-                "resolve_strategy_metadata",
+                "resolve_research_strategy_metadata",
                 return_value=SimpleNamespace(display_name="Crypto Live Pool Rotation"),
             ),
             patch(

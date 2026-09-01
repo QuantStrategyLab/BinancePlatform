@@ -16,10 +16,12 @@ from quant_platform_kit.strategy_contracts import (
     resolve_strategy_artifact_contract,
 )
 
-from crypto_strategies import get_platform_runtime_adapter, get_strategy_catalog
-from quant_platform_kit.common.strategies import load_strategy_entrypoint
-from strategy_loader import load_strategy_entrypoint_for_profile
-from strategy_registry import BINANCE_PLATFORM, resolve_strategy_metadata
+from crypto_strategies import get_platform_runtime_adapter
+from strategy_loader import (
+    load_research_strategy_entrypoint_for_profile,
+    load_strategy_entrypoint_for_profile,
+)
+from strategy_registry import BINANCE_PLATFORM, resolve_research_strategy_metadata
 from trend_pool_support import get_default_live_pool_candidates as tp_get_default_live_pool_candidates
 
 
@@ -279,7 +281,7 @@ class LoadedStrategyRuntime:
             account_metrics=dict(account_metrics),
             metadata={
                 "strategy_profile": self.profile,
-                "strategy_display_name": resolve_strategy_metadata(
+                "strategy_display_name": resolve_research_strategy_metadata(
                     self.profile,
                     platform_id=BINANCE_PLATFORM,
                 ).display_name,
@@ -324,14 +326,6 @@ def load_research_only_strategy_runtime(profile: str) -> LoadedStrategyRuntime:
     """
 
     try:
-        definition = get_strategy_catalog().definitions[profile]
-        runtime_adapter = get_platform_runtime_adapter(profile, platform_id=BINANCE_PLATFORM)
-        entrypoint = load_strategy_entrypoint(
-            definition,
-            platform_id=BINANCE_PLATFORM,
-            available_inputs=runtime_adapter.available_inputs,
-            available_capabilities=runtime_adapter.available_capabilities,
-        )
+        return _build_loaded_strategy_runtime(load_research_strategy_entrypoint_for_profile(profile))
     except (KeyError, TypeError, ValueError):
         raise ValueError(f"Unknown research-only strategy profile: {profile!r}") from None
-    return _build_loaded_strategy_runtime(entrypoint)

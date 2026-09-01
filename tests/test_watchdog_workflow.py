@@ -248,10 +248,10 @@ class WatchdogWorkflowTests(unittest.TestCase):
     def test_crypto_strategies_pin_matches_qpk_health_dependency(self) -> None:
         requirement = _dependency("crypto-strategies @ ")
         lock = LOCK.read_text(encoding="utf-8")
+        revision = requirement.rsplit("@", maxsplit=1)[1]
 
-        self.assertIn("CryptoStrategies.git?rev=ef78312d7653095f585c4f75d45bf765bedc2751", lock)
-        self.assertIn("@ef78312d7653095f585c4f75d45bf765bedc2751", requirement)
-        self.assertNotIn("@eb7bf665c5199f7f075af61ef5c86171eea1f057", lock)
+        self.assertRegex(revision, r"^[0-9a-f]{40}$")
+        self.assertIn(f"CryptoStrategies.git?rev={revision}#{revision}", lock)
 
 
 if __name__ == "__main__":

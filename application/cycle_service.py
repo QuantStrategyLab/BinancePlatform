@@ -40,7 +40,12 @@ def execute_strategy_cycle(
 ):
     circuit_breaker_pct = -0.05
     min_bnb_value, buy_bnb_amount = 10.0, 15.0
-    cycle_settings = load_cycle_execution_settings()
+    cycle_settings = getattr(runtime, "research_cycle_settings", None)
+    if cycle_settings is not None:
+        if not bool(getattr(runtime, "dry_run", False)):
+            raise ValueError("research cycle settings require dry_run=True")
+    else:
+        cycle_settings = load_cycle_execution_settings()
     btc_status_report_interval_hours = cycle_settings.btc_status_report_interval_hours
     allow_new_trend_entries_on_degraded = cycle_settings.allow_new_trend_entries_on_degraded
 

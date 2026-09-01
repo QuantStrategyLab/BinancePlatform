@@ -12,15 +12,15 @@ for path in (PROJECT_ROOT, QPK_SRC, CRYPTO_STRATEGIES_SRC):
 
 
 class StrategyLoaderTests(unittest.TestCase):
-    def test_load_strategy_entrypoint_for_profile_returns_unified_entrypoint(self):
+    def test_load_research_entrypoint_for_profile_returns_unified_entrypoint(self):
         try:
-            from strategy_loader import load_strategy_entrypoint_for_profile
+            from strategy_loader import load_research_strategy_entrypoint_for_profile
         except ModuleNotFoundError as exc:
             if exc.name == "pandas":
                 self.skipTest("pandas is not installed")
             raise
 
-        entrypoint = load_strategy_entrypoint_for_profile("crypto_live_pool_rotation")
+        entrypoint = load_research_strategy_entrypoint_for_profile("crypto_live_pool_rotation")
 
         self.assertEqual(entrypoint.manifest.profile, "crypto_live_pool_rotation")
         self.assertEqual(entrypoint.manifest.domain, "crypto")

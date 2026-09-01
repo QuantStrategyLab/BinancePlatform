@@ -19,6 +19,7 @@ for path in (QPK_SRC, CRYPTO_STRATEGIES_SRC):
 from runtime_config_support import build_live_runtime, load_cycle_execution_settings
 from strategy_registry import (
     BINANCE_PLATFORM,
+    BINANCE_ENABLED_PROFILES,
     CRYPTO_DOMAIN,
     DEFAULT_STRATEGY_PROFILE,
     get_platform_profile_status_matrix,
@@ -36,6 +37,10 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             },
             clear=False,
         ):
+            if not BINANCE_ENABLED_PROFILES:
+                with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE"):
+                    load_cycle_execution_settings()
+                return
             settings = load_cycle_execution_settings()
 
         self.assertEqual(settings.btc_status_report_interval_hours, 24)
@@ -53,6 +58,10 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             },
             clear=True,
         ):
+            if not BINANCE_ENABLED_PROFILES:
+                with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE"):
+                    load_cycle_execution_settings()
+                return
             settings = load_cycle_execution_settings()
 
         self.assertFalse(settings.allow_new_trend_entries_on_degraded)
@@ -71,6 +80,10 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             },
             clear=False,
         ):
+            if not BINANCE_ENABLED_PROFILES:
+                with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE"):
+                    load_cycle_execution_settings()
+                return
             settings = load_cycle_execution_settings()
 
         self.assertEqual(settings.strategy_profile, DEFAULT_STRATEGY_PROFILE)
@@ -80,7 +93,7 @@ class RuntimeConfigSupportTests(unittest.TestCase):
     def test_platform_supported_profiles_are_filtered_by_registry(self):
         self.assertEqual(
             get_supported_profiles_for_platform(BINANCE_PLATFORM),
-            frozenset({DEFAULT_STRATEGY_PROFILE}),
+            BINANCE_ENABLED_PROFILES,
         )
 
     def test_platform_profile_status_matrix_marks_default_profile_eligible_and_enabled(self):
@@ -93,7 +106,7 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         self.assertEqual(default_row["platform"], BINANCE_PLATFORM)
         self.assertEqual(default_row["display_name"], "Crypto Live Pool Rotation")
         self.assertTrue(default_row["eligible"])
-        self.assertTrue(default_row["enabled"])
+        self.assertEqual(default_row["enabled"], bool(BINANCE_ENABLED_PROFILES))
         self.assertTrue(default_row["is_default"])
         self.assertTrue(default_row["is_rollback"])
         self.assertEqual(default_row["domain"], CRYPTO_DOMAIN)
@@ -113,6 +126,15 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             },
             clear=False,
         ):
+            if not BINANCE_ENABLED_PROFILES:
+                with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE"):
+                    build_live_runtime(
+                        now_utc=sentinel_now,
+                        state_loader=state_loader,
+                        state_writer=state_writer,
+                        notifier=notifier,
+                    )
+                return
             runtime = build_live_runtime(
                 now_utc=sentinel_now,
                 state_loader=state_loader,
@@ -143,6 +165,10 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             },
             clear=False,
         ):
+            if not BINANCE_ENABLED_PROFILES:
+                with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE"):
+                    build_live_runtime()
+                return
             runtime = build_live_runtime()
 
         self.assertEqual(runtime.tg_chat_id, "shared-chat-id")
@@ -159,6 +185,10 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             },
             clear=False,
         ):
+            if not BINANCE_ENABLED_PROFILES:
+                with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE"):
+                    build_live_runtime()
+                return
             runtime = build_live_runtime()
 
         self.assertEqual(runtime.tg_chat_id, "qsl-chat-id")
@@ -186,6 +216,10 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             },
             clear=True,
         ):
+            if not BINANCE_ENABLED_PROFILES:
+                with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE"):
+                    build_live_runtime()
+                return
             runtime = build_live_runtime()
 
         self.assertFalse(runtime.dry_run)
@@ -223,6 +257,10 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             },
             clear=True,
         ):
+            if not BINANCE_ENABLED_PROFILES:
+                with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE"):
+                    build_live_runtime()
+                return
             runtime = build_live_runtime()
 
         self.assertFalse(runtime.dry_run)
@@ -244,8 +282,12 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             },
             clear=True,
         ):
-            with self.assertRaisesRegex(ValueError, "BINANCE_DRY_RUN"):
-                build_live_runtime()
+            if not BINANCE_ENABLED_PROFILES:
+                with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE"):
+                    build_live_runtime()
+            else:
+                with self.assertRaisesRegex(ValueError, "BINANCE_DRY_RUN"):
+                    build_live_runtime()
 
     def test_status_script_json_matches_registry(self):
         script = ROOT / "scripts" / "print_strategy_profile_status.py"
@@ -284,8 +326,16 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         self.assertEqual(plan["platform"], BINANCE_PLATFORM)
         self.assertEqual(plan["canonical_profile"], DEFAULT_STRATEGY_PROFILE)
         self.assertTrue(plan["eligible"])
-        self.assertTrue(plan["enabled"])
-        self.assertEqual(plan["set_env"]["STRATEGY_PROFILE"], DEFAULT_STRATEGY_PROFILE)
+        self.assertEqual(plan["enabled"], bool(BINANCE_ENABLED_PROFILES))
+        self.assertEqual(plan["execution_plan_available"], bool(BINANCE_ENABLED_PROFILES))
+        self.assertEqual(
+            plan["set_env"],
+            {"STRATEGY_PROFILE": DEFAULT_STRATEGY_PROFILE} if BINANCE_ENABLED_PROFILES else {},
+        )
+        self.assertEqual(
+            plan["blocking_reason"],
+            None if BINANCE_ENABLED_PROFILES else "profile_not_execution_enabled",
+        )
         self.assertIn("BINANCE_API_KEY", plan["keep_env"])
         self.assertIn("BINANCE_API_SECRET", plan["keep_env"])
         self.assertIn("TG_TOKEN", plan["keep_env"])

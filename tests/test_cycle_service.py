@@ -9,6 +9,44 @@ from application.cycle_service import execute_strategy_cycle, run_live_cycle, wr
 
 
 class CycleServiceTests(unittest.TestCase):
+    def test_research_cycle_settings_require_dry_run(self):
+        runtime = SimpleNamespace(
+            dry_run=False,
+            research_cycle_settings=SimpleNamespace(
+                btc_status_report_interval_hours=24,
+                allow_new_trend_entries_on_degraded=False,
+            ),
+        )
+
+        with self.assertRaisesRegex(ValueError, "research cycle settings require dry_run=True"):
+            execute_strategy_cycle(
+                runtime,
+                build_execution_report=lambda _runtime: {},
+                ensure_runtime_client=lambda *_args: True,
+                load_cycle_execution_settings=lambda: (_ for _ in ()).throw(
+                    AssertionError("live settings must not be called")
+                ),
+                load_cycle_state=lambda *_args: None,
+                append_trend_pool_source_logs=lambda *_args: None,
+                capture_market_snapshot=lambda *_args: None,
+                compute_portfolio_allocation=lambda *_args: None,
+                build_balance_snapshot=lambda *_args: None,
+                maybe_reset_daily_state=lambda *_args: None,
+                maybe_rebase_daily_state_for_balance_change=lambda *_args: None,
+                compute_daily_pnls=lambda *_args: None,
+                append_portfolio_report=lambda *_args: None,
+                run_daily_circuit_breaker=lambda *_args: None,
+                execute_trend_rotation=lambda *_args: None,
+                execute_btc_dca_cycle=lambda *_args: None,
+                manage_usdt_earn_buffer_runtime=lambda *_args: None,
+                maybe_send_periodic_btc_status_report=lambda *_args: None,
+                runtime_set_trade_state=lambda *_args: None,
+                append_report_error=lambda *_args: None,
+                runtime_notify=lambda *_args: None,
+                translate_fn=lambda value, **_kwargs: value,
+                traceback_module=SimpleNamespace(),
+            )
+
     def test_write_execution_report_persists_json(self):
         report = {"status": "ok", "log_lines": ["hello"], "value": 1}
         with tempfile.TemporaryDirectory() as tmp_dir:

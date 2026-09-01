@@ -18,21 +18,20 @@ for candidate in (ROOT, QPK_SRC, CRYPTO_STRATEGIES_SRC):
 from strategy_registry import (  # noqa: E402
     BINANCE_PLATFORM,
     get_platform_profile_status_matrix,
-    resolve_strategy_definition,
-    resolve_strategy_metadata,
+    resolve_research_strategy_definition,
+    resolve_research_strategy_metadata,
 )
 
 
 def build_switch_plan(profile: str) -> dict[str, object]:
-    definition = resolve_strategy_definition(profile, platform_id=BINANCE_PLATFORM)
-    metadata = resolve_strategy_metadata(definition.profile, platform_id=BINANCE_PLATFORM)
+    definition = resolve_research_strategy_definition(profile, platform_id=BINANCE_PLATFORM)
+    metadata = resolve_research_strategy_metadata(definition.profile, platform_id=BINANCE_PLATFORM)
     status_row = next(
         row for row in get_platform_profile_status_matrix() if row["canonical_profile"] == definition.profile
     )
 
-    set_env = {
-        "STRATEGY_PROFILE": definition.profile,
-    }
+    execution_enabled = bool(status_row["enabled"])
+    set_env = {"STRATEGY_PROFILE": definition.profile} if execution_enabled else {}
     keep_env = [
         "BINANCE_API_KEY",
         "BINANCE_API_SECRET",
@@ -68,13 +67,17 @@ def build_switch_plan(profile: str) -> dict[str, object]:
         "Switching is mainly STRATEGY_PROFILE plus the shared strategy artifact settings.",
         "Keep exchange credentials and Telegram settings stable across strategy switches.",
     ]
+    if not execution_enabled:
+        notes.append("This profile is not execution-enabled; no environment switch is proposed.")
 
     return {
         "platform": BINANCE_PLATFORM,
         "canonical_profile": definition.profile,
         "display_name": metadata.display_name,
         "eligible": status_row["eligible"],
-        "enabled": status_row["enabled"],
+        "enabled": execution_enabled,
+        "execution_plan_available": execution_enabled,
+        "blocking_reason": "profile_not_execution_enabled" if not execution_enabled else None,
         "required_inputs": sorted(definition.required_inputs),
         "target_mode": definition.target_mode,
         "set_env": set_env,

@@ -13,6 +13,7 @@ from quant_platform_kit.common.strategies import (
     derive_eligible_profiles_for_platform,
     get_catalog_strategy_metadata,
     get_enabled_profiles_for_platform,
+    resolve_catalog_profile,
     resolve_platform_strategy_definition,
 )
 
@@ -113,4 +114,31 @@ def resolve_strategy_metadata(
     platform_id: str,
 ):
     definition = resolve_strategy_definition(raw_value, platform_id=platform_id)
+    return get_catalog_strategy_metadata(STRATEGY_CATALOG, definition.profile)
+
+
+def resolve_research_strategy_definition(
+    raw_value: str | None,
+    *,
+    platform_id: str,
+) -> StrategyDefinition:
+    """Resolve an eligible catalog profile without granting execution access."""
+
+    if platform_id != BINANCE_PLATFORM:
+        raise ValueError(f"Unsupported platform_id={platform_id!r}")
+    candidate = raw_value or DEFAULT_STRATEGY_PROFILE
+    canonical = resolve_catalog_profile(candidate, strategy_catalog=STRATEGY_CATALOG)
+    if canonical not in ELIGIBLE_STRATEGY_PROFILES:
+        raise ValueError(f"Strategy profile is not research-eligible: {raw_value!r}")
+    return STRATEGY_DEFINITIONS[canonical]
+
+
+def resolve_research_strategy_metadata(
+    raw_value: str | None,
+    *,
+    platform_id: str,
+):
+    """Return catalog metadata for a research-only profile."""
+
+    definition = resolve_research_strategy_definition(raw_value, platform_id=platform_id)
     return get_catalog_strategy_metadata(STRATEGY_CATALOG, definition.profile)
