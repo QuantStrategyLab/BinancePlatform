@@ -161,7 +161,9 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
         connected = ensure_runtime_client(
             runtime,
             report,
-            connect_client_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("boom")),
+            connect_client_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("SENSITIVE_PROVIDER_SENTINEL")
+            ),
             append_report_error_fn=lambda report, message, stage: observed["errors"].append((stage, message)),
             runtime_notify_fn=lambda _runtime, _report, text: observed["notifications"].append(text),
             translate_fn=lambda key, **kwargs: key,
@@ -174,6 +176,46 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
         self.assertEqual(observed["sleeps"], [3, 3])
         self.assertEqual(observed["errors"][0][0], "client")
         self.assertEqual(len(observed["notifications"]), 1)
+        self.assertNotIn("SENSITIVE_PROVIDER_SENTINEL", str(report) + str(observed))
+
+    def test_asset_and_earn_errors_use_safe_messages(self):
+        sentinel = "SENSITIVE_PROVIDER_SENTINEL"
+        observed = {"notifications": [], "logs": []}
+
+        class Client:
+            def get_asset_balance(self, **_kwargs):
+                raise RuntimeError(sentinel)
+
+        runtime = SimpleNamespace(client=Client(), dry_run=False)
+        report = {"redemption_subscription_intents": []}
+
+        self.assertFalse(
+            ensure_asset_available_runtime(
+                runtime,
+                report,
+                "USDT",
+                10.0,
+                [],
+                runtime_call_client_fn=lambda *_args, **_kwargs: None,
+                append_log_fn=lambda _buffer, message: observed["logs"].append(message),
+                runtime_notify_fn=lambda _runtime, _report, text: observed["notifications"].append(text),
+                translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
+                sleep_fn=lambda *_args: None,
+            )
+        )
+        manage_usdt_earn_buffer_runtime(
+            runtime,
+            report,
+            100.0,
+            [],
+            runtime_call_client_fn=lambda *_args, **_kwargs: None,
+            append_log_fn=lambda _buffer, message: observed["logs"].append(message),
+            translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
+        )
+
+        self.assertTrue(observed["notifications"])
+        self.assertTrue(observed["logs"])
+        self.assertNotIn(sentinel, str(report) + str(observed))
 
 
 if __name__ == "__main__":

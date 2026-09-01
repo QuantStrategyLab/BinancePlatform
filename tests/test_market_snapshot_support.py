@@ -2,6 +2,7 @@ import unittest
 from types import SimpleNamespace
 
 from market_snapshot_support import capture_market_snapshot
+from runtime_support import OrderReconciliationError
 
 
 class FakeClient:
@@ -13,6 +14,32 @@ class FakeClient:
 
 
 class MarketSnapshotSupportTests(unittest.TestCase):
+    @staticmethod
+    def _capture_with_bnb_failure(failure, notifications):
+        runtime = SimpleNamespace(
+            client=FakeClient({"BNBUSDT": 300.0, "ETHUSDT": 2500.0, "BTCUSDT": 60000.0})
+        )
+        return capture_market_snapshot(
+            runtime,
+            {"buy_sell_intents": []},
+            {"ETHUSDT": {"base_asset": "ETH"}},
+            [],
+            min_bnb_value=20.0,
+            buy_bnb_amount=30.0,
+            get_total_balance_fn=lambda _client, asset, log_buffer=None: {
+                "USDT": 200.0,
+                "BNB": 0.01,
+                "ETH": 0.5,
+                "BTC": 0.01,
+            }[asset],
+            ensure_asset_available_fn=lambda *_args: True,
+            runtime_call_client_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+            runtime_notify_fn=lambda _runtime, _report, message: notifications.append(message),
+            append_log_fn=lambda *_args: None,
+            resolve_btc_snapshot_fn=lambda *_args: {"ahr999": 0.8, "zscore": 1.2},
+            resolve_trend_indicators_fn=lambda _runtime: {},
+        )
+
     def test_capture_market_snapshot_handles_bnb_top_up_and_collects_balances(self):
         runtime = SimpleNamespace(
             client=FakeClient(
@@ -107,6 +134,30 @@ class MarketSnapshotSupportTests(unittest.TestCase):
                 resolve_btc_snapshot_fn=lambda runtime, btc_price, log_buffer: None,
                 resolve_trend_indicators_fn=lambda runtime: {},
             )
+
+    def test_bnb_top_up_integrity_failure_aborts_snapshot(self):
+        notifications = []
+
+        with self.assertRaises(OrderReconciliationError):
+            self._capture_with_bnb_failure(
+                OrderReconciliationError("order_reconciliation_uncertain"),
+                notifications,
+            )
+
+        self.assertEqual(notifications, [])
+
+    def test_bnb_top_up_business_failure_notifies_without_exception_text(self):
+        notifications = []
+
+        snapshot = self._capture_with_bnb_failure(
+            RuntimeError("SENSITIVE_PROVIDER_SENTINEL"),
+            notifications,
+        )
+
+        self.assertEqual(snapshot["u_total"], 200.0)
+        self.assertEqual(len(notifications), 1)
+        self.assertIn("order_execution_failed", notifications[0])
+        self.assertNotIn("SENSITIVE_PROVIDER_SENTINEL", notifications[0])
 
 
 if __name__ == "__main__":

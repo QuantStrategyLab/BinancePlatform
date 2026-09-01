@@ -32,8 +32,8 @@ def load_trade_state(*, normalize_fn, default_state_factory, normalize=True, col
         if payload is not None:
             return normalize_fn(payload) if normalize else payload
         return default_state_factory() if normalize else {}
-    except Exception as exc:
-        print(t("firestore_get_state_failed", error=exc))
+    except Exception:
+        print(t("firestore_get_state_failed", error="state_load_failed"))
         return None
 
 
@@ -42,8 +42,8 @@ def save_trade_state(data, *, normalize_fn, collection="strategy", document="MUL
         persisted_state = normalize_fn(data)
         _get_document_store().set(collection=collection, document_id=document, data=persisted_state)
         return True
-    except Exception as exc:
-        print(t("firestore_write_failed", error=exc))
+    except Exception:
+        print(t("firestore_write_failed", error="state_persistence_failed"))
         return False
 
 

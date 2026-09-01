@@ -98,12 +98,12 @@ def ensure_asset_available_runtime(
                 if not runtime.dry_run:
                     sleep_fn(3)
                 return True
-    except Exception as exc:
+    except Exception:
         runtime_notify_fn(
             runtime,
             report,
             f"{translate_fn('redeem_failed')} {asset}\n"
-            f"{translate_fn('error_label')}: {exc}",
+            f"{translate_fn('error_label')}: asset_availability_failed",
         )
     return False
 
@@ -175,8 +175,11 @@ def manage_usdt_earn_buffer_runtime(
                         effect_type="earn_redeem",
                     )
                     append_log_fn(log_buffer, translate_fn("cash_manager_redeeming_to_spot", amount=redeem_amt))
-    except Exception as exc:
-        append_log_fn(log_buffer, translate_fn("usdt_earn_buffer_maintenance_failed", error=exc))
+    except Exception:
+        append_log_fn(
+            log_buffer,
+            translate_fn("usdt_earn_buffer_maintenance_failed", error="earn_buffer_maintenance_failed"),
+        )
 
 
 def ensure_runtime_client(
@@ -197,17 +200,17 @@ def ensure_runtime_client(
         try:
             runtime.client = connect_client_fn(runtime.api_key, runtime.api_secret, timeout=30)
             return True
-        except Exception as exc:
+        except Exception:
             if attempt < max_retries - 1:
                 sleep_fn(3)
                 continue
-            append_report_error_fn(report, f"Unable to connect Binance API: {exc}", stage="client")
+            append_report_error_fn(report, "client_connection_failed", stage="client")
             report["status"] = "aborted"
             runtime_notify_fn(
                 runtime,
                 report,
                 f"{translate_fn('api_error')}\n"
-                f"{translate_fn('error_label')}: {str(exc)}",
+                f"{translate_fn('error_label')}: client_connection_failed",
             )
             return False
 

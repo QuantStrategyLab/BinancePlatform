@@ -9,7 +9,7 @@ from quant_platform_kit.common.runtime_reports import persist_runtime_report
 from quant_platform_kit.strategy_lifecycle.performance_monitor import try_record_platform_execution
 from application.execution_receipt_adapter import attach_execution_receipt_from_report
 from runtime_logging import RuntimeLogContext, emit_runtime_log
-from runtime_support import finalize_notification_delivery
+from runtime_support import append_report_error, finalize_notification_delivery
 
 
 def execute_strategy_cycle(
@@ -225,13 +225,11 @@ def execute_strategy_cycle(
         state["last_balance_snapshot"] = build_balance_snapshot(runtime_trend_universe, balances, u_total)
         runtime_set_trade_state(runtime, report, state, reason="cycle_complete")
 
-    except Exception as exc:
+    except Exception:
         report["status"] = "error"
-        append_report_error(report, str(exc), stage="execute_cycle")
-        if runtime.print_traceback:
-            traceback_module.print_exc()
+        append_report_error(report, "cycle_execution_failed", stage="execute_cycle")
         try:
-            runtime_notify(runtime, report, f"{translate_fn('system_crash')}\n{str(exc)[:200]}")
+            runtime_notify(runtime, report, f"{translate_fn('system_crash')}\ncycle_execution_failed")
         except Exception:
             pass
     finally:
@@ -319,9 +317,15 @@ def run_live_cycle(
             project_id=os.getenv("CLOUD_PROJECT_ID") or os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT"),
         )
         persisted_local_path = persisted.local_path or report_path
-        persisted_cloud_uri = persisted.cloud_uri
-    except Exception as persist_exc:
-        output_printer(f"failed to persist archived execution report: {persist_exc}")
+        if hasattr(persisted, "cloud_uri"):
+            persisted_cloud_uri = persisted.cloud_uri
+        else:
+            persisted_cloud_uri = getattr(persisted, "gcs_uri", None)
+    except Exception:
+        report["status"] = "error"
+        append_report_error(report, "report_persistence_failed", stage="report_persistence")
+        output_printer("failed to persist archived execution report: report_persistence_failed")
+        persisted_local_path = report_writer(report)
     report_status = str(report.get("status", "unknown"))
     status_event = {
         "ok": "strategy_cycle_completed",
