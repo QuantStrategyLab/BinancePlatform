@@ -450,7 +450,7 @@ def get_trade_state(normalize=True):
 
 
 def set_trade_state(data):
-    infra_save_runtime_trade_state(
+    return infra_save_runtime_trade_state(
         data,
         normalize_fn=normalize_trade_state,
     )
@@ -465,16 +465,13 @@ def send_tg_msg(token, chat_id, text):
     return live_send_tg_msg(token, chat_id, text)
 
 
-def _runtime_error_notification_message(exc):
-    error_text = f"{type(exc).__name__}: {exc}"
-    if len(error_text) > 1200:
-        error_text = error_text[:1197] + "..."
+def _runtime_error_notification_message(_exc):
     return "\n".join(
         (
             "Binance strategy run failed",
             f"service: {os.getenv('SERVICE_NAME', 'binance-platform')}",
             f"strategy: {os.getenv('STRATEGY_PROFILE', '<unset>')}",
-            f"error: {error_text}",
+            "error: runtime_setup_failed",
         )
     )
 
@@ -487,8 +484,8 @@ def _notify_runtime_error(exc):
         return False
     try:
         receipt = send_tg_msg(token, chat_id, _runtime_error_notification_message(exc))
-    except Exception as send_exc:
-        print(f"Binance runtime error Telegram send failed: {send_exc}")
+    except Exception:
+        print("Binance runtime error Telegram send failed: notification_delivery_failed")
         return False
     if isinstance(receipt, dict):
         return receipt.get("transport_acknowledged") is True
@@ -502,8 +499,14 @@ def get_total_balance(client, asset, log_buffer=None):
     return qpk_get_total_balance(
         client,
         asset,
-        on_spot_error=lambda exc: append_log(log_buffer, t("spot_balance_lookup_failed", asset=asset, error=exc)),
-        on_earn_error=lambda exc: append_log(log_buffer, t("earn_balance_lookup_failed", asset=asset, error=exc)),
+        on_spot_error=lambda _exc: append_log(
+            log_buffer,
+            t("spot_balance_lookup_failed", asset=asset, error="balance_lookup_failed"),
+        ),
+        on_earn_error=lambda _exc: append_log(
+            log_buffer,
+            t("earn_balance_lookup_failed", asset=asset, error="balance_lookup_failed"),
+        ),
         balance_error_cls=BalanceFetchError,
     )
 
@@ -523,10 +526,10 @@ def ensure_asset_available(client, asset, required_amount, tg_token, tg_chat_id)
             tg_chat_id,
             t("execution_spot_short_redeeming_from_earn", asset=asset, amount=amount),
         ),
-        on_error=lambda exc: send_tg_msg(
+        on_error=lambda _exc: send_tg_msg(
             tg_token,
             tg_chat_id,
-            t("execution_redeem_failed_asset", asset=asset, error=exc),
+            t("execution_redeem_failed_asset", asset=asset, error="earn_redeem_failed"),
         ),
         sleep_fn=time.sleep,
     )
@@ -538,7 +541,10 @@ def manage_usdt_earn_buffer(client, target_buffer, tg_token, tg_chat_id, log_buf
         target_buffer,
         on_subscribe=lambda amount: append_log(log_buffer, t("cash_manager_subscribed_to_earn", amount=amount)),
         on_redeem=lambda amount: append_log(log_buffer, t("cash_manager_redeeming_to_spot", amount=amount)),
-        on_error=lambda exc: append_log(log_buffer, t("usdt_earn_buffer_maintenance_failed", error=exc)),
+        on_error=lambda _exc: append_log(
+            log_buffer,
+            t("usdt_earn_buffer_maintenance_failed", error="earn_maintenance_failed"),
+        ),
     )
 
 def format_qty(client, symbol, qty):
@@ -605,7 +611,11 @@ def fetch_btc_market_snapshot(client, btc_price, lookback_days=700, log_buffer=N
         client,
         btc_price,
         lookback_days=lookback_days,
-        on_fetch_error=lambda exc: log_buffer.append(t("btc_daily_fetch_failed", error=exc)) if log_buffer is not None else None,
+        on_fetch_error=lambda _exc: log_buffer.append(
+            t("btc_daily_fetch_failed", error="btc_daily_fetch_failed")
+        )
+        if log_buffer is not None
+        else None,
         on_empty=lambda: log_buffer.append(t("btc_daily_data_empty")) if log_buffer is not None else None,
         on_insufficient=lambda length, last_time: log_buffer.append(
             t("btc_data_insufficient", length=length, last_time=last_time)
@@ -679,9 +689,9 @@ def enrich_btc_snapshot_with_cycle_indicators(btc_snapshot: dict, log_buffer: li
             cycle_data = json.loads(raw)
         else:
             cycle_data = json.loads(Path(cycle_path).read_text(encoding="utf-8"))
-    except Exception as exc:
+    except Exception:
         if log_buffer is not None:
-            log_buffer.append(t("btc_cycle_indicators_load_failed", error=exc))
+            log_buffer.append(t("btc_cycle_indicators_load_failed", error="cycle_indicators_load_failed"))
         return btc_snapshot
 
     # Merge cycle fields into snapshot (pipeline data takes precedence)
@@ -1242,11 +1252,10 @@ def main():
             output_printer=print,
             exit_fn=sys.exit,
         )
-    except Exception as exc:
-        print(f"Binance strategy run failed before cycle handling: {type(exc).__name__}: {exc}")
-        traceback.print_exc()
-        _notify_runtime_error(exc)
-        raise
+    except Exception:
+        print("Binance strategy run failed before cycle handling: runtime_setup_failed")
+        _notify_runtime_error(RuntimeError("runtime_setup_failed"))
+        raise RuntimeError("runtime_setup_failed") from None
 
 
 if __name__ == "__main__":

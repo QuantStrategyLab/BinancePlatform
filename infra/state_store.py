@@ -37,7 +37,7 @@ def save_runtime_trade_state(
     collection=DEFAULT_STATE_COLLECTION,
     document=DEFAULT_STATE_DOCUMENT,
 ):
-    saver_fn(
+    return saver_fn(
         data,
         normalize_fn=normalize_fn,
         collection=collection,

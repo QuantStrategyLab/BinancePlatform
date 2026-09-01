@@ -1,6 +1,32 @@
 from unittest.mock import Mock, patch
 
-from live_services import send_tg_msg
+from live_services import load_trade_state, save_trade_state, send_tg_msg
+
+
+def test_load_trade_state_logs_only_safe_failure_reason():
+    store = Mock()
+    store.get.side_effect = RuntimeError("SENSITIVE_PROVIDER_SENTINEL")
+
+    with patch("live_services._get_document_store", return_value=store), patch("builtins.print") as print_mock:
+        result = load_trade_state(normalize_fn=lambda value: value, default_state_factory=dict)
+
+    rendered = " ".join(str(call) for call in print_mock.call_args_list)
+    assert result is None
+    assert "state_load_failed" in rendered
+    assert "SENSITIVE_PROVIDER_SENTINEL" not in rendered
+
+
+def test_save_trade_state_logs_only_safe_failure_reason():
+    store = Mock()
+    store.set.side_effect = RuntimeError("provider-secret-state-write-error")
+
+    with patch("live_services._get_document_store", return_value=store), patch("builtins.print") as print_mock:
+        result = save_trade_state({"ok": True}, normalize_fn=lambda value: value)
+
+    rendered = " ".join(str(call) for call in print_mock.call_args_list)
+    assert result is False
+    assert "state_persistence_failed" in rendered
+    assert "provider-secret-state-write-error" not in rendered
 
 
 def test_send_tg_msg_rejects_telegram_ok_false():

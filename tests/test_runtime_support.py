@@ -1,8 +1,38 @@
 import os
 import sys
+import traceback
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import requests
+
+if not hasattr(requests, "exceptions"):
+    class RequestException(OSError):
+        pass
+
+    class RequestsConnectionError(RequestException):
+        pass
+
+    class HTTPError(RequestException):
+        pass
+
+    class RequestsTimeout(RequestException):
+        pass
+
+    requests.exceptions = type(
+        "RequestsExceptions",
+        (),
+        {
+            "ConnectionError": RequestsConnectionError,
+            "HTTPError": HTTPError,
+            "Timeout": RequestsTimeout,
+        },
+    )
+else:
+    RequestsConnectionError = requests.exceptions.ConnectionError
+    HTTPError = requests.exceptions.HTTPError
+    RequestsTimeout = requests.exceptions.Timeout
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -13,13 +43,16 @@ if str(QPK_SRC) not in sys.path:
     sys.path.insert(0, str(QPK_SRC))
 
 from runtime_support import (
+    ClientCallError,
     ExecutionRuntime,
+    OrderReconciliationError,
     build_runtime_evidence_aggregate,
     build_execution_report,
     finalize_notification_delivery,
     record_gating_event,
     runtime_call_client,
     runtime_notify,
+    runtime_set_trade_state,
     validate_runtime_evidence_aggregate,
 )
 from quant_platform_kit.common.runtime_target import build_runtime_target
@@ -159,6 +192,439 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertEqual(observed["calls"], 0)
         self.assertEqual(report["side_effect_summary"]["suppressed_call_count"], 1)
         self.assertFalse(report["standard_execution_permitted"])
+
+    def test_state_writer_failure_stops_before_success_is_recorded(self):
+        runtime = ExecutionRuntime(
+            dry_run=False,
+            run_id="state-write-failure",
+            state_writer=lambda _state: False,
+        )
+        report = build_execution_report(runtime)
+
+        with self.assertRaisesRegex(RuntimeError, "state_persistence_failed") as raised:
+            runtime_set_trade_state(runtime, report, {"ok": True}, reason="cycle_complete")
+
+        self.assertEqual(type(raised.exception).__name__, "StatePersistenceError")
+        self.assertEqual(report["side_effect_summary"]["executed_call_count"], 0)
+
+    def test_state_writer_exception_is_sanitized(self):
+        def fail_write(_state):
+            raise RuntimeError("provider-secret-state-write-error")
+
+        runtime = ExecutionRuntime(
+            dry_run=False,
+            run_id="state-write-exception",
+            state_writer=fail_write,
+        )
+        report = build_execution_report(runtime)
+
+        with self.assertRaisesRegex(RuntimeError, "state_persistence_failed") as raised:
+            runtime_set_trade_state(runtime, report, {"ok": True}, reason="cycle_complete")
+
+        rendered = "".join(traceback.format_exception(raised.exception))
+        self.assertEqual(type(raised.exception).__name__, "StatePersistenceError")
+        self.assertNotIn("provider-secret-state-write-error", rendered)
+        self.assertEqual(report["side_effect_summary"]["executed_call_count"], 0)
+
+    def test_order_transport_errors_with_pending_reconciliation_stop_without_resubmit(self):
+        for error_type in (TimeoutError, ConnectionError, RequestsTimeout, RequestsConnectionError):
+            with self.subTest(error_type=error_type.__name__):
+                observed = []
+
+                class Client:
+                    def order_market_buy(self, **kwargs):
+                        observed.append(("submit", kwargs["newClientOrderId"]))
+                        raise error_type("provider-submit-secret")
+
+                    def get_order(self, *, symbol, origClientOrderId):
+                        observed.append(("reconcile", symbol, origClientOrderId))
+                        return {"status": "NEW", "clientOrderId": origClientOrderId}
+
+                runtime = ExecutionRuntime(dry_run=False, run_id="stable-order", client=Client())
+                report = build_execution_report(runtime)
+
+                with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+                    runtime_call_client(
+                        runtime,
+                        report,
+                        method_name="order_market_buy",
+                        payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                        effect_type="order_buy",
+                        max_retries=1,
+                        retry_base_sec=0,
+                    )
+
+                self.assertEqual([call[0] for call in observed], ["submit", "reconcile"])
+                self.assertEqual(observed[0][1], observed[1][2])
+
+    def test_order_reconciliation_none_response_does_not_resubmit(self):
+        observed = []
+
+        class Client:
+            def order_market_buy(self, **kwargs):
+                observed.append(("submit", kwargs["newClientOrderId"]))
+                raise TimeoutError("provider-submit-secret")
+
+            def get_order(self, *, symbol, origClientOrderId):
+                observed.append(("reconcile", symbol, origClientOrderId))
+                return None
+
+        runtime = ExecutionRuntime(dry_run=False, run_id="none-reconciliation", client=Client())
+        report = build_execution_report(runtime)
+
+        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain") as raised:
+            runtime_call_client(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                effect_type="order_buy",
+                max_retries=1,
+                retry_base_sec=0,
+            )
+
+        self.assertEqual([call[0] for call in observed], ["submit", "reconcile"])
+        self.assertNotIn("provider-submit-secret", "".join(traceback.format_exception(raised.exception)))
+
+    def test_order_reconciliation_query_error_does_not_resubmit(self):
+        observed = []
+
+        class Client:
+            def order_market_buy(self, **kwargs):
+                observed.append(("submit", kwargs["newClientOrderId"]))
+                raise TimeoutError("provider-submit-secret")
+
+            def get_order(self, *, symbol, origClientOrderId):
+                observed.append(("reconcile", symbol, origClientOrderId))
+                raise RuntimeError("provider-query-secret")
+
+        runtime = ExecutionRuntime(dry_run=False, run_id="query-error", client=Client())
+        report = build_execution_report(runtime)
+
+        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain") as raised:
+            runtime_call_client(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                effect_type="order_buy",
+                max_retries=1,
+                retry_base_sec=0,
+            )
+
+        rendered = "".join(traceback.format_exception(raised.exception))
+        self.assertEqual([call[0] for call in observed], ["submit", "reconcile"])
+        self.assertNotIn("provider-submit-secret", rendered)
+        self.assertNotIn("provider-query-secret", rendered)
+
+    def test_order_reconciliation_non_mapping_response_does_not_resubmit(self):
+        observed = []
+
+        class Client:
+            def order_market_buy(self, **kwargs):
+                observed.append(("submit", kwargs["newClientOrderId"]))
+                raise TimeoutError("provider-submit-secret")
+
+            def get_order(self, *, symbol, origClientOrderId):
+                observed.append(("reconcile", symbol, origClientOrderId))
+                return ["unexpected"]
+
+        runtime = ExecutionRuntime(dry_run=False, run_id="invalid-reconciliation", client=Client())
+        report = build_execution_report(runtime)
+
+        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+            runtime_call_client(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                effect_type="order_buy",
+                max_retries=1,
+                retry_base_sec=0,
+            )
+
+        self.assertEqual([call[0] for call in observed], ["submit", "reconcile"])
+
+    def test_order_not_found_after_transport_uncertainty_does_not_resubmit(self):
+        observed = []
+
+        class OrderNotFound(Exception):
+            code = -2013
+
+        class Client:
+            def order_market_buy(self, **kwargs):
+                observed.append(("submit", kwargs["newClientOrderId"]))
+                if len([call for call in observed if call[0] == "submit"]) == 1:
+                    raise TimeoutError("provider-submit-secret")
+                return {"status": "FILLED", "clientOrderId": kwargs["newClientOrderId"]}
+
+            def get_order(self, *, symbol, origClientOrderId):
+                observed.append(("reconcile", symbol, origClientOrderId))
+                raise OrderNotFound("provider-query-secret")
+
+        runtime = ExecutionRuntime(dry_run=False, run_id="order-not-found-retry", client=Client())
+        report = build_execution_report(runtime)
+
+        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain") as raised:
+            runtime_call_client(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                effect_type="order_buy",
+                max_retries=1,
+                retry_base_sec=0,
+            )
+
+        rendered = "".join(traceback.format_exception(raised.exception)) + str(report)
+        self.assertEqual([call[0] for call in observed], ["submit", "reconcile"])
+        self.assertEqual(observed[0][1], observed[1][2])
+        self.assertEqual(
+            report["execution_receipt_observation"],
+            {
+                "submission_attempted_count": 1,
+                "broker_acknowledged_count": 0,
+                "partially_filled_count": 0,
+                "filled_count": 0,
+                "transport_uncertain_count": 1,
+                "failed_count": 1,
+            },
+        )
+        self.assertEqual(report["side_effect_summary"], {"executed_call_count": 0, "suppressed_call_count": 1})
+        self.assertNotIn("provider-submit-secret", rendered)
+        self.assertNotIn("provider-query-secret", rendered)
+
+    def test_order_not_found_after_all_uncertain_retries_raises_integrity_error(self):
+        observed = []
+
+        class OrderNotFound(Exception):
+            code = -2013
+
+        class Client:
+            def order_market_buy(self, **kwargs):
+                observed.append(("submit", kwargs["newClientOrderId"]))
+                raise TimeoutError("provider-submit-secret")
+
+            def get_order(self, *, symbol, origClientOrderId):
+                observed.append(("reconcile", symbol, origClientOrderId))
+                raise OrderNotFound("provider-query-secret")
+
+        runtime = ExecutionRuntime(dry_run=False, run_id="order-not-found-exhausted", client=Client())
+        report = build_execution_report(runtime)
+
+        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain") as raised:
+            runtime_call_client(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                effect_type="order_buy",
+                max_retries=1,
+                retry_base_sec=0,
+            )
+
+        rendered = "".join(traceback.format_exception(raised.exception)) + str(report)
+        self.assertEqual([call[0] for call in observed], ["submit", "reconcile"])
+        self.assertEqual(observed[0][1], observed[1][2])
+        self.assertNotIn("provider-submit-secret", rendered)
+        self.assertNotIn("provider-query-secret", rendered)
+
+    def test_deterministic_order_rejection_does_not_reconcile(self):
+        observed = []
+
+        class RejectedOrder(Exception):
+            code = -1013
+
+        class Client:
+            def order_market_buy(self, **kwargs):
+                observed.append(("submit", kwargs["newClientOrderId"]))
+                raise RejectedOrder("SENSITIVE_PROVIDER_SENTINEL")
+
+            def get_order(self, **_kwargs):
+                observed.append(("reconcile",))
+
+        runtime = ExecutionRuntime(dry_run=False, run_id="rejected-order", client=Client())
+        report = build_execution_report(runtime)
+
+        with self.assertRaises(ClientCallError) as raised:
+            runtime_call_client(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                effect_type="order_buy",
+                max_retries=1,
+                retry_base_sec=0,
+            )
+
+        self.assertEqual([call[0] for call in observed], ["submit"])
+        self.assertNotIsInstance(raised.exception, OrderReconciliationError)
+        self.assertNotIn("SENSITIVE_PROVIDER_SENTINEL", str(raised.exception) + str(report))
+
+    def test_requests_http_error_does_not_reconcile(self):
+        observed = []
+
+        class Client:
+            def order_market_buy(self, **_kwargs):
+                observed.append("submit")
+                raise HTTPError("SENSITIVE_PROVIDER_SENTINEL")
+
+            def get_order(self, **_kwargs):
+                observed.append("reconcile")
+
+        runtime = ExecutionRuntime(dry_run=False, run_id="http-error", client=Client())
+        report = build_execution_report(runtime)
+
+        with self.assertRaises(ClientCallError):
+            runtime_call_client(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                effect_type="order_buy",
+                max_retries=1,
+                retry_base_sec=0,
+            )
+
+        self.assertEqual(observed, ["submit"])
+
+    def test_binance_unknown_execution_status_codes_reconcile(self):
+        class UncertainOrder(Exception):
+            def __init__(self, code):
+                super().__init__("SENSITIVE_PROVIDER_SENTINEL")
+                self.code = code
+
+        for code in (-1001, -1006, -1007):
+            with self.subTest(code=code):
+                observed = []
+
+                class Client:
+                    def order_market_buy(self, **kwargs):
+                        observed.append("submit")
+                        raise UncertainOrder(code)
+
+                    def get_order(self, *, symbol, origClientOrderId):
+                        observed.append("reconcile")
+                        return {"status": "NEW", "clientOrderId": origClientOrderId}
+
+                runtime = ExecutionRuntime(dry_run=False, run_id=f"uncertain-{code}", client=Client())
+                report = build_execution_report(runtime)
+
+                with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+                    runtime_call_client(
+                        runtime,
+                        report,
+                        method_name="order_market_buy",
+                        payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                        effect_type="order_buy",
+                        max_retries=0,
+                        retry_base_sec=0,
+                    )
+
+                self.assertEqual(observed, ["submit", "reconcile"])
+
+    def test_direct_non_filled_order_statuses_stop_before_callers_update_state(self):
+        for status, expected_observation in (
+            (
+                "NEW",
+                {
+                    "submission_attempted_count": 1,
+                    "broker_acknowledged_count": 1,
+                    "partially_filled_count": 0,
+                    "filled_count": 0,
+                    "transport_uncertain_count": 0,
+                    "failed_count": 0,
+                },
+            ),
+            (
+                "PARTIALLY_FILLED",
+                {
+                    "submission_attempted_count": 1,
+                    "broker_acknowledged_count": 0,
+                    "partially_filled_count": 1,
+                    "filled_count": 0,
+                    "transport_uncertain_count": 0,
+                    "failed_count": 0,
+                },
+            ),
+        ):
+            with self.subTest(status=status):
+                class Client:
+                    def order_market_buy(self, **kwargs):
+                        return {"status": status, "clientOrderId": kwargs["newClientOrderId"]}
+
+                runtime = ExecutionRuntime(dry_run=False, run_id=f"direct-{status}", client=Client())
+                report = build_execution_report(runtime)
+
+                with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+                    runtime_call_client(
+                        runtime,
+                        report,
+                        method_name="order_market_buy",
+                        payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                        effect_type="order_buy",
+                        max_retries=0,
+                        retry_base_sec=0,
+                    )
+
+                self.assertEqual(report["execution_receipt_observation"], expected_observation)
+                self.assertEqual(report["side_effect_summary"], {"executed_call_count": 1, "suppressed_call_count": 0})
+
+    def test_direct_terminal_failure_status_is_not_returned_as_success(self):
+        for status in ("CANCELED", "EXPIRED", "REJECTED"):
+            with self.subTest(status=status):
+                class Client:
+                    def order_market_buy(self, **kwargs):
+                        return {"status": status, "clientOrderId": kwargs["newClientOrderId"]}
+
+                runtime = ExecutionRuntime(dry_run=False, run_id=f"direct-{status}", client=Client())
+                report = build_execution_report(runtime)
+
+                with self.assertRaisesRegex(ClientCallError, "order_submission_failed"):
+                    runtime_call_client(
+                        runtime,
+                        report,
+                        method_name="order_market_buy",
+                        payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                        effect_type="order_buy",
+                        max_retries=0,
+                        retry_base_sec=0,
+                    )
+
+                self.assertEqual(report["execution_receipt_observation"]["failed_count"], 1)
+                self.assertEqual(report["side_effect_summary"], {"executed_call_count": 1, "suppressed_call_count": 0})
+
+    def test_direct_filled_order_records_one_fill_and_returns_success(self):
+        class Client:
+            def order_market_buy(self, **kwargs):
+                return {"status": "FILLED", "clientOrderId": kwargs["newClientOrderId"]}
+
+        runtime = ExecutionRuntime(dry_run=False, run_id="direct-filled", client=Client())
+        report = build_execution_report(runtime)
+
+        result = runtime_call_client(
+            runtime,
+            report,
+            method_name="order_market_buy",
+            payload={"symbol": "BTCUSDT", "quantity": 0.01},
+            effect_type="order_buy",
+            max_retries=0,
+            retry_base_sec=0,
+        )
+
+        self.assertEqual(result["status"], "FILLED")
+        self.assertEqual(
+            report["execution_receipt_observation"],
+            {
+                "submission_attempted_count": 1,
+                "broker_acknowledged_count": 0,
+                "partially_filled_count": 0,
+                "filled_count": 1,
+                "transport_uncertain_count": 0,
+                "failed_count": 0,
+            },
+        )
+        self.assertEqual(report["side_effect_summary"], {"executed_call_count": 1, "suppressed_call_count": 0})
 
     def test_report_uses_runtime_target_service_identity(self):
         runtime_target = build_runtime_target(

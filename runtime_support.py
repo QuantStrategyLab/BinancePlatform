@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import re
 import time
@@ -7,6 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
+import requests
 from quant_platform_kit.common.runtime_reports import build_runtime_report_base
 from application.execution_receipt_adapter import (
     record_order_failure,
@@ -17,6 +19,10 @@ from application.execution_receipt_adapter import (
 
 # Binance rate limits (public API: 1200 weight/min, order placement: 50 orders/10s)
 _BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC = 0.25  # max ~4 orders/sec
+_BINANCE_ORDER_TRANSPORT_UNCERTAINTY_CODES = frozenset({-1001, -1006, -1007})
+_BINANCE_ORDER_NOT_FOUND_CODE = -2013
+_BINANCE_ORDER_FILLED_STATUS = "FILLED"
+_BINANCE_ORDER_FAILED_STATUSES = frozenset({"CANCELED", "EXPIRED", "REJECTED"})
 _LAST_API_CALL_TS: float = 0.0
 RUNTIME_EVIDENCE_CONTRACT_VERSION = "qsl.runtime_evidence_aggregate.v1"
 RECONCILIATION_STATUSES = frozenset({"MISSING", "MATCHED", "MISMATCHED"})
@@ -35,6 +41,22 @@ _RUNTIME_EVIDENCE_FORBIDDEN_FIELDS = frozenset(
         "token",
     }
 )
+
+
+class ExecutionIntegrityError(RuntimeError):
+    """Execution integrity is uncertain and the cycle must stop."""
+
+
+class StatePersistenceError(ExecutionIntegrityError):
+    """State persistence did not complete durably."""
+
+
+class OrderReconciliationError(ExecutionIntegrityError):
+    """An uncertain order could not be reconciled safely."""
+
+
+class ClientCallError(RuntimeError):
+    """A client call failed without exposing provider details."""
 
 
 def _rate_limit_pause():
@@ -475,9 +497,71 @@ def runtime_set_trade_state(runtime, report, state, *, reason):
         record_side_effect(runtime, report, effect_type="state_write", target="firestore", payload=payload, executed=False)
         return
     if runtime.state_writer is None:
-        raise RuntimeError("runtime.state_writer is not configured")
-    runtime.state_writer(state)
+        raise StatePersistenceError("state_persistence_failed")
+    try:
+        persisted = runtime.state_writer(state)
+    except Exception:
+        raise StatePersistenceError("state_persistence_failed") from None
+    if persisted is not True:
+        raise StatePersistenceError("state_persistence_failed")
     record_side_effect(runtime, report, effect_type="state_write", target="firestore", payload=payload, executed=True)
+
+
+def _ensure_order_logical_identity(runtime, method_name, payload):
+    order_payload = dict(payload)
+    identity = str(order_payload.get("newClientOrderId") or "").strip()
+    if not identity:
+        logical_order = {
+            "run_id": str(runtime.run_id),
+            "method_name": str(method_name),
+            "payload": order_payload,
+        }
+        encoded = json.dumps(logical_order, sort_keys=True, separators=(",", ":"), default=str)
+        identity = f"QSL_{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:28]}"
+        order_payload["newClientOrderId"] = identity
+    return order_payload, identity
+
+
+def _binance_error_code(exc):
+    try:
+        return int(getattr(exc, "code"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _is_order_transport_uncertainty(exc):
+    transport_exceptions = (TimeoutError, ConnectionError)
+    if hasattr(requests, "exceptions"):
+        transport_exceptions += (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+    return isinstance(exc, transport_exceptions) or (
+        _binance_error_code(exc) in _BINANCE_ORDER_TRANSPORT_UNCERTAINTY_CODES
+    )
+
+
+def _reconcile_uncertain_order(client, payload, logical_order_identity):
+    symbol = str(payload.get("symbol") or "").strip()
+    if not symbol or not logical_order_identity:
+        raise OrderReconciliationError("order_reconciliation_uncertain") from None
+    try:
+        response = client.get_order(symbol=symbol, origClientOrderId=logical_order_identity)
+    except Exception as exc:
+        if _binance_error_code(exc) == _BINANCE_ORDER_NOT_FOUND_CODE:
+            raise OrderReconciliationError("order_reconciliation_uncertain") from None
+        raise OrderReconciliationError("order_reconciliation_uncertain") from None
+    if not isinstance(response, Mapping):
+        raise OrderReconciliationError("order_reconciliation_uncertain") from None
+    return response
+
+
+def _require_filled_order_response(response):
+    if not isinstance(response, Mapping):
+        raise OrderReconciliationError("order_reconciliation_uncertain") from None
+    status = str(response.get("status") or "").strip().upper()
+    if status == _BINANCE_ORDER_FILLED_STATUS:
+        return response
+    if status in _BINANCE_ORDER_FAILED_STATUSES:
+        raise ClientCallError("order_submission_failed") from None
+    raise OrderReconciliationError("order_reconciliation_uncertain") from None
 
 
 def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
@@ -492,37 +576,66 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
         raise RuntimeError("runtime.client is not configured")
 
     is_order_call = str(effect_type or "").startswith("order_")
+    client_payload = dict(payload)
+    logical_order_identity = None
     if is_order_call:
+        client_payload, logical_order_identity = _ensure_order_logical_identity(runtime, method_name, payload)
         record_order_submission_attempt(report)
     _rate_limit_pause()
-    last_error = None
+    retries_used = max_retries
     for attempt in range(max_retries + 1):
         try:
-            response = getattr(runtime.client, method_name)(**payload)
-            record_side_effect(
-                runtime, report, effect_type=effect_type,
-                target=method_name, payload=dict(payload), executed=True,
-            )
-            if is_order_call:
-                record_order_response(report, response)
-            return response
+            response = getattr(runtime.client, method_name)(**client_payload)
         except Exception as exc:
-            last_error = exc
             if is_order_call:
+                if not _is_order_transport_uncertainty(exc):
+                    retries_used = attempt
+                    break
                 record_order_transport_uncertainty(report)
+                try:
+                    reconciled_response = _reconcile_uncertain_order(
+                        runtime.client,
+                        client_payload,
+                        logical_order_identity,
+                    )
+                except OrderReconciliationError:
+                    record_side_effect(
+                        runtime,
+                        report,
+                        effect_type=f"{effect_type}_failed",
+                        target=method_name,
+                        payload={
+                            "payload": dict(client_payload),
+                            "reason": "order_reconciliation_uncertain",
+                            "retries": attempt,
+                        },
+                        executed=False,
+                    )
+                    record_order_failure(report)
+                    raise
+                record_order_response(report, reconciled_response)
+                return _require_filled_order_response(reconciled_response)
             if attempt < max_retries:
                 delay = retry_base_sec * (2 ** attempt)
                 time.sleep(delay)
+        else:
+            record_side_effect(
+                runtime, report, effect_type=effect_type,
+                target=method_name, payload=dict(client_payload), executed=True,
+            )
+            if is_order_call:
+                record_order_response(report, response)
+                return _require_filled_order_response(response)
+            return response
     # All retries exhausted — log and raise
     record_side_effect(
         runtime, report,
         effect_type=f"{effect_type}_failed",
         target=method_name,
-        payload={"payload": dict(payload), "error": str(last_error), "retries": max_retries},
+        payload={"payload": dict(client_payload), "retries": retries_used},
         executed=False,
     )
     if is_order_call:
         record_order_failure(report)
-    raise RuntimeError(
-        f"Binance API call {method_name} failed after {max_retries} retries"
-    ) from last_error
+    reason = "order_submission_failed" if is_order_call else "client_call_failed"
+    raise ClientCallError(reason) from None

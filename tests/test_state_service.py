@@ -131,6 +131,15 @@ class StateStoreTests(unittest.TestCase):
         self.assertEqual(observed["collection"], "strategy")
         self.assertEqual(observed["document"], "MULTI_ASSET_STATE")
 
+    def test_save_runtime_trade_state_propagates_persistence_failure(self):
+        result = save_runtime_trade_state(
+            {"ok": True},
+            normalize_fn=lambda value: value,
+            saver_fn=lambda *_args, **_kwargs: False,
+        )
+
+        self.assertIs(result, False)
+
 
 if __name__ == "__main__":
     unittest.main()

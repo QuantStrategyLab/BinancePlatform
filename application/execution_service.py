@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from runtime_support import record_gating_event
+from runtime_support import ExecutionIntegrityError, record_gating_event
+
+
+_SAFE_ORDER_FAILURE_REASON = "order_execution_failed"
 
 
 def _safe_float(value, default=0.0):
@@ -166,12 +169,14 @@ def run_daily_circuit_breaker(
                 symbol,
                 {"is_holding": False, "entry_price": 0.0, "highest_price": 0.0},
             )
-        except Exception as exc:
+        except ExecutionIntegrityError:
+            raise
+        except Exception:
             runtime_notify_fn(
                 runtime,
                 report,
                 f"{translate_fn('circuit_breaker_sell_failed')} {symbol}\n"
-                f"{translate_fn('error_label')}: {exc}",
+                f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
             )
 
     state.update({"is_circuit_broken": True})
@@ -271,13 +276,15 @@ def execute_trend_sells(
                 f"{translate_fn('reason_label')}: {sell_reason}\n"
                 f"{translate_fn('price_label')}: ${curr_price:.2f}",
             )
-        except Exception as exc:
+        except ExecutionIntegrityError:
+            raise
+        except Exception:
             runtime_notify_fn(
                 runtime,
                 report,
                 f"{translate_fn('trend_sell_failed')} {symbol}\n"
                 f"{translate_fn('reason_label')}: {sell_reason}\n"
-                f"{translate_fn('error_label')}: {exc}",
+                f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
             )
 
     return u_total
@@ -393,13 +400,15 @@ def execute_trend_buys(
                 f"{translate_fn('weight_label')}: {candidate_meta['weight']:.0%}\n"
                 f"{translate_fn('rel_score_label')}: {candidate_meta['relative_score']:.2f}",
             )
-        except Exception as exc:
+        except ExecutionIntegrityError:
+            raise
+        except Exception:
             runtime_notify_fn(
                 runtime,
                 report,
                 f"{translate_fn('trend_buy_failed')} {symbol}\n"
                 f"{translate_fn('budget_label')}: ${buy_u:.2f}\n"
-                f"{translate_fn('error_label')}: {exc}",
+                f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
             )
 
     return u_total
@@ -673,12 +682,14 @@ def execute_btc_dca_cycle(
                     f"{translate_fn('quantity_label')}: {qty} BTC",
                 )
                 runtime_set_trade_state_fn(runtime, report, state, reason="btc_dca_buy")
-        except Exception as exc:
+        except ExecutionIntegrityError:
+            raise
+        except Exception:
             runtime_notify_fn(
                 runtime,
                 report,
                 f"{translate_fn('btc_dca_buy_failed')} BTC\n"
-                f"{translate_fn('error_label')}: {exc}",
+                f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
             )
 
     if zscore > sell_trigger and dca_val <= 20:
@@ -741,12 +752,14 @@ def execute_btc_dca_cycle(
                     f"{translate_fn('quantity_label')}: {qty} BTC",
                 )
                 runtime_set_trade_state_fn(runtime, report, state, reason="btc_dca_sell")
-        except Exception as exc:
+        except ExecutionIntegrityError:
+            raise
+        except Exception:
             runtime_notify_fn(
                 runtime,
                 report,
                 f"{translate_fn('btc_dca_trim_failed')} BTC\n"
-                f"{translate_fn('error_label')}: {exc}",
+                f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
             )
 
     return u_total

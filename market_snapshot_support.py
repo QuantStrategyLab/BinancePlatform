@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any, Callable, Mapping
 
 from notify_i18n_support import translate as t
+from runtime_support import ExecutionIntegrityError
+
+
+_SAFE_BNB_TOP_UP_FAILURE_REASON = "order_execution_failed"
 
 
 def capture_market_snapshot(
@@ -50,11 +54,13 @@ def capture_market_snapshot(
             u_total -= buy_bnb_amount
             bnb_total += (buy_bnb_amount * 0.995) / bnb_price
             append_log_fn(log_buffer, t("bnb_top_up_completed"))
-        except Exception as exc:
+        except ExecutionIntegrityError:
+            raise
+        except Exception:
             runtime_notify_fn(
                 runtime,
                 report,
-                f"{t('bnb_top_up_failed')}\n{t('error_label')}: {exc}",
+                f"{t('bnb_top_up_failed')}\n{t('error_label')}: {_SAFE_BNB_TOP_UP_FAILURE_REASON}",
             )
 
     prices = {}
