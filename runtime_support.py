@@ -262,6 +262,7 @@ class ExecutionRuntime:
     trend_pool_payload: Optional[dict[str, Any]] = None
     btc_market_snapshot: Optional[dict[str, Any]] = None
     trend_indicator_snapshots: Optional[dict[str, Any]] = None
+    research_cycle_settings: Any = None
     print_traceback: bool = True
     order_sequence: int = 0
     side_effect_log: list[dict[str, Any]] = field(default_factory=list)
