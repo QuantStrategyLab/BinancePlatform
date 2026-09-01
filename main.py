@@ -98,6 +98,7 @@ from decision_mapper import (
     map_strategy_decision_to_rotation_plan as map_decision_to_rotation_plan,
 )
 from strategy_runtime import load_strategy_runtime
+from strategy_registry import DEFAULT_STRATEGY_PROFILE
 from trade_state_support import (
     build_default_state as ts_build_default_state,
     default_trend_symbol_state as ts_default_trend_symbol_state,
@@ -128,7 +129,22 @@ from trend_pool_support import (
 )
 
 ExecutionRuntime = _ExecutionRuntime
-STRATEGY_RUNTIME = load_strategy_runtime(os.getenv("STRATEGY_PROFILE"))
+
+
+def _load_import_safe_strategy_runtime():
+    """Keep pure replay/helpers importable when no profile is execution-enabled."""
+
+    try:
+        return load_strategy_runtime(DEFAULT_STRATEGY_PROFILE)
+    except ValueError:
+        # This fallback is only a pure catalog evaluator.  `build_live_runtime`
+        # activates an execution-gated runtime after RuntimeTarget validation.
+        from strategy_runtime import load_research_only_strategy_runtime
+
+        return load_research_only_strategy_runtime(DEFAULT_STRATEGY_PROFILE)
+
+
+STRATEGY_RUNTIME = _load_import_safe_strategy_runtime()
 
 SEPARATOR = "━━━━━━━━━━━━━━━━━━"
 
@@ -162,6 +178,22 @@ TREND_POOL_ACTION_HISTORY_KEY = "trend_action_history"
 DEFAULT_TREND_POOL_MAX_AGE_DAYS = int(STRATEGY_RUNTIME.artifact_contract["max_age_days"])
 DEFAULT_TREND_POOL_ACCEPTABLE_MODES = tuple(STRATEGY_RUNTIME.artifact_contract["acceptable_modes"])
 BTC_MARKET_SNAPSHOT_RETRY_DELAYS = (5, 15)
+
+
+def _activate_execution_strategy_runtime(profile: str) -> None:
+    """Replace the import-safe evaluator only after RuntimeTarget validation."""
+
+    global STRATEGY_RUNTIME
+    global TREND_POOL_SIZE
+    global DEFAULT_LIVE_POOL_LEGACY_PATH
+    global DEFAULT_TREND_POOL_MAX_AGE_DAYS
+    global DEFAULT_TREND_POOL_ACCEPTABLE_MODES
+
+    STRATEGY_RUNTIME = load_strategy_runtime(profile)
+    TREND_POOL_SIZE = STRATEGY_RUNTIME.trend_pool_size
+    DEFAULT_LIVE_POOL_LEGACY_PATH = STRATEGY_RUNTIME.default_local_artifact_path
+    DEFAULT_TREND_POOL_MAX_AGE_DAYS = int(STRATEGY_RUNTIME.artifact_contract["max_age_days"])
+    DEFAULT_TREND_POOL_ACCEPTABLE_MODES = tuple(STRATEGY_RUNTIME.artifact_contract["acceptable_modes"])
 
 
 class BalanceFetchError(RuntimeError):
@@ -717,12 +749,14 @@ def get_tradable_qty(symbol, total_qty, prices, min_bnb_value):
 # 3. Core strategy
 # ==========================================
 def build_live_runtime(now_utc=None):
-    return rc_build_live_runtime(
+    runtime = rc_build_live_runtime(
         now_utc=now_utc,
         state_loader=get_trade_state,
         state_writer=set_trade_state,
         notifier=lambda **kwargs: send_tg_msg(kwargs["token"], kwargs["chat_id"], kwargs["text"]),
     )
+    _activate_execution_strategy_runtime(runtime.strategy_profile)
+    return runtime
 
 
 def _set_runtime_trend_universe(resolved_trend_universe):

@@ -21,18 +21,19 @@ if "requests" not in sys.modules:
 
 from quant_platform_kit import PortfolioSnapshot
 from quant_platform_kit.strategy_contracts import StrategyManifest, StrategyRuntimeAdapter
+from strategy_registry import BINANCE_ENABLED_PROFILES
 
 
 class StrategyRuntimeTests(unittest.TestCase):
-    def test_load_strategy_runtime_exposes_explicit_artifact_contract(self):
+    def test_research_only_runtime_exposes_explicit_artifact_contract_without_execution_grant(self):
         try:
-            from strategy_runtime import load_strategy_runtime
+            from strategy_runtime import load_research_only_strategy_runtime
         except ModuleNotFoundError as exc:
             if exc.name == "pandas":
                 self.skipTest("pandas is not installed")
             raise
 
-        runtime = load_strategy_runtime("crypto_live_pool_rotation")
+        runtime = load_research_only_strategy_runtime("crypto_live_pool_rotation")
 
         self.assertEqual(runtime.profile, "crypto_live_pool_rotation")
         self.assertEqual(runtime.runtime_adapter.portfolio_input_name, "portfolio_snapshot")
@@ -47,7 +48,7 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertGreaterEqual(len(runtime.local_artifact_candidates), 1)
         self.assertIn(str(runtime.default_local_artifact_path), runtime.artifact_contract["default_local_candidates"])
 
-    def test_combo_profile_is_not_supported_on_binance(self):
+    def test_execution_runtime_rejects_profiles_when_the_rollout_allowlist_is_empty(self):
         try:
             from strategy_runtime import load_strategy_runtime
         except ModuleNotFoundError as exc:
@@ -55,18 +56,24 @@ class StrategyRuntimeTests(unittest.TestCase):
                 self.skipTest("pandas is not installed")
             raise
 
-        with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE='crypto_equity_combo'"):
-            load_strategy_runtime("crypto_equity_combo")
+        if not BINANCE_ENABLED_PROFILES:
+            with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE='crypto_live_pool_rotation'"):
+                load_strategy_runtime("crypto_live_pool_rotation")
+        else:
+            self.assertEqual(
+                load_strategy_runtime("crypto_live_pool_rotation").profile,
+                "crypto_live_pool_rotation",
+            )
 
     def test_strategy_runtime_evaluate_returns_decision_with_buy_sell_diagnostics(self):
         try:
-            from strategy_runtime import load_strategy_runtime
+            from strategy_runtime import load_research_only_strategy_runtime
         except ModuleNotFoundError as exc:
             if exc.name == "pandas":
                 self.skipTest("pandas is not installed")
             raise
 
-        runtime = load_strategy_runtime("crypto_live_pool_rotation")
+        runtime = load_research_only_strategy_runtime("crypto_live_pool_rotation")
         account_metrics = {
             "total_equity": 10000.0,
             "cash_usdt": 2500.0,

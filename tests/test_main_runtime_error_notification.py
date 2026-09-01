@@ -60,6 +60,7 @@ def install_test_stubs():
     if "strategy_registry" not in sys.modules:
         strategy_registry_module = types.ModuleType("strategy_registry")
         strategy_registry_module.BINANCE_PLATFORM = "binance"
+        strategy_registry_module.DEFAULT_STRATEGY_PROFILE = "crypto_live_pool_rotation"
         strategy_registry_module.resolve_strategy_definition = lambda *_args, **_kwargs: types.SimpleNamespace(
             profile="crypto_live_pool_rotation",
             domain="crypto",

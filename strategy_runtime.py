@@ -16,7 +16,8 @@ from quant_platform_kit.strategy_contracts import (
     resolve_strategy_artifact_contract,
 )
 
-from crypto_strategies import get_platform_runtime_adapter
+from crypto_strategies import get_platform_runtime_adapter, get_strategy_catalog
+from quant_platform_kit.common.strategies import load_strategy_entrypoint
 from strategy_loader import load_strategy_entrypoint_for_profile
 from strategy_registry import BINANCE_PLATFORM, resolve_strategy_metadata
 from trend_pool_support import get_default_live_pool_candidates as tp_get_default_live_pool_candidates
@@ -286,8 +287,7 @@ class LoadedStrategyRuntime:
         )
 
 
-def load_strategy_runtime(raw_profile: str | None) -> LoadedStrategyRuntime:
-    entrypoint = load_strategy_entrypoint_for_profile(raw_profile)
+def _build_loaded_strategy_runtime(entrypoint: StrategyEntrypoint) -> LoadedStrategyRuntime:
     runtime_adapter = get_platform_runtime_adapter(
         entrypoint.manifest.profile,
         platform_id=BINANCE_PLATFORM,
@@ -306,3 +306,32 @@ def load_strategy_runtime(raw_profile: str | None) -> LoadedStrategyRuntime:
         merged_runtime_config=merged_runtime_config,
         local_artifact_candidates=local_artifact_candidates,
     )
+
+
+def load_strategy_runtime(raw_profile: str | None) -> LoadedStrategyRuntime:
+    """Load an execution-eligible runtime through the platform policy gate."""
+
+    return _build_loaded_strategy_runtime(load_strategy_entrypoint_for_profile(raw_profile))
+
+
+def load_research_only_strategy_runtime(profile: str) -> LoadedStrategyRuntime:
+    """Load a catalog runtime solely for local replay or import-safe utilities.
+
+    This deliberately bypasses the runtime rollout allowlist, but it does not
+    produce a RuntimeTarget or make a profile execution eligible.  The live
+    configuration path still uses :func:`load_strategy_runtime` and therefore
+    remains fail-closed when the allowlist is empty.
+    """
+
+    try:
+        definition = get_strategy_catalog().definitions[profile]
+        runtime_adapter = get_platform_runtime_adapter(profile, platform_id=BINANCE_PLATFORM)
+        entrypoint = load_strategy_entrypoint(
+            definition,
+            platform_id=BINANCE_PLATFORM,
+            available_inputs=runtime_adapter.available_inputs,
+            available_capabilities=runtime_adapter.available_capabilities,
+        )
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(f"Unknown research-only strategy profile: {profile!r}") from None
+    return _build_loaded_strategy_runtime(entrypoint)
