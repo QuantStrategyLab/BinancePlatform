@@ -74,13 +74,18 @@ def test_heartbeat_installs_locked_dependencies_before_importing_qpk() -> None:
     workflow = HEARTBEAT_WORKFLOW.read_text(encoding="utf-8")
 
     checkout = workflow.index("      - name: Checkout repository")
+    setup_uv = workflow.index("      - name: Set up uv")
     install = workflow.index("      - name: Install locked dependencies")
     check = workflow.index("      - name: Check recent Runtime workflow success")
 
-    assert checkout < install < check
+    assert checkout < setup_uv < install < check
+    setup_uv_step = workflow[setup_uv:install]
     install_step = workflow[install:check]
-    assert "python -m pip install --upgrade pip uv" in install_step
+    assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9" in setup_uv_step
     assert "uv sync --frozen --no-dev" in install_step
+    assert "python -m pip install" not in workflow
+    assert "uv run --no-sync python scripts/runtime_workflow_heartbeat.py" in workflow[check:]
+    assert "run: python scripts/runtime_workflow_heartbeat.py" not in workflow[check:]
 
 
 def test_lifecycle_workflow_is_read_only_and_uses_pinned_actions() -> None:
