@@ -597,7 +597,13 @@ class TestBuildExecutionReport(unittest.TestCase):
     def test_direct_filled_order_records_one_fill_and_returns_success(self):
         class Client:
             def order_market_buy(self, **kwargs):
-                return {"status": "FILLED", "clientOrderId": kwargs["newClientOrderId"]}
+                return {
+                    "status": "FILLED",
+                    "clientOrderId": kwargs["newClientOrderId"],
+                    "orderId": 101,
+                    "origQty": "0.01000000",
+                    "executedQty": "0.01000000",
+                }
 
         runtime = ExecutionRuntime(dry_run=False, run_id="direct-filled", client=Client())
         report = build_execution_report(runtime)
@@ -625,6 +631,54 @@ class TestBuildExecutionReport(unittest.TestCase):
             },
         )
         self.assertEqual(report["side_effect_summary"], {"executed_call_count": 1, "suppressed_call_count": 0})
+        event = report["execution_order_events"][0]
+        self.assertEqual(event["event_source"], "submission_response")
+        self.assertEqual(event["client_order_id"], result["clientOrderId"])
+        self.assertEqual(event["venue_order_id"], "101")
+        self.assertEqual(event["ordered_quantity"], "0.01")
+        self.assertEqual(event["cumulative_filled_quantity"], "0.01")
+        self.assertEqual(event["status"], "FILLED")
+
+    def test_reconciled_filled_order_preserves_stable_order_event(self):
+        observed = {}
+
+        class Client:
+            def order_market_buy(self, **kwargs):
+                observed["client_order_id"] = kwargs["newClientOrderId"]
+                raise TimeoutError("provider-submit-secret")
+
+            def get_order(self, *, symbol, origClientOrderId):
+                observed["reconciliation_query"] = (symbol, origClientOrderId)
+                return {
+                    "status": "FILLED",
+                    "clientOrderId": origClientOrderId,
+                    "orderId": 202,
+                    "origQty": "0.02000000",
+                    "executedQty": "0.02000000",
+                }
+
+        runtime = ExecutionRuntime(dry_run=False, run_id="reconciled-filled", client=Client())
+        report = build_execution_report(runtime)
+
+        result = runtime_call_client(
+            runtime,
+            report,
+            method_name="order_market_buy",
+            payload={"symbol": "BTCUSDT", "quantity": 0.02},
+            effect_type="order_buy",
+            max_retries=0,
+            retry_base_sec=0,
+        )
+
+        self.assertEqual(result["status"], "FILLED")
+        event = report["execution_order_events"][0]
+        self.assertEqual(event["event_source"], "reconciliation_response")
+        self.assertEqual(event["client_order_id"], observed["client_order_id"])
+        self.assertEqual(observed["reconciliation_query"], ("BTCUSDT", event["client_order_id"]))
+        self.assertEqual(event["venue_order_id"], "202")
+        self.assertEqual(event["ordered_quantity"], "0.02")
+        self.assertEqual(event["cumulative_filled_quantity"], "0.02")
+        self.assertEqual(event["status"], "FILLED")
 
     def test_report_uses_runtime_target_service_identity(self):
         runtime_target = build_runtime_target(

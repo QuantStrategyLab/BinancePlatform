@@ -613,7 +613,13 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                     )
                     record_order_failure(report)
                     raise
-                record_order_response(report, reconciled_response)
+                record_order_response(
+                    report,
+                    reconciled_response,
+                    client_order_id=logical_order_identity,
+                    ordered_quantity=client_payload.get("quantity"),
+                    event_source="reconciliation_response",
+                )
                 return _require_filled_order_response(reconciled_response)
             if attempt < max_retries:
                 delay = retry_base_sec * (2 ** attempt)
@@ -624,7 +630,13 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 target=method_name, payload=dict(client_payload), executed=True,
             )
             if is_order_call:
-                record_order_response(report, response)
+                record_order_response(
+                    report,
+                    response,
+                    client_order_id=logical_order_identity,
+                    ordered_quantity=client_payload.get("quantity"),
+                    event_source="submission_response",
+                )
                 return _require_filled_order_response(response)
             return response
     # All retries exhausted — log and raise
