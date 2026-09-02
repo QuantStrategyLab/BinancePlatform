@@ -16,7 +16,7 @@ from quant_platform_kit.common.execution_receipts import (
 
 _OBSERVATION_KEY = "execution_receipt_observation"
 _ORDER_EVENTS_KEY = "execution_order_events"
-_ORDER_EVENT_SCHEMA_VERSION = "binance.order_response_event.v1"
+_ORDER_EVENT_SCHEMA_VERSION = "binance.order_response_event.v2"
 _COUNTER_FIELDS = (
     "submission_attempted_count",
     "broker_acknowledged_count",
@@ -28,6 +28,7 @@ _COUNTER_FIELDS = (
 _FILLED_STATUSES = frozenset({"FILLED"})
 _PARTIAL_FILL_STATUSES = frozenset({"PARTIALLY_FILLED"})
 _FAILED_STATUSES = frozenset({"CANCELED", "EXPIRED", "REJECTED"})
+_TERMINAL_STATUSES = _FAILED_STATUSES | _FILLED_STATUSES
 
 
 def record_order_submission_attempt(report: dict[str, Any]) -> None:
@@ -43,11 +44,19 @@ def record_order_response(
     client_order_id: object = None,
     ordered_quantity: object = None,
     event_source: object = None,
-) -> None:
+    reducer_state: dict[str, dict[str, Any]] | None = None,
+) -> bool:
     """Record an explicit Binance status and a bounded order event when bound."""
 
     observation = _observation(report)
     status = str(response.get("status") or "").strip().upper() if isinstance(response, Mapping) else ""
+    reduced = _reduce_order_response(
+        response,
+        client_order_id=client_order_id,
+        ordered_quantity=ordered_quantity,
+        status=status,
+        reducer_state=reducer_state,
+    )
     appended = _append_order_event(
         report,
         response,
@@ -56,16 +65,15 @@ def record_order_response(
         event_source=event_source,
         status=status,
     )
-    if appended is False:
-        return
-    if status in _FILLED_STATUSES:
-        observation["filled_count"] += 1
-    elif status in _PARTIAL_FILL_STATUSES:
-        observation["partially_filled_count"] += 1
-    elif status in _FAILED_STATUSES:
-        observation["failed_count"] += 1
-    elif status:
-        observation["broker_acknowledged_count"] += 1
+    if reduced is None:
+        if appended is not False:
+            _increment_observation_status(observation, status)
+        return True
+    if not reduced[0]:
+        return False
+    if appended is not False:
+        _replace_observation_status(observation, reduced[1], reduced[2])
+    return True
 
 
 def record_order_transport_uncertainty(report: dict[str, Any]) -> None:
@@ -147,10 +155,8 @@ def _append_order_event(
     if not stable_client_order_id or not source or not status:
         return None
 
-    response_ordered_quantity = response.get("origQty")
-    if response_ordered_quantity in (None, ""):
-        response_ordered_quantity = ordered_quantity
-    payload = {
+    response_ordered_quantity = _response_ordered_quantity(response, ordered_quantity)
+    raw_identity = {
         "schema_version": _ORDER_EVENT_SCHEMA_VERSION,
         "client_order_id": stable_client_order_id,
         "venue_order_id": _optional_text(response.get("orderId")),
@@ -159,7 +165,14 @@ def _append_order_event(
         "status": status,
         "event_source": source,
     }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    canonical = json.dumps(raw_identity, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    payload = {
+        "schema_version": _ORDER_EVENT_SCHEMA_VERSION,
+        "client_order_id_sha256": _sha256_text(stable_client_order_id),
+        "venue_order_id_sha256": _sha256_text(_optional_text(response.get("orderId"))),
+        "status": status,
+        "event_source": source,
+    }
     event = {
         "event_id": f"binance-order-event.{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}",
         **payload,
@@ -173,12 +186,106 @@ def _append_order_event(
     return True
 
 
+def _reduce_order_response(
+    response: object,
+    *,
+    client_order_id: object,
+    ordered_quantity: object,
+    status: str,
+    reducer_state: dict[str, dict[str, Any]] | None,
+) -> tuple[bool, str | None, str | None] | None:
+    if reducer_state is None:
+        return None
+    if not isinstance(response, Mapping):
+        return False, None, None
+    stable_client_order_id = str(client_order_id or "").strip()
+    if not stable_client_order_id or not status:
+        return False, None, None
+
+    state_key = _sha256_text(stable_client_order_id)
+    previous = reducer_state.get(state_key, {})
+    previous_status = _optional_text(previous.get("status"))
+    if previous_status in _TERMINAL_STATUSES:
+        return False, previous_status, previous_status
+    if previous_status == "PARTIALLY_FILLED" and status not in _PARTIAL_FILL_STATUSES | _TERMINAL_STATUSES:
+        return False, previous_status, previous_status
+
+    cumulative_quantity = previous.get("cumulative_quantity")
+    if status in _PARTIAL_FILL_STATUSES | _FILLED_STATUSES:
+        ordered = _quantity_decimal(_response_ordered_quantity(response, ordered_quantity))
+        cumulative = _quantity_decimal(response.get("executedQty"))
+        if ordered is None or cumulative is None or cumulative > ordered:
+            return False, previous_status, previous_status
+        if status in _FILLED_STATUSES and cumulative != ordered:
+            return False, previous_status, previous_status
+        if cumulative_quantity is not None and cumulative < cumulative_quantity:
+            return False, previous_status, previous_status
+        cumulative_quantity = cumulative
+
+    reducer_state[state_key] = {
+        "status": status,
+        "cumulative_quantity": cumulative_quantity,
+    }
+    return True, previous_status, status
+
+
+def _increment_observation_status(observation: dict[str, int], status: str) -> None:
+    field = _observation_field(status)
+    if field is not None:
+        observation[field] += 1
+
+
+def _replace_observation_status(
+    observation: dict[str, int],
+    previous_status: str | None,
+    current_status: str | None,
+) -> None:
+    previous_field = _observation_field(previous_status or "")
+    current_field = _observation_field(current_status or "")
+    if previous_field == current_field:
+        return
+    if previous_field is not None:
+        observation[previous_field] = max(0, observation[previous_field] - 1)
+    if current_field is not None:
+        observation[current_field] += 1
+
+
+def _observation_field(status: str) -> str | None:
+    if status in _FILLED_STATUSES:
+        return "filled_count"
+    if status in _PARTIAL_FILL_STATUSES:
+        return "partially_filled_count"
+    if status in _FAILED_STATUSES:
+        return "failed_count"
+    return "broker_acknowledged_count" if status else None
+
+
 def _optional_text(value: object) -> str | None:
     text = str(value or "").strip()
     return text or None
 
 
+def _sha256_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _response_ordered_quantity(response: Mapping[str, Any], ordered_quantity: object) -> object:
+    response_ordered_quantity = response.get("origQty")
+    return ordered_quantity if response_ordered_quantity in (None, "") else response_ordered_quantity
+
+
 def _quantity_text(value: object) -> str | None:
+    quantity = _quantity_decimal(value)
+    if quantity is None:
+        return None
+    if not quantity:
+        return "0"
+    return format(quantity.normalize(), "f")
+
+
+def _quantity_decimal(value: object) -> Decimal | None:
     if value is None or isinstance(value, bool):
         return None
     try:
@@ -187,6 +294,4 @@ def _quantity_text(value: object) -> str | None:
         return None
     if not quantity.is_finite() or quantity < 0:
         return None
-    if not quantity:
-        return "0"
-    return format(quantity.normalize(), "f")
+    return quantity

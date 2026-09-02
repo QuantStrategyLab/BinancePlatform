@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -23,6 +24,8 @@ _BINANCE_ORDER_TRANSPORT_UNCERTAINTY_CODES = frozenset({-1001, -1006, -1007})
 _BINANCE_ORDER_NOT_FOUND_CODE = -2013
 _BINANCE_ORDER_FILLED_STATUS = "FILLED"
 _BINANCE_ORDER_FAILED_STATUSES = frozenset({"CANCELED", "EXPIRED", "REJECTED"})
+_BINANCE_CLIENT_ORDER_ID_PREFIX = "QSL_"
+_BINANCE_CLIENT_ORDER_ID_HASH_LENGTH = 28
 _LAST_API_CALL_TS: float = 0.0
 RUNTIME_EVIDENCE_CONTRACT_VERSION = "qsl.runtime_evidence_aggregate.v1"
 RECONCILIATION_STATUSES = frozenset({"MISSING", "MATCHED", "MISMATCHED"})
@@ -287,6 +290,8 @@ class ExecutionRuntime:
     research_cycle_settings: Any = None
     print_traceback: bool = True
     order_sequence: int = 0
+    order_id_nonce: str = field(default_factory=lambda: secrets.token_hex(16))
+    order_event_reducer_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     side_effect_log: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self):
@@ -390,8 +395,14 @@ def record_side_effect(runtime, report, *, effect_type, target, payload, execute
 
 def next_order_id(runtime, prefix, symbol):
     runtime.order_sequence += 1
-    safe_run_id = "".join(ch if ch.isalnum() else "_" for ch in str(runtime.run_id))[:24] or "run"
-    return f"{prefix}_{symbol}_{safe_run_id}_{runtime.order_sequence:03d}"
+    return _build_client_order_id(
+        runtime,
+        {
+            "prefix": str(prefix),
+            "symbol": str(symbol),
+            "sequence": runtime.order_sequence,
+        },
+    )
 
 
 def runtime_notify(runtime, report, text):
@@ -511,15 +522,41 @@ def _ensure_order_logical_identity(runtime, method_name, payload):
     order_payload = dict(payload)
     identity = str(order_payload.get("newClientOrderId") or "").strip()
     if not identity:
-        logical_order = {
-            "run_id": str(runtime.run_id),
-            "method_name": str(method_name),
-            "payload": order_payload,
-        }
-        encoded = json.dumps(logical_order, sort_keys=True, separators=(",", ":"), default=str)
-        identity = f"QSL_{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:28]}"
+        runtime.order_sequence += 1
+        identity = _build_client_order_id(
+            runtime,
+            {
+                "method_name": str(method_name),
+                "payload": order_payload,
+                "sequence": runtime.order_sequence,
+            },
+        )
         order_payload["newClientOrderId"] = identity
     return order_payload, identity
+
+
+def _build_client_order_id(runtime, logical_order):
+    encoded = json.dumps(
+        {
+            "run_id": str(runtime.run_id),
+            "order_id_nonce": str(runtime.order_id_nonce),
+            "logical_order": logical_order,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    return f"{_BINANCE_CLIENT_ORDER_ID_PREFIX}{digest[:_BINANCE_CLIENT_ORDER_ID_HASH_LENGTH]}"
+
+
+def _require_matching_client_order_identity(response, logical_order_identity):
+    if not isinstance(response, Mapping):
+        raise OrderReconciliationError("order_reconciliation_uncertain") from None
+    observed_identity = str(response.get("clientOrderId") or "").strip()
+    if not observed_identity or observed_identity != logical_order_identity:
+        raise OrderReconciliationError("order_reconciliation_uncertain") from None
+    return response
 
 
 def _binance_error_code(exc):
@@ -613,13 +650,21 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                     )
                     record_order_failure(report)
                     raise
-                record_order_response(
+                try:
+                    _require_matching_client_order_identity(reconciled_response, logical_order_identity)
+                except OrderReconciliationError:
+                    record_order_failure(report)
+                    raise
+                if not record_order_response(
                     report,
                     reconciled_response,
                     client_order_id=logical_order_identity,
                     ordered_quantity=client_payload.get("quantity"),
                     event_source="reconciliation_response",
-                )
+                    reducer_state=runtime.order_event_reducer_state,
+                ):
+                    record_order_failure(report)
+                    raise OrderReconciliationError("order_reconciliation_uncertain") from None
                 return _require_filled_order_response(reconciled_response)
             if attempt < max_retries:
                 delay = retry_base_sec * (2 ** attempt)
@@ -630,13 +675,21 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 target=method_name, payload=dict(client_payload), executed=True,
             )
             if is_order_call:
-                record_order_response(
+                try:
+                    _require_matching_client_order_identity(response, logical_order_identity)
+                except OrderReconciliationError:
+                    record_order_failure(report)
+                    raise
+                if not record_order_response(
                     report,
                     response,
                     client_order_id=logical_order_identity,
                     ordered_quantity=client_payload.get("quantity"),
                     event_source="submission_response",
-                )
+                    reducer_state=runtime.order_event_reducer_state,
+                ):
+                    record_order_failure(report)
+                    raise OrderReconciliationError("order_reconciliation_uncertain") from None
                 return _require_filled_order_response(response)
             return response
     # All retries exhausted — log and raise

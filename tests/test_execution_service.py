@@ -116,7 +116,12 @@ class ExecutionServiceTests(unittest.TestCase):
                 observed["submits"].append((payload["symbol"], payload["newClientOrderId"]))
                 if payload["symbol"] == "ETHUSDT":
                     raise RejectedOrder("SENSITIVE_PROVIDER_SENTINEL")
-                return {"status": "FILLED", "clientOrderId": payload["newClientOrderId"]}
+                return {
+                    "status": "FILLED",
+                    "clientOrderId": payload["newClientOrderId"],
+                    "origQty": str(payload["quantity"]),
+                    "executedQty": str(payload["quantity"]),
+                }
 
             def get_order(self, **payload):
                 observed["queries"].append(payload)

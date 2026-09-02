@@ -2,6 +2,8 @@ import os
 import sys
 import traceback
 import unittest
+from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
@@ -50,15 +52,84 @@ from runtime_support import (
     build_execution_report,
     finalize_notification_delivery,
     record_gating_event,
+    next_order_id,
     runtime_call_client,
     runtime_notify,
     runtime_set_trade_state,
     validate_runtime_evidence_aggregate,
 )
 from quant_platform_kit.common.runtime_target import build_runtime_target
+from application.execution_receipt_adapter import attach_execution_receipt_from_report
 
 
 class TestBuildExecutionReport(unittest.TestCase):
+    def test_default_runtime_order_ids_are_unique_within_one_second_and_bounded(self):
+        same_second = datetime(2026, 9, 3, 0, 0, tzinfo=timezone.utc)
+        first = ExecutionRuntime(now_utc=same_second)
+        second = ExecutionRuntime(now_utc=same_second)
+
+        first_order_id = next_order_id(first, "T_BUY", "BTCUSDT")
+        second_order_id = next_order_id(second, "T_BUY", "BTCUSDT")
+
+        self.assertNotEqual(first_order_id, second_order_id)
+        for order_id in (first_order_id, second_order_id):
+            self.assertLessEqual(len(order_id), 32)
+            self.assertRegex(order_id, r"^QSL_[0-9a-f]{28}$")
+
+    def test_mismatched_response_identity_fails_closed_without_accepted_event(self):
+        for source in ("submission_response", "reconciliation_response"):
+            with self.subTest(source=source):
+                class Client:
+                    def order_market_buy(self, **kwargs):
+                        if source == "submission_response":
+                            return {
+                                "status": "FILLED",
+                                "clientOrderId": "unexpected-client-order-id",
+                                "orderId": 101,
+                                "origQty": "0.01000000",
+                                "executedQty": "0.01000000",
+                            }
+                        raise TimeoutError("provider-submit-secret")
+
+                    def get_order(self, *, symbol, origClientOrderId):
+                        return {
+                            "status": "FILLED",
+                            "clientOrderId": "unexpected-client-order-id",
+                            "orderId": 202,
+                            "origQty": "0.01000000",
+                            "executedQty": "0.01000000",
+                        }
+
+                runtime = ExecutionRuntime(dry_run=False, run_id=f"identity-{source}", client=Client())
+                report = build_execution_report(runtime)
+                report["runtime_target"] = {"execution_mode": "live"}
+                report["runtime_release_receipt"] = {
+                    "attestation_state": "self_attested",
+                    "strategy_release": {"strategy_revision": "a" * 40},
+                }
+
+                with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+                    runtime_call_client(
+                        runtime,
+                        report,
+                        method_name="order_market_buy",
+                        payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                        effect_type="order_buy",
+                        max_retries=0,
+                        retry_base_sec=0,
+                    )
+
+                self.assertNotIn("execution_order_events", report)
+                self.assertEqual(report["execution_receipt_observation"]["broker_acknowledged_count"], 0)
+                self.assertEqual(report["execution_receipt_observation"]["partially_filled_count"], 0)
+                self.assertEqual(report["execution_receipt_observation"]["filled_count"], 0)
+                self.assertEqual(report["execution_receipt_observation"]["failed_count"], 1)
+                self.assertTrue(attach_execution_receipt_from_report(report))
+                self.assertNotIn(
+                    report["execution_receipt"]["outcome"],
+                    {"broker_acknowledged", "partially_filled", "filled"},
+                )
+
     @staticmethod
     def runtime_evidence_inputs():
         return {
@@ -551,7 +622,10 @@ class TestBuildExecutionReport(unittest.TestCase):
             with self.subTest(status=status):
                 class Client:
                     def order_market_buy(self, **kwargs):
-                        return {"status": status, "clientOrderId": kwargs["newClientOrderId"]}
+                        response = {"status": status, "clientOrderId": kwargs["newClientOrderId"]}
+                        if status == "PARTIALLY_FILLED":
+                            response.update({"origQty": "0.01000000", "executedQty": "0.00500000"})
+                        return response
 
                 runtime = ExecutionRuntime(dry_run=False, run_id=f"direct-{status}", client=Client())
                 report = build_execution_report(runtime)
@@ -633,10 +707,8 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertEqual(report["side_effect_summary"], {"executed_call_count": 1, "suppressed_call_count": 0})
         event = report["execution_order_events"][0]
         self.assertEqual(event["event_source"], "submission_response")
-        self.assertEqual(event["client_order_id"], result["clientOrderId"])
-        self.assertEqual(event["venue_order_id"], "101")
-        self.assertEqual(event["ordered_quantity"], "0.01")
-        self.assertEqual(event["cumulative_filled_quantity"], "0.01")
+        self.assertEqual(event["client_order_id_sha256"], sha256(result["clientOrderId"].encode()).hexdigest())
+        self.assertEqual(event["venue_order_id_sha256"], sha256(b"101").hexdigest())
         self.assertEqual(event["status"], "FILLED")
 
     def test_reconciled_filled_order_preserves_stable_order_event(self):
@@ -673,11 +745,9 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertEqual(result["status"], "FILLED")
         event = report["execution_order_events"][0]
         self.assertEqual(event["event_source"], "reconciliation_response")
-        self.assertEqual(event["client_order_id"], observed["client_order_id"])
-        self.assertEqual(observed["reconciliation_query"], ("BTCUSDT", event["client_order_id"]))
-        self.assertEqual(event["venue_order_id"], "202")
-        self.assertEqual(event["ordered_quantity"], "0.02")
-        self.assertEqual(event["cumulative_filled_quantity"], "0.02")
+        self.assertEqual(event["client_order_id_sha256"], sha256(observed["client_order_id"].encode()).hexdigest())
+        self.assertEqual(observed["reconciliation_query"], ("BTCUSDT", observed["client_order_id"]))
+        self.assertEqual(event["venue_order_id_sha256"], sha256(b"202").hexdigest())
         self.assertEqual(event["status"], "FILLED")
 
     def test_report_uses_runtime_target_service_identity(self):
