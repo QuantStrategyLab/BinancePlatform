@@ -27,7 +27,7 @@ _COUNTER_FIELDS = (
 )
 _FILLED_STATUSES = frozenset({"FILLED"})
 _PARTIAL_FILL_STATUSES = frozenset({"PARTIALLY_FILLED"})
-_FAILED_STATUSES = frozenset({"CANCELED", "EXPIRED", "REJECTED"})
+_FAILED_STATUSES = frozenset({"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"})
 _TERMINAL_STATUSES = _FAILED_STATUSES | _FILLED_STATUSES
 
 
@@ -57,6 +57,20 @@ def record_order_response(
         status=status,
         reducer_state=reducer_state,
     )
+    if reduced is None:
+        appended = _append_order_event(
+            report,
+            response,
+            client_order_id=client_order_id,
+            ordered_quantity=ordered_quantity,
+            event_source=event_source,
+            status=status,
+        )
+        if appended is not False:
+            _increment_observation_status(observation, status)
+        return True
+    if not reduced[0]:
+        return False
     appended = _append_order_event(
         report,
         response,
@@ -65,12 +79,6 @@ def record_order_response(
         event_source=event_source,
         status=status,
     )
-    if reduced is None:
-        if appended is not False:
-            _increment_observation_status(observation, status)
-        return True
-    if not reduced[0]:
-        return False
     if appended is not False:
         _replace_observation_status(observation, reduced[1], reduced[2])
     return True
@@ -212,9 +220,12 @@ def _reduce_order_response(
 
     cumulative_quantity = previous.get("cumulative_quantity")
     if status in _PARTIAL_FILL_STATUSES | _FILLED_STATUSES:
-        ordered = _quantity_decimal(_response_ordered_quantity(response, ordered_quantity))
+        ordered = _quantity_decimal(ordered_quantity)
+        response_ordered = _quantity_decimal(response.get("origQty"))
         cumulative = _quantity_decimal(response.get("executedQty"))
-        if ordered is None or cumulative is None or cumulative > ordered:
+        if ordered is None or response_ordered is None or response_ordered != ordered:
+            return False, previous_status, previous_status
+        if cumulative is None or cumulative > ordered:
             return False, previous_status, previous_status
         if status in _FILLED_STATUSES and cumulative != ordered:
             return False, previous_status, previous_status

@@ -75,8 +75,81 @@ class ExecutionReceiptAdapterTest(unittest.TestCase):
         self.assertEqual(report["execution_receipt_observation"]["filled_count"], 1)
         self.assertEqual(
             [event["status"] for event in report["execution_order_events"]],
-            ["PARTIALLY_FILLED", "FILLED", "PARTIALLY_FILLED"],
+            ["PARTIALLY_FILLED", "FILLED"],
         )
+
+    def test_rejected_responses_are_not_persisted_as_accepted_events(self) -> None:
+        report = _report()
+        reducer_state = {}
+        partial = {
+            "status": "PARTIALLY_FILLED",
+            "clientOrderId": "client-001",
+            "orderId": 42,
+            "origQty": "1.00000000",
+            "executedQty": "0.60000000",
+        }
+        self.assertTrue(
+            record_order_response(
+                report,
+                partial,
+                client_order_id="client-001",
+                ordered_quantity="1.0",
+                event_source="reconciliation_response",
+                reducer_state=reducer_state,
+            )
+        )
+        event_count = len(report["execution_order_events"])
+
+        for response in (
+            {**partial, "status": "FILLED", "executedQty": "0.90000000"},
+            {**partial, "executedQty": "0.50000000"},
+        ):
+            self.assertFalse(
+                record_order_response(
+                    report,
+                    response,
+                    client_order_id="client-001",
+                    ordered_quantity="1.0",
+                    event_source="reconciliation_response",
+                    reducer_state=reducer_state,
+                )
+            )
+            self.assertEqual(len(report["execution_order_events"]), event_count)
+
+    def test_expired_in_match_is_terminal_and_cannot_roll_back(self) -> None:
+        report = _report()
+        reducer_state = {}
+        expired = {
+            "status": "EXPIRED_IN_MATCH",
+            "clientOrderId": "client-001",
+            "orderId": 42,
+        }
+        self.assertTrue(
+            record_order_response(
+                report,
+                expired,
+                client_order_id="client-001",
+                ordered_quantity="1.0",
+                event_source="reconciliation_response",
+                reducer_state=reducer_state,
+            )
+        )
+        self.assertFalse(
+            record_order_response(
+                report,
+                {
+                    **expired,
+                    "status": "FILLED",
+                    "origQty": "1.00000000",
+                    "executedQty": "1.00000000",
+                },
+                client_order_id="client-001",
+                ordered_quantity="1.0",
+                event_source="reconciliation_response",
+                reducer_state=reducer_state,
+            )
+        )
+        self.assertEqual([event["status"] for event in report["execution_order_events"]], ["EXPIRED_IN_MATCH"])
 
     def test_incomplete_filled_response_is_not_recognized(self) -> None:
         report = _report()

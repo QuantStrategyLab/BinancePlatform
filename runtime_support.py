@@ -2,7 +2,6 @@ import hashlib
 import json
 import os
 import re
-import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -23,9 +22,13 @@ _BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC = 0.25  # max ~4 orders/sec
 _BINANCE_ORDER_TRANSPORT_UNCERTAINTY_CODES = frozenset({-1001, -1006, -1007})
 _BINANCE_ORDER_NOT_FOUND_CODE = -2013
 _BINANCE_ORDER_FILLED_STATUS = "FILLED"
-_BINANCE_ORDER_FAILED_STATUSES = frozenset({"CANCELED", "EXPIRED", "REJECTED"})
+_BINANCE_ORDER_FAILED_STATUSES = frozenset({"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"})
+_BINANCE_ORDER_TERMINAL_STATUSES = _BINANCE_ORDER_FAILED_STATUSES | frozenset({_BINANCE_ORDER_FILLED_STATUS})
 _BINANCE_CLIENT_ORDER_ID_PREFIX = "QSL_"
-_BINANCE_CLIENT_ORDER_ID_HASH_LENGTH = 28
+_BINANCE_CLIENT_ORDER_ID_HASH_LENGTH = 32
+_DURABLE_ORDER_IDENTITIES_KEY = "durable_logical_order_identities"
+_DURABLE_ORDER_IDENTITY_SCHEMA_VERSION = "binance.durable_logical_order.v1"
+_DURABLE_ORDER_IDENTITY_SCOPE = "binance.strategy.MULTI_ASSET_STATE"
 _LAST_API_CALL_TS: float = 0.0
 RUNTIME_EVIDENCE_CONTRACT_VERSION = "qsl.runtime_evidence_aggregate.v1"
 RECONCILIATION_STATUSES = frozenset({"MISSING", "MATCHED", "MISMATCHED"})
@@ -289,8 +292,7 @@ class ExecutionRuntime:
     trend_indicator_snapshots: Optional[dict[str, Any]] = None
     research_cycle_settings: Any = None
     print_traceback: bool = True
-    order_sequence: int = 0
-    order_id_nonce: str = field(default_factory=lambda: secrets.token_hex(16))
+    durable_order_identity_state: dict[str, Any] | None = None
     order_event_reducer_state: dict[str, dict[str, Any]] = field(default_factory=dict)
     side_effect_log: list[dict[str, Any]] = field(default_factory=list)
 
@@ -394,14 +396,12 @@ def record_side_effect(runtime, report, *, effect_type, target, payload, execute
 
 
 def next_order_id(runtime, prefix, symbol):
-    runtime.order_sequence += 1
-    return _build_client_order_id(
+    logical_order = {"prefix": str(prefix), "symbol": str(symbol)}
+    if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
+        return _build_suppressed_order_client_id(runtime, logical_order)
+    return _reserve_durable_order_client_id(
         runtime,
-        {
-            "prefix": str(prefix),
-            "symbol": str(symbol),
-            "sequence": runtime.order_sequence,
-        },
+        logical_order,
     )
 
 
@@ -518,29 +518,130 @@ def runtime_set_trade_state(runtime, report, state, *, reason):
     record_side_effect(runtime, report, effect_type="state_write", target="firestore", payload=payload, executed=True)
 
 
-def _ensure_order_logical_identity(runtime, method_name, payload):
+def _ensure_order_logical_identity(runtime, method_name, effect_type, payload):
     order_payload = dict(payload)
     identity = str(order_payload.get("newClientOrderId") or "").strip()
     if not identity:
-        runtime.order_sequence += 1
-        identity = _build_client_order_id(
+        identity = _reserve_durable_order_client_id(
             runtime,
             {
                 "method_name": str(method_name),
-                "payload": order_payload,
-                "sequence": runtime.order_sequence,
+                "effect_type": str(effect_type),
+                "symbol": str(order_payload.get("symbol") or ""),
             },
         )
         order_payload["newClientOrderId"] = identity
     return order_payload, identity
 
 
-def _build_client_order_id(runtime, logical_order):
+def _reserve_durable_order_client_id(runtime, logical_order):
+    state, registry = _durable_order_identity_registry(runtime)
+    logical_order_key = _sha256_canonical(logical_order)
+    records = registry["records"]
+    record = records.get(logical_order_key)
+    if isinstance(record, Mapping) and record.get("status") == "reserved":
+        ordinal = record.get("ordinal")
+    else:
+        previous_next_ordinal = registry["next_ordinal"]
+        previous_record = records.get(logical_order_key)
+        ordinal = registry["next_ordinal"] + 1
+        registry["next_ordinal"] = ordinal
+        records[logical_order_key] = {"ordinal": ordinal, "status": "reserved"}
+        try:
+            _persist_durable_order_identity_state(runtime, state)
+        except StatePersistenceError:
+            registry["next_ordinal"] = previous_next_ordinal
+            if previous_record is None:
+                records.pop(logical_order_key, None)
+            else:
+                records[logical_order_key] = previous_record
+            raise
+    if not isinstance(ordinal, int) or isinstance(ordinal, bool) or ordinal < 1:
+        raise StatePersistenceError("durable_order_identity_unavailable")
+    return _build_client_order_id(ordinal)
+
+
+def _durable_order_identity_registry(runtime):
+    state = getattr(runtime, "durable_order_identity_state", None)
+    if not isinstance(state, dict):
+        raise StatePersistenceError("durable_order_identity_unavailable")
+    raw_registry = state.get(_DURABLE_ORDER_IDENTITIES_KEY)
+    if raw_registry is None:
+        registry = {
+            "schema_version": _DURABLE_ORDER_IDENTITY_SCHEMA_VERSION,
+            "next_ordinal": 0,
+            "records": {},
+        }
+        state[_DURABLE_ORDER_IDENTITIES_KEY] = registry
+        return state, registry
+    if not isinstance(raw_registry, dict):
+        raise StatePersistenceError("durable_order_identity_unavailable")
+    if raw_registry.get("schema_version") != _DURABLE_ORDER_IDENTITY_SCHEMA_VERSION:
+        raise StatePersistenceError("durable_order_identity_unavailable")
+    next_ordinal = raw_registry.get("next_ordinal")
+    records = raw_registry.get("records")
+    if (
+        not isinstance(next_ordinal, int)
+        or isinstance(next_ordinal, bool)
+        or next_ordinal < 0
+        or not isinstance(records, dict)
+    ):
+        raise StatePersistenceError("durable_order_identity_unavailable")
+    for record in records.values():
+        if not isinstance(record, Mapping):
+            raise StatePersistenceError("durable_order_identity_unavailable")
+        ordinal = record.get("ordinal")
+        if (
+            not isinstance(ordinal, int)
+            or isinstance(ordinal, bool)
+            or ordinal < 1
+            or record.get("status") not in {"reserved", "terminal"}
+        ):
+            raise StatePersistenceError("durable_order_identity_unavailable")
+    return state, raw_registry
+
+
+def _persist_durable_order_identity_state(runtime, state):
+    state_writer = getattr(runtime, "state_writer", None)
+    if not callable(state_writer):
+        raise StatePersistenceError("durable_order_identity_persistence_failed")
+    try:
+        persisted = state_writer(state)
+    except Exception:
+        raise StatePersistenceError("durable_order_identity_persistence_failed") from None
+    if persisted is not True:
+        raise StatePersistenceError("durable_order_identity_persistence_failed")
+
+
+def _finalize_durable_order_identity(runtime, client_order_id):
+    state = getattr(runtime, "durable_order_identity_state", None)
+    if not isinstance(state, dict):
+        return
+    try:
+        current_state, registry = _durable_order_identity_registry(runtime)
+    except StatePersistenceError:
+        raise
+    for record in registry["records"].values():
+        if record.get("status") != "reserved":
+            continue
+        if _build_client_order_id(record.get("ordinal")) != client_order_id:
+            continue
+        previous_status = record["status"]
+        record["status"] = "terminal"
+        try:
+            _persist_durable_order_identity_state(runtime, current_state)
+        except StatePersistenceError:
+            record["status"] = previous_status
+            raise
+        return
+
+
+def _build_client_order_id(ordinal):
     encoded = json.dumps(
         {
-            "run_id": str(runtime.run_id),
-            "order_id_nonce": str(runtime.order_id_nonce),
-            "logical_order": logical_order,
+            "schema_version": _DURABLE_ORDER_IDENTITY_SCHEMA_VERSION,
+            "scope": _DURABLE_ORDER_IDENTITY_SCOPE,
+            "ordinal": ordinal,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -548,6 +649,20 @@ def _build_client_order_id(runtime, logical_order):
     )
     digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
     return f"{_BINANCE_CLIENT_ORDER_ID_PREFIX}{digest[:_BINANCE_CLIENT_ORDER_ID_HASH_LENGTH]}"
+
+
+def _build_suppressed_order_client_id(runtime, logical_order):
+    identity = {
+        'schema_version': 'binance.suppressed_order_client_id.v1',
+        'run_id': str(runtime.run_id),
+        'logical_order': logical_order,
+    }
+    return f"{_BINANCE_CLIENT_ORDER_ID_PREFIX}{_sha256_canonical(identity)[:_BINANCE_CLIENT_ORDER_ID_HASH_LENGTH]}"
+
+
+def _sha256_canonical(value):
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _require_matching_client_order_identity(response, logical_order_identity):
@@ -616,7 +731,7 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
     client_payload = dict(payload)
     logical_order_identity = None
     if is_order_call:
-        client_payload, logical_order_identity = _ensure_order_logical_identity(runtime, method_name, payload)
+        client_payload, logical_order_identity = _ensure_order_logical_identity(runtime, method_name, effect_type, payload)
         record_order_submission_attempt(report)
     _rate_limit_pause()
     retries_used = max_retries
@@ -665,6 +780,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 ):
                     record_order_failure(report)
                     raise OrderReconciliationError("order_reconciliation_uncertain") from None
+                if str(reconciled_response.get("status") or "").strip().upper() in _BINANCE_ORDER_TERMINAL_STATUSES:
+                    _finalize_durable_order_identity(runtime, logical_order_identity)
                 return _require_filled_order_response(reconciled_response)
             if attempt < max_retries:
                 delay = retry_base_sec * (2 ** attempt)
@@ -690,6 +807,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 ):
                     record_order_failure(report)
                     raise OrderReconciliationError("order_reconciliation_uncertain") from None
+                if str(response.get("status") or "").strip().upper() in _BINANCE_ORDER_TERMINAL_STATUSES:
+                    _finalize_durable_order_identity(runtime, logical_order_identity)
                 return _require_filled_order_response(response)
             return response
     # All retries exhausted — log and raise

@@ -35,6 +35,7 @@ def load_cycle_state(
     state = normalize_trade_state(raw_state)
     update_trend_pool_state(state, trend_pool_resolution)
     runtime_set_trade_state(runtime, report, state, reason="trend_pool_metadata_refresh")
+    runtime.durable_order_identity_state = state
 
     runtime_trend_universe = get_runtime_trend_universe(state)
     allow_new_trend_entries = (not trend_pool_resolution["degraded"]) or allow_new_trend_entries_on_degraded

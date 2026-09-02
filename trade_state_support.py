@@ -45,6 +45,7 @@ def build_default_state(
     retired_positions_key,
 ):
     state = {
+        "durable_logical_order_identities": {},
         "BTCUSDT": {"holding_qty": 0.0, "avg_cost": 0.0},
         "daily_equity_base": 0.0,
         "daily_trend_equity_base": 0.0,

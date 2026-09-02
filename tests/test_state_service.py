@@ -57,6 +57,7 @@ class StateServiceTests(unittest.TestCase):
         self.assertEqual(observed["trend_universe"], runtime_trend_universe)
         self.assertEqual(observed["persist_reasons"][0][0], "trend_pool_metadata_refresh")
         self.assertEqual(observed["persist_reasons"][0][1]["resolution_seen"], "last_known_good")
+        self.assertIs(runtime.durable_order_identity_state, normalized_state)
         self.assertEqual(
             result,
             (normalized_state, trend_pool_resolution, runtime_trend_universe, True),

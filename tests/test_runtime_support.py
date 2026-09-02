@@ -2,6 +2,7 @@ import os
 import sys
 import traceback
 import unittest
+from copy import deepcopy
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -46,8 +47,9 @@ if str(QPK_SRC) not in sys.path:
 
 from runtime_support import (
     ClientCallError,
-    ExecutionRuntime,
+    ExecutionRuntime as RuntimeUnderTest,
     OrderReconciliationError,
+    StatePersistenceError,
     build_runtime_evidence_aggregate,
     build_execution_report,
     finalize_notification_delivery,
@@ -62,19 +64,148 @@ from quant_platform_kit.common.runtime_target import build_runtime_target
 from application.execution_receipt_adapter import attach_execution_receipt_from_report
 
 
+class ExecutionRuntime(RuntimeUnderTest):
+    """Offline runtime fixture with an in-memory durable state writer."""
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.durable_order_identity_state is None:
+            self.durable_order_identity_state = {}
+        if self.state_writer is None:
+            self.state_writer = lambda _state: True
+
+
 class TestBuildExecutionReport(unittest.TestCase):
-    def test_default_runtime_order_ids_are_unique_within_one_second_and_bounded(self):
-        same_second = datetime(2026, 9, 3, 0, 0, tzinfo=timezone.utc)
-        first = ExecutionRuntime(now_utc=same_second)
-        second = ExecutionRuntime(now_utc=same_second)
+    def test_durable_order_identity_reconstructs_after_restart_without_sensitive_fields(self):
+        persisted = []
+        state = {}
+        first = ExecutionRuntime(
+            now_utc=datetime(2026, 9, 3, 0, 0, tzinfo=timezone.utc),
+            state_writer=lambda value: persisted.append(deepcopy(value)) or True,
+        )
+        first.durable_order_identity_state = state
 
         first_order_id = next_order_id(first, "T_BUY", "BTCUSDT")
-        second_order_id = next_order_id(second, "T_BUY", "BTCUSDT")
+        restarted = ExecutionRuntime(state_writer=lambda _value: True)
+        restarted.durable_order_identity_state = deepcopy(persisted[-1])
+        reconstructed_order_id = next_order_id(restarted, "T_BUY", "BTCUSDT")
+        different_order_id = next_order_id(restarted, "D_BUY", "BTCUSDT")
 
-        self.assertNotEqual(first_order_id, second_order_id)
-        for order_id in (first_order_id, second_order_id):
-            self.assertLessEqual(len(order_id), 32)
-            self.assertRegex(order_id, r"^QSL_[0-9a-f]{28}$")
+        self.assertEqual(first_order_id, reconstructed_order_id)
+        self.assertNotEqual(first_order_id, different_order_id)
+        self.assertLessEqual(len(first_order_id), 36)
+        self.assertRegex(first_order_id, r"^QSL_[0-9a-f]{32}$")
+        persisted_text = str(persisted[-1])
+        for sensitive_value in (first_order_id, "0.12345678", "123.45", "20260903"):
+            self.assertNotIn(sensitive_value, persisted_text)
+
+    def test_order_identity_write_failure_fails_closed_before_submission(self):
+        writes = []
+        runtime = ExecutionRuntime(state_writer=lambda _value: False)
+        runtime.durable_order_identity_state = {}
+
+        with self.assertRaises(StatePersistenceError):
+            next_order_id(runtime, "T_BUY", "BTCUSDT")
+
+        runtime.state_writer = lambda _value: writes.append("persisted") or True
+        next_order_id(runtime, "T_BUY", "BTCUSDT")
+
+        self.assertEqual(writes, ["persisted"])
+
+    def test_order_identity_persistence_failure_blocks_order_client(self):
+        calls = []
+
+        class Client:
+            def order_market_buy(self, **_kwargs):
+                calls.append("submit")
+
+        runtime = ExecutionRuntime(dry_run=False, client=Client(), state_writer=lambda _value: False)
+        runtime.durable_order_identity_state = {}
+        report = build_execution_report(runtime)
+
+        with self.assertRaises(StatePersistenceError):
+            runtime_call_client(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                effect_type="order_buy",
+                max_retries=0,
+                retry_base_sec=0,
+            )
+
+        self.assertEqual(calls, [])
+
+    def test_terminal_identity_write_failure_keeps_prior_reservation(self):
+        writes = [True, False]
+        state = {}
+
+        def state_writer(_value):
+            return writes.pop(0)
+
+        class Client:
+            def order_market_buy(self, **kwargs):
+                return {
+                    "status": "FILLED",
+                    "clientOrderId": kwargs["newClientOrderId"],
+                    "orderId": 101,
+                    "origQty": "0.01000000",
+                    "executedQty": "0.01000000",
+                }
+
+        runtime = ExecutionRuntime(dry_run=False, client=Client(), state_writer=state_writer)
+        runtime.durable_order_identity_state = state
+        client_order_id = next_order_id(runtime, "T_BUY", "BTCUSDT")
+        report = build_execution_report(runtime)
+
+        with self.assertRaises(StatePersistenceError):
+            runtime_call_client(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload={"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": client_order_id},
+                effect_type="order_buy",
+                max_retries=0,
+                retry_base_sec=0,
+            )
+
+        self.assertEqual(next_order_id(runtime, "T_BUY", "BTCUSDT"), client_order_id)
+
+    def test_missing_durable_order_identity_fails_closed(self):
+        runtime = RuntimeUnderTest()
+
+        with self.assertRaises(StatePersistenceError):
+            next_order_id(runtime, "T_BUY", "BTCUSDT")
+
+    def test_orig_qty_mismatch_fails_closed_without_accepted_event(self):
+        client_order_id = "QSL_" + "a" * 32
+
+        class Client:
+            def order_market_buy(self, **_kwargs):
+                return {
+                    "status": "FILLED",
+                    "clientOrderId": client_order_id,
+                    "orderId": 101,
+                    "origQty": "0.02000000",
+                    "executedQty": "0.02000000",
+                }
+
+        runtime = ExecutionRuntime(dry_run=False, client=Client())
+        report = build_execution_report(runtime)
+
+        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+            runtime_call_client(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload={"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": client_order_id},
+                effect_type="order_buy",
+                max_retries=0,
+                retry_base_sec=0,
+            )
+
+        self.assertNotIn("execution_order_events", report)
+        self.assertEqual(report["execution_receipt_observation"]["failed_count"], 1)
 
     def test_mismatched_response_identity_fails_closed_without_accepted_event(self):
         for source in ("submission_response", "reconciliation_response"):
@@ -645,7 +776,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 self.assertEqual(report["side_effect_summary"], {"executed_call_count": 1, "suppressed_call_count": 0})
 
     def test_direct_terminal_failure_status_is_not_returned_as_success(self):
-        for status in ("CANCELED", "EXPIRED", "REJECTED"):
+        for status in ("CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "REJECTED"):
             with self.subTest(status=status):
                 class Client:
                     def order_market_buy(self, **kwargs):
