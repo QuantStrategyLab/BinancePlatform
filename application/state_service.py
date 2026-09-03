@@ -33,6 +33,7 @@ def load_cycle_state(
     trend_universe_setter(resolved_trend_universe)
 
     state = normalize_trade_state(raw_state)
+    runtime.trade_state = state
     update_trend_pool_state(state, trend_pool_resolution)
     runtime_set_trade_state(runtime, report, state, reason="trend_pool_metadata_refresh")
 

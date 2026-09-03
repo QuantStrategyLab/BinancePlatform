@@ -439,7 +439,13 @@ class CycleServiceTests(unittest.TestCase):
                 observed["reconciliations"].append((symbol, origClientOrderId))
                 raise OrderNotFound("provider-query-secret")
 
-        runtime = ExecutionRuntime(dry_run=False, run_id="cycle-reconciliation-exhausted", client=Client())
+        runtime = ExecutionRuntime(
+            dry_run=False,
+            run_id="cycle-reconciliation-exhausted",
+            client=Client(),
+            state_loader=lambda *, normalize=False: {"order_submission": {"state": "RESERVED"}},
+            state_writer=lambda _state: True,
+        )
 
         def execute_trend_rotation(current_runtime, report, state, *_args, **_kwargs):
             return execute_trend_buys(

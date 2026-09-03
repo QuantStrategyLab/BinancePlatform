@@ -105,7 +105,7 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertEqual(len(observed["notifications"]), 2)
         self.assertNotIn("ordinary_order_failure", " ".join(observed["notifications"]))
 
-    def test_deterministic_binance_rejection_skips_query_and_continues_next_order(self):
+    def test_deterministic_binance_rejection_queries_and_stops_remaining_orders(self):
         observed = {"submits": [], "queries": [], "persist_reasons": [], "notifications": []}
 
         class RejectedOrder(Exception):
@@ -120,43 +120,51 @@ class ExecutionServiceTests(unittest.TestCase):
 
             def get_order(self, **payload):
                 observed["queries"].append(payload)
+                return {"status": "NEW"}
 
-        runtime = ExecutionRuntime(dry_run=False, run_id="isolated-rejection", client=Client())
+        runtime = ExecutionRuntime(
+            dry_run=False,
+            run_id="isolated-rejection",
+            client=Client(),
+            state_loader=lambda *, normalize=False: {"order_submission": {"state": "RESERVED"}},
+            state_writer=lambda _state: True,
+        )
         report = build_execution_report(runtime)
 
-        execute_trend_buys(
-            runtime,
-            report,
-            {},
-            {
-                "ETHUSDT": {"weight": 0.5, "relative_score": 1.2},
-                "SOLUSDT": {"weight": 0.5, "relative_score": 1.1},
-            },
-            ["ETHUSDT", "SOLUSDT"],
-            {"ETHUSDT": 100.0, "SOLUSDT": 100.0},
-            {"ETHUSDT": 100.0, "SOLUSDT": 50.0},
-            {"ETHUSDT": 0.0, "SOLUSDT": 0.0},
-            500.0,
-            [],
-            "20260901",
-            should_skip_duplicate_trend_action_fn=lambda *_args: False,
-            append_log_fn=lambda *_args: None,
-            translate_fn=lambda key, **_kwargs: key,
-            format_qty_fn=lambda *_args: 1.0,
-            ensure_asset_available_fn=lambda *_args: True,
-            runtime_call_client_fn=lambda runtime, report, **kwargs: runtime_call_client(
-                runtime, report, max_retries=0, retry_base_sec=0, **kwargs
-            ),
-            next_order_id_fn=lambda _runtime, _prefix, symbol: f"buy-{symbol}",
-            set_symbol_trade_state_fn=lambda *_args: None,
-            record_trend_action_fn=lambda *_args: None,
-            runtime_set_trade_state_fn=lambda _runtime, _report, _state, reason: observed["persist_reasons"].append(reason),
-            runtime_notify_fn=lambda _runtime, _report, text: observed["notifications"].append(text),
-        )
+        with self.assertRaises(OrderReconciliationError):
+            execute_trend_buys(
+                runtime,
+                report,
+                {},
+                {
+                    "ETHUSDT": {"weight": 0.5, "relative_score": 1.2},
+                    "SOLUSDT": {"weight": 0.5, "relative_score": 1.1},
+                },
+                ["ETHUSDT", "SOLUSDT"],
+                {"ETHUSDT": 100.0, "SOLUSDT": 100.0},
+                {"ETHUSDT": 100.0, "SOLUSDT": 50.0},
+                {"ETHUSDT": 0.0, "SOLUSDT": 0.0},
+                500.0,
+                [],
+                "20260901",
+                should_skip_duplicate_trend_action_fn=lambda *_args: False,
+                append_log_fn=lambda *_args: None,
+                translate_fn=lambda key, **_kwargs: key,
+                format_qty_fn=lambda *_args: 1.0,
+                ensure_asset_available_fn=lambda *_args: True,
+                runtime_call_client_fn=lambda runtime, report, **kwargs: runtime_call_client(
+                    runtime, report, max_retries=0, retry_base_sec=0, **kwargs
+                ),
+                next_order_id_fn=lambda _runtime, _prefix, symbol: f"buy-{symbol}",
+                set_symbol_trade_state_fn=lambda *_args: None,
+                record_trend_action_fn=lambda *_args: None,
+                runtime_set_trade_state_fn=lambda _runtime, _report, _state, reason: observed["persist_reasons"].append(reason),
+                runtime_notify_fn=lambda _runtime, _report, text: observed["notifications"].append(text),
+            )
 
-        self.assertEqual([symbol for symbol, _order_id in observed["submits"]], ["ETHUSDT", "SOLUSDT"])
-        self.assertEqual(observed["queries"], [])
-        self.assertEqual(observed["persist_reasons"], ["trend_buy:SOLUSDT"])
+        self.assertEqual([symbol for symbol, _order_id in observed["submits"]], ["ETHUSDT"])
+        self.assertEqual(len(observed["queries"]), 1)
+        self.assertEqual(observed["persist_reasons"], [])
         self.assertNotIn("SENSITIVE_PROVIDER_SENTINEL", str(report) + str(observed))
 
     def test_trend_buy_reconciliation_uncertainty_stops_remaining_orders(self):
@@ -204,7 +212,13 @@ class ExecutionServiceTests(unittest.TestCase):
                     def order_market_buy(self, **payload):
                         return {"status": status, "clientOrderId": payload["newClientOrderId"]}
 
-                runtime = ExecutionRuntime(dry_run=False, run_id=f"pending-{status}", client=Client())
+                runtime = ExecutionRuntime(
+                    dry_run=False,
+                    run_id=f"pending-{status}",
+                    client=Client(),
+                    state_loader=lambda *, normalize=False: {"order_submission": {"state": "RESERVED"}},
+                    state_writer=lambda _state: True,
+                )
                 report = build_execution_report(runtime)
                 state = {}
                 balances = {"ETHUSDT": 0.0}
