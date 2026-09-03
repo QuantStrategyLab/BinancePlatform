@@ -35,6 +35,16 @@ from runtime_config_support import load_cycle_execution_settings
 from trade_state_support import build_default_state, normalize_trade_state
 
 
+_FAILURE_CLASS_BY_STAGE = {
+    "runtime_target_load": "configuration",
+    "local_execution_ledger_load": "ledger",
+    "client_connect": "connectivity",
+    "reconciliation_collect": "broker_read",
+    "candidate_build": "evidence_build",
+    "receipt_write": "persistence",
+}
+
+
 def _safe_reason_code(exc: Exception) -> str:
     """Return a stable operational code without exposing broker response text.
 
@@ -71,6 +81,28 @@ def _safe_reason_code(exc: Exception) -> str:
     return "reconciliation_read_unavailable"
 
 
+def _blocked_receipt(*, stage: str, reason_code: str) -> dict[str, str]:
+    """Return the only failure fields allowed in logs and persisted receipts."""
+
+    return {
+        "status": "blocked",
+        "stage": stage,
+        "failure_class": _FAILURE_CLASS_BY_STAGE[stage],
+        "reason_code": reason_code,
+    }
+
+
+def _write_receipt(output_path: Path | None, payload: dict[str, object]) -> bool:
+    if output_path is None:
+        return True
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
+    except OSError:
+        return False
+    return True
+
+
 def _symbols_from_env() -> tuple[str, ...]:
     raw = str(os.environ.get("BINANCE_RECONCILIATION_SYMBOLS") or "").strip()
     symbols = tuple(dict.fromkeys(item.strip().upper() for item in raw.split(",") if item.strip()))
@@ -93,6 +125,7 @@ def _parse_args():
 
 def main() -> int:
     args = _parse_args()
+    stage = "runtime_target_load"
     try:
         settings = load_cycle_execution_settings()
         target = settings.runtime_target
@@ -104,6 +137,7 @@ def main() -> int:
         api_secret = str(os.environ.get("BINANCE_API_SECRET") or "").strip()
         if not api_key or not api_secret:
             raise BinanceReconciliationReadError("Binance reconciliation requires the existing private API credentials.")
+        stage = "local_execution_ledger_load"
         state = load_runtime_trade_state(
             normalize_fn=normalize_trade_state,
             default_state_factory=build_default_state,
@@ -111,28 +145,35 @@ def main() -> int:
         )
         if not isinstance(state, dict):
             raise BinanceReconciliationReadError("Binance reconciliation could not load the local execution ledger.")
+        stage = "client_connect"
         client = connect_client(api_key, api_secret, timeout=30)
+        stage = "reconciliation_collect"
         observations = collect_read_only_reconciliation_observations(
             client,
             strategy_symbols=_symbols_from_env(),
             local_execution_ledger=state,
         )
+        stage = "candidate_build"
         candidate = build_reconciliation_candidate(
             observations=observations,
             runtime_target=target,
         )
-        payload = json.dumps(candidate.to_safe_dict(), ensure_ascii=False, sort_keys=True)
-        if args.output is not None:
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(payload + "\n", encoding="utf-8")
-        print(payload)
+        payload = candidate.to_safe_dict()
+        stage = "receipt_write"
+        if not _write_receipt(args.output, payload):
+            print(json.dumps(_blocked_receipt(stage=stage, reason_code="receipt_write_failed"), sort_keys=True))
+            return 2
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
         return 0
     except BinanceReconciliationReadError as exc:
-        print(json.dumps({"status": "blocked", "reason_code": _safe_reason_code(exc)}, sort_keys=True))
-        return 2
+        payload = _blocked_receipt(stage=stage, reason_code=_safe_reason_code(exc))
     except Exception as exc:
-        print(json.dumps({"status": "blocked", "reason_code": _safe_reason_code(exc)}, sort_keys=True))
-        return 2
+        payload = _blocked_receipt(stage=stage, reason_code=_safe_reason_code(exc))
+
+    if not _write_receipt(args.output, payload):
+        payload = _blocked_receipt(stage="receipt_write", reason_code="receipt_write_failed")
+    print(json.dumps(payload, sort_keys=True))
+    return 2
 
 
 if __name__ == "__main__":
