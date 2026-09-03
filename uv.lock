@@ -17,7 +17,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "quant-platform-kit", git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=b13e28759a880dcb446dbfbc580dc032333b065e" }]
+overrides = [{ name = "quant-platform-kit", git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=ac1d07c6b0188c8b0abc682e99315bdc056879b5" }]
 
 [[package]]
 name = "aiohappyeyeballs"
@@ -206,7 +206,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "crypto-strategies", git = "https://github.com/QuantStrategyLab/CryptoStrategies.git?rev=dd88b39991122338f00e649e4d7c32533d1cbcb3" },
+    { name = "crypto-strategies", git = "https://github.com/QuantStrategyLab/CryptoStrategies.git?rev=b279f51ce4ba0499cf42e0ef508731eb1a05bd7f" },
     { name = "functions-framework" },
     { name = "google-cloud-firestore" },
     { name = "google-cloud-storage" },
@@ -214,7 +214,7 @@ requires-dist = [
     { name = "pandas" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
     { name = "python-binance" },
-    { name = "quant-platform-kit", git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=b13e28759a880dcb446dbfbc580dc032333b065e" },
+    { name = "quant-platform-kit", git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=ac1d07c6b0188c8b0abc682e99315bdc056879b5" },
     { name = "requests" },
     { name = "ruff", marker = "extra == 'test'", specifier = ">=0.12" },
 ]
@@ -446,7 +446,7 @@ wheels = [
 [[package]]
 name = "crypto-strategies"
 version = "0.4.11"
-source = { git = "https://github.com/QuantStrategyLab/CryptoStrategies.git?rev=dd88b39991122338f00e649e4d7c32533d1cbcb3#dd88b39991122338f00e649e4d7c32533d1cbcb3" }
+source = { git = "https://github.com/QuantStrategyLab/CryptoStrategies.git?rev=b279f51ce4ba0499cf42e0ef508731eb1a05bd7f#b279f51ce4ba0499cf42e0ef508731eb1a05bd7f" }
 dependencies = [
     { name = "quant-platform-kit" },
 ]
@@ -1617,7 +1617,7 @@ wheels = [
 [[package]]
 name = "quant-platform-kit"
 version = "0.10.0"
-source = { git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=b13e28759a880dcb446dbfbc580dc032333b065e#b13e28759a880dcb446dbfbc580dc032333b065e" }
+source = { git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=ac1d07c6b0188c8b0abc682e99315bdc056879b5#ac1d07c6b0188c8b0abc682e99315bdc056879b5" }
 
 [[package]]
 name = "regex"
