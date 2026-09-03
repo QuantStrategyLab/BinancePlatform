@@ -82,7 +82,7 @@ class ReconciliationScriptTests(unittest.TestCase):
             output_path = Path(directory) / "candidate.json"
             with patch.object(
                 module,
-                "load_cycle_execution_settings",
+                "resolve_runtime_target_from_env",
                 side_effect=RuntimeError("sensitive configuration detail"),
             ):
                 exit_code, emitted, persisted = self._run_main_with_output(module, output_path)
@@ -100,12 +100,44 @@ class ReconciliationScriptTests(unittest.TestCase):
         )
         self.assertNotIn("sensitive configuration detail", json.dumps(emitted, sort_keys=True))
 
+    def test_reconciliation_uses_canonical_target_without_execution_settings(self) -> None:
+        module = _script_module()
+        target = SimpleNamespace(live_continuity=SimpleNamespace(state="RECONCILE_ONLY"))
+        candidate = SimpleNamespace(to_safe_dict=lambda: {"status": "ready"})
+        with tempfile.TemporaryDirectory() as directory:
+            output_path = Path(directory) / "candidate.json"
+            with (
+                patch.object(module, "resolve_runtime_target_from_env", return_value=target),
+                patch.object(module, "load_runtime_trade_state", return_value={}),
+                patch.object(module, "connect_client", return_value=object()),
+                patch.object(module, "collect_read_only_reconciliation_observations", return_value=object()),
+                patch.object(module, "build_reconciliation_candidate", return_value=candidate),
+                patch.dict(
+                    module.os.environ,
+                    {
+                        "BINANCE_API_KEY": "x",
+                        "BINANCE_API_SECRET": "x",
+                        "BINANCE_RECONCILIATION_SYMBOLS": "BTCUSDT",
+                    },
+                    clear=True,
+                ),
+            ):
+                exit_code, emitted, persisted = self._run_main_with_output(module, output_path)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(emitted, {"status": "ready"})
+        self.assertEqual(persisted, emitted)
+
     def test_client_connect_failure_uses_fixed_stage_and_class(self) -> None:
         module = _script_module()
         with tempfile.TemporaryDirectory() as directory:
             output_path = Path(directory) / "candidate.json"
             with (
-                patch.object(module, "load_cycle_execution_settings", return_value=self._reconcile_only_settings()),
+                patch.object(
+                    module,
+                    "resolve_runtime_target_from_env",
+                    return_value=self._reconcile_only_settings().runtime_target,
+                ),
                 patch.object(module, "load_runtime_trade_state", return_value={}),
                 patch.object(module, "connect_client", side_effect=RuntimeError("sensitive provider detail")),
                 patch.dict(
