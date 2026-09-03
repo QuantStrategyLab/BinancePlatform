@@ -9,6 +9,7 @@ grep -Fq 'GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}' "$workfl
 grep -Fq 'NOTIFY_LANG: ${{ vars.NOTIFY_LANG }}' "$workflow_file"
 grep -Fq "STRATEGY_PROFILE: \${{ vars.STRATEGY_PROFILE || 'crypto_live_pool_rotation' }}" "$workflow_file"
 grep -Fq 'RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}' "$workflow_file"
+grep -Fq 'BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON: ${{ vars.BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON }}' "$workflow_file"
 grep -Fq "RUNTIME_TARGET_ENABLED: \${{ vars.RUNTIME_TARGET_ENABLED || 'false' }}" "$workflow_file"
 grep -Fq 'Runtime target is disabled; broker strategy was intentionally not invoked.' "$workflow_file"
 grep -Fq 'needs.deploy.outputs.runtime_target_enabled == '\''true'\''' "$workflow_file"

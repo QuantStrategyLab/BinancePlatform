@@ -194,6 +194,7 @@ jobs:
           BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
           STRATEGY_PROFILE: ${{ vars.STRATEGY_PROFILE || 'crypto_live_pool_rotation' }}
           RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}
+          BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON: ${{ vars.BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
           NOTIFY_LANG: ${{ vars.NOTIFY_LANG }}
