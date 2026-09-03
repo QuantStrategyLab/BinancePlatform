@@ -31,7 +31,8 @@ from application.broker_reconciliation import (
 )
 from infra.state_store import load_runtime_trade_state
 from quant_platform_kit.binance import connect_client
-from runtime_config_support import load_cycle_execution_settings
+from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
+from strategy_registry import BINANCE_PLATFORM
 from trade_state_support import build_default_state, normalize_trade_state
 
 
@@ -127,8 +128,10 @@ def main() -> int:
     args = _parse_args()
     stage = "runtime_target_load"
     try:
-        settings = load_cycle_execution_settings()
-        target = settings.runtime_target
+        target = resolve_runtime_target_from_env(
+            env=os.environ,
+            expected_platform_id=BINANCE_PLATFORM,
+        )
         if str(getattr(getattr(target, "live_continuity", None), "state", "")).upper() != "RECONCILE_ONLY":
             raise BinanceReconciliationReadError(
                 "Binance reconciliation is only available for a frozen baseline."
