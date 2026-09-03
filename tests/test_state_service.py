@@ -3,9 +3,26 @@ from types import SimpleNamespace
 
 from application.state_service import append_trend_pool_source_logs, load_cycle_state
 from infra.state_store import load_runtime_trade_state, save_runtime_trade_state
+from trade_state_support import build_default_state, normalize_trade_state
 
 
 class StateServiceTests(unittest.TestCase):
+    def test_order_submission_guard_survives_trade_state_normalization(self):
+        kwargs = {
+            "trend_universe": {"ETHUSDT"},
+            "last_good_payload_key": "last_good_payload",
+            "action_history_key": "action_history",
+            "retired_positions_key": "retired_positions",
+        }
+        unknown = {
+            "state": "SUBMISSION_UNKNOWN",
+            "identity_sha256": "a" * 64,
+            "symbol": "ETHUSDT",
+        }
+
+        self.assertEqual(build_default_state(**kwargs)["order_submission"], {"state": "RESERVED"})
+        self.assertEqual(normalize_trade_state({"order_submission": unknown}, **kwargs)["order_submission"], unknown)
+
     def test_load_cycle_state_marks_report_aborted_when_state_load_fails(self):
         report = {"status": "ok"}
         observed_errors = []
