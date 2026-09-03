@@ -79,11 +79,11 @@ jobs:
             exit 1
           fi
       - name: 1. Checkout latest code
-        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' }}
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' }}
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: 2. Authenticate to Google Cloud
-        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' }}
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' }}
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
@@ -94,7 +94,7 @@ jobs:
           cleanup_credentials: true
 
       - name: 3. Prepare or update dependency environment
-        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' }}
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' }}
         run: |
           set -euo pipefail
           LOCK_FILE="uv.lock"
@@ -177,7 +177,7 @@ jobs:
       # credentials are scoped only here.  `reconcile_only` exits before
       # `main.py` and has no order path.
       - name: 4. Run trading strategy
-        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' }}
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' }}
         run: |
           set -euo pipefail
           if [ "${VALIDATE_ONLY:-false}" = "true" ]; then
@@ -244,7 +244,7 @@ jobs:
           retention-days: 1
 
       - name: 5b. Retain redacted reconciliation candidate
-        if: ${{ github.event.inputs.reconcile_only == 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
+        if: ${{ github.event.inputs.reconcile_only == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: binance-reconciliation-candidate-${{ github.run_id }}

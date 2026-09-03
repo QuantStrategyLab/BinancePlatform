@@ -51,6 +51,16 @@ def test_reconciliation_artifact_retention_matches_repository_policy() -> None:
     assert "retention-days: 7" in reconciliation_step
 
 
+def test_reconciliation_only_can_collect_evidence_while_normal_runtime_is_disabled() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+
+    reconciliation_gate = "env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true'"
+    assert broker_job.count(reconciliation_gate) >= 4
+    assert 'if [ "${RECONCILE_ONLY:-false}" = "true" ]; then' in broker_job
+    assert '"$VENV_PATH/bin/python" main.py' in broker_job
+
+
 def test_oidc_and_notification_workflows_pin_remote_actions() -> None:
     for path in (WATCHDOG_WORKFLOW, HEARTBEAT_WORKFLOW):
         workflow = path.read_text(encoding="utf-8")
