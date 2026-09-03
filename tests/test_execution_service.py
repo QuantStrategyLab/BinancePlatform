@@ -121,7 +121,13 @@ class ExecutionServiceTests(unittest.TestCase):
             def get_order(self, **payload):
                 observed["queries"].append(payload)
 
-        runtime = ExecutionRuntime(dry_run=False, run_id="isolated-rejection", client=Client())
+        runtime = ExecutionRuntime(
+            dry_run=False,
+            run_id="isolated-rejection",
+            client=Client(),
+            state_loader=lambda *, normalize=False: {"order_submission": {"state": "RESERVED"}},
+            state_writer=lambda _state: True,
+        )
         report = build_execution_report(runtime)
 
         execute_trend_buys(
@@ -204,7 +210,13 @@ class ExecutionServiceTests(unittest.TestCase):
                     def order_market_buy(self, **payload):
                         return {"status": status, "clientOrderId": payload["newClientOrderId"]}
 
-                runtime = ExecutionRuntime(dry_run=False, run_id=f"pending-{status}", client=Client())
+                runtime = ExecutionRuntime(
+                    dry_run=False,
+                    run_id=f"pending-{status}",
+                    client=Client(),
+                    state_loader=lambda *, normalize=False: {"order_submission": {"state": "RESERVED"}},
+                    state_writer=lambda _state: True,
+                )
                 report = build_execution_report(runtime)
                 state = {}
                 balances = {"ETHUSDT": 0.0}

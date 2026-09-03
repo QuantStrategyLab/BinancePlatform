@@ -23,6 +23,11 @@ _BINANCE_ORDER_TRANSPORT_UNCERTAINTY_CODES = frozenset({-1001, -1006, -1007})
 _BINANCE_ORDER_NOT_FOUND_CODE = -2013
 _BINANCE_ORDER_FILLED_STATUS = "FILLED"
 _BINANCE_ORDER_FAILED_STATUSES = frozenset({"CANCELED", "EXPIRED", "REJECTED"})
+_ORDER_SUBMISSION_STATE_KEY = "order_submission"
+_ORDER_SUBMISSION_RESERVED = "RESERVED"
+_ORDER_SUBMISSION_UNKNOWN = "SUBMISSION_UNKNOWN"
+_ORDER_SUBMISSION_TERMINAL = "TERMINAL"
+_ORDER_CLIENT_ID_PREFIX = "QSL_"
 _LAST_API_CALL_TS: float = 0.0
 RUNTIME_EVIDENCE_CONTRACT_VERSION = "qsl.runtime_evidence_aggregate.v1"
 RECONCILIATION_STATUSES = frozenset({"MISSING", "MATCHED", "MISMATCHED"})
@@ -287,6 +292,7 @@ class ExecutionRuntime:
     research_cycle_settings: Any = None
     print_traceback: bool = True
     order_sequence: int = 0
+    trade_state: Optional[dict[str, Any]] = None
     side_effect_log: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self):
@@ -504,22 +510,92 @@ def runtime_set_trade_state(runtime, report, state, *, reason):
         raise StatePersistenceError("state_persistence_failed") from None
     if persisted is not True:
         raise StatePersistenceError("state_persistence_failed")
+    runtime.trade_state = state
     record_side_effect(runtime, report, effect_type="state_write", target="firestore", payload=payload, executed=True)
 
 
 def _ensure_order_logical_identity(runtime, method_name, payload):
     order_payload = dict(payload)
-    identity = str(order_payload.get("newClientOrderId") or "").strip()
-    if not identity:
-        logical_order = {
+    supplied_identity = str(order_payload.get("newClientOrderId") or "").strip()
+    logical_order = (
+        {"supplied_client_order_id": supplied_identity}
+        if supplied_identity
+        else {
             "run_id": str(runtime.run_id),
             "method_name": str(method_name),
             "payload": order_payload,
         }
-        encoded = json.dumps(logical_order, sort_keys=True, separators=(",", ":"), default=str)
-        identity = f"QSL_{hashlib.sha256(encoded.encode('utf-8')).hexdigest()[:28]}"
-        order_payload["newClientOrderId"] = identity
-    return order_payload, identity
+    )
+    encoded = json.dumps(logical_order, sort_keys=True, separators=(",", ":"), default=str)
+    identity_sha256 = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    order_payload["newClientOrderId"] = _client_order_id_from_digest(identity_sha256)
+    return order_payload, identity_sha256
+
+
+def _client_order_id_from_digest(identity_sha256):
+    if not _is_sha256(identity_sha256):
+        raise StatePersistenceError("submission_state_invalid") from None
+    return f"{_ORDER_CLIENT_ID_PREFIX}{identity_sha256[:28]}"
+
+
+def _load_order_submission_state(runtime):
+    state = runtime.trade_state
+    if state is None:
+        if runtime.state_loader is None:
+            raise StatePersistenceError("state_persistence_unavailable") from None
+        try:
+            state = runtime.state_loader(normalize=False)
+        except Exception:
+            raise StatePersistenceError("state_persistence_failed") from None
+    if not isinstance(state, dict):
+        raise StatePersistenceError("submission_state_invalid") from None
+
+    record = state.get(_ORDER_SUBMISSION_STATE_KEY, {"state": _ORDER_SUBMISSION_RESERVED})
+    if not isinstance(record, Mapping):
+        raise StatePersistenceError("submission_state_invalid") from None
+    record = dict(record)
+    status = record.get("state")
+    if status in {_ORDER_SUBMISSION_RESERVED, _ORDER_SUBMISSION_TERMINAL}:
+        if set(record) != {"state"}:
+            raise StatePersistenceError("submission_state_invalid") from None
+    elif status == _ORDER_SUBMISSION_UNKNOWN:
+        if set(record) != {"state", "identity_sha256", "symbol"}:
+            raise StatePersistenceError("submission_state_invalid") from None
+        if not _is_sha256(record.get("identity_sha256")):
+            raise StatePersistenceError("submission_state_invalid") from None
+        if not re.fullmatch(r"[A-Z0-9]{3,30}", str(record.get("symbol") or "")):
+            raise StatePersistenceError("submission_state_invalid") from None
+    else:
+        raise StatePersistenceError("submission_state_invalid") from None
+    runtime.trade_state = state
+    return state, record
+
+
+def _persist_order_submission_state(runtime, state, record):
+    if runtime.state_writer is None:
+        raise StatePersistenceError("state_persistence_unavailable") from None
+    updated_state = dict(state)
+    updated_state[_ORDER_SUBMISSION_STATE_KEY] = dict(record)
+    try:
+        persisted = runtime.state_writer(updated_state)
+    except Exception:
+        raise StatePersistenceError("state_persistence_failed") from None
+    if persisted is not True:
+        raise StatePersistenceError("state_persistence_failed") from None
+    state[_ORDER_SUBMISSION_STATE_KEY] = dict(record)
+    runtime.trade_state = state
+
+
+def _complete_order_response(runtime, report, state, response):
+    record_order_response(report, response)
+    status = str(response.get("status") or "").strip().upper() if isinstance(response, Mapping) else ""
+    if status == _BINANCE_ORDER_FILLED_STATUS or status in _BINANCE_ORDER_FAILED_STATUSES:
+        _persist_order_submission_state(
+            runtime,
+            state,
+            {"state": _ORDER_SUBMISSION_TERMINAL},
+        )
+    return _require_filled_order_response(response)
 
 
 def _binance_error_code(exc):
@@ -538,12 +614,14 @@ def _is_order_transport_uncertainty(exc):
     )
 
 
-def _reconcile_uncertain_order(client, payload, logical_order_identity):
-    symbol = str(payload.get("symbol") or "").strip()
-    if not symbol or not logical_order_identity:
+def _reconcile_uncertain_order(client, symbol, identity_sha256):
+    if not symbol or not identity_sha256:
         raise OrderReconciliationError("order_reconciliation_uncertain") from None
     try:
-        response = client.get_order(symbol=symbol, origClientOrderId=logical_order_identity)
+        response = client.get_order(
+            symbol=symbol,
+            origClientOrderId=_client_order_id_from_digest(identity_sha256),
+        )
     except Exception as exc:
         if _binance_error_code(exc) == _BINANCE_ORDER_NOT_FOUND_CODE:
             raise OrderReconciliationError("order_reconciliation_uncertain") from None
@@ -577,9 +655,37 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
 
     is_order_call = str(effect_type or "").startswith("order_")
     client_payload = dict(payload)
-    logical_order_identity = None
+    trade_state = None
+    identity_sha256 = None
     if is_order_call:
-        client_payload, logical_order_identity = _ensure_order_logical_identity(runtime, method_name, payload)
+        trade_state, submission_record = _load_order_submission_state(runtime)
+        submission_status = submission_record["state"]
+        if submission_status == _ORDER_SUBMISSION_UNKNOWN:
+            reconciled_response = _reconcile_uncertain_order(
+                runtime.client,
+                submission_record["symbol"],
+                submission_record["identity_sha256"],
+            )
+            return _complete_order_response(runtime, report, trade_state, reconciled_response)
+        if submission_status == _ORDER_SUBMISSION_TERMINAL:
+            _persist_order_submission_state(
+                runtime,
+                trade_state,
+                {"state": _ORDER_SUBMISSION_RESERVED},
+            )
+        client_payload, identity_sha256 = _ensure_order_logical_identity(runtime, method_name, payload)
+        symbol = str(client_payload.get("symbol") or "").strip().upper()
+        if not re.fullmatch(r"[A-Z0-9]{3,30}", symbol):
+            raise StatePersistenceError("submission_state_invalid") from None
+        _persist_order_submission_state(
+            runtime,
+            trade_state,
+            {
+                "state": _ORDER_SUBMISSION_UNKNOWN,
+                "identity_sha256": identity_sha256,
+                "symbol": symbol,
+            },
+        )
         record_order_submission_attempt(report)
     _rate_limit_pause()
     retries_used = max_retries
@@ -595,8 +701,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 try:
                     reconciled_response = _reconcile_uncertain_order(
                         runtime.client,
-                        client_payload,
-                        logical_order_identity,
+                        str(client_payload.get("symbol") or "").strip().upper(),
+                        identity_sha256,
                     )
                 except OrderReconciliationError:
                     record_side_effect(
@@ -613,8 +719,7 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                     )
                     record_order_failure(report)
                     raise
-                record_order_response(report, reconciled_response)
-                return _require_filled_order_response(reconciled_response)
+                return _complete_order_response(runtime, report, trade_state, reconciled_response)
             if attempt < max_retries:
                 delay = retry_base_sec * (2 ** attempt)
                 time.sleep(delay)
@@ -624,8 +729,7 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 target=method_name, payload=dict(client_payload), executed=True,
             )
             if is_order_call:
-                record_order_response(report, response)
-                return _require_filled_order_response(response)
+                return _complete_order_response(runtime, report, trade_state, response)
             return response
     # All retries exhausted — log and raise
     record_side_effect(
@@ -637,5 +741,10 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
     )
     if is_order_call:
         record_order_failure(report)
+        _persist_order_submission_state(
+            runtime,
+            trade_state,
+            {"state": _ORDER_SUBMISSION_TERMINAL},
+        )
     reason = "order_submission_failed" if is_order_call else "client_call_failed"
     raise ClientCallError(reason) from None
