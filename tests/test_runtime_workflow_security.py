@@ -51,6 +51,15 @@ def test_reconciliation_artifact_retention_matches_repository_policy() -> None:
     assert "retention-days: 7" in reconciliation_step
 
 
+def test_reconciliation_failure_still_uploads_the_redacted_candidate() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    reconciliation_step = workflow[workflow.index("      - name: 5b. Retain redacted reconciliation candidate") :]
+
+    assert "always()" in reconciliation_step.splitlines()[1]
+    assert "github.event.inputs.reconcile_only == 'true'" in reconciliation_step.splitlines()[1]
+    assert "continue-on-error: true" not in reconciliation_step.split("      - name: 6.", 1)[0]
+
+
 def test_reconciliation_only_can_collect_evidence_while_normal_runtime_is_disabled() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     broker_job = _job_block(workflow, "deploy", "publish-execution-log")
