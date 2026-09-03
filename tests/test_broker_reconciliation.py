@@ -180,6 +180,7 @@ def test_candidate_can_pass_only_with_all_matching_private_digests():
     expected = {
         key: seed.evidence.to_dict()[key]
         for key in (
+            "account_scope_sha256",
             "positions_sha256",
             "cash_sha256",
             "open_orders_sha256",

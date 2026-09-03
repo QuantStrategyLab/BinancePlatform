@@ -25,6 +25,7 @@ from quant_platform_kit.common.broker_reconciliation import (
 
 BINANCE_RECONCILIATION_EXPECTED_DIGESTS_ENV = "BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON"
 _EXPECTED_DIGEST_KEYS = (
+    "account_scope_sha256",
     "positions_sha256",
     "cash_sha256",
     "open_orders_sha256",
@@ -306,10 +307,14 @@ def build_reconciliation_candidate(
         now=timestamp,
         expected_platform_id=platform_id,
         expected_strategy_profile=strategy_profile,
-        expected_account_scope_sha256=account_scope_sha256,
+        expected_account_scope_sha256=(expected or {}).get("account_scope_sha256"),
         expected_baseline_id=baseline_id,
         expected_runtime_target_sha256=baseline_target_sha256,
-        **{f"expected_{key}": (expected or {}).get(key) for key in _EXPECTED_DIGEST_KEYS},
+        **{
+            f"expected_{key}": (expected or {}).get(key)
+            for key in _EXPECTED_DIGEST_KEYS
+            if key != "account_scope_sha256"
+        },
     )
     return BinanceReconciliationCandidate(
         evidence=evidence,
