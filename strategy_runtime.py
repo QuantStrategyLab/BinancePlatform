@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from quant_platform_kit import PortfolioSnapshot, Position, build_strategy_evaluation_inputs
-from quant_platform_kit.strategy_contracts import (
+from quant_platform_kit.common.strategy_contracts import (
     StrategyContext,
     StrategyDecision,
     StrategyEntrypoint,

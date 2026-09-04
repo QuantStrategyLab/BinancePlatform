@@ -11,7 +11,7 @@ if str(QPK_SRC) not in sys.path:
     sys.path.insert(0, str(QPK_SRC))
 
 from decision_mapper import map_strategy_decision_to_allocation, map_strategy_decision_to_rotation_plan
-from quant_platform_kit.strategy_contracts import BudgetIntent, PositionTarget, StrategyDecision
+from quant_platform_kit.common.strategy_contracts import BudgetIntent, PositionTarget, StrategyDecision
 
 
 class DecisionMapperTests(unittest.TestCase):

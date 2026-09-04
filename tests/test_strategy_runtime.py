@@ -20,7 +20,7 @@ if "requests" not in sys.modules:
     sys.modules["requests"] = requests_module
 
 from quant_platform_kit import PortfolioSnapshot
-from quant_platform_kit.strategy_contracts import StrategyManifest, StrategyRuntimeAdapter
+from quant_platform_kit.common.strategy_contracts import StrategyManifest, StrategyRuntimeAdapter
 from strategy_registry import BINANCE_ENABLED_PROFILES
 
 
@@ -261,7 +261,7 @@ class StrategyRuntimeTests(unittest.TestCase):
 
     def test_evaluate_stamps_consecutive_losses(self):
         import strategy_runtime as strategy_runtime_module
-        from quant_platform_kit.strategy_contracts import StrategyDecision
+        from quant_platform_kit.common.strategy_contracts import StrategyDecision
 
         class FakeEntrypoint:
             manifest = StrategyManifest(
