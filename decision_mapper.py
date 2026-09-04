@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from quant_platform_kit.strategy_contracts import StrategyDecision
+from quant_platform_kit.common.strategy_contracts import StrategyDecision
 
 
 def _budget_map(decision: StrategyDecision) -> dict[str, float]:

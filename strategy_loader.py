@@ -4,7 +4,7 @@ from quant_platform_kit.common.strategies import (
     StrategyDefinition,
     load_strategy_entrypoint,
 )
-from quant_platform_kit.strategy_contracts import StrategyEntrypoint
+from quant_platform_kit.common.strategy_contracts import StrategyEntrypoint
 
 from crypto_strategies import get_platform_runtime_adapter
 from strategy_registry import (
