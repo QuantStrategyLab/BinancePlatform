@@ -119,3 +119,14 @@ def test_lifecycle_workflow_is_read_only_and_uses_pinned_actions() -> None:
     assert "id-token: write" in workflow
     assert "EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}" in workflow
     assert "source-id: binance.runtime-target-lifecycle" in workflow
+
+
+def test_reconciliation_defaults_to_zero_persistence_and_no_notification() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+
+    assert "reconcile_persist_candidate:" in workflow
+    assert 'default: false' in workflow[workflow.index("reconcile_persist_candidate:") : workflow.index("permissions:")]
+    assert 'args=(--no-persist)' in broker_job
+    assert "github.event.inputs.reconcile_persist_candidate == 'true'" in broker_job
+    assert "github.event.inputs.reconcile_only != 'true'" in broker_job

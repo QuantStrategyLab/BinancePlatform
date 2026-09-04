@@ -160,3 +160,12 @@ class ReconciliationScriptTests(unittest.TestCase):
             },
         )
         self.assertNotIn("sensitive provider detail", json.dumps(emitted, sort_keys=True))
+
+    def test_reconciliation_script_requires_an_explicit_output_to_persist(self) -> None:
+        module = _script_module()
+
+        no_persist = module._parse_args(["--no-persist"])
+        self.assertTrue(no_persist.no_persist)
+        self.assertIsNone(no_persist.output)
+        with self.assertRaises(SystemExit):
+            module._parse_args(["--no-persist", "--output", "candidate.json"])
