@@ -1,7 +1,9 @@
 # Binance 冻结实盘基线的只读对账
 
 当 Binance target 处于 `RECONCILE_ONLY` 时，可在自托管运行器手动启动 Runtime
-workflow，并选择 `reconcile_only=true`。它运行独立的
+workflow，并选择 `reconcile_only=true`。默认使用 `--no-persist`，仅输出脱敏候选，
+不生成 artifact、运行报告或通知；只有在人工明确选择
+`reconcile_persist_candidate=true` 后才会保存短期 artifact。它运行独立的
 `scripts/reconcile_frozen_live_baseline.py`，不会进入 `main.py`、不会触发策略、下单、
 撤单、资金划转、理财申赎或 Firestore 写入。
 
@@ -10,7 +12,7 @@ workflow，并选择 `reconcile_only=true`。它运行独立的
 全部趋势候选和 BNB 手续费资产，不能用“查询全历史”替代。Binance Spot 的 `myTrades` 每次
 时间范围最多 24 小时，因此系统按不重叠的日窗口查询并去重；任一窗口达到 API 的 1,000 条
 上限时会失败关闭，而不会猜测分页而遗漏成交。它同时只读本地执行状态。账户
-UID、余额、订单和成交永不写入日志、报告或 artifact。artifact 只保留
+UID、余额、订单和成交永不写入日志、报告或 artifact。启用持久化时，artifact 只保留
 `binance_reconciliation_candidate.v1` 的摘要和稳定阻断码，保存 7 天。
 
 若交易所未返回账户 UID、受管交易对未配置、任一读取失败、私有预期摘要不存在或任一摘要

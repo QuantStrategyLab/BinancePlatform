@@ -13,6 +13,11 @@ on:
         required: false
         default: false
         type: boolean
+      reconcile_persist_candidate:
+        description: "Persist the redacted reconciliation candidate as a short-lived artifact"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -185,7 +190,11 @@ jobs:
             exit 0
           fi
           if [ "${RECONCILE_ONLY:-false}" = "true" ]; then
-            "$VENV_PATH/bin/python" scripts/reconcile_frozen_live_baseline.py --output reports/binance-reconciliation-candidate.json
+            args=(--no-persist)
+            if [ "${RECONCILE_PERSIST_CANDIDATE:-false}" = "true" ]; then
+              args=(--output reports/binance-reconciliation-candidate.json)
+            fi
+            "$VENV_PATH/bin/python" scripts/reconcile_frozen_live_baseline.py "${args[@]}"
             exit 0
           fi
           "$VENV_PATH/bin/python" main.py
@@ -229,6 +238,7 @@ jobs:
           BINANCE_RECONCILIATION_SYMBOLS: ${{ vars.BINANCE_RECONCILIATION_SYMBOLS }}
           VALIDATE_ONLY: ${{ github.event.inputs.validate_only || 'false' }}
           RECONCILE_ONLY: ${{ github.event.inputs.reconcile_only || 'false' }}
+          RECONCILE_PERSIST_CANDIDATE: ${{ github.event.inputs.reconcile_persist_candidate || 'false' }}
 
       - name: Confirm target is intentionally disabled
         if: ${{ env.RUNTIME_TARGET_ENABLED == 'false' }}
@@ -245,7 +255,7 @@ jobs:
           retention-days: 1
 
       - name: 5b. Retain redacted reconciliation candidate
-        if: ${{ always() && github.event.inputs.reconcile_only == 'true' }}
+        if: ${{ always() && github.event.inputs.reconcile_only == 'true' && github.event.inputs.reconcile_persist_candidate == 'true' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: binance-reconciliation-candidate-${{ github.run_id }}
@@ -256,7 +266,7 @@ jobs:
           retention-days: 7
 
       - name: 6. Notify Telegram on runtime workflow failure
-        if: ${{ failure() && github.event.inputs.validate_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
+        if: ${{ failure() && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
         continue-on-error: true
         run: |
           set -euo pipefail

@@ -114,14 +114,22 @@ def _symbols_from_env() -> tuple[str, ...]:
     return symbols
 
 
-def _parse_args():
+def _parse_args(argv: list[str] | None = None):
     parser = ArgumentParser(description="Create a redacted no-order Binance reconciliation candidate")
+    parser.add_argument(
+        "--no-persist",
+        action="store_true",
+        help="Require stdout-only output and reject any candidate file write.",
+    )
     parser.add_argument(
         "--output",
         type=Path,
         help="Optional private/short-lived path for the redacted candidate JSON.",
     )
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.no_persist and args.output is not None:
+        parser.error("--no-persist cannot be combined with --output")
+    return args
 
 
 def main() -> int:
