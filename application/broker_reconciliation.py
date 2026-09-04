@@ -58,6 +58,12 @@ def _finite_number(value: object, *, field_name: str) -> float:
     return parsed
 
 
+def _strict_bool(value: object, *, field_name: str) -> bool:
+    if type(value) is not bool:
+        raise BinanceReconciliationReadError(f"Binance reconciliation received an invalid {field_name}.")
+    return value
+
+
 def _normalize_balance(raw: Mapping[str, object]) -> dict[str, object]:
     asset = _text(raw.get("asset")).upper()
     if not asset:
@@ -102,7 +108,7 @@ def _normalize_trade(raw: Mapping[str, object]) -> dict[str, object]:
         "commission": _finite_number(raw.get("commission"), field_name="trade commission"),
         "commission_asset": _text(raw.get("commissionAsset")).upper(),
         "time": _text(raw.get("time")),
-        "is_buyer": bool(raw.get("isBuyer")),
+        "is_buyer": _strict_bool(raw.get("isBuyer"), field_name="trade buyer flag"),
     }
 
 

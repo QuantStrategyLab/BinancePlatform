@@ -109,6 +109,22 @@ def test_missing_exchange_account_identity_fails_closed():
         )
 
 
+@pytest.mark.parametrize("invalid_is_buyer", ["false", None, 0, 1])
+def test_invalid_trade_buyer_flag_fails_closed(invalid_is_buyer):
+    class InvalidBuyerFlag(_Client):
+        def get_my_trades(self, *, symbol, startTime, endTime, limit):
+            payload = super().get_my_trades(
+                symbol=symbol, startTime=startTime, endTime=endTime, limit=limit
+            )[0]
+            payload["isBuyer"] = invalid_is_buyer
+            return [payload]
+
+    with pytest.raises(BinanceReconciliationReadError, match="buyer flag"):
+        collect_read_only_reconciliation_observations(
+            InvalidBuyerFlag(), strategy_symbols=("BTCUSDT",), local_execution_ledger={}
+        )
+
+
 def test_recent_trades_are_partitioned_into_day_windows_and_deduplicated():
     class WindowRecordingClient(_Client):
         def __init__(self):
