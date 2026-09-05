@@ -6,6 +6,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -158,6 +159,39 @@ def _accepted_payload(payload: dict[str, Any]) -> tuple[bool, str]:
     return True, f"status={status}"
 
 
+def _deployment_observation(payload: dict[str, Any], *, now: dt.datetime) -> dict[str, Any] | None:
+    """Project the last run, never the hosted monitor's current environment."""
+    target = payload.get("runtime_target")
+    if not isinstance(target, dict) or target.get("platform_id") != "binance":
+        return None
+    profile = target.get("strategy_profile")
+    if not isinstance(profile, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._=-]{0,127}", profile):
+        return None
+    if profile != _payload_strategy(payload):
+        return None
+    try:
+        observed = dt.datetime.fromisoformat(str(payload.get("started_at") or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if observed.tzinfo is None or observed > now:
+        return None
+
+    mode = target.get("execution_mode")
+    dry_run = payload.get("dry_run")
+    if not isinstance(mode, str) or mode not in {"live", "paper", "dry_run"}:
+        mode = ("dry_run" if dry_run else "live") if isinstance(dry_run, bool) else None
+    elif (mode == "live" and dry_run is True) or (mode != "live" and dry_run is False):
+        mode = None
+    permitted = payload.get("standard_execution_permitted")
+    return {
+        "runtime_enabled": permitted if isinstance(permitted, bool) else None,
+        "scheduler_state": "unknown",
+        "strategy_profile": profile,
+        "execution_mode": mode,
+        "observed_at": observed.astimezone(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+
+
 def assess_execution_report_heartbeat(now: dt.datetime | None = None) -> dict[str, Any]:
     current = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
     name = os.environ.get("RUNTIME_HEARTBEAT_NAME") or "Binance Runtime"
@@ -203,7 +237,7 @@ def assess_execution_report_heartbeat(now: dt.datetime | None = None) -> dict[st
             continue
         accepted, reason = _accepted_payload(payload)
         if accepted:
-            return {
+            assessment = {
                 "schema": _SCHEMA,
                 "observed_at": current.isoformat().replace("+00:00", "Z"),
                 "status": "healthy",
@@ -211,6 +245,10 @@ def assess_execution_report_heartbeat(now: dt.datetime | None = None) -> dict[st
                 "name": name,
                 "report_updated_at": (_entry_updated_at(entry) or current).isoformat().replace("+00:00", "Z"),
             }
+            deployment = _deployment_observation(payload, now=current)
+            if deployment is not None:
+                assessment["deployment"] = deployment
+            return assessment
 
     return {
         "schema": _SCHEMA,
