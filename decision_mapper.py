@@ -52,6 +52,8 @@ def map_strategy_decision_to_rotation_plan(decision: StrategyDecision) -> dict[s
     diagnostics = dict(decision.diagnostics)
     metadata = diagnostics.get("metadata") if isinstance(diagnostics.get("metadata"), Mapping) else {}
     combo_meta = metadata.get("combo") if isinstance(metadata.get("combo"), Mapping) else {}
+    assessment = diagnostics.get("member_risk_assessment")
+    execution_permitted = isinstance(assessment, Mapping) and assessment.get("outcome") == "APPROVE"
     selected_candidates = {
         str(symbol): {
             "weight": float(payload.get("weight", 0.0)),
@@ -69,10 +71,18 @@ def map_strategy_decision_to_rotation_plan(decision: StrategyDecision) -> dict[s
         for symbol, reason in dict(diagnostics.get("sell_reasons", {})).items()
         if str(reason)
     }
+    if not execution_permitted:
+        selected_candidates = {}
+        planned_trend_buys = {}
+        sell_reasons = {}
     return {
         "active_trend_pool": list(diagnostics.get("trend_pool", ())),
         "selected_candidates": selected_candidates,
-        "eligible_buy_symbols": [str(symbol) for symbol in diagnostics.get("eligible_buy_symbols", ())],
+        "eligible_buy_symbols": (
+            [str(symbol) for symbol in diagnostics.get("eligible_buy_symbols", ())]
+            if execution_permitted
+            else []
+        ),
         "planned_trend_buys": planned_trend_buys,
         "sell_reasons": sell_reasons,
         "rotation_pool_source_version": diagnostics.get("rotation_pool_source_version"),
