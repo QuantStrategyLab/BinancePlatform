@@ -9,7 +9,6 @@ from application.execution_service import (
     run_daily_circuit_breaker,
 )
 from runtime_support import (
-    ExecutionRuntime,
     OrderReconciliationError,
     build_execution_report,
     runtime_call_client,
@@ -17,10 +16,13 @@ from runtime_support import (
 )
 
 
+from tests.test_runtime_support import owned_runtime
+
+
 class ExecutionServiceTests(unittest.TestCase):
     def test_trend_buy_state_persistence_failure_stops_remaining_orders(self):
         observed = {"client_calls": [], "notifications": []}
-        runtime = ExecutionRuntime(
+        runtime = owned_runtime(
             dry_run=False,
             run_id="trend-persistence-failure",
             client=object(),
@@ -122,7 +124,7 @@ class ExecutionServiceTests(unittest.TestCase):
                 observed["queries"].append(payload)
                 return {"status": "NEW"}
 
-        runtime = ExecutionRuntime(
+        runtime = owned_runtime(
             dry_run=False,
             run_id="isolated-rejection",
             client=Client(),
@@ -212,7 +214,7 @@ class ExecutionServiceTests(unittest.TestCase):
                     def order_market_buy(self, **payload):
                         return {"status": status, "clientOrderId": payload["newClientOrderId"]}
 
-                runtime = ExecutionRuntime(
+                runtime = owned_runtime(
                     dry_run=False,
                     run_id=f"pending-{status}",
                     client=Client(),

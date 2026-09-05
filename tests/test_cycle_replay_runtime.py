@@ -155,6 +155,8 @@ class CycleReplayRuntimeTests(unittest.TestCase):
             now_utc=FIXTURE_TIME,
         )
         runtime.research_cycle_settings = None
+        runtime.state_owner_claim = lambda _owner: True
+        runtime.state_owner_release = lambda _owner: True
         original_state_writer = runtime.state_writer
         runtime.state_writer = lambda state: original_state_writer(state) or True
         client.account_snapshot["spot_balances"]["BNB"] = {"free": "0", "locked": "0"}

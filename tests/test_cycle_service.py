@@ -27,6 +27,8 @@ class CycleServiceTests(unittest.TestCase):
         snapshot_error=False,
         state=None,
         earn_failure=False,
+        runtime=None,
+        ownership_events=None,
     ):
         events = []
         state = {} if state is None else state
@@ -42,13 +44,20 @@ class CycleServiceTests(unittest.TestCase):
             if earn_failure:
                 events.append("periodic")
 
-        runtime = SimpleNamespace(
+        runtime = runtime or SimpleNamespace(
+            state_owner_claim=lambda _owner: True,
+            state_owner_release=lambda _owner: True,
             dry_run=False,
             now_utc=SimpleNamespace(strftime=lambda fmt: "20260905" if "%d" in fmt else "2026-09-05"),
             standard_execution_permitted=True,
             tg_token="",
             tg_chat_id="",
         )
+
+        ownership_events = [] if ownership_events is None else ownership_events
+        def note(event, value):
+            ownership_events.append(event)
+            return value
 
         report = execute_strategy_cycle(
             runtime,
@@ -61,17 +70,17 @@ class CycleServiceTests(unittest.TestCase):
                 "gating_summary": {},
                 "gating_events": [],
             },
-            ensure_runtime_client=lambda *_args: True,
+            ensure_runtime_client=lambda *_args: note("client", True),
             load_cycle_execution_settings=lambda: SimpleNamespace(
                 btc_status_report_interval_hours=24,
                 allow_new_trend_entries_on_degraded=False,
             ),
-            load_cycle_state=lambda *_args: (state, {"degraded": False}, {"ETHUSDT": {}}, True),
+            load_cycle_state=lambda *_args: note("state", (state, {"degraded": False}, {"ETHUSDT": {}}, True)),
             append_trend_pool_source_logs=lambda *_args: None,
             capture_market_snapshot=(
                 lambda *_args: (_ for _ in ()).throw(RuntimeError("snapshot_read_failed"))
                 if snapshot_error
-                else {
+                else note("snapshot", {
                     "u_total": 200.0,
                     "fuel_val": 0.0,
                     "dynamic_usdt_buffer": 100.0,
@@ -79,7 +88,7 @@ class CycleServiceTests(unittest.TestCase):
                     "balances": {"BTCUSDT": 0.0, "ETHUSDT": 0.0},
                     "btc_snapshot": {},
                     "trend_indicators": {},
-                }
+                })
             ),
             top_up_bnb_fuel=lambda *_args: events.append("fuel") or (185.0, 15.0, "ready"),
             compute_portfolio_allocation=lambda *_args: {
@@ -110,6 +119,47 @@ class CycleServiceTests(unittest.TestCase):
             traceback_module=SimpleNamespace(),
         )
         return report, events
+
+    def test_owner_busy_prevents_client_state_and_market_reads(self):
+        observed = []
+        runtime = ExecutionRuntime(state_owner_claim=lambda _owner: False, state_owner_release=lambda _owner: True)
+        report, events = self._run_funds_cycle(True, runtime=runtime, ownership_events=observed)
+        self.assertEqual(report["execution_blocked_reason"], "state_owner_busy")
+        self.assertEqual(observed, [])
+        self.assertEqual(events, [])
+
+    def test_normal_risk_rejection_releases_and_next_cycle_reads_fresh_state(self):
+        owners, released, observed = [], [], []
+        def claim(owner):
+            if owners:
+                return False
+            owners.append(owner)
+            return True
+        def release(owner):
+            self.assertEqual(owners, [owner])
+            owners.clear()
+            released.append(owner)
+            return True
+        runtime = ExecutionRuntime(state_owner_claim=claim, state_owner_release=release)
+        for _ in range(2):
+            report, events = self._run_funds_cycle(False, runtime=runtime, ownership_events=observed)
+            self.assertEqual(report["execution_blocked_reason"], "risk_execution_not_permitted")
+            self.assertEqual(events, [])
+        self.assertEqual(observed, ["client", "state", "snapshot"] * 2)
+        self.assertEqual(len(released), 2)
+        self.assertFalse(owners)
+
+    def test_inherited_unknown_never_uses_new_run_id_to_submit_or_release(self):
+        from unittest.mock import Mock
+        observed = []
+        release = Mock(return_value=True)
+        runtime = ExecutionRuntime(run_id="different-run", state_owner_claim=lambda _owner: True, state_owner_release=release)
+        report, events = self._run_funds_cycle(True, runtime=runtime, ownership_events=observed,
+            state={"order_submission": {"state": "SUBMISSION_UNKNOWN"}})
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(observed, ["client", "state"])
+        self.assertEqual(events, [])
+        release.assert_not_called()
 
     def test_rejected_or_missing_execution_permission_blocks_all_funds_actions(self):
         for execution_permitted in (False, None):
@@ -582,6 +632,8 @@ class CycleServiceTests(unittest.TestCase):
         runtime = ExecutionRuntime(
             dry_run=False,
             run_id="cycle-reconciliation-exhausted",
+            state_owner_claim=lambda _owner: True,
+            state_owner_release=lambda _owner: True,
             client=Client(),
             state_loader=lambda *, normalize=False: {"order_submission": {"state": "RESERVED"}},
             state_writer=lambda _state: True,

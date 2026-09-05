@@ -57,6 +57,7 @@ from runtime_support import (
     runtime_set_trade_state,
     validate_runtime_evidence_aggregate,
     _ensure_order_logical_identity,
+    acquire_runtime_state_owner, release_runtime_state_owner, reconcile_runtime_cash_effects,
 )
 from quant_platform_kit.common.runtime_target import build_runtime_target
 
@@ -76,11 +77,22 @@ class DurableSubmissionStateStore:
         return True
 
 
+
+def owned_runtime(**kwargs):
+    """Existing submission fixtures explicitly acquire a synthetic owner."""
+    runtime = ExecutionRuntime(**kwargs)
+    runtime.state_owner_claim = lambda _owner: True
+    runtime.state_owner_release = lambda _owner: True
+    acquire_runtime_state_owner(runtime)
+    if kwargs.get("trade_state") is not None:
+        runtime.trade_state = kwargs["trade_state"]
+    return runtime
+
 def build_order_runtime(**kwargs):
     store = DurableSubmissionStateStore()
     kwargs.setdefault("state_loader", store.load)
     kwargs.setdefault("state_writer", store.write)
-    return ExecutionRuntime(**kwargs)
+    return owned_runtime(**kwargs)
 
 
 def order_query_response(*, client_order_id, status, symbol="BTCUSDT", side="BUY", quantity="0.01"):
@@ -91,6 +103,7 @@ def order_query_response(*, client_order_id, status, symbol="BTCUSDT", side="BUY
         "side": side,
         "origQty": quantity,
         "origQuoteOrderQty": "0",
+        "executedQty": "0" if status in {"CANCELED", "REJECTED", "EXPIRED"} else quantity,
     }
 
 
@@ -169,7 +182,7 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertTrue(validate_runtime_evidence_aggregate(build_runtime_evidence_aggregate(**mismatched_inputs))["ok"])
 
     def test_report_contains_enrichment_fields(self):
-        runtime = ExecutionRuntime(dry_run=True, run_id="test-001")
+        runtime = owned_runtime(dry_run=True, run_id="test-001")
         report = build_execution_report(runtime)
         self.assertIsNone(report["total_equity_usdt"])
         self.assertIsNone(report["trend_equity_usdt"])
@@ -180,7 +193,7 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertEqual(report["gating_events"], [])
 
     def test_report_preserves_existing_fields(self):
-        runtime = ExecutionRuntime(dry_run=False, run_id="test-002")
+        runtime = owned_runtime(dry_run=False, run_id="test-002")
         with patch.dict(
             os.environ,
             {
@@ -208,7 +221,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 observed["calls"] += 1
                 return {"status": "unexpected"}
 
-        runtime = ExecutionRuntime(
+        runtime = owned_runtime(
             dry_run=False,
             run_id="target-disabled",
             client=Client(),
@@ -230,7 +243,7 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertFalse(report["standard_execution_permitted"])
 
     def test_state_writer_failure_stops_before_success_is_recorded(self):
-        runtime = ExecutionRuntime(
+        runtime = owned_runtime(
             dry_run=False,
             run_id="state-write-failure",
             state_writer=lambda _state: False,
@@ -247,7 +260,7 @@ class TestBuildExecutionReport(unittest.TestCase):
         def fail_write(_state):
             raise RuntimeError("provider-secret-state-write-error")
 
-        runtime = ExecutionRuntime(
+        runtime = owned_runtime(
             dry_run=False,
             run_id="state-write-exception",
             state_writer=fail_write,
@@ -276,7 +289,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                         store.events.append(("query",))
                         return order_query_response(client_order_id=origClientOrderId, status="NEW")
 
-                runtime = ExecutionRuntime(
+                runtime = owned_runtime(
                     dry_run=False,
                     run_id=f"unknown-{error_type.__name__}",
                     client=Client(),
@@ -297,19 +310,27 @@ class TestBuildExecutionReport(unittest.TestCase):
                 self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
                 self.assertEqual([event[0] for event in store.events], ["write", "submit", "query"])
 
-    @unittest.expectedFailure
     def test_concurrent_runners_with_same_scheduled_order_submit_once(self):
-        # Known R5 gap: the shared state store has no atomic claim. This test
-        # must continue to execute until a separately authorized concurrency fix.
+        # Same original two-runner counterexample, now entering through the claim.
+        # The barrier moves before claim: a loser must never call the state loader.
         shared_state = {"order_submission": {"state": "RESERVED"}}
         loader_barrier = threading.Barrier(2)
         lock = threading.Lock()
         submissions = []
         errors = []
+        owners, reads, blocked = [], [], []
 
-        def load(*, normalize=False):
+        def claim(owner):
             loader_barrier.wait(timeout=2)
             with lock:
+                if owners:
+                    return False
+                owners.append(owner)
+                return True
+
+        def load(*, normalize=False):
+            with lock:
+                reads.append(True)
                 return copy.deepcopy(shared_state)
 
         def write(state):
@@ -331,8 +352,13 @@ class TestBuildExecutionReport(unittest.TestCase):
                 client=Client(),
                 state_loader=load,
                 state_writer=write,
+                state_owner_claim=claim,
+                state_owner_release=lambda _owner: True,
             )
             try:
+                if not acquire_runtime_state_owner(runtime):
+                    blocked.append(run_id)
+                    return
                 runtime_call_client(
                     runtime,
                     build_execution_report(runtime),
@@ -353,6 +379,8 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertFalse(any(runner.is_alive() for runner in runners))
         self.assertEqual(errors, [])
         self.assertEqual(len(submissions), 1)
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(len(blocked), 1)
 
     def test_earn_timeout_submits_once_and_keeps_unknown(self):
         cases = (
@@ -373,7 +401,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                         calls.append(("subscribe", kwargs))
                         raise TimeoutError("provider-submit-secret")
 
-                runtime = ExecutionRuntime(
+                runtime = owned_runtime(
                     dry_run=False,
                     run_id=f"earn-timeout-{effect_type}",
                     client=Client(),
@@ -415,7 +443,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                         calls.append(("subscribe", kwargs))
                         return {"success": True, "purchaseId": 1}
 
-                runtime = ExecutionRuntime(
+                runtime = owned_runtime(
                     dry_run=False,
                     run_id=f"earn-success-{effect_type}",
                     client=Client(),
@@ -444,7 +472,7 @@ class TestBuildExecutionReport(unittest.TestCase):
             def subscribe_simple_earn_flexible_product(self, **_kwargs):
                 return {"success": False}
 
-        runtime = ExecutionRuntime(
+        runtime = owned_runtime(
             dry_run=False,
             run_id="earn-unconfirmed",
             client=Client(),
@@ -496,7 +524,7 @@ class TestBuildExecutionReport(unittest.TestCase):
             ),
         ):
             with self.subTest(method_name=method_name):
-                runtime = ExecutionRuntime(
+                runtime = owned_runtime(
                     dry_run=False,
                     run_id=f"blocked-{method_name}",
                     client=Client(),
@@ -519,7 +547,7 @@ class TestBuildExecutionReport(unittest.TestCase):
         market_store = DurableSubmissionStateStore(
             {"state": "SUBMISSION_UNKNOWN", "identity_sha256": "b" * 64, "symbol": "BTCUSDT"}
         )
-        runtime = ExecutionRuntime(
+        runtime = owned_runtime(
             dry_run=False,
             run_id="blocked-earn-after-market",
             client=Client(),
@@ -542,7 +570,7 @@ class TestBuildExecutionReport(unittest.TestCase):
     def test_restart_with_exact_unknown_intent_recovers_without_resubmit(self):
         payload = {"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "restart-unknown"}
         _, identity_sha256 = _ensure_order_logical_identity(
-            ExecutionRuntime(), "order_market_buy", payload
+            owned_runtime(), "order_market_buy", payload
         )
         store = DurableSubmissionStateStore({
             "state": "SUBMISSION_UNKNOWN",
@@ -559,7 +587,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 store.events.append(("query",))
                 return order_query_response(client_order_id=origClientOrderId, status="FILLED")
 
-        runtime = ExecutionRuntime(
+        runtime = owned_runtime(
             dry_run=False,
             run_id="restart-unknown",
             client=Client(),
@@ -599,7 +627,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                         store.events.append(("query_old",))
                         return order_query_response(client_order_id=origClientOrderId, status="NEW")
 
-                initial_runtime = ExecutionRuntime(
+                initial_runtime = owned_runtime(
                     dry_run=False,
                     run_id="old-unknown",
                     client=InitialClient(),
@@ -629,7 +657,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                         store.events.append(("query_old",))
                         return order_query_response(client_order_id=origClientOrderId, status="FILLED")
 
-                restart_runtime = ExecutionRuntime(
+                restart_runtime = owned_runtime(
                     dry_run=False,
                     run_id="new-request",
                     client=RestartClient(),
@@ -652,7 +680,7 @@ class TestBuildExecutionReport(unittest.TestCase):
     def test_unknown_order_with_different_client_identity_does_not_query_or_submit(self):
         payload = {"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "old-identity"}
         _, identity_sha256 = _ensure_order_logical_identity(
-            ExecutionRuntime(), "order_market_buy", payload
+            owned_runtime(), "order_market_buy", payload
         )
         store = DurableSubmissionStateStore({
             "state": "SUBMISSION_UNKNOWN",
@@ -670,7 +698,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 observed.append("query")
                 raise AssertionError("different identities must not reconcile")
 
-        runtime = ExecutionRuntime(
+        runtime = owned_runtime(
             dry_run=False,
             run_id="different-client-identity",
             client=Client(),
@@ -708,7 +736,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 response["origQuoteOrderQty"] = "20"
                 return response
 
-        initial_runtime = ExecutionRuntime(
+        initial_runtime = owned_runtime(
             dry_run=False,
             run_id="quote-initial",
             client=InitialClient(),
@@ -739,7 +767,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 response.update({"origQuoteOrderQty": "20", "cummulativeQuoteQty": "19.5"})
                 return response
 
-        restart_runtime = ExecutionRuntime(
+        restart_runtime = owned_runtime(
             dry_run=False,
             run_id="quote-restart",
             client=RestartClient(),
@@ -770,7 +798,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 store.events.append(("query",))
                 return order_query_response(client_order_id=origClientOrderId, status="REJECTED")
 
-        runtime = ExecutionRuntime(
+        runtime = owned_runtime(
             dry_run=False,
             run_id="verified-terminal",
             client=Client(),
@@ -808,7 +836,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 store.events.append(("submit",))
                 return {"status": "FILLED"}
 
-        initial_runtime = ExecutionRuntime(
+        initial_runtime = owned_runtime(
             dry_run=False,
             run_id="terminal-write-failure",
             client=InitialClient(),
@@ -835,7 +863,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 store.events.append(("query",))
                 return order_query_response(client_order_id=origClientOrderId, status="FILLED")
 
-        restart_runtime = ExecutionRuntime(
+        restart_runtime = owned_runtime(
             dry_run=False,
             run_id="terminal-write-failure-restart",
             client=RestartClient(),
@@ -864,7 +892,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 store.events.append(("submit",))
                 raise AssertionError("pre-submit validation must stop first")
 
-        runtime = ExecutionRuntime(
+        runtime = owned_runtime(
             dry_run=False,
             run_id="invalid-symbol",
             client=Client(),
@@ -1211,7 +1239,7 @@ class TestBuildExecutionReport(unittest.TestCase):
             with self.subTest(status=status):
                 class Client:
                     def order_market_buy(self, **kwargs):
-                        return {"status": status, "clientOrderId": kwargs["newClientOrderId"]}
+                        return {"status": status, "clientOrderId": kwargs["newClientOrderId"], "executedQty": "0"}
 
                 runtime = build_order_runtime(dry_run=False, run_id=f"direct-{status}", client=Client())
                 report = build_execution_report(runtime)
@@ -1235,7 +1263,7 @@ class TestBuildExecutionReport(unittest.TestCase):
             with self.subTest(status=status):
                 class Client:
                     def order_market_buy(self, **kwargs):
-                        return {"status": status, "clientOrderId": kwargs["newClientOrderId"]}
+                        return {"status": status, "clientOrderId": kwargs["newClientOrderId"], "executedQty": "0"}
 
                 runtime = build_order_runtime(dry_run=False, run_id=f"direct-{status}", client=Client())
                 report = build_execution_report(runtime)
@@ -1293,7 +1321,7 @@ class TestBuildExecutionReport(unittest.TestCase):
             dry_run_only=False,
             service_name="binance-platform",
         )
-        runtime = ExecutionRuntime(
+        runtime = owned_runtime(
             dry_run=False,
             run_id="test-runtime-target",
             runtime_target=runtime_target,
@@ -1325,7 +1353,7 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertEqual(report["gating_events"][0]["detail"]["budget_usdt"], 12.0)
 
     def test_runtime_notify_persists_only_safe_failed_delivery_receipt(self):
-        runtime = ExecutionRuntime(
+        runtime = owned_runtime(
             dry_run=False,
             run_id="test-notification",
             tg_token="secret-token",
@@ -1351,3 +1379,107 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertNotIn("secret-token", serialized)
         self.assertNotIn("private-chat", serialized)
         self.assertNotIn("sensitive notification body", serialized)
+
+
+def test_unowned_live_call_refuses_before_state_or_broker():
+    from unittest.mock import Mock
+    client, loader, writer = Mock(), Mock(), Mock()
+    runtime = ExecutionRuntime(dry_run=False, client=client, state_loader=loader, state_writer=writer)
+    with unittest.TestCase().assertRaisesRegex(RuntimeError, 'state_owner_required'):
+        runtime_call_client(runtime, build_execution_report(runtime), method_name='order_market_buy', payload={'symbol': 'BTCUSDT', 'quantity': 0.01}, effect_type='order_buy', max_retries=0)
+    loader.assert_not_called()
+    writer.assert_not_called()
+    client.order_market_buy.assert_not_called()
+
+
+def test_owner_release_requires_confirmed_fill_and_existing_persisted_action():
+    import pytest
+    from unittest.mock import Mock
+    from runtime_support import StatePersistenceError
+    client = Mock()
+    client.order_market_buy.return_value = {'status': 'FILLED'}
+    runtime = build_order_runtime(client=client)
+    release = runtime.state_owner_release = Mock(return_value=True)
+    report = build_execution_report(runtime)
+    runtime_call_client(runtime, report, method_name='order_market_buy',
+                        payload={'symbol': 'ETHUSDT', 'quantity': 1}, effect_type='order_buy')
+    assert release_runtime_state_owner(runtime) is False
+    release.assert_not_called()
+    state = runtime.trade_state
+    state['trend_action_history'] = {'ETHUSDT': {'action': 'buy', 'date': runtime.now_utc.strftime('%Y%m%d')}}
+    writer = runtime.state_writer
+    runtime.state_writer = lambda _state: False
+    with pytest.raises(StatePersistenceError):
+        runtime_set_trade_state(runtime, report, state, reason='trend_buy:ETHUSDT')
+    assert release_runtime_state_owner(runtime) is False
+    runtime.state_writer = writer
+    runtime_set_trade_state(runtime, report, state, reason='trend_buy:ETHUSDT')
+    assert release_runtime_state_owner(runtime) is True
+    release.assert_called_once()
+    assert acquire_runtime_state_owner(runtime) is True
+    assert runtime.trade_state is None
+
+
+def test_partial_or_unknown_fill_retains_owner_but_zero_fill_rejection_releases():
+    import pytest
+    from unittest.mock import Mock
+    for status, filled in [('PARTIALLY_FILLED', '0.5'), ('CANCELED', '0.5'), ('CANCELED', '0')]:
+        client = Mock()
+        client.order_market_buy.return_value = {'status': status, 'executedQty': filled}
+        runtime = build_order_runtime(client=client)
+        release = runtime.state_owner_release = Mock(return_value=True)
+        with pytest.raises((ClientCallError, OrderReconciliationError)):
+            runtime_call_client(runtime, build_execution_report(runtime), method_name='order_market_buy',
+                                payload={'symbol': 'ETHUSDT', 'quantity': 1}, effect_type='order_buy')
+        assert release_runtime_state_owner(runtime) is (filled == '0')
+        assert release.call_count == int(filled == '0')
+
+
+def test_confirmed_earn_and_fuel_require_fresh_balances_and_successful_state_write():
+    import pytest
+    from unittest.mock import Mock
+    from runtime_support import ExecutionIntegrityError, StatePersistenceError
+    for method, payload, effect, asset, response in [
+        ('order_market_buy', {'symbol': 'BNBUSDT', 'quantity': 1}, 'order_buy', None, {'status': 'FILLED'}),
+        ('subscribe_simple_earn_flexible_product', {'productId': 'synthetic', 'amount': 1}, 'earn_subscribe', 'USDT', {'success': True, 'purchaseId': 1}),
+    ]:
+        client = Mock()
+        getattr(client, method).return_value = response
+        client.get_asset_balance.return_value = {'free': '10', 'locked': '0'}
+        client.get_simple_earn_flexible_product_position.return_value = {'rows': []}
+        runtime = build_order_runtime(client=client)
+        runtime.state_owner_release = Mock(return_value=True)
+        report = build_execution_report(runtime)
+        runtime_call_client(runtime, report, method_name=method, payload=payload, effect_type=effect, accounting_asset=asset)
+        assert release_runtime_state_owner(runtime) is False
+        state = runtime.trade_state
+        client.get_asset_balance.side_effect = TimeoutError('synthetic')
+        with pytest.raises(ExecutionIntegrityError, match='cash_reconciliation_uncertain'):
+            reconcile_runtime_cash_effects(runtime, state)
+        assert release_runtime_state_owner(runtime) is False
+        client.get_asset_balance.side_effect = None
+        reconcile_runtime_cash_effects(runtime, state)
+        runtime.state_writer = lambda _state: False
+        with pytest.raises(StatePersistenceError):
+            runtime_set_trade_state(runtime, report, state, reason='cycle_complete')
+        assert release_runtime_state_owner(runtime) is False
+        runtime.state_writer = lambda _state: True
+        runtime_set_trade_state(runtime, report, state, reason='cycle_complete')
+        assert release_runtime_state_owner(runtime) is True
+
+
+def test_release_uncertainty_does_not_authorize_old_owner_and_readonly_never_claims():
+    import pytest
+    from unittest.mock import Mock
+    from runtime_support import StatePersistenceError
+    runtime = owned_runtime()
+    runtime.state_owner_release = Mock(side_effect=TimeoutError('synthetic'))
+    with pytest.raises(StatePersistenceError, match='state_owner_release_uncertain'):
+        release_runtime_state_owner(runtime)
+    assert runtime.state_owner_held is False
+    for kwargs in ({'dry_run': True}, {'standard_execution_permitted': False}):
+        claim = Mock()
+        runtime = ExecutionRuntime(state_owner_claim=claim, **kwargs)
+        assert acquire_runtime_state_owner(runtime) is True
+        claim.assert_not_called()
+        assert runtime.state_owner_held is False

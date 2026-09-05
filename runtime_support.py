@@ -1,8 +1,10 @@
 import hashlib
 import json
+import math
 import os
 import re
 import time
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -302,6 +304,14 @@ class ExecutionRuntime:
     print_traceback: bool = True
     order_sequence: int = 0
     trade_state: Optional[dict[str, Any]] = None
+    state_owner_claim: Optional[Callable[[str], bool]] = None
+    state_owner_release: Optional[Callable[[str], bool]] = None
+    state_owner_id: str = ""
+    state_owner_held: bool = False
+    pending_funds: list[dict[str, Any]] = field(default_factory=list)
+    cash_balance_observation: dict[str, float] = field(default_factory=dict)
+    fuel_symbol: str = "BNBUSDT"
+    fuel_asset: str = "BNB"
     side_effect_log: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self):
@@ -505,12 +515,99 @@ def finalize_notification_delivery(report):
         report["status"] = "error"
 
 
+
+def acquire_runtime_state_owner(runtime):
+    if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
+        return True
+    if getattr(runtime, "state_owner_held", False):
+        raise StatePersistenceError("state_owner_already_held") from None
+    if not callable(getattr(runtime, "state_owner_claim", None)) or not callable(getattr(runtime, "state_owner_release", None)):
+        raise StatePersistenceError("state_owner_unavailable") from None
+    runtime.state_owner_id = uuid.uuid4().hex
+    try:
+        held = runtime.state_owner_claim(runtime.state_owner_id)
+    except Exception:
+        raise StatePersistenceError("state_owner_claim_uncertain") from None
+    runtime.state_owner_held = held is True
+    if runtime.state_owner_held:
+        runtime.trade_state = None  # Never reuse a pre-claim cached state.
+        runtime.pending_funds = []
+        runtime.cash_balance_observation = {}
+    return runtime.state_owner_held
+
+
+def require_runtime_state_owner(runtime):
+    if not getattr(runtime, "state_owner_held", False) or not getattr(runtime, "state_owner_id", ""):
+        raise StatePersistenceError("state_owner_required") from None
+
+
+def release_runtime_state_owner(runtime):
+    require_runtime_state_owner(runtime)
+    record = (runtime.trade_state or {}).get(_ORDER_SUBMISSION_STATE_KEY, {})
+    if runtime.pending_funds or record.get("state") == _ORDER_SUBMISSION_UNKNOWN:
+        return False
+    try:
+        released = runtime.state_owner_release(runtime.state_owner_id)
+    except Exception:
+        raise StatePersistenceError("state_owner_release_uncertain") from None
+    finally:
+        # An uncertain release never authorizes further work by this owner.
+        runtime.state_owner_held = False
+    if released is not True:
+        raise StatePersistenceError("state_owner_release_failed") from None
+    return True
+
+
+def reconcile_runtime_cash_effects(runtime, state):
+    """Refresh confirmed Earn/fuel balances; no receipt or status word substitutes for this read."""
+    pending = getattr(runtime, "pending_funds", [])
+    assets = {item["asset"] for item in pending if item.get("confirmed") and item.get("asset")}
+    if not assets:
+        return
+    require_runtime_state_owner(runtime)
+    observations = {}
+    try:
+        for asset in assets | {"USDT"}:
+            spot = runtime.client.get_asset_balance(asset=asset)
+            earn = runtime.client.get_simple_earn_flexible_product_position(asset=asset)
+            if not isinstance(earn, Mapping) or not isinstance(earn.get("rows"), list):
+                raise ValueError("incomplete_balance")
+            values = [Decimal(str(spot[key])) for key in ("free", "locked")]
+            values.extend(Decimal(str(row["totalAmount"])) for row in earn["rows"])
+            if not all(value.is_finite() and value >= 0 for value in values):
+                raise ValueError("invalid_balance")
+            observations[asset] = float(sum(values))
+            if not math.isfinite(observations[asset]):
+                raise ValueError("invalid_balance")
+    except Exception:
+        raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None
+    state.setdefault("last_balance_snapshot", {}).update(observations)
+    runtime.cash_balance_observation = observations
+
+
+def _accounted_funds(runtime, state, reason, item):
+    if not item.get("confirmed"):
+        return False
+    today = runtime.now_utc.strftime("%Y%m%d")
+    action, symbol = item.get("action"), item.get("symbol")
+    if reason == f"trend_{action}:{symbol}":
+        return state.get("trend_action_history", {}).get(symbol) == {"action": action, "date": today}
+    if reason == f"btc_dca_{action}" and symbol == "BTCUSDT":
+        return state.get(f"dca_last_{action}_date") == today
+    if reason == "daily_circuit_breaker" and action == "sell":
+        return state.get("is_circuit_broken") is True and isinstance(state.get("last_balance_snapshot"), dict)
+    asset = item.get("asset")
+    observed = getattr(runtime, "cash_balance_observation", {})
+    return bool(asset and asset in observed and reason in {"cycle_complete", "cash_reconciliation"}
+                and all(state.get("last_balance_snapshot", {}).get(key) == value for key, value in observed.items()))
+
 def runtime_set_trade_state(runtime, report, state, *, reason):
     payload = {"reason": str(reason)}
     report["state_write_intents"].append(payload)
     if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
         record_side_effect(runtime, report, effect_type="state_write", target="firestore", payload=payload, executed=False)
         return
+    require_runtime_state_owner(runtime)
     if runtime.state_writer is None:
         raise StatePersistenceError("state_persistence_failed")
     try:
@@ -520,6 +617,7 @@ def runtime_set_trade_state(runtime, report, state, *, reason):
     if persisted is not True:
         raise StatePersistenceError("state_persistence_failed")
     runtime.trade_state = state
+    runtime.pending_funds = [item for item in runtime.pending_funds if not _accounted_funds(runtime, state, reason, item)]
     record_side_effect(runtime, report, effect_type="state_write", target="firestore", payload=payload, executed=True)
 
 
@@ -635,6 +733,7 @@ def _load_order_submission_state(runtime):
 
 
 def _persist_order_submission_state(runtime, state, record):
+    require_runtime_state_owner(runtime)
     if runtime.state_writer is None:
         raise StatePersistenceError("state_persistence_unavailable") from None
     updated_state = dict(state)
@@ -652,12 +751,21 @@ def _persist_order_submission_state(runtime, state, record):
 def _complete_order_response(runtime, report, state, response):
     record_order_response(report, response)
     status = str(response.get("status") or "").strip().upper() if isinstance(response, Mapping) else ""
+    if status in _BINANCE_ORDER_FAILED_STATUSES:
+        try:
+            executed = Decimal(str(response["executedQty"]))
+            no_fill = executed.is_finite() and executed == 0
+        except (KeyError, InvalidOperation, TypeError):
+            no_fill = False
+        if not no_fill:
+            raise OrderReconciliationError("order_reconciliation_uncertain") from None
     if status == _BINANCE_ORDER_FILLED_STATUS or status in _BINANCE_ORDER_FAILED_STATUSES:
-        _persist_order_submission_state(
-            runtime,
-            state,
-            {"state": _ORDER_SUBMISSION_TERMINAL},
-        )
+        _persist_order_submission_state(runtime, state, {"state": _ORDER_SUBMISSION_TERMINAL})
+        if runtime.pending_funds:
+            if status == _BINANCE_ORDER_FILLED_STATUS:
+                runtime.pending_funds[-1]["confirmed"] = True
+            else:
+                runtime.pending_funds.pop()
     return _require_filled_order_response(response)
 
 
@@ -714,13 +822,14 @@ def _require_filled_order_response(response):
 
 
 def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
-                        max_retries: int = 3, retry_base_sec: float = 1.0):
+                        max_retries: int = 3, retry_base_sec: float = 1.0, accounting_asset=None):
     if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
         record_side_effect(
             runtime, report, effect_type=effect_type,
             target=method_name, payload=dict(payload), executed=False,
         )
         return {"status": "suppressed", "method": method_name, "payload": dict(payload)}
+    require_runtime_state_owner(runtime)
     if runtime.client is None:
         raise RuntimeError("runtime.client is not configured")
 
@@ -750,6 +859,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
             )
             if not _reconciled_order_matches_request(reconciled_response, association):
                 raise OrderReconciliationError("order_reconciliation_intent_mismatch") from None
+            if not runtime.pending_funds:
+                runtime.pending_funds.append({"confirmed": False, "action": association["side"].lower(), "symbol": association["symbol"], "asset": None})
             return _complete_order_response(runtime, report, trade_state, reconciled_response)
         if submission_status == _ORDER_SUBMISSION_TERMINAL:
             _persist_order_submission_state(
@@ -778,6 +889,14 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
             trade_state,
             unknown_record,
         )
+        runtime.pending_funds.append({
+            "confirmed": False,
+            "action": "buy" if method_name == "order_market_buy" else "sell",
+            "symbol": client_payload.get("symbol"),
+            "asset": accounting_asset if is_earn_call else (
+                runtime.fuel_asset if client_payload.get("symbol") == runtime.fuel_symbol else None
+            ),
+        })
         record_order_submission_attempt(report)
     if is_earn_call:
         _rate_limit_pause()
@@ -814,6 +933,7 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
             executed=True,
         )
         _persist_order_submission_state(runtime, trade_state, {"state": _ORDER_SUBMISSION_TERMINAL})
+        runtime.pending_funds[-1]["confirmed"] = True
         return response
     _rate_limit_pause()
     retries_used = max_retries

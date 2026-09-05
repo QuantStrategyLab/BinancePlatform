@@ -29,6 +29,7 @@ from quant_platform_kit.binance import (
     manage_usdt_earn_buffer as qpk_manage_usdt_earn_buffer,
 )
 from live_services import (
+    bind_trade_state_access,
     get_firestore_client as live_get_firestore_client,
     get_state_doc_ref as live_get_state_doc_ref,
     send_tg_msg as live_send_tg_msg,
@@ -766,6 +767,12 @@ def build_live_runtime(now_utc=None):
         state_writer=set_trade_state,
         notifier=lambda **kwargs: send_tg_msg(kwargs["token"], kwargs["chat_id"], kwargs["text"]),
     )
+    if not runtime.dry_run and runtime.standard_execution_permitted:
+        runtime.state_loader, runtime.state_writer, runtime.state_owner_claim, runtime.state_owner_release = bind_trade_state_access(
+            normalize_fn=normalize_trade_state, default_state_factory=build_default_state,
+        )
+        runtime.fuel_symbol = BNB_FUEL_SYMBOL
+        runtime.fuel_asset = BNB_FUEL_ASSET
     _activate_execution_strategy_runtime(runtime.strategy_profile)
     return runtime
 
