@@ -22,11 +22,20 @@ def _position_weight_map(decision: StrategyDecision) -> dict[str, float]:
     return values
 
 
+def _execution_permitted(decision: StrategyDecision) -> bool:
+    assessment = decision.diagnostics.get("member_risk_assessment")
+    return (
+        isinstance(assessment, Mapping)
+        and assessment.get("outcome") == "APPROVE"
+        and not any(str(flag).startswith("rejected:") for flag in decision.risk_flags)
+    )
+
+
 def map_strategy_decision_to_allocation(
     decision: StrategyDecision,
     *,
     account_metrics: Mapping[str, Any],
-) -> dict[str, float]:
+) -> dict[str, Any]:
     diagnostics = dict(decision.diagnostics)
     budgets = _budget_map(decision)
     positions = _position_weight_map(decision)
@@ -45,6 +54,7 @@ def map_strategy_decision_to_allocation(
         "trend_usdt_pool": float(budgets.get("trend_rotation_pool", 0.0)),
         "dca_usdt_pool": float(budgets.get("btc_core_dca_pool", 0.0)),
         "btc_base_order_usdt": float(diagnostics.get("btc_base_order_usdt", 0.0)),
+        "execution_permitted": _execution_permitted(decision),
     }
 
 
@@ -52,8 +62,7 @@ def map_strategy_decision_to_rotation_plan(decision: StrategyDecision) -> dict[s
     diagnostics = dict(decision.diagnostics)
     metadata = diagnostics.get("metadata") if isinstance(diagnostics.get("metadata"), Mapping) else {}
     combo_meta = metadata.get("combo") if isinstance(metadata.get("combo"), Mapping) else {}
-    assessment = diagnostics.get("member_risk_assessment")
-    execution_permitted = isinstance(assessment, Mapping) and assessment.get("outcome") == "APPROVE"
+    execution_permitted = _execution_permitted(decision)
     selected_candidates = {
         str(symbol): {
             "weight": float(payload.get("weight", 0.0)),
@@ -90,6 +99,7 @@ def map_strategy_decision_to_rotation_plan(decision: StrategyDecision) -> dict[s
         "rotation_pool_last_month": diagnostics.get("rotation_pool_last_month"),
         "artifact_contract": dict(diagnostics.get("artifact_contract", {})),
         "risk_flags": tuple(str(flag) for flag in decision.risk_flags),
+        "execution_permitted": execution_permitted,
         "combo_diagnostics": {
             "base_btc_weight": float(combo_meta.get("base_btc_weight", 0.0) or 0.0),
             "base_trend_weight": float(combo_meta.get("base_trend_weight", 0.0) or 0.0),

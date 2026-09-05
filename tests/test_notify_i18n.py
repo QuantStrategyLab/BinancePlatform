@@ -197,7 +197,7 @@ class NotifyI18nTests(unittest.TestCase):
         self.assertIn("趋势池来源", log_lines[0])
         self.assertTrue(any("暂停新的趋势买入" in line for line in log_lines))
 
-    def test_capture_market_snapshot_uses_chinese_bnb_log_when_notify_lang_is_zh(self):
+    def test_capture_market_snapshot_is_read_only_when_notify_lang_is_zh(self):
         runtime = SimpleNamespace(
             client=FakeClient(
                 {
@@ -209,32 +209,24 @@ class NotifyI18nTests(unittest.TestCase):
         )
         report = {"buy_sell_intents": []}
         log_buffer = []
-        side_effect_calls = []
-
         with patch.dict(os.environ, {"NOTIFY_LANG": "zh"}, clear=False):
             capture_market_snapshot(
                 runtime,
                 report,
                 {"ETHUSDT": {"base_asset": "ETH"}},
                 log_buffer,
-                min_bnb_value=20.0,
-                buy_bnb_amount=30.0,
                 get_total_balance_fn=lambda client, asset, log_buffer=None: {
                     "USDT": 200.0,
                     "BNB": 0.05,
                     "ETH": 1.5,
                     "BTC": 0.01,
                 }[asset],
-                ensure_asset_available_fn=lambda runtime, report, asset, amount, log_buffer: True,
-                runtime_call_client_fn=lambda runtime, report, **kwargs: side_effect_calls.append(kwargs),
-                runtime_notify_fn=lambda runtime, report, message: self.fail(f"unexpected notification: {message}"),
-                append_log_fn=lambda buffer, message: buffer.append(message),
                 resolve_btc_snapshot_fn=lambda runtime, btc_price, log_buffer: {"ahr999": 0.8, "zscore": 1.2},
                 resolve_trend_indicators_fn=lambda runtime: {"ETHUSDT": {"score": 1.0}},
             )
 
-        self.assertEqual(side_effect_calls[0]["method_name"], "order_market_buy")
-        self.assertIn("BNB 补仓已完成", "".join(log_buffer))
+        self.assertEqual(report["buy_sell_intents"], [])
+        self.assertEqual(log_buffer, [])
 
 
 if __name__ == "__main__":

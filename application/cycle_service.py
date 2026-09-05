@@ -21,6 +21,7 @@ def execute_strategy_cycle(
     load_cycle_state,
     append_trend_pool_source_logs,
     capture_market_snapshot,
+    top_up_bnb_fuel,
     compute_portfolio_allocation,
     build_balance_snapshot,
     maybe_reset_daily_state,
@@ -77,8 +78,6 @@ def execute_strategy_cycle(
             report,
             runtime_trend_universe,
             log_buffer,
-            min_bnb_value,
-            buy_bnb_amount,
         )
         u_total = market_snapshot["u_total"]
         fuel_val = market_snapshot["fuel_val"]
@@ -104,6 +103,10 @@ def execute_strategy_cycle(
 
         report["total_equity_usdt"] = total_equity
         report["trend_equity_usdt"] = trend_val_equity
+
+        if not allocation.get("execution_permitted", False):
+            report["execution_blocked_reason"] = "risk_execution_not_permitted"
+            return report
 
         now_utc = runtime.now_utc
         today_utc = now_utc.strftime("%Y-%m-%d")
@@ -141,6 +144,19 @@ def execute_strategy_cycle(
         ):
             return report
 
+        _u_total, _fuel_val, fuel_status = top_up_bnb_fuel(
+            runtime,
+            report,
+            u_total,
+            fuel_val,
+            log_buffer,
+            min_bnb_value,
+            buy_bnb_amount,
+        )
+        if fuel_status != "ready":
+            report["execution_blocked_reason"] = f"bnb_fuel_{fuel_status}"
+            return report
+
         u_total = execute_trend_rotation(
             runtime,
             report,
@@ -174,6 +190,10 @@ def execute_strategy_cycle(
 
         report["total_equity_usdt"] = total_equity
         report["trend_equity_usdt"] = trend_val_equity
+
+        if not post_trade_allocation.get("execution_permitted", False):
+            report["execution_blocked_reason"] = "risk_execution_not_permitted"
+            return report
 
         btc_target_ratio = post_trade_allocation["btc_target_ratio"]
         dca_usdt_pool = post_trade_allocation["dca_usdt_pool"]

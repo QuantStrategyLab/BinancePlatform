@@ -63,6 +63,30 @@ class DecisionMapperTests(unittest.TestCase):
 
                 self.assertEqual(submitted, [])
 
+    def test_local_risk_veto_revokes_an_otherwise_approved_assessment(self):
+        decision = StrategyDecision(
+            diagnostics={
+                "rotation_candidates": {
+                    "ETHUSDT": {"weight": 0.5, "relative_score": 1.2, "abs_momentum": 0.3},
+                },
+                "eligible_buy_symbols": ("ETHUSDT",),
+                "planned_trend_buys": {"ETHUSDT": 100.0},
+                "member_risk_assessment": {"outcome": "APPROVE"},
+            },
+            risk_flags=("rejected:strategy_concentration",),
+        )
+
+        plan = map_strategy_decision_to_rotation_plan(decision)
+        allocation = map_strategy_decision_to_allocation(
+            decision,
+            account_metrics={"total_equity": 1000.0, "trend_value": 0.0, "dca_value": 0.0},
+        )
+
+        self.assertFalse(plan["execution_permitted"])
+        self.assertFalse(allocation["execution_permitted"])
+        self.assertEqual(plan["eligible_buy_symbols"], [])
+        self.assertEqual(plan["planned_trend_buys"], {})
+
     def test_map_strategy_decision_to_allocation_uses_budgets_and_diagnostics(self):
         decision = StrategyDecision(
             positions=(
@@ -95,6 +119,7 @@ class DecisionMapperTests(unittest.TestCase):
         self.assertEqual(allocation["btc_base_order_usdt"], 50.0)
         self.assertEqual(allocation["btc_target_ratio"], 0.3)
         self.assertEqual(allocation["trend_target_ratio"], 0.7)
+        self.assertFalse(allocation["execution_permitted"])
 
     def test_map_strategy_decision_to_rotation_plan_uses_unified_diagnostics(self):
         decision = StrategyDecision(
@@ -134,6 +159,7 @@ class DecisionMapperTests(unittest.TestCase):
         self.assertEqual(plan["sell_reasons"], {"SOLUSDT": "trend_sell_reason_rotated_out"})
         self.assertEqual(plan["artifact_contract"], {"version": "v1"})
         self.assertEqual(plan["risk_flags"], ("regime_off",))
+        self.assertTrue(plan["execution_permitted"])
         self.assertEqual(
             plan["combo_diagnostics"],
             {

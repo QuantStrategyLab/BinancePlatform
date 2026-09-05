@@ -89,15 +89,15 @@ class CycleReplayRuntimeTests(unittest.TestCase):
         output_buffer = io.StringIO()
         decisions = []
 
-        def capture_mapper(decision):
+        def capture_mapper(decision, *, account_metrics):
             decisions.append(decision)
-            return original_mapper(decision)
+            return original_mapper(decision, account_metrics=account_metrics)
 
-        original_mapper = main.map_decision_to_rotation_plan
+        original_mapper = main.map_decision_to_allocation
         with contextlib.redirect_stdout(output_buffer):
             with patch.object(
                 main,
-                "map_decision_to_rotation_plan",
+                "map_decision_to_allocation",
                 side_effect=capture_mapper if capture_decisions else original_mapper,
             ):
                 result = run_cycle_replay.run_replay_cycle(
@@ -130,19 +130,15 @@ class CycleReplayRuntimeTests(unittest.TestCase):
                 assessment["reason_codes"],
                 ("invalid_mandate", "invalid_portfolio_snapshot", "missing_candidate_identity"),
             )
-        # Earn subscription is a separate, still-unresolved funds-management path;
-        # this mapper regression test must neither mask nor approve it.
-        self.assertGreaterEqual(len(report["redemption_subscription_intents"]), 1)
+        self.assertEqual(report["redemption_subscription_intents"], [])
 
     def test_fixed_input_produces_deterministic_execution_report(self):
         first = self.run_cycle(run_id="deterministic-report")
         second = self.run_cycle(run_id="deterministic-report")
 
         self.assertEqual(first["report"], second["report"])
-        self.assertEqual(
-            first["report"]["selected_symbols"]["active_trend_pool"],
-            ["ETHUSDT", "SOLUSDT", "XRPUSDT", "LTCUSDT", "BCHUSDT"],
-        )
+        self.assertEqual(first["report"]["selected_symbols"]["active_trend_pool"], [])
+        self.assertEqual(first["report"]["execution_blocked_reason"], "risk_execution_not_permitted")
         trend_buy_symbols = [
             intent["symbol"]
             for intent in first["report"]["buy_sell_intents"]
@@ -150,9 +146,52 @@ class CycleReplayRuntimeTests(unittest.TestCase):
         ]
         self.assertEqual(trend_buy_symbols, [])
         self.assertEqual(first["report"]["btc_dca_intents"], [])
-        self.assertEqual(first["report"]["gating_summary"]["btc_dca_pool_too_small"], 1)
-        self.assertEqual(first["report"]["redemption_subscription_intents"][0]["action"], "subscribe")
-        self.assertAlmostEqual(first["report"]["redemption_subscription_intents"][0]["amount"], 950.0)
+        self.assertEqual(first["report"]["redemption_subscription_intents"], [])
+
+    def test_fake_live_reject_with_low_bnb_and_earn_balance_submits_no_funds_actions(self):
+        runtime, client, _state_store, _ = run_cycle_replay.build_replay_runtime(
+            run_id="fake-live-risk-reject",
+            dry_run=False,
+            now_utc=FIXTURE_TIME,
+        )
+        runtime.research_cycle_settings = None
+        original_state_writer = runtime.state_writer
+        runtime.state_writer = lambda state: original_state_writer(state) or True
+        client.account_snapshot["spot_balances"]["BNB"] = {"free": "0", "locked": "0"}
+        client.account_snapshot["earn_positions"]["USDT"] = {
+            "rows": [{"productId": "fixture-earn", "totalAmount": "50"}]
+        }
+        self.assertTrue(client.account_snapshot["earn_positions"]["USDT"]["rows"])
+        decisions = []
+        original_mapper = main.map_decision_to_allocation
+
+        def capture_mapper(decision, *, account_metrics):
+            decisions.append(decision)
+            return original_mapper(decision, account_metrics=account_metrics)
+
+        with patch.object(
+            main,
+            "rc_load_cycle_execution_settings",
+            return_value=types.SimpleNamespace(
+                btc_status_report_interval_hours=24,
+                allow_new_trend_entries_on_degraded=False,
+            ),
+        ), patch.object(main, "map_decision_to_allocation", side_effect=capture_mapper):
+            report = main.execute_cycle(runtime)
+
+        self.assertFalse(report["dry_run"])
+        self.assertEqual(report["execution_blocked_reason"], "risk_execution_not_permitted")
+        self.assertEqual(client.side_effect_calls, [])
+        self.assertEqual(report["buy_sell_intents"], [])
+        self.assertEqual(report["btc_dca_intents"], [])
+        self.assertEqual(report["redemption_subscription_intents"], [])
+        self.assertTrue(decisions)
+        assessment = decisions[0].diagnostics["member_risk_assessment"]
+        self.assertEqual(assessment["outcome"], "REJECT")
+        self.assertEqual(
+            assessment["reason_codes"],
+            ("invalid_mandate", "invalid_portfolio_snapshot", "missing_candidate_identity"),
+        )
 
     def test_state_load_failure_aborts_execution_safely(self):
         runtime, client, state_store, _ = run_cycle_replay.build_replay_runtime(
