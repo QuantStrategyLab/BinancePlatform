@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from runtime_support import ExecutionIntegrityError
+
 
 def resolve_runtime_btc_snapshot(
     runtime,
@@ -98,6 +100,8 @@ def ensure_asset_available_runtime(
                 if not runtime.dry_run:
                     sleep_fn(3)
                 return True
+    except ExecutionIntegrityError:
+        raise
     except Exception:
         runtime_notify_fn(
             runtime,
@@ -175,6 +179,8 @@ def manage_usdt_earn_buffer_runtime(
                         effect_type="earn_redeem",
                     )
                     append_log_fn(log_buffer, translate_fn("cash_manager_redeeming_to_spot", amount=redeem_amt))
+    except ExecutionIntegrityError:
+        raise
     except Exception:
         append_log_fn(
             log_buffer,

@@ -8,6 +8,7 @@ from infra.binance_runtime import (
     resolve_runtime_btc_snapshot,
     resolve_runtime_trend_indicators,
 )
+from runtime_support import ExecutionIntegrityError
 
 
 class BinanceRuntimeInfraTests(unittest.TestCase):
@@ -152,6 +153,51 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
         self.assertEqual(report["redemption_subscription_intents"][0]["amount"], 50.0)
         self.assertEqual(observed["calls"][0][0], "subscribe_simple_earn_flexible_product")
         self.assertEqual(len(observed["logs"]), 1)
+
+    def test_earn_integrity_errors_are_not_swallowed(self):
+        failure = ExecutionIntegrityError("order_reconciliation_uncertain")
+        observed = {"notifications": [], "logs": [], "sleeps": []}
+
+        class RedemptionClient:
+            def get_asset_balance(self, *, asset):
+                return {"free": "2.0"}
+
+            def get_simple_earn_flexible_product_position(self, *, asset):
+                return {"rows": [{"productId": "earn-1", "totalAmount": "5.0"}]}
+
+        with self.assertRaises(ExecutionIntegrityError):
+            ensure_asset_available_runtime(
+                SimpleNamespace(client=RedemptionClient(), dry_run=False),
+                {"redemption_subscription_intents": []},
+                "ETH",
+                3.0,
+                [],
+                runtime_call_client_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+                append_log_fn=lambda _buffer, message: observed["logs"].append(message),
+                runtime_notify_fn=lambda _runtime, _report, text: observed["notifications"].append(text),
+                translate_fn=lambda key, **_kwargs: key,
+                sleep_fn=lambda seconds: observed["sleeps"].append(seconds),
+            )
+
+        class SubscriptionClient:
+            def get_asset_balance(self, *, asset):
+                return {"free": "150.0"}
+
+            def get_simple_earn_flexible_product_list(self, *, asset):
+                return {"rows": [{"productId": "earn-1"}]}
+
+        with self.assertRaises(ExecutionIntegrityError):
+            manage_usdt_earn_buffer_runtime(
+                SimpleNamespace(client=SubscriptionClient()),
+                {"redemption_subscription_intents": []},
+                100.0,
+                [],
+                runtime_call_client_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+                append_log_fn=lambda _buffer, message: observed["logs"].append(message),
+                translate_fn=lambda key, **_kwargs: key,
+            )
+
+        self.assertEqual(observed, {"notifications": [], "logs": [], "sleeps": []})
 
     def test_ensure_runtime_client_marks_report_aborted_after_retries(self):
         runtime = SimpleNamespace(client=None, api_key="key", api_secret="secret")
