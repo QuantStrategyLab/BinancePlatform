@@ -5,6 +5,7 @@ import types
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 
 def install_test_stubs():
@@ -84,17 +85,33 @@ FIXTURE_TIME = datetime(2026, 3, 15, 0, 0, tzinfo=timezone.utc)
 
 
 class CycleReplayRuntimeTests(unittest.TestCase):
-    def run_cycle(self, *, run_id):
+    def run_cycle(self, *, run_id, capture_decisions=False):
         output_buffer = io.StringIO()
+        decisions = []
+
+        def capture_mapper(decision):
+            decisions.append(decision)
+            return original_mapper(decision)
+
+        original_mapper = main.map_decision_to_rotation_plan
         with contextlib.redirect_stdout(output_buffer):
-            return run_cycle_replay.run_replay_cycle(
-                run_id=run_id,
-                dry_run=True,
-                now_utc=FIXTURE_TIME,
-            )
+            with patch.object(
+                main,
+                "map_decision_to_rotation_plan",
+                side_effect=capture_mapper if capture_decisions else original_mapper,
+            ):
+                result = run_cycle_replay.run_replay_cycle(
+                    run_id=run_id,
+                    dry_run=True,
+                    now_utc=FIXTURE_TIME,
+                )
+        return (result, decisions) if capture_decisions else result
 
     def test_dry_run_produces_no_real_side_effects(self):
-        result = self.run_cycle(run_id="dry-run-regression")
+        result, decisions = self.run_cycle(
+            run_id="dry-run-regression",
+            capture_decisions=True,
+        )
         report = result["report"]
 
         self.assertEqual(report["status"], "ok")
@@ -103,7 +120,18 @@ class CycleReplayRuntimeTests(unittest.TestCase):
         self.assertEqual(result["state_store"].write_calls, [])
         self.assertEqual(report["side_effect_summary"]["executed_call_count"], 0)
         self.assertGreater(report["side_effect_summary"]["suppressed_call_count"], 0)
-        self.assertGreaterEqual(len(report["buy_sell_intents"]), 2)
+        self.assertEqual(report["buy_sell_intents"], [])
+        self.assertEqual(report["btc_dca_intents"], [])
+        self.assertTrue(decisions)
+        for decision in decisions:
+            assessment = decision.diagnostics["member_risk_assessment"]
+            self.assertEqual(assessment["outcome"], "REJECT")
+            self.assertEqual(
+                assessment["reason_codes"],
+                ("invalid_mandate", "invalid_portfolio_snapshot", "missing_candidate_identity"),
+            )
+        # Earn subscription is a separate, still-unresolved funds-management path;
+        # this mapper regression test must neither mask nor approve it.
         self.assertGreaterEqual(len(report["redemption_subscription_intents"]), 1)
 
     def test_fixed_input_produces_deterministic_execution_report(self):
@@ -120,11 +148,11 @@ class CycleReplayRuntimeTests(unittest.TestCase):
             for intent in first["report"]["buy_sell_intents"]
             if intent["category"] == "trend" and intent["action"] == "buy"
         ]
-        self.assertEqual(trend_buy_symbols, ["ETHUSDT", "SOLUSDT"])
+        self.assertEqual(trend_buy_symbols, [])
         self.assertEqual(first["report"]["btc_dca_intents"], [])
         self.assertEqual(first["report"]["gating_summary"]["btc_dca_pool_too_small"], 1)
         self.assertEqual(first["report"]["redemption_subscription_intents"][0]["action"], "subscribe")
-        self.assertAlmostEqual(first["report"]["redemption_subscription_intents"][0]["amount"], 95.5)
+        self.assertAlmostEqual(first["report"]["redemption_subscription_intents"][0]["amount"], 950.0)
 
     def test_state_load_failure_aborts_execution_safely(self):
         runtime, client, state_store, _ = run_cycle_replay.build_replay_runtime(

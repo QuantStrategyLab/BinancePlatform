@@ -93,10 +93,22 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/qpk-pin-guard
-          curl -fsSL -o /tmp/qpk-pin-guard/QPK_PIN \
-            https://raw.githubusercontent.com/QuantStrategyLab/QuantPlatformKit/main/QPK_PIN
+          qpk_pin="$(
+            uv run --no-sync python - <<'PY'
+          import re
+          import tomllib
+          from pathlib import Path
+
+          requires = tomllib.load(Path("qsl.toml").open("rb")).get("qsl", {}).get("requires", {})
+          qpk_pin = requires.get("quant_platform_kit") if isinstance(requires, dict) else None
+          if not isinstance(qpk_pin, str) or re.fullmatch(r"[0-9a-f]{40}", qpk_pin) is None:
+              raise SystemExit("qsl.requires.quant_platform_kit must be a lowercase 40-character Git SHA")
+          print(qpk_pin)
+          PY
+          )"
+          printf '%s\n' "$qpk_pin" > /tmp/qpk-pin-guard/QPK_PIN
           curl -fsSL -o /tmp/qpk-pin-guard/check_qpk_pin_consistency.py \
-            https://raw.githubusercontent.com/QuantStrategyLab/QuantPlatformKit/main/scripts/check_qpk_pin_consistency.py
+            "https://raw.githubusercontent.com/QuantStrategyLab/QuantPlatformKit/${qpk_pin}/scripts/check_qpk_pin_consistency.py"
           uv run --no-sync python /tmp/qpk-pin-guard/check_qpk_pin_consistency.py \
             --root . \
             --pin-file /tmp/qpk-pin-guard/QPK_PIN
