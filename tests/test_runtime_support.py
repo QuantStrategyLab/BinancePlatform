@@ -55,6 +55,7 @@ from runtime_support import (
     runtime_notify,
     runtime_set_trade_state,
     validate_runtime_evidence_aggregate,
+    _ensure_order_logical_identity,
 )
 from quant_platform_kit.common.runtime_target import build_runtime_target
 
@@ -79,6 +80,17 @@ def build_order_runtime(**kwargs):
     kwargs.setdefault("state_loader", store.load)
     kwargs.setdefault("state_writer", store.write)
     return ExecutionRuntime(**kwargs)
+
+
+def order_query_response(*, client_order_id, status, symbol="BTCUSDT", side="BUY", quantity="0.01"):
+    return {
+        "status": status,
+        "clientOrderId": client_order_id,
+        "symbol": symbol,
+        "side": side,
+        "origQty": quantity,
+        "origQuoteOrderQty": "0",
+    }
 
 
 class TestBuildExecutionReport(unittest.TestCase):
@@ -259,9 +271,9 @@ class TestBuildExecutionReport(unittest.TestCase):
                         store.events.append(("submit",))
                         raise error_type("provider-submit-secret")
 
-                    def get_order(self, **_kwargs):
+                    def get_order(self, *, origClientOrderId, **_kwargs):
                         store.events.append(("query",))
-                        return {"status": "NEW"}
+                        return order_query_response(client_order_id=origClientOrderId, status="NEW")
 
                 runtime = ExecutionRuntime(
                     dry_run=False,
@@ -284,23 +296,25 @@ class TestBuildExecutionReport(unittest.TestCase):
                 self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
                 self.assertEqual([event[0] for event in store.events], ["write", "submit", "query"])
 
-    def test_restart_with_unknown_only_queries_and_never_submits(self):
-        store = DurableSubmissionStateStore(
-            {
-                "state": "SUBMISSION_UNKNOWN",
-                "identity_sha256": "a" * 64,
-                "symbol": "BTCUSDT",
-            }
+    def test_restart_with_exact_unknown_intent_recovers_without_resubmit(self):
+        payload = {"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "restart-unknown"}
+        _, identity_sha256 = _ensure_order_logical_identity(
+            ExecutionRuntime(), "order_market_buy", payload
         )
+        store = DurableSubmissionStateStore({
+            "state": "SUBMISSION_UNKNOWN",
+            "identity_sha256": identity_sha256,
+            "symbol": "BTCUSDT",
+        })
 
         class Client:
             def order_market_buy(self, **_kwargs):
                 store.events.append(("submit",))
                 raise AssertionError("UNKNOWN must not submit")
 
-            def get_order(self, **_kwargs):
+            def get_order(self, *, origClientOrderId, **_kwargs):
                 store.events.append(("query",))
-                return {"status": "NEW"}
+                return order_query_response(client_order_id=origClientOrderId, status="FILLED")
 
         runtime = ExecutionRuntime(
             dry_run=False,
@@ -310,18 +324,196 @@ class TestBuildExecutionReport(unittest.TestCase):
             state_writer=store.write,
         )
 
-        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+        result = runtime_call_client(
+            runtime,
+            build_execution_report(runtime),
+            method_name="order_market_buy",
+            payload=payload,
+            effect_type="order_buy",
+            max_retries=0,
+        )
+
+        self.assertEqual(result["status"], "FILLED")
+        self.assertEqual([event[0] for event in store.events], ["query", "write"])
+        self.assertEqual(store.data["order_submission"], {"state": "TERMINAL"})
+
+    def test_unknown_order_cannot_complete_a_different_requested_order(self):
+        variants = (
+            ("symbol", "order_market_buy", {"symbol": "ETHUSDT", "quantity": 0.01}),
+            ("side", "order_market_sell", {"symbol": "BTCUSDT", "quantity": 0.01}),
+            ("quantity", "order_market_buy", {"symbol": "BTCUSDT", "quantity": 0.02}),
+        )
+        for label, new_method, new_payload in variants:
+            with self.subTest(changed=label):
+                store = DurableSubmissionStateStore()
+
+                class InitialClient:
+                    def order_market_buy(self, **_kwargs):
+                        store.events.append(("submit_old",))
+                        raise TimeoutError("provider-submit-secret")
+
+                    def get_order(self, *, origClientOrderId, **_kwargs):
+                        store.events.append(("query_old",))
+                        return order_query_response(client_order_id=origClientOrderId, status="NEW")
+
+                initial_runtime = ExecutionRuntime(
+                    dry_run=False,
+                    run_id="old-unknown",
+                    client=InitialClient(),
+                    state_loader=store.load,
+                    state_writer=store.write,
+                )
+                with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+                    runtime_call_client(
+                        initial_runtime,
+                        build_execution_report(initial_runtime),
+                        method_name="order_market_buy",
+                        payload={"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "unknown-order"},
+                        effect_type="order_buy",
+                        max_retries=0,
+                    )
+
+                class RestartClient:
+                    def order_market_buy(self, **_kwargs):
+                        store.events.append(("submit_new",))
+                        raise AssertionError("UNKNOWN must not submit a new order")
+
+                    def order_market_sell(self, **_kwargs):
+                        store.events.append(("submit_new",))
+                        raise AssertionError("UNKNOWN must not submit a new order")
+
+                    def get_order(self, *, origClientOrderId, **_kwargs):
+                        store.events.append(("query_old",))
+                        return order_query_response(client_order_id=origClientOrderId, status="FILLED")
+
+                restart_runtime = ExecutionRuntime(
+                    dry_run=False,
+                    run_id="new-request",
+                    client=RestartClient(),
+                    state_loader=store.load,
+                    state_writer=store.write,
+                )
+                with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_intent_mismatch"):
+                    runtime_call_client(
+                        restart_runtime,
+                        build_execution_report(restart_runtime),
+                        method_name=new_method,
+                        payload={**new_payload, "newClientOrderId": "unknown-order"},
+                        effect_type="order_buy" if new_method.endswith("buy") else "order_sell",
+                        max_retries=0,
+                    )
+
+                self.assertNotIn(("submit_new",), store.events)
+                self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
+
+    def test_unknown_order_with_different_client_identity_does_not_query_or_submit(self):
+        payload = {"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "old-identity"}
+        _, identity_sha256 = _ensure_order_logical_identity(
+            ExecutionRuntime(), "order_market_buy", payload
+        )
+        store = DurableSubmissionStateStore({
+            "state": "SUBMISSION_UNKNOWN",
+            "identity_sha256": identity_sha256,
+            "symbol": "BTCUSDT",
+        })
+        observed = []
+
+        class Client:
+            def order_market_buy(self, **_kwargs):
+                observed.append("submit")
+                raise AssertionError("UNKNOWN must not submit")
+
+            def get_order(self, **_kwargs):
+                observed.append("query")
+                raise AssertionError("different identities must not reconcile")
+
+        runtime = ExecutionRuntime(
+            dry_run=False,
+            run_id="different-client-identity",
+            client=Client(),
+            state_loader=store.load,
+            state_writer=store.write,
+        )
+        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_intent_mismatch"):
             runtime_call_client(
                 runtime,
                 build_execution_report(runtime),
                 method_name="order_market_buy",
-                payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                payload={"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "new-identity"},
                 effect_type="order_buy",
                 max_retries=0,
             )
 
-        self.assertEqual(store.events, [("query",)])
+        self.assertEqual(observed, [])
         self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
+
+    def test_unknown_quote_order_uses_original_quote_amount_not_fill_amount(self):
+        store = DurableSubmissionStateStore()
+        payload = {"symbol": "BNBUSDT", "quoteOrderQty": 20, "newClientOrderId": "quote-unknown"}
+
+        class InitialClient:
+            def order_market_buy(self, **_kwargs):
+                raise TimeoutError("provider-submit-secret")
+
+            def get_order(self, *, origClientOrderId, **_kwargs):
+                response = order_query_response(
+                    client_order_id=origClientOrderId,
+                    status="NEW",
+                    symbol="BNBUSDT",
+                    quantity="0",
+                )
+                response["origQuoteOrderQty"] = "20"
+                return response
+
+        initial_runtime = ExecutionRuntime(
+            dry_run=False,
+            run_id="quote-initial",
+            client=InitialClient(),
+            state_loader=store.load,
+            state_writer=store.write,
+        )
+        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+            runtime_call_client(
+                initial_runtime,
+                build_execution_report(initial_runtime),
+                method_name="order_market_buy",
+                payload=payload,
+                effect_type="order_buy",
+                max_retries=0,
+            )
+
+        class RestartClient:
+            def order_market_buy(self, **_kwargs):
+                raise AssertionError("UNKNOWN must not submit")
+
+            def get_order(self, *, origClientOrderId, **_kwargs):
+                response = order_query_response(
+                    client_order_id=origClientOrderId,
+                    status="FILLED",
+                    symbol="BNBUSDT",
+                    quantity="0",
+                )
+                response.update({"origQuoteOrderQty": "20", "cummulativeQuoteQty": "19.5"})
+                return response
+
+        restart_runtime = ExecutionRuntime(
+            dry_run=False,
+            run_id="quote-restart",
+            client=RestartClient(),
+            state_loader=store.load,
+            state_writer=store.write,
+        )
+        result = runtime_call_client(
+            restart_runtime,
+            build_execution_report(restart_runtime),
+            method_name="order_market_buy",
+            payload=payload,
+            effect_type="order_buy",
+            max_retries=0,
+        )
+
+        self.assertEqual(result["status"], "FILLED")
+        self.assertEqual(store.data["order_submission"], {"state": "TERMINAL"})
 
     def test_verified_terminal_query_response_is_required_to_write_terminal(self):
         store = DurableSubmissionStateStore()
@@ -331,9 +523,9 @@ class TestBuildExecutionReport(unittest.TestCase):
                 store.events.append(("submit",))
                 raise HTTPError("provider-submit-secret")
 
-            def get_order(self, **_kwargs):
+            def get_order(self, *, origClientOrderId, **_kwargs):
                 store.events.append(("query",))
-                return {"status": "REJECTED"}
+                return order_query_response(client_order_id=origClientOrderId, status="REJECTED")
 
         runtime = ExecutionRuntime(
             dry_run=False,
@@ -348,7 +540,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 runtime,
                 build_execution_report(runtime),
                 method_name="order_market_buy",
-                payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                payload={"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "verified-terminal"},
                 effect_type="order_buy",
                 max_retries=0,
             )
@@ -386,7 +578,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 initial_runtime,
                 build_execution_report(initial_runtime),
                 method_name="order_market_buy",
-                payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                payload={"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "terminal-write-failure"},
                 effect_type="order_buy",
                 max_retries=0,
             )
@@ -396,9 +588,9 @@ class TestBuildExecutionReport(unittest.TestCase):
                 store.events.append(("submit",))
                 raise AssertionError("UNKNOWN must not submit")
 
-            def get_order(self, **_kwargs):
+            def get_order(self, *, origClientOrderId, **_kwargs):
                 store.events.append(("query",))
-                return {"status": "FILLED"}
+                return order_query_response(client_order_id=origClientOrderId, status="FILLED")
 
         restart_runtime = ExecutionRuntime(
             dry_run=False,
@@ -413,7 +605,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                 restart_runtime,
                 build_execution_report(restart_runtime),
                 method_name="order_market_buy",
-                payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                payload={"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "terminal-write-failure"},
                 effect_type="order_buy",
                 max_retries=0,
             )
@@ -462,7 +654,7 @@ class TestBuildExecutionReport(unittest.TestCase):
 
                     def get_order(self, *, symbol, origClientOrderId):
                         observed.append(("reconcile", symbol, origClientOrderId))
-                        return {"status": "NEW", "clientOrderId": origClientOrderId}
+                        return order_query_response(client_order_id=origClientOrderId, status="NEW")
 
                 runtime = build_order_runtime(dry_run=False, run_id="stable-order", client=Client())
                 report = build_execution_report(runtime)
@@ -730,7 +922,7 @@ class TestBuildExecutionReport(unittest.TestCase):
 
                     def get_order(self, *, symbol, origClientOrderId):
                         observed.append("reconcile")
-                        return {"status": "NEW", "clientOrderId": origClientOrderId}
+                        return order_query_response(client_order_id=origClientOrderId, status="NEW")
 
                 runtime = build_order_runtime(dry_run=False, run_id=f"uncertain-{code}", client=Client())
                 report = build_execution_report(runtime)
