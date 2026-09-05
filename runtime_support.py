@@ -5,6 +5,7 @@ import re
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
@@ -538,6 +539,56 @@ def _client_order_id_from_digest(identity_sha256):
     return f"{_ORDER_CLIENT_ID_PREFIX}{identity_sha256[:28]}"
 
 
+def _build_order_request_association(method_name, order_payload):
+    symbol = str(order_payload.get("symbol") or "").strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{3,30}", symbol):
+        raise StatePersistenceError("submission_state_invalid") from None
+
+    method_to_side = {
+        "order_market_buy": "BUY",
+        "order_market_sell": "SELL",
+    }
+    side = method_to_side.get(str(method_name))
+    client_order_id = str(order_payload.get("newClientOrderId") or "").strip()
+    quantity_fields = [name for name in ("quantity", "quoteOrderQty") if name in order_payload]
+    if side is None or not client_order_id or len(quantity_fields) != 1:
+        raise StatePersistenceError("submission_state_invalid") from None
+
+    quantity_field = quantity_fields[0]
+    try:
+        quantity = Decimal(str(order_payload[quantity_field]))
+    except (InvalidOperation, ValueError):
+        raise StatePersistenceError("submission_state_invalid") from None
+    if not quantity.is_finite() or quantity <= 0:
+        raise StatePersistenceError("submission_state_invalid") from None
+    return {
+        "symbol": symbol,
+        "side": side,
+        "client_order_id": client_order_id,
+        "quantity_field": quantity_field,
+        "quantity": quantity,
+    }
+
+
+def _reconciled_order_matches_request(response, association):
+    if not isinstance(response, Mapping):
+        return False
+    if str(response.get("clientOrderId") or "").strip() != association["client_order_id"]:
+        return False
+    if str(response.get("symbol") or "").strip().upper() != association["symbol"]:
+        return False
+    if str(response.get("side") or "").strip().upper() != association["side"]:
+        return False
+    response_quantity_field = (
+        "origQty" if association["quantity_field"] == "quantity" else "origQuoteOrderQty"
+    )
+    try:
+        response_quantity = Decimal(str(response[response_quantity_field]))
+    except (KeyError, InvalidOperation, ValueError):
+        return False
+    return response_quantity.is_finite() and response_quantity == association["quantity"]
+
+
 def _load_order_submission_state(runtime):
     state = runtime.trade_state
     if state is None:
@@ -661,11 +712,17 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
         trade_state, submission_record = _load_order_submission_state(runtime)
         submission_status = submission_record["state"]
         if submission_status == _ORDER_SUBMISSION_UNKNOWN:
+            current_payload, current_identity_sha256 = _ensure_order_logical_identity(runtime, method_name, payload)
+            if current_identity_sha256 != submission_record["identity_sha256"]:
+                raise OrderReconciliationError("order_reconciliation_intent_mismatch") from None
+            association = _build_order_request_association(method_name, current_payload)
             reconciled_response = _reconcile_uncertain_order(
                 runtime.client,
                 submission_record["symbol"],
                 submission_record["identity_sha256"],
             )
+            if not _reconciled_order_matches_request(reconciled_response, association):
+                raise OrderReconciliationError("order_reconciliation_intent_mismatch") from None
             return _complete_order_response(runtime, report, trade_state, reconciled_response)
         if submission_status == _ORDER_SUBMISSION_TERMINAL:
             _persist_order_submission_state(
@@ -674,9 +731,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 {"state": _ORDER_SUBMISSION_RESERVED},
             )
         client_payload, identity_sha256 = _ensure_order_logical_identity(runtime, method_name, payload)
-        symbol = str(client_payload.get("symbol") or "").strip().upper()
-        if not re.fullmatch(r"[A-Z0-9]{3,30}", symbol):
-            raise StatePersistenceError("submission_state_invalid") from None
+        association = _build_order_request_association(method_name, client_payload)
+        symbol = association["symbol"]
         _persist_order_submission_state(
             runtime,
             trade_state,
@@ -699,7 +755,7 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 try:
                     reconciled_response = _reconcile_uncertain_order(
                         runtime.client,
-                        str(client_payload.get("symbol") or "").strip().upper(),
+                        symbol,
                         identity_sha256,
                     )
                 except OrderReconciliationError:
@@ -717,6 +773,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                     )
                     record_order_failure(report)
                     raise
+                if not _reconciled_order_matches_request(reconciled_response, association):
+                    raise OrderReconciliationError("order_reconciliation_intent_mismatch") from None
                 return _complete_order_response(runtime, report, trade_state, reconciled_response)
             if attempt < max_retries:
                 delay = retry_base_sec * (2 ** attempt)
