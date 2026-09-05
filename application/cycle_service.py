@@ -9,7 +9,10 @@ from quant_platform_kit.common.runtime_reports import persist_runtime_report
 from quant_platform_kit.strategy_lifecycle.performance_monitor import try_record_platform_execution
 from application.execution_receipt_adapter import attach_execution_receipt_from_report
 from runtime_logging import RuntimeLogContext, emit_runtime_log
-from runtime_support import append_report_error, finalize_notification_delivery
+from runtime_support import (
+    append_report_error, finalize_notification_delivery, acquire_runtime_state_owner,
+    release_runtime_state_owner, reconcile_runtime_cash_effects, ExecutionIntegrityError,
+)
 
 
 def execute_strategy_cycle(
@@ -58,7 +61,11 @@ def execute_strategy_cycle(
             "Runtime target disables standard execution; monitoring continues and all order/state-write calls are suppressed."
         )
 
+    state_healthy = False
     try:
+        if not acquire_runtime_state_owner(runtime):
+            report["execution_blocked_reason"] = "state_owner_busy"
+            return report
         if not ensure_runtime_client(runtime, report):
             return report
 
@@ -67,6 +74,9 @@ def execute_strategy_cycle(
             return report
 
         state, trend_pool_resolution, runtime_trend_universe, allow_new_trend_entries = cycle_state
+        runtime.trade_state = state
+        if state.get("order_submission", {}).get("state") == "SUBMISSION_UNKNOWN":
+            raise ExecutionIntegrityError("order_reconciliation_uncertain")
         append_trend_pool_source_logs(log_buffer, trend_pool_resolution, allow_new_trend_entries)
 
         report["upstream_pool_symbols"] = list(runtime_trend_universe.keys())
@@ -87,6 +97,7 @@ def execute_strategy_cycle(
         btc_snapshot = market_snapshot["btc_snapshot"]
         trend_indicators = market_snapshot["trend_indicators"]
 
+        state_healthy = True
         allocation = compute_portfolio_allocation(
             runtime,
             runtime_trend_universe,
@@ -155,6 +166,11 @@ def execute_strategy_cycle(
         )
         if fuel_status != "ready":
             report["execution_blocked_reason"] = f"bnb_fuel_{fuel_status}"
+            if fuel_status == "filled_pending_snapshot":
+                reconcile_runtime_cash_effects(runtime, state)
+                runtime_set_trade_state(runtime, report, state, reason="cash_reconciliation")
+            else:
+                state_healthy = False
             return report
 
         u_total = execute_trend_rotation(
@@ -243,9 +259,11 @@ def execute_strategy_cycle(
         )
 
         state["last_balance_snapshot"] = build_balance_snapshot(runtime_trend_universe, balances, u_total)
+        reconcile_runtime_cash_effects(runtime, state)
         runtime_set_trade_state(runtime, report, state, reason="cycle_complete")
 
     except Exception:
+        state_healthy = False
         report["status"] = "error"
         append_report_error(report, "cycle_execution_failed", stage="execute_cycle")
         try:
@@ -253,6 +271,12 @@ def execute_strategy_cycle(
         except Exception:
             pass
     finally:
+        if state_healthy and getattr(runtime, "state_owner_held", False):
+            try:
+                release_runtime_state_owner(runtime)
+            except ExecutionIntegrityError:
+                report["status"] = "error"
+                append_report_error(report, "state_owner_release_uncertain", stage="state_release")
         report["log_lines"] = list(log_buffer)
         finalize_notification_delivery(report)
         attach_execution_receipt_from_report(report)

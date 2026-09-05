@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from math import isfinite
+
 from runtime_support import ExecutionIntegrityError
 
 
@@ -92,6 +94,7 @@ def ensure_asset_available_runtime(
                     method_name="redeem_simple_earn_flexible_product",
                     payload={"productId": product_id, "amount": redeem_amt},
                     effect_type="earn_redeem",
+                    accounting_asset=asset,
                 )
                 append_log_fn(
                     log_buffer,
@@ -99,16 +102,14 @@ def ensure_asset_available_runtime(
                 )
                 if not runtime.dry_run:
                     sleep_fn(3)
+                    observed_free = float(runtime.client.get_asset_balance(asset=asset)["free"])
+                    if not isfinite(observed_free) or observed_free + 1e-8 < spot_free + redeem_amt:
+                        raise ExecutionIntegrityError("earn_reconciliation_pending")
                 return True
     except ExecutionIntegrityError:
         raise
     except Exception:
-        runtime_notify_fn(
-            runtime,
-            report,
-            f"{translate_fn('redeem_failed')} {asset}\n"
-            f"{translate_fn('error_label')}: asset_availability_failed",
-        )
+        raise ExecutionIntegrityError("asset_availability_failed") from None
     return False
 
 
@@ -153,7 +154,12 @@ def manage_usdt_earn_buffer_runtime(
                     method_name="subscribe_simple_earn_flexible_product",
                     payload={"productId": product_id, "amount": excess},
                     effect_type="earn_subscribe",
+                    accounting_asset=asset,
                 )
+                if not runtime.dry_run:
+                    observed_free = float(runtime.client.get_asset_balance(asset=asset)["free"])
+                    if not isfinite(observed_free) or observed_free < 0 or observed_free > spot_free - excess + 1e-8:
+                        raise ExecutionIntegrityError("earn_reconciliation_pending")
                 append_log_fn(log_buffer, translate_fn("cash_manager_subscribed_to_earn", amount=excess))
         elif spot_free < target_buffer - 5.0:
             shortfall = round(target_buffer - spot_free, 4)
@@ -177,15 +183,17 @@ def manage_usdt_earn_buffer_runtime(
                         method_name="redeem_simple_earn_flexible_product",
                         payload={"productId": product_id, "amount": redeem_amt},
                         effect_type="earn_redeem",
+                        accounting_asset=asset,
                     )
+                    if not runtime.dry_run:
+                        observed_free = float(runtime.client.get_asset_balance(asset=asset)["free"])
+                        if not isfinite(observed_free) or observed_free + 1e-8 < spot_free + redeem_amt:
+                            raise ExecutionIntegrityError("earn_reconciliation_pending")
                     append_log_fn(log_buffer, translate_fn("cash_manager_redeeming_to_spot", amount=redeem_amt))
     except ExecutionIntegrityError:
         raise
     except Exception:
-        append_log_fn(
-            log_buffer,
-            translate_fn("usdt_earn_buffer_maintenance_failed", error="earn_buffer_maintenance_failed"),
-        )
+        raise ExecutionIntegrityError("earn_buffer_maintenance_failed") from None
 
 
 def ensure_runtime_client(

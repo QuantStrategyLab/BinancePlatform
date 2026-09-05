@@ -95,6 +95,10 @@ class MarketSnapshotSupportTests(unittest.TestCase):
             state_loader=lambda *, normalize=False: {"order_submission": {"state": "RESERVED"}},
             state_writer=lambda _state: True,
         )
+        from runtime_support import acquire_runtime_state_owner
+        runtime.state_owner_claim = lambda _owner: True
+        runtime.state_owner_release = lambda _owner: True
+        acquire_runtime_state_owner(runtime)
         report = build_execution_report(runtime)
 
         u_total, fuel_val, continue_execution = top_up_bnb_fuel(
