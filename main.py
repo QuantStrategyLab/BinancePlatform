@@ -35,6 +35,7 @@ from live_services import (
 )
 from market_snapshot_support import (
     capture_market_snapshot as ms_capture_market_snapshot,
+    top_up_bnb_fuel as ms_top_up_bnb_fuel,
 )
 from runtime_support import (
     ExecutionRuntime as _ExecutionRuntime,
@@ -812,23 +813,34 @@ def _append_trend_pool_source_logs(log_buffer, trend_pool_resolution, allow_new_
     )
 
 
-def _capture_market_snapshot(runtime, report, runtime_trend_universe, log_buffer, min_bnb_value, buy_bnb_amount):
+def _capture_market_snapshot(runtime, report, runtime_trend_universe, log_buffer):
     return ms_capture_market_snapshot(
         runtime,
         report,
         runtime_trend_universe,
         log_buffer,
-        min_bnb_value,
-        buy_bnb_amount,
         get_total_balance_fn=get_total_balance,
-        ensure_asset_available_fn=ensure_asset_available_runtime,
-        runtime_call_client_fn=runtime_call_client,
-        runtime_notify_fn=runtime_notify,
-        append_log_fn=append_log,
         resolve_btc_snapshot_fn=resolve_runtime_btc_snapshot,
         resolve_trend_indicators_fn=resolve_runtime_trend_indicators,
         bnb_fuel_symbol=BNB_FUEL_SYMBOL,
         bnb_fuel_asset=BNB_FUEL_ASSET,
+    )
+
+
+def _top_up_bnb_fuel(runtime, report, u_total, fuel_val, log_buffer, min_bnb_value, buy_bnb_amount):
+    return ms_top_up_bnb_fuel(
+        runtime,
+        report,
+        u_total,
+        fuel_val,
+        log_buffer,
+        min_bnb_value=min_bnb_value,
+        buy_bnb_amount=buy_bnb_amount,
+        ensure_asset_available_fn=ensure_asset_available_runtime,
+        runtime_call_client_fn=runtime_call_client,
+        runtime_notify_fn=runtime_notify,
+        append_log_fn=append_log,
+        bnb_fuel_symbol=BNB_FUEL_SYMBOL,
     )
 
 
@@ -1212,6 +1224,7 @@ def execute_cycle(runtime):
             load_cycle_state=_load_cycle_state,
             append_trend_pool_source_logs=_append_trend_pool_source_logs,
             capture_market_snapshot=_capture_market_snapshot,
+            top_up_bnb_fuel=_top_up_bnb_fuel,
             compute_portfolio_allocation=_compute_portfolio_allocation,
             build_balance_snapshot=_build_balance_snapshot,
             maybe_reset_daily_state=_maybe_reset_daily_state,

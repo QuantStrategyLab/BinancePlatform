@@ -18,6 +18,115 @@ from runtime_support import (
 
 
 class CycleServiceTests(unittest.TestCase):
+    def _run_funds_cycle(self, execution_permitted, *, post_execution_permitted=None, snapshot_error=False, state=None):
+        events = []
+        state = {} if state is None else state
+        post_execution_permitted = execution_permitted if post_execution_permitted is None else post_execution_permitted
+        allocation_permissions = [execution_permitted, post_execution_permitted]
+        runtime = SimpleNamespace(
+            dry_run=False,
+            now_utc=SimpleNamespace(strftime=lambda fmt: "20260905" if "%d" in fmt else "2026-09-05"),
+            standard_execution_permitted=True,
+            tg_token="",
+            tg_chat_id="",
+        )
+
+        report = execute_strategy_cycle(
+            runtime,
+            build_execution_report=lambda _runtime: {
+                "status": "ok",
+                "buy_sell_intents": [],
+                "btc_dca_intents": [],
+                "redemption_subscription_intents": [],
+                "selected_symbols": {},
+                "gating_summary": {},
+                "gating_events": [],
+            },
+            ensure_runtime_client=lambda *_args: True,
+            load_cycle_execution_settings=lambda: SimpleNamespace(
+                btc_status_report_interval_hours=24,
+                allow_new_trend_entries_on_degraded=False,
+            ),
+            load_cycle_state=lambda *_args: (state, {"degraded": False}, {"ETHUSDT": {}}, True),
+            append_trend_pool_source_logs=lambda *_args: None,
+            capture_market_snapshot=(
+                lambda *_args: (_ for _ in ()).throw(RuntimeError("snapshot_read_failed"))
+                if snapshot_error
+                else {
+                    "u_total": 200.0,
+                    "fuel_val": 0.0,
+                    "dynamic_usdt_buffer": 100.0,
+                    "prices": {"BTCUSDT": 50_000.0, "ETHUSDT": 100.0},
+                    "balances": {"BTCUSDT": 0.0, "ETHUSDT": 0.0},
+                    "btc_snapshot": {},
+                    "trend_indicators": {},
+                }
+            ),
+            top_up_bnb_fuel=lambda *_args: events.append("fuel") or (185.0, 15.0, "ready"),
+            compute_portfolio_allocation=lambda *_args: {
+                "total_equity": 200.0,
+                "trend_val": 0.0,
+                "dca_val": 0.0,
+                "btc_target_ratio": 0.0,
+                "dca_usdt_pool": 0.0,
+                "btc_base_order_usdt": 0.0,
+                "execution_permitted": allocation_permissions.pop(0)
+                if allocation_permissions
+                else execution_permitted,
+            },
+            build_balance_snapshot=lambda *_args: {},
+            maybe_reset_daily_state=lambda *_args: events.append("state_reset"),
+            maybe_rebase_daily_state_for_balance_change=lambda *_args: events.append("state_rebase"),
+            compute_daily_pnls=lambda *_args: (0.0, 0.0),
+            append_portfolio_report=lambda *_args: None,
+            run_daily_circuit_breaker=lambda *_args: events.append("circuit_breaker") or False,
+            execute_trend_rotation=lambda *_args, **_kwargs: events.append("trend") or 185.0,
+            execute_btc_dca_cycle=lambda *_args: events.append("dca") or 185.0,
+            manage_usdt_earn_buffer_runtime=lambda *_args, **_kwargs: events.append("earn"),
+            maybe_send_periodic_btc_status_report=lambda *_args, **_kwargs: None,
+            runtime_set_trade_state=lambda *_args, **_kwargs: events.append("state_write"),
+            append_report_error=lambda *_args, **_kwargs: None,
+            runtime_notify=lambda *_args, **_kwargs: None,
+            translate_fn=lambda value, **_kwargs: value,
+            traceback_module=SimpleNamespace(),
+        )
+        return report, events
+
+    def test_rejected_or_missing_execution_permission_blocks_all_funds_actions(self):
+        for execution_permitted in (False, None):
+            with self.subTest(execution_permitted=execution_permitted):
+                report, events = self._run_funds_cycle(execution_permitted)
+
+                self.assertEqual(events, [])
+                self.assertEqual(report["execution_blocked_reason"], "risk_execution_not_permitted")
+
+    def test_approved_execution_permission_preserves_fuel_trend_dca_and_earn_actions(self):
+        _report, events = self._run_funds_cycle(True)
+
+        self.assertEqual(events, ["state_reset", "state_rebase", "circuit_breaker", "fuel", "trend", "dca", "earn", "state_write"])
+
+    def test_snapshot_read_failure_blocks_all_funds_actions(self):
+        report, events = self._run_funds_cycle(True, snapshot_error=True)
+
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(events, [])
+
+    def test_latched_circuit_breaker_blocks_fuel_before_any_funds_action(self):
+        _report, events = self._run_funds_cycle(True, state={"is_circuit_broken": True})
+
+        self.assertNotIn("fuel", events)
+        self.assertNotIn("trend", events)
+        self.assertNotIn("dca", events)
+        self.assertNotIn("earn", events)
+
+    def test_post_trade_risk_veto_blocks_dca_and_earn_actions(self):
+        report, events = self._run_funds_cycle(True, post_execution_permitted=False)
+
+        self.assertEqual(report["execution_blocked_reason"], "risk_execution_not_permitted")
+        self.assertIn("trend", events)
+        self.assertNotIn("dca", events)
+        self.assertNotIn("earn", events)
+
     def test_research_cycle_settings_require_dry_run(self):
         runtime = SimpleNamespace(
             dry_run=False,
@@ -38,6 +147,7 @@ class CycleServiceTests(unittest.TestCase):
                 load_cycle_state=lambda *_args: None,
                 append_trend_pool_source_logs=lambda *_args: None,
                 capture_market_snapshot=lambda *_args: None,
+                top_up_bnb_fuel=lambda *_args: (0.0, 0.0, "ready"),
                 compute_portfolio_allocation=lambda *_args: None,
                 build_balance_snapshot=lambda *_args: None,
                 maybe_reset_daily_state=lambda *_args: None,
@@ -298,6 +408,7 @@ class CycleServiceTests(unittest.TestCase):
                 load_cycle_state=lambda *_args: self.fail("cycle must abort before state load"),
                 append_trend_pool_source_logs=lambda *_args: None,
                 capture_market_snapshot=lambda *_args: None,
+                top_up_bnb_fuel=lambda *_args: (0.0, 0.0, "ready"),
                 compute_portfolio_allocation=lambda *_args: None,
                 build_balance_snapshot=lambda *_args: None,
                 maybe_reset_daily_state=lambda *_args: None,
@@ -360,6 +471,7 @@ class CycleServiceTests(unittest.TestCase):
             load_cycle_state=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not load state")),
             append_trend_pool_source_logs=lambda *_args, **_kwargs: None,
             capture_market_snapshot=lambda *_args, **_kwargs: None,
+            top_up_bnb_fuel=lambda *_args, **_kwargs: (0.0, 0.0, "ready"),
             compute_portfolio_allocation=lambda *_args, **_kwargs: None,
             build_balance_snapshot=lambda *_args, **_kwargs: {},
             maybe_reset_daily_state=lambda *_args, **_kwargs: None,
@@ -399,6 +511,7 @@ class CycleServiceTests(unittest.TestCase):
             load_cycle_state=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("provider-secret-cycle-error")),
             append_trend_pool_source_logs=lambda *_args, **_kwargs: None,
             capture_market_snapshot=lambda *_args, **_kwargs: None,
+            top_up_bnb_fuel=lambda *_args, **_kwargs: (0.0, 0.0, "ready"),
             compute_portfolio_allocation=lambda *_args, **_kwargs: None,
             build_balance_snapshot=lambda *_args, **_kwargs: {},
             maybe_reset_daily_state=lambda *_args, **_kwargs: None,
@@ -506,9 +619,11 @@ class CycleServiceTests(unittest.TestCase):
                 "btc_snapshot": {},
                 "trend_indicators": {},
             },
+            top_up_bnb_fuel=lambda *_args: (500.0, 0.0, "ready"),
             compute_portfolio_allocation=lambda *_args: {
                 "total_equity": 500.0,
                 "trend_val": 0.0,
+                "execution_permitted": True,
             },
             build_balance_snapshot=lambda *_args: {},
             maybe_reset_daily_state=lambda *_args: None,
