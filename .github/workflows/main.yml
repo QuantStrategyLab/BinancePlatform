@@ -59,8 +59,54 @@ jobs:
               ;;
           esac
           echo "enabled=${RUNTIME_TARGET_ENABLED,,}" >> "$GITHUB_OUTPUT"
+          if [ "${RUNTIME_TARGET_ENABLED,,}" = "false" ]; then
+            echo "observed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout disabled host observation producer
+        if: ${{ steps.runtime-target-control.outputs.enabled == 'false' && github.event.inputs.reconcile_only != 'true' && github.event.inputs.validate_only != 'true' }}
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Prepare disabled host observation
+        id: disabled-host
+        if: ${{ steps.runtime-target-control.outputs.enabled == 'false' && github.event.inputs.reconcile_only != 'true' && github.event.inputs.validate_only != 'true' }}
+        shell: bash
+        env:
+          RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}
+          RUNTIME_TARGET_ENABLED: ${{ steps.runtime-target-control.outputs.enabled }}
+          RUNTIME_TARGET_CONTROL_OBSERVED_AT: ${{ steps.runtime-target-control.outputs.observed_at }}
+          EXECUTION_EVIDENCE_SYNC_URL: ${{ vars.EXECUTION_EVIDENCE_SYNC_URL }}
+          EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 scripts/runtime_target_lifecycle_status.py
+          if [ -n "${EXECUTION_EVIDENCE_SYNC_URL:-}" ] && [ -n "${EXECUTION_EVIDENCE_SYNC_TOKEN:-}" ]; then
+            echo "publish_ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish_ready=false" >> "$GITHUB_OUTPUT"
+            echo "Disabled host observation not published: state ingress unavailable."
+          fi
+
+      - name: Publish disabled host observation
+        if: ${{ steps.disabled-host.outputs.publish_ready == 'true' }}
+        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-target-lifecycle@c2e46314fd749fd40f4d5fbdbaedadc8b7b27dff
+        with:
+          source-id: binance.runtime-target-lifecycle
+          target-id: ${{ steps.disabled-host.outputs.target_id }}
+          platform: binance
+          configured-state: ${{ steps.disabled-host.outputs.configured_state }}
+          execution-mode: ${{ steps.disabled-host.outputs.execution_mode }}
+          runtime-guard: ${{ steps.disabled-host.outputs.runtime_guard }}
+          execution-heartbeat: not_applicable
+          deployment-json: ${{ steps.disabled-host.outputs.deployment_json }}
+          sync-url: ${{ vars.EXECUTION_EVIDENCE_SYNC_URL }}
+        env:
+          EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}
 
       - name: 0. Validate deployment identity configuration
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
