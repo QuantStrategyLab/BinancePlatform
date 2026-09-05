@@ -29,6 +29,14 @@ _ORDER_SUBMISSION_RESERVED = "RESERVED"
 _ORDER_SUBMISSION_UNKNOWN = "SUBMISSION_UNKNOWN"
 _ORDER_SUBMISSION_TERMINAL = "TERMINAL"
 _ORDER_CLIENT_ID_PREFIX = "QSL_"
+_EARN_METHOD_BY_EFFECT_TYPE = {
+    "earn_redeem": "redeem_simple_earn_flexible_product",
+    "earn_subscribe": "subscribe_simple_earn_flexible_product",
+}
+_EARN_SUCCESS_ID_BY_METHOD = {
+    "redeem_simple_earn_flexible_product": "redeemId",
+    "subscribe_simple_earn_flexible_product": "purchaseId",
+}
 _LAST_API_CALL_TS: float = 0.0
 RUNTIME_EVIDENCE_CONTRACT_VERSION = "qsl.runtime_evidence_aggregate.v1"
 RECONCILIATION_STATUSES = frozenset({"MISSING", "MATCHED", "MISMATCHED"})
@@ -610,11 +618,15 @@ def _load_order_submission_state(runtime):
         if set(record) != {"state"}:
             raise StatePersistenceError("submission_state_invalid") from None
     elif status == _ORDER_SUBMISSION_UNKNOWN:
-        if set(record) != {"state", "identity_sha256", "symbol"}:
-            raise StatePersistenceError("submission_state_invalid") from None
         if not _is_sha256(record.get("identity_sha256")):
             raise StatePersistenceError("submission_state_invalid") from None
-        if not re.fullmatch(r"[A-Z0-9]{3,30}", str(record.get("symbol") or "")):
+        if set(record) == {"state", "identity_sha256", "symbol"}:
+            if not re.fullmatch(r"[A-Z0-9]{3,30}", str(record.get("symbol") or "")):
+                raise StatePersistenceError("submission_state_invalid") from None
+        elif set(record) == {"state", "identity_sha256", "method_name"}:
+            if str(record.get("method_name") or "") not in _EARN_SUCCESS_ID_BY_METHOD:
+                raise StatePersistenceError("submission_state_invalid") from None
+        else:
             raise StatePersistenceError("submission_state_invalid") from None
     else:
         raise StatePersistenceError("submission_state_invalid") from None
@@ -665,6 +677,14 @@ def _is_order_transport_uncertainty(exc):
     )
 
 
+def _is_confirmed_earn_success(method_name, response):
+    response_id_field = _EARN_SUCCESS_ID_BY_METHOD.get(str(method_name))
+    if not response_id_field or not isinstance(response, Mapping) or response.get("success") is not True:
+        return False
+    response_id = response.get(response_id_field)
+    return isinstance(response_id, int) and not isinstance(response_id, bool) and response_id > 0
+
+
 def _reconcile_uncertain_order(client, symbol, identity_sha256):
     if not symbol or not identity_sha256:
         raise OrderReconciliationError("order_reconciliation_uncertain") from None
@@ -705,13 +725,20 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
         raise RuntimeError("runtime.client is not configured")
 
     is_order_call = str(effect_type or "").startswith("order_")
+    earn_method = _EARN_METHOD_BY_EFFECT_TYPE.get(str(effect_type or ""))
+    is_earn_call = earn_method == str(method_name)
+    if str(effect_type or "").startswith("earn_") and not is_earn_call:
+        raise StatePersistenceError("submission_state_invalid") from None
+    is_funding_mutation = is_order_call or is_earn_call
     client_payload = dict(payload)
     trade_state = None
     identity_sha256 = None
-    if is_order_call:
+    if is_funding_mutation:
         trade_state, submission_record = _load_order_submission_state(runtime)
         submission_status = submission_record["state"]
         if submission_status == _ORDER_SUBMISSION_UNKNOWN:
+            if "method_name" in submission_record or is_earn_call:
+                raise OrderReconciliationError("order_reconciliation_uncertain") from None
             current_payload, current_identity_sha256 = _ensure_order_logical_identity(runtime, method_name, payload)
             if current_identity_sha256 != submission_record["identity_sha256"]:
                 raise OrderReconciliationError("order_reconciliation_intent_mismatch") from None
@@ -730,19 +757,64 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 trade_state,
                 {"state": _ORDER_SUBMISSION_RESERVED},
             )
-        client_payload, identity_sha256 = _ensure_order_logical_identity(runtime, method_name, payload)
-        association = _build_order_request_association(method_name, client_payload)
-        symbol = association["symbol"]
-        _persist_order_submission_state(
-            runtime,
-            trade_state,
-            {
+        if is_order_call:
+            client_payload, identity_sha256 = _ensure_order_logical_identity(runtime, method_name, payload)
+            association = _build_order_request_association(method_name, client_payload)
+            symbol = association["symbol"]
+            unknown_record = {
                 "state": _ORDER_SUBMISSION_UNKNOWN,
                 "identity_sha256": identity_sha256,
                 "symbol": symbol,
-            },
+            }
+        else:
+            _unused_order_payload, identity_sha256 = _ensure_order_logical_identity(runtime, method_name, payload)
+            unknown_record = {
+                "state": _ORDER_SUBMISSION_UNKNOWN,
+                "identity_sha256": identity_sha256,
+                "method_name": str(method_name),
+            }
+        _persist_order_submission_state(
+            runtime,
+            trade_state,
+            unknown_record,
         )
         record_order_submission_attempt(report)
+    if is_earn_call:
+        _rate_limit_pause()
+        try:
+            response = getattr(runtime.client, method_name)(**client_payload)
+        except Exception as exc:
+            if _is_order_transport_uncertainty(exc):
+                record_order_transport_uncertainty(report)
+            record_side_effect(
+                runtime,
+                report,
+                effect_type=f"{effect_type}_failed",
+                target=method_name,
+                payload={"payload": dict(client_payload), "reason": "order_reconciliation_uncertain", "retries": 0},
+                executed=False,
+            )
+            raise OrderReconciliationError("order_reconciliation_uncertain") from None
+        if not _is_confirmed_earn_success(method_name, response):
+            record_side_effect(
+                runtime,
+                report,
+                effect_type=f"{effect_type}_failed",
+                target=method_name,
+                payload={"payload": dict(client_payload), "reason": "order_reconciliation_uncertain", "retries": 0},
+                executed=False,
+            )
+            raise OrderReconciliationError("order_reconciliation_uncertain") from None
+        record_side_effect(
+            runtime,
+            report,
+            effect_type=effect_type,
+            target=method_name,
+            payload=dict(client_payload),
+            executed=True,
+        )
+        _persist_order_submission_state(runtime, trade_state, {"state": _ORDER_SUBMISSION_TERMINAL})
+        return response
     _rate_limit_pause()
     retries_used = max_retries
     for attempt in range(max_retries + 1):

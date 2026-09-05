@@ -1,6 +1,7 @@
 import copy
 import os
 import sys
+import threading
 import traceback
 import unittest
 from pathlib import Path
@@ -295,6 +296,248 @@ class TestBuildExecutionReport(unittest.TestCase):
 
                 self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
                 self.assertEqual([event[0] for event in store.events], ["write", "submit", "query"])
+
+    @unittest.expectedFailure
+    def test_concurrent_runners_with_same_scheduled_order_submit_once(self):
+        # Known R5 gap: the shared state store has no atomic claim. This test
+        # must continue to execute until a separately authorized concurrency fix.
+        shared_state = {"order_submission": {"state": "RESERVED"}}
+        loader_barrier = threading.Barrier(2)
+        lock = threading.Lock()
+        submissions = []
+        errors = []
+
+        def load(*, normalize=False):
+            loader_barrier.wait(timeout=2)
+            with lock:
+                return copy.deepcopy(shared_state)
+
+        def write(state):
+            with lock:
+                shared_state.clear()
+                shared_state.update(copy.deepcopy(state))
+            return True
+
+        class Client:
+            def order_market_buy(self, **kwargs):
+                with lock:
+                    submissions.append(kwargs["newClientOrderId"])
+                return {"status": "FILLED"}
+
+        def execute(run_id):
+            runtime = ExecutionRuntime(
+                dry_run=False,
+                run_id=run_id,
+                client=Client(),
+                state_loader=load,
+                state_writer=write,
+            )
+            try:
+                runtime_call_client(
+                    runtime,
+                    build_execution_report(runtime),
+                    method_name="order_market_buy",
+                    payload={"symbol": "BTCUSDT", "quantity": 0.01},
+                    effect_type="order_buy",
+                    max_retries=0,
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        runners = [threading.Thread(target=execute, args=(f"duplicate-{index}",)) for index in range(2)]
+        for runner in runners:
+            runner.start()
+        for runner in runners:
+            runner.join(timeout=3)
+
+        self.assertFalse(any(runner.is_alive() for runner in runners))
+        self.assertEqual(errors, [])
+        self.assertEqual(len(submissions), 1)
+
+    def test_earn_timeout_submits_once_and_keeps_unknown(self):
+        cases = (
+            ("redeem_simple_earn_flexible_product", "earn_redeem", "redeemId"),
+            ("subscribe_simple_earn_flexible_product", "earn_subscribe", "purchaseId"),
+        )
+        for method_name, effect_type, _response_id in cases:
+            with self.subTest(method_name=method_name):
+                store = DurableSubmissionStateStore()
+                calls = []
+
+                class Client:
+                    def redeem_simple_earn_flexible_product(self, **kwargs):
+                        calls.append(("redeem", kwargs))
+                        raise TimeoutError("provider-submit-secret")
+
+                    def subscribe_simple_earn_flexible_product(self, **kwargs):
+                        calls.append(("subscribe", kwargs))
+                        raise TimeoutError("provider-submit-secret")
+
+                runtime = ExecutionRuntime(
+                    dry_run=False,
+                    run_id=f"earn-timeout-{effect_type}",
+                    client=Client(),
+                    state_loader=store.load,
+                    state_writer=store.write,
+                )
+
+                with patch("runtime_support._rate_limit_pause"), patch("runtime_support.time.sleep"):
+                    with self.assertRaises(RuntimeError) as raised:
+                        runtime_call_client(
+                            runtime,
+                            build_execution_report(runtime),
+                            method_name=method_name,
+                            payload={"productId": "earn-1", "amount": 1.0},
+                            effect_type=effect_type,
+                        )
+
+                self.assertEqual(len(calls), 1)
+                self.assertIsInstance(raised.exception, OrderReconciliationError)
+                self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
+                self.assertEqual(store.data["order_submission"]["method_name"], method_name)
+
+    def test_confirmed_earn_success_terminalizes_existing_submission_state(self):
+        cases = (
+            ("redeem_simple_earn_flexible_product", "earn_redeem", "redeemId"),
+            ("subscribe_simple_earn_flexible_product", "earn_subscribe", "purchaseId"),
+        )
+        for method_name, effect_type, response_id in cases:
+            with self.subTest(method_name=method_name):
+                store = DurableSubmissionStateStore()
+                calls = []
+
+                class Client:
+                    def redeem_simple_earn_flexible_product(self, **kwargs):
+                        calls.append(("redeem", kwargs))
+                        return {"success": True, "redeemId": 1}
+
+                    def subscribe_simple_earn_flexible_product(self, **kwargs):
+                        calls.append(("subscribe", kwargs))
+                        return {"success": True, "purchaseId": 1}
+
+                runtime = ExecutionRuntime(
+                    dry_run=False,
+                    run_id=f"earn-success-{effect_type}",
+                    client=Client(),
+                    state_loader=store.load,
+                    state_writer=store.write,
+                )
+
+                response = runtime_call_client(
+                    runtime,
+                    build_execution_report(runtime),
+                    method_name=method_name,
+                    payload={"productId": "earn-1", "amount": 1.0},
+                    effect_type=effect_type,
+                    max_retries=0,
+                )
+
+                self.assertTrue(response["success"])
+                self.assertIn(response_id, response)
+                self.assertEqual(len(calls), 1)
+                self.assertEqual(store.data["order_submission"], {"state": "TERMINAL"})
+
+    def test_unconfirmed_earn_response_keeps_unknown(self):
+        store = DurableSubmissionStateStore()
+
+        class Client:
+            def subscribe_simple_earn_flexible_product(self, **_kwargs):
+                return {"success": False}
+
+        runtime = ExecutionRuntime(
+            dry_run=False,
+            run_id="earn-unconfirmed",
+            client=Client(),
+            state_loader=store.load,
+            state_writer=store.write,
+        )
+
+        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+            runtime_call_client(
+                runtime,
+                build_execution_report(runtime),
+                method_name="subscribe_simple_earn_flexible_product",
+                payload={"productId": "earn-1", "amount": 1.0},
+                effect_type="earn_subscribe",
+                max_retries=0,
+            )
+
+        self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
+
+    def test_unknown_earn_blocks_later_funding_without_order_query(self):
+        store = DurableSubmissionStateStore(
+            {
+                "state": "SUBMISSION_UNKNOWN",
+                "identity_sha256": "a" * 64,
+                "method_name": "subscribe_simple_earn_flexible_product",
+            }
+        )
+        observed = []
+
+        class Client:
+            def order_market_buy(self, **_kwargs):
+                observed.append("order_submit")
+                raise AssertionError("UNKNOWN must block funding submission")
+
+            def subscribe_simple_earn_flexible_product(self, **_kwargs):
+                observed.append("earn_submit")
+                raise AssertionError("UNKNOWN must block funding submission")
+
+            def get_order(self, **_kwargs):
+                observed.append("order_query")
+                raise AssertionError("Earn UNKNOWN must never use market-order reconciliation")
+
+        for method_name, payload, effect_type in (
+            ("order_market_buy", {"symbol": "BTCUSDT", "quantity": 0.01}, "order_buy"),
+            (
+                "subscribe_simple_earn_flexible_product",
+                {"productId": "earn-1", "amount": 1.0},
+                "earn_subscribe",
+            ),
+        ):
+            with self.subTest(method_name=method_name):
+                runtime = ExecutionRuntime(
+                    dry_run=False,
+                    run_id=f"blocked-{method_name}",
+                    client=Client(),
+                    state_loader=store.load,
+                    state_writer=store.write,
+                )
+                with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+                    runtime_call_client(
+                        runtime,
+                        build_execution_report(runtime),
+                        method_name=method_name,
+                        payload=payload,
+                        effect_type=effect_type,
+                        max_retries=0,
+                    )
+
+        self.assertEqual(observed, [])
+        self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
+
+        market_store = DurableSubmissionStateStore(
+            {"state": "SUBMISSION_UNKNOWN", "identity_sha256": "b" * 64, "symbol": "BTCUSDT"}
+        )
+        runtime = ExecutionRuntime(
+            dry_run=False,
+            run_id="blocked-earn-after-market",
+            client=Client(),
+            state_loader=market_store.load,
+            state_writer=market_store.write,
+        )
+        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+            runtime_call_client(
+                runtime,
+                build_execution_report(runtime),
+                method_name="subscribe_simple_earn_flexible_product",
+                payload={"productId": "earn-1", "amount": 1.0},
+                effect_type="earn_subscribe",
+                max_retries=0,
+            )
+
+        self.assertEqual(observed, [])
+        self.assertEqual(market_store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
 
     def test_restart_with_exact_unknown_intent_recovers_without_resubmit(self):
         payload = {"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "restart-unknown"}

@@ -9,6 +9,7 @@ from application.cycle_service import execute_strategy_cycle, run_live_cycle, wr
 from application.execution_service import execute_trend_buys
 from infra.binance_runtime import ensure_runtime_client
 from runtime_support import (
+    ExecutionIntegrityError,
     ExecutionRuntime,
     append_report_error,
     build_execution_report,
@@ -18,11 +19,29 @@ from runtime_support import (
 
 
 class CycleServiceTests(unittest.TestCase):
-    def _run_funds_cycle(self, execution_permitted, *, post_execution_permitted=None, snapshot_error=False, state=None):
+    def _run_funds_cycle(
+        self,
+        execution_permitted,
+        *,
+        post_execution_permitted=None,
+        snapshot_error=False,
+        state=None,
+        earn_failure=False,
+    ):
         events = []
         state = {} if state is None else state
         post_execution_permitted = execution_permitted if post_execution_permitted is None else post_execution_permitted
         allocation_permissions = [execution_permitted, post_execution_permitted]
+
+        def manage_earn(*_args, **_kwargs):
+            events.append("earn")
+            if earn_failure:
+                raise ExecutionIntegrityError("order_reconciliation_uncertain")
+
+        def send_periodic_status(*_args, **_kwargs):
+            if earn_failure:
+                events.append("periodic")
+
         runtime = SimpleNamespace(
             dry_run=False,
             now_utc=SimpleNamespace(strftime=lambda fmt: "20260905" if "%d" in fmt else "2026-09-05"),
@@ -82,8 +101,8 @@ class CycleServiceTests(unittest.TestCase):
             run_daily_circuit_breaker=lambda *_args: events.append("circuit_breaker") or False,
             execute_trend_rotation=lambda *_args, **_kwargs: events.append("trend") or 185.0,
             execute_btc_dca_cycle=lambda *_args: events.append("dca") or 185.0,
-            manage_usdt_earn_buffer_runtime=lambda *_args, **_kwargs: events.append("earn"),
-            maybe_send_periodic_btc_status_report=lambda *_args, **_kwargs: None,
+            manage_usdt_earn_buffer_runtime=manage_earn,
+            maybe_send_periodic_btc_status_report=send_periodic_status,
             runtime_set_trade_state=lambda *_args, **_kwargs: events.append("state_write"),
             append_report_error=lambda *_args, **_kwargs: None,
             runtime_notify=lambda *_args, **_kwargs: None,
@@ -126,6 +145,14 @@ class CycleServiceTests(unittest.TestCase):
         self.assertIn("trend", events)
         self.assertNotIn("dca", events)
         self.assertNotIn("earn", events)
+
+    def test_earn_integrity_error_stops_final_state_write_and_later_cycle_actions(self):
+        report, events = self._run_funds_cycle(True, earn_failure=True)
+
+        self.assertEqual(report["status"], "error")
+        self.assertIn("earn", events)
+        self.assertNotIn("periodic", events)
+        self.assertNotIn("state_write", events)
 
     def test_research_cycle_settings_require_dry_run(self):
         runtime = SimpleNamespace(
