@@ -107,7 +107,7 @@ jobs:
 
       - name: Publish read-only runtime execution evidence
         if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.execution-heartbeat.outcome == 'success' }}
-        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-execution-evidence@a87864a5a0eb0d4932af967080eeb6a5e46ebd41
+        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-execution-evidence@490e510e210fe2304e47d015ab4647a669fc62e1
         with:
           source-id: runtime-reports-binance
           report-platform: binance
