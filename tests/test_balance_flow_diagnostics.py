@@ -114,7 +114,7 @@ def test_invalid_reward_rows_stop_before_transfer_reads():
         if path.startswith('capital/'):
             return []
         if path.endswith('/rewardsRecord'):
-            return {'rows': [{'asset': 'USDT', 'rewards': '0.1', 'type': 'BONUS',
+            return {'rows': [{'asset': 'USDT', 'rewards': '0.1', 'type': 'BONUS', 'projectId': {},
                               'time': int(NOW.timestamp()*1000)}], 'total': 1}
         return {'rows': [], 'total': 0}
     rows = ({'asset': 'USDT', 'free': 1.0, 'locked': 0.0},)

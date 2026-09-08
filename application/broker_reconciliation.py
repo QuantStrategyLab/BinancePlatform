@@ -427,7 +427,7 @@ def diagnose_bonus_reward_balance(
                 asset, project, kind, timestamp = (row.get(k) for k in ("asset", "projectId", "type", "time"))
                 checks = (
                     ("reward_asset_invalid", isinstance(asset, str) and bool(asset.strip())),
-                    ("reward_project_invalid", isinstance(project, str) and bool(project.strip())),
+                    ("reward_project_invalid", project is None or isinstance(project, str)),
                     ("reward_type_invalid", isinstance(kind, str) and kind in counts),
                     ("reward_timestamp_type_invalid", type(timestamp) is int),
                     ("reward_timestamp_outside_window", type(timestamp) is int and start_ms <= timestamp <= end_ms),
@@ -435,7 +435,9 @@ def diagnose_bonus_reward_balance(
                 for failure_code, valid in checks:
                     if not valid:
                         raise ValueError
-                identity = (asset, project, kind, timestamp)
+                # The API's optional product label is not an input to balance
+                # arithmetic. Keep it for duplicate detection when supplied.
+                identity = (asset, project or "", kind, timestamp)
                 failure_code = "reward_record_duplicate"
                 if identity in seen:
                     raise ValueError
