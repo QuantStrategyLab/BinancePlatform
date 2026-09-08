@@ -293,17 +293,17 @@ def execute_strategy_cycle(
             domain="crypto",
         )
 
-    # Heartbeat beat — every cycle completion
-    try:
-        import builtins
-        monitor = builtins.__dict__.get("_qsl_health_monitor")
-        if monitor is not None:
-            monitor.beat(
-                status=report.get("status", "ok"),
-                error=report.get("error", ""),
-            )
-    except Exception:
-        pass
+        # Early returns (including risk rejection) also complete a cycle.
+        try:
+            import builtins
+            monitor = builtins.__dict__.get("_qsl_health_monitor")
+            if monitor is not None:
+                monitor.beat(
+                    status=report.get("status", "ok"),
+                    error=report.get("error", ""),
+                )
+        except Exception:
+            pass
 
     return report
 

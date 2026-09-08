@@ -1,9 +1,10 @@
+import builtins
 import json
 import os
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from application.cycle_service import execute_strategy_cycle, run_live_cycle, write_execution_report
 from application.execution_service import execute_trend_buys
@@ -168,6 +169,42 @@ class CycleServiceTests(unittest.TestCase):
 
                 self.assertEqual(events, [])
                 self.assertEqual(report["execution_blocked_reason"], "risk_execution_not_permitted")
+
+    def test_early_cycle_returns_still_publish_one_heartbeat_without_funds_actions(self):
+        for permission in (False, None):
+            with self.subTest(execution_permitted=permission):
+                monitor = Mock()
+                with patch.object(builtins, "_qsl_health_monitor", monitor, create=True):
+                    report, events = self._run_funds_cycle(permission)
+                self.assertEqual(report["execution_blocked_reason"], "risk_execution_not_permitted")
+                self.assertEqual(events, [])
+                monitor.beat.assert_called_once_with(status="ok", error="")
+
+    def test_heartbeat_preserves_failed_cycle_status(self):
+        monitor = Mock()
+        with patch.object(builtins, "_qsl_health_monitor", monitor, create=True):
+            report, events = self._run_funds_cycle(True, snapshot_error=True)
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(events, [])
+        monitor.beat.assert_called_once_with(status="error", error="")
+
+    def test_heartbeat_failure_does_not_change_risk_rejection(self):
+        monitor = Mock()
+        monitor.beat.side_effect = RuntimeError("synthetic heartbeat unavailable")
+        with patch.object(builtins, "_qsl_health_monitor", monitor, create=True):
+            report, events = self._run_funds_cycle(False)
+        monitor.beat.assert_called_once()
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["execution_blocked_reason"], "risk_execution_not_permitted")
+        self.assertEqual(events, [])
+
+    def test_full_cycle_publishes_heartbeat_only_once(self):
+        monitor = Mock()
+        with patch.object(builtins, "_qsl_health_monitor", monitor, create=True):
+            report, events = self._run_funds_cycle(True)
+        self.assertEqual(report["status"], "ok")
+        self.assertIn("state_write", events)
+        monitor.beat.assert_called_once_with(status="ok", error="")
 
     def test_approved_execution_permission_preserves_fuel_trend_dca_and_earn_actions(self):
         _report, events = self._run_funds_cycle(True)
