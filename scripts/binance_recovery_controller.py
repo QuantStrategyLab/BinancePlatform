@@ -10,6 +10,7 @@ import sys
 from argparse import ArgumentParser
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -50,7 +51,8 @@ def request_json(url, token, *, payload=None):
     if not token:
         raise ValueError("recovery_credential_missing")
     request = Request(url, data=None if payload is None else json.dumps(payload).encode(),
-                      headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "application/json"},
+                      headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "application/json",
+                               "User-Agent": "QuantStrategyLab-BinancePlatform/1.0 (reconciliation-controller)"},
                       method="GET" if payload is None else "POST")
     with build_opener(_NoRedirect).open(request, timeout=20) as response:
         if response.status != 200:
@@ -192,6 +194,9 @@ def main(argv=None):
         parser.error("verify/activate require the exact recovery ID shown by prepare")
     try:
         result = run(args.action, args.recovery_id)
+    except HTTPError as exc:
+        print(json.dumps({"status": "blocked", "stage": STAGE, "reason_code": "recovery_http_request_failed", "http_status": exc.code, "no_order": True}))
+        return 2
     except Exception:
         # Never serialize provider messages, credentials or broker payloads.
         print(json.dumps({"status": "blocked", "stage": STAGE, "reason_code": "recovery_operation_failed", "no_order": True}))
