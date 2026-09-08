@@ -52,20 +52,15 @@ def maybe_send_periodic_btc_status_report(
         return
 
     gate_text = translate_fn("gate_on") if btc_snapshot.get("regime_on", False) else translate_fn("gate_off")
-    hint = build_btc_manual_hint(btc_snapshot, translate_fn=translate_fn)
     text = (
         f"{translate_fn('heartbeat_title')}\n"
         f"{translate_fn('strategy_label', name=strategy_display_name)}\n"
-        f"{separator}\n"
-        f"{translate_fn('total_equity')}: ${total_equity:,.0f}\n"
+        f"{translate_fn('total_equity')}: ${total_equity:,.0f} | "
         f"{translate_fn('trend_equity')}: ${trend_holdings_equity:,.0f} ({trend_daily_pnl:+.1%})\n"
-        f"{translate_fn('btc_price')}: ${btc_price:,.0f}\n"
-        f"{separator}\n"
+        f"{translate_fn('btc_price')}: ${btc_price:,.0f} | "
         f"{translate_fn('btc_gate')}: {gate_text}\n"
-        f"Ahr999: {btc_snapshot['ahr999']:.2f} | {translate_fn('zscore')}: {btc_snapshot['zscore']:.1f} ({translate_fn('zscore_threshold')} {btc_snapshot['sell_trigger']:.1f})\n"
-        f"{translate_fn('btc_target')}: {btc_target_ratio:.1%}\n"
-        f"{separator}\n"
-        f"💡 {hint}"
+        f"{translate_fn('btc_target')}: {btc_target_ratio:.1%} | "
+        f"AHR999: {btc_snapshot['ahr999']:.2f} | {translate_fn('zscore')}: {btc_snapshot['zscore']:.1f}"
     )
     delivery = send_tg_msg_fn(tg_token, tg_chat_id, text) if notifier_fn is None else notifier_fn(text)
     if isinstance(delivery, dict):
@@ -94,19 +89,19 @@ def append_portfolio_report(
     append_log_fn(log_buffer, translate_fn("portfolio_snapshot_title"))
     append_log_fn(
         log_buffer,
-        f"💰 {translate_fn('total_equity')}: ${allocation['total_equity']:,.0f} ({daily_pnl:+.1%})",
+        f"{translate_fn('total_equity')}: ${allocation['total_equity']:,.0f} ({daily_pnl:+.1%})",
     )
     append_log_fn(
         log_buffer,
-        f"🪙 {translate_fn('btc_target')}: {allocation['btc_target_ratio']:.0%} | ${allocation['dca_val']:,.0f}",
+        f"{translate_fn('btc_target')}: {allocation['btc_target_ratio']:.0%} | ${allocation['dca_val']:,.0f}",
     )
     append_log_fn(
         log_buffer,
-        f"🔥 {translate_fn('trend_equity')}: {allocation['trend_target_ratio']:.0%} | ${allocation['trend_val']:,.0f} ({trend_daily_pnl:+.1%})",
+        f"{translate_fn('trend_equity')}: {allocation['trend_target_ratio']:.0%} | ${allocation['trend_val']:,.0f} ({trend_daily_pnl:+.1%})",
     )
     append_log_fn(
         log_buffer,
-        f"🚦 {translate_fn('btc_gate')}: {gate_text} | Ahr={btc_snapshot['ahr999']:.2f} Z={btc_snapshot['zscore']:.1f}",
+        f"{translate_fn('btc_gate')}: {gate_text} | AHR999={btc_snapshot['ahr999']:.2f} Z={btc_snapshot['zscore']:.1f}",
     )
     append_log_fn(log_buffer, separator)
 

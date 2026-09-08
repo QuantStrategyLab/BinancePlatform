@@ -99,6 +99,15 @@ import main
 
 
 class MainRuntimeErrorNotificationTests(unittest.TestCase):
+    def test_runtime_error_message_uses_chinese_without_exposing_exception(self):
+        with patch.dict(os.environ, {"NOTIFY_LANG": "zh-CN", "STRATEGY_PROFILE": "crypto_live_pool_rotation"}):
+            message = main._runtime_error_notification_message(RuntimeError("PRIVATE_SENTINEL"))
+        self.assertIn("Binance 策略运行失败", message)
+        self.assertIn("加密实时池轮动", message)
+        self.assertIn("下一步", message)
+        self.assertNotIn("PRIVATE_SENTINEL", message)
+        self.assertNotIn("未提交订单", message)
+
     def test_main_wires_cli_entrypoint_with_runtime_builder_and_cycle_runner(self):
         observed = {}
 
@@ -146,7 +155,8 @@ class MainRuntimeErrorNotificationTests(unittest.TestCase):
         self.assertEqual(observed["messages"][0][0], "token-1")
         self.assertEqual(observed["messages"][0][1], "chat-1")
         self.assertIn("Binance strategy run failed", observed["messages"][0][2])
-        self.assertIn("runtime_setup_failed", observed["messages"][0][2])
+        self.assertIn("check the latest execution report", observed["messages"][0][2])
+        self.assertIn("runtime_setup_failed", str(observed["printed"]))
         self.assertNotIn(sentinel, str(observed))
         print_exc.assert_not_called()
 

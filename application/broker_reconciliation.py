@@ -265,6 +265,55 @@ def _expected_digests(*, env_reader: Callable[[str, str | None], str | None] = o
     return {key: _text(value[key]).lower().removeprefix("sha256:") for key in _EXPECTED_DIGEST_KEYS}
 
 
+def diagnose_balance_snapshot(
+    account: Mapping[str, object], *, expected_digests: Mapping[str, str] | None,
+) -> dict[str, object]:
+    """Explain an exact legacy match without changing a baseline or authority.
+
+    Old receipts contain hashes only. Removing a zero row and matching BOTH
+    original hashes proves the remaining snapshot is identical. Failure to
+    find such a match proves nothing about the cause of a real balance change.
+    The bounded search only handles one added row (or an originally zero-free
+    baseline); it must never be treated as general ledger reconciliation.
+    """
+    if not expected_digests or not isinstance(account, Mapping):
+        raise ValueError("balance_diagnostic_input_missing")
+    uid = _text(account.get("uid"))
+    if not uid or calculate_broker_observation_sha256({"account_uid": uid}) != expected_digests.get("account_scope_sha256"):
+        raise ValueError("account_identity_mismatch")
+    raw = account.get("balances")
+    if not isinstance(raw, list) or len(raw) > 5000 or any(not isinstance(row, Mapping) for row in raw):
+        raise ValueError("balance_diagnostic_rows_invalid")
+    rows = _canonical_records([_normalize_balance(row) for row in raw])
+    if len({row["asset"] for row in rows}) != len(rows):
+        raise ValueError("balance_diagnostic_duplicate_asset")
+    zero_indexes = [index for index, row in enumerate(rows) if row["free"] == 0 and row["locked"] == 0]
+
+    def matches(values):
+        return (
+            calculate_broker_observation_sha256(values) == expected_digests.get("positions_sha256")
+            and calculate_broker_observation_sha256({"balances": list(values)}) == expected_digests.get("cash_sha256")
+        )
+
+    reason = "balance_difference_unexplained"
+    if matches(rows):
+        reason = "balance_snapshot_matches"
+    elif zero_indexes:
+        nonzero = tuple(row for row in rows if row["free"] != 0 or row["locked"] != 0)
+        if matches(nonzero) or any(matches(rows[:index] + rows[index + 1:]) for index in zero_indexes):
+            reason = "balance_difference_is_zero_row_only"
+    return {
+        "status": "diagnostic",
+        "reason_code": reason,
+        "balance_difference_explained": reason != "balance_difference_unexplained",
+        "balance_row_count": len(rows),
+        "zero_balance_row_count": len(zero_indexes),
+        "positions_and_cash_share_balance_source": True,
+        "baseline_rows_available": False,
+        "execution_authority_granted": False,
+    }
+
+
 def build_reconciliation_candidate(
     *,
     observations: BinanceReconciliationObservations,

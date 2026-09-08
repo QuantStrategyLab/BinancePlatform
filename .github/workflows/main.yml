@@ -18,6 +18,11 @@ on:
         required: false
         default: false
         type: boolean
+      diagnose_balances:
+        description: "With reconcile_only: diagnose balance hashes without a candidate or writes"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -49,8 +54,19 @@ jobs:
       - name: 0. Validate runtime target control
         id: runtime-target-control
         shell: bash
+        env:
+          DIAGNOSE_BALANCES_INPUT: ${{ inputs.diagnose_balances || 'false' }}
+          RECONCILE_ONLY_INPUT: ${{ inputs.reconcile_only || 'false' }}
+          RECONCILE_PERSIST_INPUT: ${{ inputs.reconcile_persist_candidate || 'false' }}
+          VALIDATE_ONLY_INPUT: ${{ inputs.validate_only || 'false' }}
         run: |
           set -euo pipefail
+          if [ "$DIAGNOSE_BALANCES_INPUT" = "true" ]; then
+            if [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ]; then
+              echo "::error::Balance diagnostics require reconcile_only and forbid persistence or validate_only."
+              exit 1
+            fi
+          fi
           case "${RUNTIME_TARGET_ENABLED,,}" in
             true|false) ;;
             *)
@@ -190,6 +206,10 @@ jobs:
             exit 0
           fi
           if [ "${RECONCILE_ONLY:-false}" = "true" ]; then
+            if [ "${DIAGNOSE_BALANCES:-false}" = "true" ]; then
+              "$VENV_PATH/bin/python" scripts/reconcile_frozen_live_baseline.py --no-persist --diagnose-balances
+              exit 0
+            fi
             args=(--no-persist)
             if [ "${RECONCILE_PERSIST_CANDIDATE:-false}" = "true" ]; then
               args=(--output reports/binance-reconciliation-candidate.json)
@@ -238,6 +258,7 @@ jobs:
           BINANCE_RECONCILIATION_SYMBOLS: ${{ vars.BINANCE_RECONCILIATION_SYMBOLS }}
           VALIDATE_ONLY: ${{ github.event.inputs.validate_only || 'false' }}
           RECONCILE_ONLY: ${{ github.event.inputs.reconcile_only || 'false' }}
+          DIAGNOSE_BALANCES: ${{ github.event.inputs.diagnose_balances || 'false' }}
           RECONCILE_PERSIST_CANDIDATE: ${{ github.event.inputs.reconcile_persist_candidate || 'false' }}
 
       - name: Confirm target is intentionally disabled
