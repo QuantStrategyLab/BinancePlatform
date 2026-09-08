@@ -95,6 +95,33 @@ control does not silently change the established paper-runtime behaviour.
   operator review; none of those states can automatically re-enable the
   target.
 
+### Frozen balance diagnosis
+
+While the target is `RECONCILE_ONLY`, an authorized operator can dispatch
+`Runtime` on reviewed `main` with `reconcile_only=true`,
+`diagnose_balances=true`, `reconcile_persist_candidate=false`, and
+`validate_only=false`. The input guard rejects other diagnostic combinations
+before checkout or authentication. Keep `RUNTIME_TARGET_ENABLED=false`.
+
+This mode reads the signed account snapshot once and compares both legacy
+balance digests, including a bounded check for added zero-balance rows. It
+prints only a reason code and aggregate counts. It does not load the execution
+ledger, collect order history, build a recovery candidate, persist an artifact,
+send Telegram, or change the frozen baseline. A diagnostic match is evidence
+about the balance representation only; it never permits live execution.
+`balance_difference_unexplained` leaves recovery closed and requires an
+independently explained balance change before any baseline enrollment.
+
+### Notification language and format
+
+Set `NOTIFY_LANG` to `zh` or `en`; Chinese locale variants such as `zh-CN`
+also select Chinese. Unsupported locales use English. Human-facing startup
+errors and periodic summaries use the same local catalog, while machine reason
+codes and execution-report fields remain stable. Periodic summaries include
+the strategy name, equity, trend holding, BTC gate and target, AHR999 and Z-score
+in at most five lines. Existing frequency and delivery acknowledgement rules
+still control deduplication; low AHR999 no longer adds discretionary-buy advice.
+
 ### Runner security boundary
 
 The current production runtime still uses a persistent self-hosted runner. Treat this as a temporary, higher-risk boundary until the runtime moves to an ephemeral runner or an isolated Cloud Run Job:

@@ -468,12 +468,13 @@ def send_tg_msg(token, chat_id, text):
 
 
 def _runtime_error_notification_message(_exc):
+    strategy_name = build_strategy_display_name(t)(os.getenv("STRATEGY_PROFILE", ""))
     return "\n".join(
         (
-            "Binance strategy run failed",
-            f"service: {os.getenv('SERVICE_NAME', 'binance-platform')}",
-            f"strategy: {os.getenv('STRATEGY_PROFILE', '<unset>')}",
-            "error: runtime_setup_failed",
+            t("runtime_error_title"),
+            t("strategy_label", name=strategy_name) if strategy_name else "",
+            t("runtime_error_result"),
+            t("runtime_error_action"),
         )
     )
 
@@ -482,12 +483,12 @@ def _notify_runtime_error(exc):
     token = os.getenv("TG_TOKEN", "")
     chat_id = os.getenv("QSL_GLOBAL_TELEGRAM_CHAT_ID") or os.getenv("GLOBAL_TELEGRAM_CHAT_ID", "")
     if not token or not chat_id:
-        print("Binance runtime error notification skipped: no Telegram target configured.")
+        print(t("runtime_notification_missing_target"))
         return False
     try:
         receipt = send_tg_msg(token, chat_id, _runtime_error_notification_message(exc))
     except Exception:
-        print("Binance runtime error Telegram send failed: notification_delivery_failed")
+        print(t("runtime_notification_delivery_failed"))
         return False
     if isinstance(receipt, dict):
         return receipt.get("transport_acknowledged") is True
@@ -1261,7 +1262,7 @@ def main():
         monitor.start()
         import builtins
         builtins.__dict__["_qsl_health_monitor"] = monitor
-        print("Health monitor started", flush=True)
+        print(t("runtime_health_monitor_started"), flush=True)
     except Exception:
         pass
 
@@ -1273,7 +1274,7 @@ def main():
             exit_fn=sys.exit,
         )
     except Exception:
-        print("Binance strategy run failed before cycle handling: runtime_setup_failed")
+        print(t("runtime_setup_failed"))
         _notify_runtime_error(RuntimeError("runtime_setup_failed"))
         raise RuntimeError("runtime_setup_failed") from None
 

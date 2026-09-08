@@ -26,6 +26,29 @@ def _script_module():
 
 
 class ReconciliationScriptTests(unittest.TestCase):
+    def test_balance_diagnostic_never_reads_ledger_builds_candidate_or_writes(self):
+        module = _script_module()
+        target = SimpleNamespace(live_continuity=SimpleNamespace(state="RECONCILE_ONLY"))
+        client = SimpleNamespace(get_account=lambda: {"private": "in-memory-only"})
+        stdout = io.StringIO()
+        with (
+            patch.object(sys, "argv", [str(SCRIPT), "--diagnose-balances", "--no-persist"]),
+            patch.object(module, "resolve_runtime_target_from_env", return_value=target),
+            patch.object(module, "connect_client", return_value=client),
+            patch.object(module, "_expected_digests", return_value={}),
+            patch.object(module, "diagnose_balance_snapshot", return_value={"status": "diagnostic"}),
+            patch.object(module, "load_runtime_trade_state") as ledger,
+            patch.object(module, "build_reconciliation_candidate") as candidate,
+            patch.object(module, "_write_receipt") as writer,
+            patch.dict(module.os.environ, {"BINANCE_API_KEY": "test", "BINANCE_API_SECRET": "test"}),
+            redirect_stdout(stdout),
+        ):
+            self.assertEqual(module.main(), 0)
+        ledger.assert_not_called()
+        candidate.assert_not_called()
+        writer.assert_not_called()
+        self.assertEqual(json.loads(stdout.getvalue()), {"status": "diagnostic"})
+
     def _run_main_with_output(self, module, output_path: Path) -> tuple[int, dict[str, object], dict[str, object]]:
         stdout = io.StringIO()
         previous_argv = sys.argv
@@ -169,3 +192,5 @@ class ReconciliationScriptTests(unittest.TestCase):
         self.assertIsNone(no_persist.output)
         with self.assertRaises(SystemExit):
             module._parse_args(["--no-persist", "--output", "candidate.json"])
+        with self.assertRaises(SystemExit):
+            module._parse_args(["--diagnose-balances", "--output", "candidate.json"])

@@ -1,5 +1,9 @@
 from pathlib import Path
 import re
+import subprocess
+import textwrap
+
+import pytest
 
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "main.yml"
@@ -130,3 +134,24 @@ def test_reconciliation_defaults_to_zero_persistence_and_no_notification() -> No
     assert 'args=(--no-persist)' in broker_job
     assert "github.event.inputs.reconcile_persist_candidate == 'true'" in broker_job
     assert "github.event.inputs.reconcile_only != 'true'" in broker_job
+
+
+@pytest.mark.parametrize("reconcile,persist,validate,allowed", [
+    ("false", "false", "false", False),
+    ("true", "true", "false", False),
+    ("true", "false", "true", False),
+    ("true", "false", "false", True),
+])
+def test_balance_diagnostic_guard_rejects_unsafe_input_combinations(reconcile, persist, validate, allowed):
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    first_step = workflow.split("      - name: 0. Validate deployment identity configuration", 1)[0]
+    # Execute the actual guard before any checkout, authentication, or broker read.
+    guard = textwrap.dedent(first_step.split("        run: |\n", 1)[1].split('          case "${RUNTIME_TARGET_ENABLED,,}"', 1)[0])
+    result = subprocess.run(
+        ["/bin/bash", "-c", guard + '\nprintf "guard_passed"\n'],
+        env={"DIAGNOSE_BALANCES_INPUT": "true", "RECONCILE_ONLY_INPUT": reconcile,
+             "RECONCILE_PERSIST_INPUT": persist, "VALIDATE_ONLY_INPUT": validate},
+        capture_output=True, text=True, check=False,
+    )
+    assert (result.returncode == 0) is allowed
+    assert ("guard_passed" in result.stdout) is allowed

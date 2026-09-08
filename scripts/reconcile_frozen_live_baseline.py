@@ -28,6 +28,8 @@ from application.broker_reconciliation import (
     BinanceReconciliationReadError,
     build_reconciliation_candidate,
     collect_read_only_reconciliation_observations,
+    diagnose_balance_snapshot,
+    _expected_digests,
 )
 from infra.state_store import load_runtime_trade_state
 from quant_platform_kit.binance import connect_client
@@ -42,6 +44,7 @@ _FAILURE_CLASS_BY_STAGE = {
     "client_connect": "connectivity",
     "reconciliation_collect": "broker_read",
     "candidate_build": "evidence_build",
+    "balance_diagnostic": "broker_read",
     "receipt_write": "persistence",
 }
 
@@ -126,9 +129,15 @@ def _parse_args(argv: list[str] | None = None):
         type=Path,
         help="Optional private/short-lived path for the redacted candidate JSON.",
     )
+    parser.add_argument(
+        "--diagnose-balances", action="store_true",
+        help="Only diagnose the frozen balance hashes; no ledger read, candidate, or write.",
+    )
     args = parser.parse_args(argv)
     if args.no_persist and args.output is not None:
         parser.error("--no-persist cannot be combined with --output")
+    if args.diagnose_balances and args.output is not None:
+        parser.error("balance diagnostics cannot persist a candidate")
     return args
 
 
@@ -148,6 +157,13 @@ def main() -> int:
         api_secret = str(os.environ.get("BINANCE_API_SECRET") or "").strip()
         if not api_key or not api_secret:
             raise BinanceReconciliationReadError("Binance reconciliation requires the existing private API credentials.")
+        if args.diagnose_balances:
+            stage = "client_connect"
+            client = connect_client(api_key, api_secret, timeout=30)
+            stage = "balance_diagnostic"
+            result = diagnose_balance_snapshot(client.get_account(), expected_digests=_expected_digests())
+            print(json.dumps(result, sort_keys=True))
+            return 0
         stage = "local_execution_ledger_load"
         state = load_runtime_trade_state(
             normalize_fn=normalize_trade_state,

@@ -139,7 +139,9 @@ class NotifyI18nTests(unittest.TestCase):
         self.assertIn("💓 加密状态", messages[0])
         self.assertIn("💰 总净值", messages[0])
         self.assertIn("₿ BTC 价格", messages[0])
-        self.assertIn("AHR999 偏低", messages[0])
+        self.assertIn("AHR999: 0.70", messages[0])
+        self.assertNotIn("手动买入", messages[0])
+        self.assertLessEqual(len(messages[0].splitlines()), 5)
 
     def test_periodic_btc_status_report_uses_combo_display_name(self):
         state = {}
