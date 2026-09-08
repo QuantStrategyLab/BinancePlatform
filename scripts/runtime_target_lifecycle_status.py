@@ -13,6 +13,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -108,6 +109,29 @@ def main() -> int:
         "target_id": result.target_id,
         "error": result.error,
     }
+    if "RUNTIME_TARGET_CONTROL_OBSERVED_AT" in os.environ:
+        if (
+            os.environ.get("RUNTIME_TARGET_ENABLED") != "false"
+            or result.configured_state != "disabled"
+            or result.runtime_guard != "pass"
+        ):
+            raise ValueError("Disabled host observation requires a valid disabled control")
+        try:
+            observed_at = datetime.fromisoformat(
+                os.environ["RUNTIME_TARGET_CONTROL_OBSERVED_AT"].replace("Z", "+00:00")
+            )
+        except ValueError:
+            raise ValueError("Host control observation time is invalid") from None
+        if observed_at.tzinfo is None:
+            raise ValueError("Host control observation time must include a timezone")
+        # Preserve the actual control-read instant, not the later publication time.
+        fields["deployment_json"] = json.dumps({
+            "runtime_enabled": False,
+            "scheduler_state": "unknown",
+            "strategy_profile": None,
+            "execution_mode": None,
+            "observed_at": observed_at.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }, sort_keys=True)
     output = os.environ.get("GITHUB_OUTPUT")
     if output:
         with open(output, "a", encoding="utf-8") as handle:
