@@ -122,7 +122,7 @@ def test_realtime_rewards_are_not_subtracted_from_spot_balance():
 
 @pytest.mark.parametrize("bad", [
     {"rewards": "NaN"}, {"rewards": "-1"}, {"rewards": True}, {"rewards": "1e999999999"},
-    {"type": "UNKNOWN"}, {"time": True}, {"time": 0}, {"asset": ""}, {"projectId": ""},
+    {"type": "UNKNOWN"}, {"time": True}, {"time": 0}, {"asset": ""}, {"projectId": {}},
 ])
 def test_invalid_reward_rows_cannot_prove_balance_reconstruction(bad):
     result = bonus_diagnosis(account(), [reward(**bad)])
@@ -156,3 +156,25 @@ def test_bonus_reconstruction_can_prove_an_added_zero_row_without_discarding_non
     payload["balances"][1]["free"] = "10.1"
     payload["balances"].append({"asset": "NEW_ZERO", "free": "0", "locked": "0"})
     assert bonus_diagnosis(payload, [reward()])["historical_balance_hashes_match"] is True
+
+
+@pytest.mark.parametrize(("bad", "code"), [
+    ({"projectId": {}}, "reward_project_invalid"),
+    ({"time": "123"}, "reward_timestamp_type_invalid"),
+    ({"time": 0}, "reward_timestamp_outside_window"),
+    ({"type": "PRIVATE_TYPE"}, "reward_type_invalid"),
+    ({"rewards": "NaN"}, "reward_amount_invalid"),
+])
+def test_invalid_reward_diagnostics_emit_fixed_failure_codes_only(bad, code):
+    result = bonus_diagnosis(account(), [reward(**bad)])
+    assert result["validation_failure_code"] == code
+    assert result["reward_type_counts"] is None
+    assert "PRIVATE_TYPE" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("project", [None, ""])
+def test_optional_project_label_is_not_required_for_exact_balance_math(project):
+    payload = account()
+    payload["balances"][1]["free"] = "10.1"
+    result = bonus_diagnosis(payload, [reward(projectId=project)])
+    assert result["historical_balance_hashes_match"] is True
