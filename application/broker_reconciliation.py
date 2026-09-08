@@ -424,10 +424,20 @@ def diagnose_balance_flows(
         rows = response if is_list else response.get("rows") if isinstance(response, Mapping) else None
         total = None if is_list or not isinstance(response, Mapping) else response.get("total")
         total_valid = (type(total) is int and total >= 0) or (isinstance(total, str) and total.isdecimal())
+        if not is_list and total_valid and int(total) == 0 and "rows" not in response:
+            rows = []
         if (not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows)
                 or len(rows) >= parameters.get("limit", parameters.get("size"))
                 or (not is_list and (not total_valid or int(total) != len(rows)))):
-            return {**result, "reason_code": "balance_history_incomplete", "failed_surface": name}
+            return {
+                **result, "reason_code": "balance_history_incomplete", "failed_surface": name,
+                "response_shape": {
+                    "rows_is_list": isinstance(rows, list),
+                    "total_valid": total_valid,
+                    "total_is_zero": total_valid and int(total) == 0,
+                    "page_full": isinstance(rows, list) and len(rows) >= parameters.get("limit", parameters.get("size")),
+                },
+            }
         counts[name] = len(rows)
         if name == "earn_subscriptions" and all(
             all(isinstance(row.get(key), str) for key in ("type", "status", "sourceAccount")) for row in rows

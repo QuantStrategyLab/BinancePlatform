@@ -58,3 +58,24 @@ def test_history_window_is_checked_before_broker_read(span):
     with pytest.raises(ValueError):
         diagnose_balance_flows(c, start=NOW-timedelta(days=span), end=NOW, now=NOW)
     assert not calls
+
+
+def test_explicit_zero_total_allows_omitted_empty_transfer_rows():
+    def read(method, path, **kwargs):
+        if path.startswith('capital/'):
+            return []
+        if path == 'asset/transfer':
+            return {'total': 0}
+        return {'rows': [], 'total': 0}
+    result = diagnose_balance_flows(SimpleNamespace(_request_margin_api=read), start=NOW-timedelta(days=5), end=NOW, now=NOW)
+    assert result['history_complete_for_requested_surfaces'] is True
+    assert result['history_counts']['transfer_main_funding'] == 0
+    assert result['execution_authority_granted'] is False
+
+
+@pytest.mark.parametrize('payload', [{}, {'total': 1}, {'total': False}, {'total': -1}, {'total': 'unknown'}])
+def test_unknown_or_nonzero_total_does_not_imply_empty_rows(payload):
+    c, calls = client(payload)
+    result = diagnose_balance_flows(c, start=NOW-timedelta(days=5), end=NOW, now=NOW)
+    assert result['history_complete_for_requested_surfaces'] is False
+    assert result['history_counts']['earn_subscriptions'] is None
