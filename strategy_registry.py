@@ -117,6 +117,33 @@ def resolve_strategy_metadata(
     return get_catalog_strategy_metadata(STRATEGY_CATALOG, definition.profile)
 
 
+def resolve_runtime_target_strategy(runtime_target):
+    """Resolve this account's committed legacy recovery, or the normal catalog.
+
+    A target flag is not a recovery grant. Re-read the private committed control
+    and verify its full binding before loading a non-selectable legacy profile.
+    """
+    from dataclasses import replace
+    from application.reconciliation_recovery import load_activated_target
+
+    target = runtime_target
+    if target.strategy_profile in BINANCE_ENABLED_PROFILES:
+        definition = resolve_strategy_definition(target.strategy_profile, platform_id=target.platform_id)
+        return load_activated_target(target), definition
+    continuity = target.live_continuity
+    if (target.platform_id != BINANCE_PLATFORM or target.dry_run_only
+            or target.strategy_profile != "crypto_live_pool_rotation"
+            or continuity is None or continuity.baseline_kind != "legacy_authorized"
+            or continuity.state not in {"RECONCILE_ONLY", "ACTIVE_LKG"}):
+        return target, resolve_strategy_definition(target.strategy_profile, platform_id=target.platform_id)
+    frozen = replace(target, live_continuity=replace(continuity, state="RECONCILE_ONLY"))
+    activated = load_activated_target(frozen)
+    if activated.live_continuity.state != "ACTIVE_LKG":
+        raise ValueError("runtime_recovery_not_active")
+    definition = resolve_research_strategy_definition(activated.strategy_profile, platform_id=activated.platform_id)
+    return activated, definition
+
+
 def resolve_research_strategy_definition(
     raw_value: str | None,
     *,

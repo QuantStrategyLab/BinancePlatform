@@ -156,6 +156,8 @@ def _github_request(url: str, token: str) -> dict[str, Any]:
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "QSL-Binance-Runtime-Heartbeat",
+            "Cache-Control": "no-cache",
         },
     )
     for attempt in range(1, _GITHUB_API_MAX_ATTEMPTS + 1):
@@ -220,17 +222,21 @@ def _list_workflow_runs(
     token: str,
     branch: str,
     per_page: int,
+    since: dt.datetime,
 ) -> list[dict[str, Any]]:
     query = urllib.parse.urlencode(
         {
             "branch": branch,
             "per_page": str(per_page),
+            "created": ">=" + since.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
     )
     url = f"https://api.github.com/repos/{repository}/actions/workflows/{workflow}/runs?{query}"
     payload = _github_request(url, token)
     runs = payload.get("workflow_runs")
-    return runs if isinstance(runs, list) else []
+    if not isinstance(runs, list):
+        raise ValueError("github_actions_query_invalid_response")
+    return runs
 
 
 def _list_repository_workflow_runs(
@@ -240,18 +246,20 @@ def _list_repository_workflow_runs(
     token: str,
     branch: str,
     per_page: int,
+    since: dt.datetime,
 ) -> list[dict[str, Any]]:
     query = urllib.parse.urlencode(
         {
             "branch": branch,
             "per_page": str(per_page),
+            "created": ">=" + since.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
     )
     url = f"https://api.github.com/repos/{repository}/actions/runs?{query}"
     payload = _github_request(url, token)
     runs = payload.get("workflow_runs")
     if not isinstance(runs, list):
-        return []
+        raise ValueError("github_actions_query_invalid_response")
     expected_paths = _workflow_paths(workflow)
     return [run for run in runs if str(run.get("path") or "") in expected_paths]
 
@@ -263,6 +271,7 @@ def _list_runtime_runs(
     token: str,
     branch: str,
     per_page: int,
+    since: dt.datetime,
 ) -> list[dict[str, Any]]:
     workflow_runs = _list_workflow_runs(
         repository=repository,
@@ -270,6 +279,7 @@ def _list_runtime_runs(
         token=token,
         branch=branch,
         per_page=per_page,
+        since=since,
     )
     try:
         repository_runs = _list_repository_workflow_runs(
@@ -278,11 +288,17 @@ def _list_runtime_runs(
             token=token,
             branch=branch,
             per_page=per_page,
+            since=since,
         )
     except Exception as exc:  # noqa: BLE001
         print(f"Repository-level workflow run lookup skipped: {exc}", file=sys.stderr)
         repository_runs = []
-    return _dedupe_and_sort_runs([*workflow_runs, *repository_runs])
+    runs = _dedupe_and_sort_runs([*workflow_runs, *repository_runs])
+    if any((created := _parse_timestamp(run.get("created_at"))) is None or created < since.replace(microsecond=0) for run in runs):
+        raise ValueError("github_actions_query_outside_requested_window")
+    # Validation, reconciliation and disabled no-op jobs never attest a strategy
+    # cycle. Older ambiguous titles cannot establish this evidence either.
+    return [run for run in runs if run.get("display_title") == "Runtime · strategy"]
 
 
 def _run_summary(run: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -455,6 +471,7 @@ def main() -> int:
         raise SystemExit("GITHUB_TOKEN is required")
 
     now = dt.datetime.now(dt.timezone.utc)
+    since = now - dt.timedelta(hours=max(lookback_hours, expected_interval_hours * (max_consecutive_misses + 1)))
     try:
         runs = _list_runtime_runs(
             repository=repository,
@@ -462,6 +479,7 @@ def main() -> int:
             token=token,
             branch=branch,
             per_page=per_page,
+            since=since,
         )
     except Exception as exc:  # noqa: BLE001
         assessment = {
@@ -478,7 +496,7 @@ def main() -> int:
             name=name,
             lookback_hours=lookback_hours,
             issues=[_notice("workflow_heartbeat_query_failed")],
-            technical_details=[f"{type(exc).__name__}: {exc}"],
+            technical_details=[type(exc).__name__],
             workflow_url=_heartbeat_workflow_url(repository),
         )
         print(message)

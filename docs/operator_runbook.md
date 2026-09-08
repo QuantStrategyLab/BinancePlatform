@@ -95,6 +95,33 @@ control does not silently change the established paper-runtime behaviour.
   operator review; none of those states can automatically re-enable the
   target.
 
+### Frozen balance diagnosis
+
+While the target is `RECONCILE_ONLY`, an authorized operator can dispatch
+`Runtime` on reviewed `main` with `reconcile_only=true`,
+`diagnose_balances=true`, `reconcile_persist_candidate=false`, and
+`validate_only=false`. The input guard rejects other diagnostic combinations
+before checkout or authentication. Keep `RUNTIME_TARGET_ENABLED=false`.
+
+This mode reads the signed account snapshot once and compares both legacy
+balance digests, including a bounded check for added zero-balance rows. It
+prints only a reason code and aggregate counts. It does not load the execution
+ledger, collect order history, build a recovery candidate, persist an artifact,
+send Telegram, or change the frozen baseline. A diagnostic match is evidence
+about the balance representation only; it never permits live execution.
+`balance_difference_unexplained` leaves recovery closed and requires an
+independently explained balance change before any baseline enrollment.
+
+### Notification language and format
+
+Set `NOTIFY_LANG` to `zh` or `en`; Chinese locale variants such as `zh-CN`
+also select Chinese. Unsupported locales use English. Human-facing startup
+errors and periodic summaries use the same local catalog, while machine reason
+codes and execution-report fields remain stable. Periodic summaries include
+the strategy name, equity, trend holding, BTC gate and target, AHR999 and Z-score
+in at most five lines. Existing frequency and delivery acknowledgement rules
+still control deduplication; low AHR999 no longer adds discretionary-buy advice.
+
 ### Runner security boundary
 
 The current production runtime still uses a persistent self-hosted runner. Treat this as a temporary, higher-risk boundary until the runtime moves to an ephemeral runner or an isolated Cloud Run Job:
@@ -271,3 +298,29 @@ python3 -m unittest discover -s tests -v
 - If the runtime falls to `static`, treat it as an operator-visible degraded incident.
 - If Firestore state cannot load, do not bypass the abort by force-running live trades.
 - If upstream remains stale for multiple cycles, coordinate with the upstream publisher before changing degraded-mode buy policy.
+
+### Bounded balance-activity history
+
+When zero-row diagnosis cannot explain a frozen digest difference, the same
+private diagnostic dispatch can accept `balance_history_start` and
+`balance_history_end` (ISO 8601 with timezone). Both must be supplied, describe
+at most seven days, and fall within the past thirty days. The script validates
+the window before contacting the broker. Use the independently recorded
+baseline observation time as the start, not an inferred balance timestamp.
+
+The additional GET-only diagnostic counts deposits, withdrawals, Flexible Earn
+subscriptions/redemptions/rewards, and twelve Spot-related universal transfer
+directions. Each surface is limited to one page. A full page, inconsistent
+total, malformed response or failed read stops collection without a retry;
+unknown counts remain null. It prints no asset names, amounts or provider
+errors and never changes the baseline or runtime state.
+
+An activity count is a lead for investigation, not proof that the old balance
+has been reconstructed. These surfaces omit other account operations such as
+Convert, dust and isolated-margin movements. `complete_balance_reconciliation`
+and `execution_authority_granted` always remain false. Recovery still needs an
+independent account/ledger check and an explicitly confirmed baseline.
+
+API contracts: [Wallet capital history](https://developers.binance.com/en/docs/catalog/core-trading-wallet/api/rest-api/capital),
+[Flexible Earn history](https://developers.binance.com/en/docs/catalog/investment-and-services-simple-earn/api/rest-api/flexible-locked),
+[Universal transfers](https://developers.binance.com/en/docs/catalog/core-trading-wallet/api/rest-api/asset).

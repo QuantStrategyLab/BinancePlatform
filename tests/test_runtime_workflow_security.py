@@ -1,5 +1,9 @@
 from pathlib import Path
 import re
+import subprocess
+import textwrap
+
+import pytest
 
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "main.yml"
@@ -195,3 +199,52 @@ def test_disabled_host_prepare_requires_state_credentials_without_refreshing_tim
         assert json.loads(values["deployment_json"])["observed_at"] == "2026-09-06T01:00:00Z"
         assert ("observation not published" in result.stdout) is not available
         assert "synthetic-test-value" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("reconcile,persist,validate,allowed", [
+    ("false", "false", "false", False),
+    ("true", "true", "false", False),
+    ("true", "false", "true", False),
+    ("true", "false", "false", True),
+])
+def test_balance_diagnostic_guard_rejects_unsafe_input_combinations(reconcile, persist, validate, allowed):
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    first_step = workflow.split("      - name: 0. Validate deployment identity configuration", 1)[0]
+    # Execute the actual guard before any checkout, authentication, or broker read.
+    guard = textwrap.dedent(first_step.split("        run: |\n", 1)[1].split('          case "${RUNTIME_TARGET_ENABLED,,}"', 1)[0])
+    result = subprocess.run(
+        ["/bin/bash", "-c", guard + '\nprintf "guard_passed"\n'],
+        env={"DIAGNOSE_BALANCES_INPUT": "true", "RECONCILE_ONLY_INPUT": reconcile,
+             "RECONCILE_PERSIST_INPUT": persist, "VALIDATE_ONLY_INPUT": validate},
+        capture_output=True, text=True, check=False,
+    )
+    assert (result.returncode == 0) is allowed
+    assert ("guard_passed" in result.stdout) is allowed
+
+
+@pytest.mark.parametrize("action,reconcile,enabled,ref,allowed", [
+    ("prepare", "true", "false", "refs/heads/main", True),
+    ("activate", "true", "false", "refs/heads/main", True),
+    ("verify", "false", "false", "refs/heads/main", False),
+    ("prepare", "true", "true", "refs/heads/main", False),
+    ("prepare", "true", "false", "refs/heads/feature", False),
+    ("unexpected", "true", "false", "refs/heads/main", False),
+])
+def test_recovery_action_cannot_run_as_standard_trading(action, reconcile, enabled, ref, allowed):
+    workflow = WORKFLOW.read_text()
+    assert "RECOVERY_ACTION_INPUT:" in workflow
+    first_step = workflow.split("      - name: 0. Validate deployment identity configuration", 1)[0]
+    guard = textwrap.dedent(first_step.split("        run: |\n", 1)[1].split('          case "${RUNTIME_TARGET_ENABLED,,}"', 1)[0])
+    result = subprocess.run(["/bin/bash", "-c", guard], env={"RECOVERY_ACTION_INPUT": action,
+        "DIAGNOSE_BALANCES_INPUT": "false", "RECONCILE_ONLY_INPUT": reconcile, "RECONCILE_PERSIST_INPUT": "false",
+        "VALIDATE_ONLY_INPUT": "false", "RUNTIME_TARGET_ENABLED": enabled, "GITHUB_REF": ref}, capture_output=True)
+    assert (result.returncode == 0) is allowed
+
+
+def test_recovery_credentials_are_scoped_to_explicit_recovery_actions():
+    workflow = WORKFLOW.read_text()
+    assert "inputs.recovery_action == 'prepare' && secrets.RECONCILIATION_RECOVERY_SYNC_TOKEN" in workflow
+    assert "inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate'" in workflow
+    step = workflow.split("      - name: 4. Run trading strategy", 1)[1].split("        env:", 1)[0]
+    assert 'scripts/binance_recovery_controller.py "$RECOVERY_ACTION"' in step
+    assert step.index("binance_recovery_controller.py") < step.index('main.py')

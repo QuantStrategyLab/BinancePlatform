@@ -1,4 +1,5 @@
 name: Runtime
+run-name: Runtime · ${{ inputs.validate_only && 'validation' || inputs.reconcile_only && 'reconciliation' || vars.RUNTIME_TARGET_ENABLED == 'true' && 'strategy' || 'disabled' }}
 
 on:
   workflow_dispatch:
@@ -18,6 +19,29 @@ on:
         required: false
         default: false
         type: boolean
+      diagnose_balances:
+        description: "With reconcile_only: diagnose balance hashes without a candidate or writes"
+        required: false
+        default: false
+        type: boolean
+      balance_history_start:
+        description: "Optional balance diagnosis history start (ISO 8601 with timezone, at most 7 days)."
+        type: string
+        required: false
+      balance_history_end:
+        description: "Optional balance diagnosis history end (ISO 8601 with timezone)."
+        type: string
+        required: false
+      recovery_action:
+        description: "Explicit no-order recovery step; requires disabled runtime and reconcile_only"
+        type: choice
+        required: false
+        default: none
+        options: [none, prepare, verify, activate]
+      recovery_id:
+        description: "Exact prepared recovery ID; required for verify or activate"
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -49,8 +73,38 @@ jobs:
       - name: 0. Validate runtime target control
         id: runtime-target-control
         shell: bash
+        env:
+          RECOVERY_ACTION_INPUT: ${{ inputs.recovery_action || 'none' }}
+          DIAGNOSE_BALANCES_INPUT: ${{ inputs.diagnose_balances || 'false' }}
+          RECONCILE_ONLY_INPUT: ${{ inputs.reconcile_only || 'false' }}
+          RECONCILE_PERSIST_INPUT: ${{ inputs.reconcile_persist_candidate || 'false' }}
+          VALIDATE_ONLY_INPUT: ${{ inputs.validate_only || 'false' }}
+          BALANCE_HISTORY_START: ${{ inputs.balance_history_start }}
+          BALANCE_HISTORY_END: ${{ inputs.balance_history_end }}
         run: |
           set -euo pipefail
+          case "${RECOVERY_ACTION_INPUT:-none}" in
+            none) ;;
+            prepare|verify|activate)
+              if [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
+                echo "::error::Recovery requires disabled main runtime, reconcile_only, and no other diagnostic mode."
+                exit 1
+              fi
+              ;;
+            *) echo "::error::Unknown recovery action."; exit 1 ;;
+          esac
+          if [ -n "${BALANCE_HISTORY_START:-}${BALANCE_HISTORY_END:-}" ]; then
+            if [ "$DIAGNOSE_BALANCES_INPUT" != "true" ] || [ -z "${BALANCE_HISTORY_START:-}" ] || [ -z "${BALANCE_HISTORY_END:-}" ]; then
+              echo "::error::Balance history requires balance diagnostics and both window bounds."
+              exit 1
+            fi
+          fi
+          if [ "$DIAGNOSE_BALANCES_INPUT" = "true" ]; then
+            if [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ]; then
+              echo "::error::Balance diagnostics require reconcile_only and forbid persistence or validate_only."
+              exit 1
+            fi
+          fi
           case "${RUNTIME_TARGET_ENABLED,,}" in
             true|false) ;;
             *)
@@ -228,6 +282,7 @@ jobs:
       # credentials are scoped only here.  `reconcile_only` exits before
       # `main.py` and has no order path.
       - name: 4. Run trading strategy
+        id: strategy
         if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' }}
         run: |
           set -euo pipefail
@@ -236,6 +291,18 @@ jobs:
             exit 0
           fi
           if [ "${RECONCILE_ONLY:-false}" = "true" ]; then
+            if [ "${RECOVERY_ACTION:-none}" != "none" ]; then
+              "$VENV_PATH/bin/python" scripts/binance_recovery_controller.py "$RECOVERY_ACTION" --recovery-id "${RECOVERY_ID:-}"
+              exit 0
+            fi
+            if [ "${DIAGNOSE_BALANCES:-false}" = "true" ]; then
+              args=(--no-persist --diagnose-balances)
+              if [ -n "${BALANCE_HISTORY_START:-}" ]; then
+                args+=(--history-start "$BALANCE_HISTORY_START" --history-end "$BALANCE_HISTORY_END")
+              fi
+              "$VENV_PATH/bin/python" scripts/reconcile_frozen_live_baseline.py "${args[@]}"
+              exit 0
+            fi
             args=(--no-persist)
             if [ "${RECONCILE_PERSIST_CANDIDATE:-false}" = "true" ]; then
               args=(--output reports/binance-reconciliation-candidate.json)
@@ -245,6 +312,12 @@ jobs:
           fi
           "$VENV_PATH/bin/python" main.py
         env:
+          RECOVERY_ACTION: ${{ inputs.recovery_action || 'none' }}
+          RECOVERY_ID: ${{ inputs.recovery_id }}
+          RECONCILIATION_RECOVERY_SYNC_TOKEN: ${{ inputs.recovery_action == 'prepare' && secrets.RECONCILIATION_RECOVERY_SYNC_TOKEN || '' }}
+          RECONCILIATION_RECOVERY_CONTROLLER_TOKEN: ${{ (inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.RECONCILIATION_RECOVERY_CONTROLLER_TOKEN || '' }}
+          GITHUB_TOKEN: ${{ (inputs.recovery_action == 'prepare' || inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.GITHUB_TOKEN || '' }}
+          BINANCE_RECOVERY_CONTROL_ENABLED: ${{ vars.BINANCE_RECOVERY_CONTROL_ENABLED || 'false' }}
           BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
           BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
           STRATEGY_PROFILE: ${{ vars.STRATEGY_PROFILE || 'crypto_live_pool_rotation' }}
@@ -284,6 +357,9 @@ jobs:
           BINANCE_RECONCILIATION_SYMBOLS: ${{ vars.BINANCE_RECONCILIATION_SYMBOLS }}
           VALIDATE_ONLY: ${{ github.event.inputs.validate_only || 'false' }}
           RECONCILE_ONLY: ${{ github.event.inputs.reconcile_only || 'false' }}
+          DIAGNOSE_BALANCES: ${{ github.event.inputs.diagnose_balances || 'false' }}
+          BALANCE_HISTORY_START: ${{ inputs.balance_history_start }}
+          BALANCE_HISTORY_END: ${{ inputs.balance_history_end }}
           RECONCILE_PERSIST_CANDIDATE: ${{ github.event.inputs.reconcile_persist_candidate || 'false' }}
 
       - name: Confirm target is intentionally disabled
@@ -312,7 +388,7 @@ jobs:
           retention-days: 7
 
       - name: 6. Notify Telegram on runtime workflow failure
-        if: ${{ failure() && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
+        if: ${{ failure() && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' && steps.strategy.outputs.runtime_failure_notified != 'true' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -327,14 +403,13 @@ jobs:
             exit 0
           fi
 
+          case "${NOTIFY_LANG:-zh}" in
+            zh*) TITLE="⚠️ Binance 启动失败，尚未生成执行报告。请查看运行日志。" ;;
+            *) TITLE="⚠️ Binance startup failed before an execution report was written. Check the run log." ;;
+          esac
           MESSAGE=$(printf '%s\n' \
-            "Binance Runtime workflow failed before execution report was written" \
-            "repo: ${GITHUB_REPOSITORY}" \
-            "workflow: ${GITHUB_WORKFLOW}" \
+            "$TITLE" \
             "run: #${GITHUB_RUN_NUMBER} attempt ${GITHUB_RUN_ATTEMPT}" \
-            "ref: ${GITHUB_REF_NAME}" \
-            "sha: ${GITHUB_SHA}" \
-            "actor: ${GITHUB_ACTOR}" \
             "url: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")
           RESPONSE="$(curl -fsS -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${GLOBAL_TELEGRAM_CHAT_ID}" \
@@ -351,6 +426,7 @@ jobs:
               raise SystemExit("Telegram did not acknowledge workflow failure notification")
           PY
         env:
+          NOTIFY_LANG: ${{ vars.NOTIFY_LANG || 'zh' }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
 

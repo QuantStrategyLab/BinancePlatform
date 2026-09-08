@@ -182,7 +182,7 @@ DEFAULT_TREND_POOL_ACCEPTABLE_MODES = tuple(STRATEGY_RUNTIME.artifact_contract["
 BTC_MARKET_SNAPSHOT_RETRY_DELAYS = (5, 15)
 
 
-def _activate_execution_strategy_runtime(profile: str) -> None:
+def _activate_execution_strategy_runtime(profile: str, *, runtime_target=None) -> None:
     """Replace the import-safe evaluator only after RuntimeTarget validation."""
 
     global STRATEGY_RUNTIME
@@ -191,7 +191,8 @@ def _activate_execution_strategy_runtime(profile: str) -> None:
     global DEFAULT_TREND_POOL_MAX_AGE_DAYS
     global DEFAULT_TREND_POOL_ACCEPTABLE_MODES
 
-    STRATEGY_RUNTIME = load_strategy_runtime(profile)
+    STRATEGY_RUNTIME = (load_strategy_runtime(profile) if runtime_target is None
+                        else load_strategy_runtime(profile, runtime_target=runtime_target))
     TREND_POOL_SIZE = STRATEGY_RUNTIME.trend_pool_size
     DEFAULT_LIVE_POOL_LEGACY_PATH = STRATEGY_RUNTIME.default_local_artifact_path
     DEFAULT_TREND_POOL_MAX_AGE_DAYS = int(STRATEGY_RUNTIME.artifact_contract["max_age_days"])
@@ -468,12 +469,13 @@ def send_tg_msg(token, chat_id, text):
 
 
 def _runtime_error_notification_message(_exc):
+    strategy_name = build_strategy_display_name(t)(os.getenv("STRATEGY_PROFILE", ""))
     return "\n".join(
         (
-            "Binance strategy run failed",
-            f"service: {os.getenv('SERVICE_NAME', 'binance-platform')}",
-            f"strategy: {os.getenv('STRATEGY_PROFILE', '<unset>')}",
-            "error: runtime_setup_failed",
+            t("runtime_error_title"),
+            t("strategy_label", name=strategy_name) if strategy_name else "",
+            t("runtime_error_result"),
+            t("runtime_error_action"),
         )
     )
 
@@ -482,12 +484,12 @@ def _notify_runtime_error(exc):
     token = os.getenv("TG_TOKEN", "")
     chat_id = os.getenv("QSL_GLOBAL_TELEGRAM_CHAT_ID") or os.getenv("GLOBAL_TELEGRAM_CHAT_ID", "")
     if not token or not chat_id:
-        print("Binance runtime error notification skipped: no Telegram target configured.")
+        print(t("runtime_notification_missing_target"))
         return False
     try:
         receipt = send_tg_msg(token, chat_id, _runtime_error_notification_message(exc))
     except Exception:
-        print("Binance runtime error Telegram send failed: notification_delivery_failed")
+        print(t("runtime_notification_delivery_failed"))
         return False
     if isinstance(receipt, dict):
         return receipt.get("transport_acknowledged") is True
@@ -767,13 +769,13 @@ def build_live_runtime(now_utc=None):
         state_writer=set_trade_state,
         notifier=lambda **kwargs: send_tg_msg(kwargs["token"], kwargs["chat_id"], kwargs["text"]),
     )
+    _activate_execution_strategy_runtime(runtime.strategy_profile, runtime_target=runtime.runtime_target)
     if not runtime.dry_run and runtime.standard_execution_permitted:
         runtime.state_loader, runtime.state_writer, runtime.state_owner_claim, runtime.state_owner_release = bind_trade_state_access(
             normalize_fn=normalize_trade_state, default_state_factory=build_default_state,
         )
         runtime.fuel_symbol = BNB_FUEL_SYMBOL
         runtime.fuel_asset = BNB_FUEL_ASSET
-    _activate_execution_strategy_runtime(runtime.strategy_profile)
     return runtime
 
 
@@ -1261,7 +1263,7 @@ def main():
         monitor.start()
         import builtins
         builtins.__dict__["_qsl_health_monitor"] = monitor
-        print("Health monitor started", flush=True)
+        print(t("runtime_health_monitor_started"), flush=True)
     except Exception:
         pass
 
@@ -1272,9 +1274,22 @@ def main():
             output_printer=print,
             exit_fn=sys.exit,
         )
-    except Exception:
-        print("Binance strategy run failed before cycle handling: runtime_setup_failed")
-        _notify_runtime_error(RuntimeError("runtime_setup_failed"))
+    except Exception as exc:
+        print(t("runtime_setup_failed"))
+        frames = traceback.extract_tb(exc.__traceback__)
+        stage = "runtime_setup"
+        for frame in frames:
+            if frame.filename.endswith("runtime_config_support.py"):
+                stage = "runtime_config"
+            elif frame.filename.endswith(("strategy_loader.py", "strategy_runtime.py", "strategy_registry.py")):
+                stage = "strategy_load"
+        error_type = type(exc).__name__ if type(exc) in {ValueError, KeyError, TypeError, OSError, RuntimeError} else "RuntimeError"
+        print(f"runtime_setup_failed stage={stage} error_type={error_type}")
+        if _notify_runtime_error(RuntimeError("runtime_setup_failed")):
+            output_path = os.getenv("GITHUB_OUTPUT")
+            if output_path:
+                with open(output_path, "a", encoding="utf-8") as output:
+                    output.write("runtime_failure_notified=true\n")
         raise RuntimeError("runtime_setup_failed") from None
 
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 
+from quant_platform_kit.common.operational_notification_localization import resolve_operational_notification_locale
+
 
 DEFAULT_NOTIFY_LANG = "en"
 SUPPORTED_NOTIFY_LANGS = {"en", "zh"}
@@ -14,6 +16,15 @@ _TEXTS = {
         "firestore_get_state_failed": "Firestore get state failed: {error}",
         "firestore_write_failed": "Firestore write failed: {error}",
         "telegram_send_failed": "Telegram send failed",
+        "runtime_error_title": "⚠️ Binance strategy run failed",
+        "runtime_health_monitor_started": "Health monitor started",
+        "runtime_setup_failed": "Strategy startup failed: runtime_setup_failed",
+        "runtime_error_result": "The run did not finish successfully; check the latest execution report.",
+        "runtime_error_action": "Next: check runtime configuration and connectivity.",
+        "runtime_notification_missing_target": "Runtime alert not sent: Telegram target is not configured (notification_target_missing)",
+        "runtime_notification_delivery_failed": "Runtime alert delivery failed (notification_delivery_failed)",
+        "btc_cycle_indicators_load_failed": "BTC cycle indicators unavailable: {error}",
+        "btc_cycle_indicators_loaded": "BTC cycle indicators loaded: AHR999={ahr999}, Mayer={mayer}",
         "strategy_label": "🧭 Strategy: {name}",
         "total_equity": "💰 Total Equity",
         "trend_equity": "📈 Trend Holdings",
@@ -141,6 +152,15 @@ _TEXTS = {
         "firestore_get_state_failed": "Firestore 读取状态失败: {error}",
         "firestore_write_failed": "Firestore 写入状态失败: {error}",
         "telegram_send_failed": "Telegram 发送失败",
+        "runtime_error_title": "⚠️ Binance 策略运行失败",
+        "runtime_health_monitor_started": "运行监测已启动",
+        "runtime_setup_failed": "策略启动失败：runtime_setup_failed",
+        "runtime_error_result": "本次运行未正常结束，请查看最新执行报告。",
+        "runtime_error_action": "下一步：检查运行配置和连接状态。",
+        "runtime_notification_missing_target": "运行告警未发送：未配置 Telegram 接收目标（notification_target_missing）",
+        "runtime_notification_delivery_failed": "运行告警发送失败（notification_delivery_failed）",
+        "btc_cycle_indicators_load_failed": "BTC 周期指标不可用：{error}",
+        "btc_cycle_indicators_loaded": "BTC 周期指标已载入：AHR999={ahr999}，Mayer={mayer}",
         "strategy_label": "🧭 策略: {name}",
         "total_equity": "💰 总净值",
         "trend_equity": "📈 趋势层持仓",
@@ -265,15 +285,13 @@ _TEXTS = {
 
 
 def get_notify_lang() -> str:
-    value = str(os.getenv("NOTIFY_LANG", DEFAULT_NOTIFY_LANG)).strip().lower()
-    if value in SUPPORTED_NOTIFY_LANGS:
-        return value
-    return DEFAULT_NOTIFY_LANG
+    return resolve_operational_notification_locale(os.getenv("NOTIFY_LANG", DEFAULT_NOTIFY_LANG))
 
 
 def build_translator(lang: str):
+    active_lang = resolve_operational_notification_locale(lang)
+
     def translator(key: str, **kwargs) -> str:
-        active_lang = lang if lang in SUPPORTED_NOTIFY_LANGS else DEFAULT_NOTIFY_LANG
         template = _TEXTS.get(active_lang, _TEXTS[DEFAULT_NOTIFY_LANG]).get(key)
         if template is None:
             template = _TEXTS[DEFAULT_NOTIFY_LANG].get(key, key)

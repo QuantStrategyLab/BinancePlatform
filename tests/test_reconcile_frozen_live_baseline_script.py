@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -26,6 +27,60 @@ def _script_module():
 
 
 class ReconciliationScriptTests(unittest.TestCase):
+    def test_history_reuses_one_account_read_without_persisting_private_inputs(self):
+        module = _script_module()
+        now = datetime.now(timezone.utc)
+        args = SimpleNamespace(diagnose_balances=True, output=None, history_start=now-timedelta(days=5), history_end=now)
+        target = SimpleNamespace(live_continuity=SimpleNamespace(state="RECONCILE_ONLY"))
+        account = {"uid": "private-synthetic-account", "balances": []}
+        client = SimpleNamespace(get_account=lambda: account)
+        stdout = io.StringIO()
+        with (
+            patch.object(module, "_parse_args", return_value=args),
+            patch.object(module, "resolve_runtime_target_from_env", return_value=target),
+            patch.object(module, "connect_client", return_value=client),
+            patch.object(client, "get_account", wraps=client.get_account) as account_read,
+            patch.object(module, "_expected_digests", return_value={"private": "synthetic-hash"}),
+            patch.object(module, "diagnose_balance_snapshot", return_value={"status": "diagnostic"}),
+            patch.object(module, "diagnose_balance_flows", return_value={"history_complete_for_requested_surfaces": True}) as history,
+            patch.object(module, "load_runtime_trade_state") as ledger,
+            patch.object(module, "build_reconciliation_candidate") as candidate,
+            patch.object(module, "_write_receipt") as writer,
+            patch.dict(module.os.environ, {"BINANCE_API_KEY": "test", "BINANCE_API_SECRET": "test"}),
+            redirect_stdout(stdout),
+        ):
+            self.assertEqual(module.main(), 0)
+        self.assertIs(history.call_args.kwargs["account"], account)
+        account_read.assert_called_once_with()
+        self.assertEqual(history.call_args.kwargs["expected_digests"], {"private": "synthetic-hash"})
+        ledger.assert_not_called()
+        candidate.assert_not_called()
+        writer.assert_not_called()
+        self.assertNotIn("private", stdout.getvalue())
+
+    def test_balance_diagnostic_never_reads_ledger_builds_candidate_or_writes(self):
+        module = _script_module()
+        target = SimpleNamespace(live_continuity=SimpleNamespace(state="RECONCILE_ONLY"))
+        client = SimpleNamespace(get_account=lambda: {"private": "in-memory-only"})
+        stdout = io.StringIO()
+        with (
+            patch.object(sys, "argv", [str(SCRIPT), "--diagnose-balances", "--no-persist"]),
+            patch.object(module, "resolve_runtime_target_from_env", return_value=target),
+            patch.object(module, "connect_client", return_value=client),
+            patch.object(module, "_expected_digests", return_value={}),
+            patch.object(module, "diagnose_balance_snapshot", return_value={"status": "diagnostic"}),
+            patch.object(module, "load_runtime_trade_state") as ledger,
+            patch.object(module, "build_reconciliation_candidate") as candidate,
+            patch.object(module, "_write_receipt") as writer,
+            patch.dict(module.os.environ, {"BINANCE_API_KEY": "test", "BINANCE_API_SECRET": "test"}),
+            redirect_stdout(stdout),
+        ):
+            self.assertEqual(module.main(), 0)
+        ledger.assert_not_called()
+        candidate.assert_not_called()
+        writer.assert_not_called()
+        self.assertEqual(json.loads(stdout.getvalue()), {"status": "diagnostic"})
+
     def _run_main_with_output(self, module, output_path: Path) -> tuple[int, dict[str, object], dict[str, object]]:
         stdout = io.StringIO()
         previous_argv = sys.argv
@@ -169,3 +224,25 @@ class ReconciliationScriptTests(unittest.TestCase):
         self.assertIsNone(no_persist.output)
         with self.assertRaises(SystemExit):
             module._parse_args(["--no-persist", "--output", "candidate.json"])
+        with self.assertRaises(SystemExit):
+            module._parse_args(["--diagnose-balances", "--output", "candidate.json"])
+
+
+def test_history_options_require_diagnostic_mode_and_valid_bounded_dates():
+    from datetime import datetime, timedelta, timezone
+    import pytest
+    module = _script_module()
+    now = datetime.now(timezone.utc) - timedelta(seconds=5)
+    start = (now - timedelta(days=5)).isoformat()
+    end = now.isoformat()
+    with pytest.raises(SystemExit):
+        module._parse_args(["--history-start", start, "--history-end", end])
+    with pytest.raises(SystemExit):
+        module._parse_args(["--diagnose-balances", "--history-start", start])
+    with pytest.raises(SystemExit):
+        module._parse_args(["--diagnose-balances", "--history-start", "invalid", "--history-end", end])
+    with pytest.raises(SystemExit):
+        module._parse_args(["--diagnose-balances", "--history-start", (now-timedelta(days=8)).isoformat(), "--history-end", end])
+    args = module._parse_args(["--diagnose-balances", "--history-start", start, "--history-end", end])
+    assert args.history_start.tzinfo is not None
+    assert args.history_end.tzinfo is not None

@@ -12,6 +12,7 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, DecimalException, localcontext
 from typing import Any
 
 from quant_platform_kit.common.broker_reconciliation import (
@@ -199,6 +200,7 @@ def collect_read_only_reconciliation_observations(
     local_execution_ledger: Mapping[str, object],
     now: datetime | None = None,
     lookback: timedelta = timedelta(days=7),
+    account_snapshot: Mapping[str, object] | None = None,
 ) -> BinanceReconciliationObservations:
     """Read exchange balances, orders and fills without mutating exchange state."""
 
@@ -208,7 +210,7 @@ def collect_read_only_reconciliation_observations(
     for method_name in ("get_account", "get_open_orders", "get_my_trades"):
         if not callable(getattr(client, method_name, None)):
             raise BinanceReconciliationReadError(f"Binance reconciliation requires read-only {method_name} support.")
-    account = client.get_account()
+    account = client.get_account() if account_snapshot is None else account_snapshot
     if not isinstance(account, Mapping):
         raise BinanceReconciliationReadError("Binance reconciliation received an invalid account response.")
     # Binance exposes an account uid on the signed account response used by
@@ -263,6 +265,55 @@ def _expected_digests(*, env_reader: Callable[[str, str | None], str | None] = o
     if not isinstance(value, Mapping) or set(value) != set(_EXPECTED_DIGEST_KEYS):
         raise BinanceReconciliationReadError("Binance reconciliation expected digests are incomplete.")
     return {key: _text(value[key]).lower().removeprefix("sha256:") for key in _EXPECTED_DIGEST_KEYS}
+
+
+def diagnose_balance_snapshot(
+    account: Mapping[str, object], *, expected_digests: Mapping[str, str] | None,
+) -> dict[str, object]:
+    """Explain an exact legacy match without changing a baseline or authority.
+
+    Old receipts contain hashes only. Removing a zero row and matching BOTH
+    original hashes proves the remaining snapshot is identical. Failure to
+    find such a match proves nothing about the cause of a real balance change.
+    The bounded search only handles one added row (or an originally zero-free
+    baseline); it must never be treated as general ledger reconciliation.
+    """
+    if not expected_digests or not isinstance(account, Mapping):
+        raise ValueError("balance_diagnostic_input_missing")
+    uid = _text(account.get("uid"))
+    if not uid or calculate_broker_observation_sha256({"account_uid": uid}) != expected_digests.get("account_scope_sha256"):
+        raise ValueError("account_identity_mismatch")
+    raw = account.get("balances")
+    if not isinstance(raw, list) or len(raw) > 5000 or any(not isinstance(row, Mapping) for row in raw):
+        raise ValueError("balance_diagnostic_rows_invalid")
+    rows = _canonical_records([_normalize_balance(row) for row in raw])
+    if len({row["asset"] for row in rows}) != len(rows):
+        raise ValueError("balance_diagnostic_duplicate_asset")
+    zero_indexes = [index for index, row in enumerate(rows) if row["free"] == 0 and row["locked"] == 0]
+
+    def matches(values):
+        return (
+            calculate_broker_observation_sha256(values) == expected_digests.get("positions_sha256")
+            and calculate_broker_observation_sha256({"balances": list(values)}) == expected_digests.get("cash_sha256")
+        )
+
+    reason = "balance_difference_unexplained"
+    if matches(rows):
+        reason = "balance_snapshot_matches"
+    elif zero_indexes:
+        nonzero = tuple(row for row in rows if row["free"] != 0 or row["locked"] != 0)
+        if matches(nonzero) or any(matches(rows[:index] + rows[index + 1:]) for index in zero_indexes):
+            reason = "balance_difference_is_zero_row_only"
+    return {
+        "status": "diagnostic",
+        "reason_code": reason,
+        "balance_difference_explained": reason != "balance_difference_unexplained",
+        "balance_row_count": len(rows),
+        "zero_balance_row_count": len(zero_indexes),
+        "positions_and_cash_share_balance_source": True,
+        "baseline_rows_available": False,
+        "execution_authority_granted": False,
+    }
 
 
 def build_reconciliation_candidate(
@@ -327,3 +378,177 @@ def build_reconciliation_candidate(
         recovery_blockers=blockers,
         expected_digests_configured=expected is not None,
     )
+
+
+def diagnose_bonus_reward_balance(
+    account: Mapping[str, object], *, rewards: Sequence[Mapping[str, object]],
+    expected_digests: Mapping[str, str], start: datetime, end: datetime,
+) -> dict[str, object]:
+    """Test one exact explanation in memory, without replacing frozen hashes.
+
+    Flexible BONUS rewards credit Spot; REALTIME rewards accrue inside Earn.
+    Subtract only documented BONUS credits using decimal arithmetic, then use
+    the unchanged legacy normalizer and both original hashes. This cannot
+    establish complete account reconciliation or authorize baseline migration.
+    """
+    diagnose_balance_snapshot(account, expected_digests=expected_digests)
+    result = {
+        "reason_code": "spot_bonus_rewards_do_not_explain_balance_difference",
+        "historical_balance_hashes_match": False,
+        "reward_type_counts": None,
+        "complete_balance_reconciliation": False,
+        "execution_authority_granted": False,
+    }
+
+    def amount(value):
+        if not isinstance(value, str) or not value or len(value) > 80:
+            raise ValueError
+        number = Decimal(value)
+        if not number.is_finite() or number < 0:
+            raise ValueError
+        return number
+
+    counts = dict.fromkeys(("BONUS", "REALTIME", "REWARDS"), 0)
+    failure_code = "reward_page_invalid"
+    try:
+        if not isinstance(rewards, (list, tuple)) or len(rewards) >= 100:
+            raise ValueError
+        failure_code = "reward_window_invalid"
+        if start.tzinfo is None or end.tzinfo is None or not start < end:
+            raise ValueError
+        start_ms, end_ms = int(start.timestamp()*1000), int(end.timestamp()*1000)
+        seen = set()
+        with localcontext() as context:
+            context.prec = 100
+            credits: dict[str, Decimal] = {}
+            for row in rewards:
+                failure_code = "reward_row_invalid"
+                if not isinstance(row, Mapping):
+                    raise ValueError
+                asset, project, kind, timestamp = (row.get(k) for k in ("asset", "projectId", "type", "time"))
+                checks = (
+                    ("reward_asset_invalid", isinstance(asset, str) and bool(asset.strip())),
+                    ("reward_project_invalid", project is None or isinstance(project, str)),
+                    ("reward_type_invalid", isinstance(kind, str) and kind in counts),
+                    ("reward_timestamp_type_invalid", type(timestamp) is int),
+                    ("reward_timestamp_outside_window", type(timestamp) is int and start_ms <= timestamp <= end_ms),
+                )
+                for failure_code, valid in checks:
+                    if not valid:
+                        raise ValueError
+                # The API's optional product label is not an input to balance
+                # arithmetic. Keep it for duplicate detection when supplied.
+                identity = (asset, project or "", kind, timestamp)
+                failure_code = "reward_record_duplicate"
+                if identity in seen:
+                    raise ValueError
+                seen.add(identity)
+                failure_code = "reward_amount_invalid"
+                credit = amount(row.get("rewards"))
+                counts[kind] += 1
+                if kind == "BONUS":
+                    credits[asset.upper()] = credits.get(asset.upper(), Decimal(0)) + credit
+            result["reward_type_counts"] = counts
+            historical = {"uid": account["uid"], "balances": []}
+            remaining = set(credits)
+            for row in account["balances"]:
+                failure_code = "account_balance_amount_invalid"
+                asset = _text(row["asset"]).upper()
+                free, locked = amount(row.get("free")), amount(row.get("locked"))
+                previous_free = free - credits.get(asset, Decimal(0))
+                if previous_free < 0:
+                    return result
+                historical["balances"].append({"asset": asset, "free": str(previous_free), "locked": str(locked)})
+                remaining.discard(asset)
+            if remaining or not counts["BONUS"]:
+                return result
+        comparison = diagnose_balance_snapshot(historical, expected_digests=expected_digests)
+    except (ValueError, TypeError, KeyError, DecimalException):
+        return {**result, "reason_code": "spot_bonus_reward_rows_invalid", "reward_type_counts": None,
+                "validation_failure_code": failure_code}
+    if comparison["balance_difference_explained"]:
+        result["reason_code"] = "spot_bonus_rewards_explain_balance_difference"
+        result["historical_balance_hashes_match"] = True
+    return result
+
+
+def diagnose_balance_flows(
+    client: Any, *, start: datetime, end: datetime, now: datetime | None = None,
+    account: Mapping[str, object] | None = None, expected_digests: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Read a bounded activity summary, never an enrollment or reconciliation.
+
+    Only documented GET surfaces are used. Each gets one finite page; a full
+    list or a total exceeding the page stops collection. No amounts, asset
+    names, account rows, provider text, or observed baseline hashes are emitted.
+    """
+    now = now or datetime.now(timezone.utc)
+    if (start.tzinfo is None or end.tzinfo is None or not start < end <= now
+            or end - start > timedelta(days=7) or now - start > timedelta(days=30)):
+        raise ValueError("balance_history_window_invalid")
+    bounds = {"startTime": int(start.timestamp() * 1000), "endTime": int(end.timestamp() * 1000)}
+    surfaces = [
+        ("deposits", "capital/deposit/hisrec", {"limit": 1000, "offset": 0}, True),
+        ("withdrawals", "capital/withdraw/history", {"limit": 1000, "offset": 0}, True),
+        ("earn_subscriptions", "simple-earn/flexible/history/subscriptionRecord", {"size": 100, "current": 1}, False),
+        ("earn_redemptions", "simple-earn/flexible/history/redemptionRecord", {"size": 100, "current": 1}, False),
+        ("earn_rewards", "simple-earn/flexible/history/rewardsRecord", {"size": 100, "current": 1, "type": "ALL"}, False),
+    ]
+    for transfer_type in (
+        "MAIN_FUNDING", "FUNDING_MAIN", "MAIN_MARGIN", "MARGIN_MAIN",
+        "MAIN_UMFUTURE", "UMFUTURE_MAIN", "MAIN_CMFUTURE", "CMFUTURE_MAIN",
+        "MAIN_OPTION", "OPTION_MAIN", "MAIN_PORTFOLIO_MARGIN", "PORTFOLIO_MARGIN_MAIN",
+    ):
+        surfaces.append((f"transfer_{transfer_type.lower()}", "asset/transfer",
+                         {"size": 100, "current": 1, "type": transfer_type}, False))
+    counts = dict.fromkeys(name for name, *_ in surfaces)
+    result = {
+        "reason_code": "balance_history_activity_summary",
+        "history_complete_for_requested_surfaces": False,
+        "history_counts": counts,
+        "automatic_spot_earn_subscriptions": None,
+        "complete_balance_reconciliation": False,
+        "baseline_rows_available": False,
+        "execution_authority_granted": False,
+    }
+    reward_rows = None
+    for name, path, parameters, is_list in surfaces:
+        try:
+            response = client._request_margin_api("get", path, signed=True, data={**bounds, **parameters})
+        except Exception:
+            return {**result, "reason_code": "balance_history_read_failed", "failed_surface": name}
+        rows = response if is_list else response.get("rows") if isinstance(response, Mapping) else None
+        total = None if is_list or not isinstance(response, Mapping) else response.get("total")
+        total_valid = (type(total) is int and total >= 0) or (isinstance(total, str) and total.isdecimal())
+        if not is_list and total_valid and int(total) == 0 and "rows" not in response:
+            rows = []
+        if (not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows)
+                or len(rows) >= parameters.get("limit", parameters.get("size"))
+                or (not is_list and (not total_valid or int(total) != len(rows)))):
+            return {
+                **result, "reason_code": "balance_history_incomplete", "failed_surface": name,
+                "response_shape": {
+                    "rows_is_list": isinstance(rows, list),
+                    "total_valid": total_valid,
+                    "total_is_zero": total_valid and int(total) == 0,
+                    "page_full": isinstance(rows, list) and len(rows) >= parameters.get("limit", parameters.get("size")),
+                },
+            }
+        counts[name] = len(rows)
+        if name == "earn_rewards":
+            reward_rows = rows
+            if account is not None and expected_digests is not None:
+                result["spot_bonus_reconciliation"] = diagnose_bonus_reward_balance(
+                    account, rewards=reward_rows, expected_digests=expected_digests, start=start, end=end,
+                )
+                if result["spot_bonus_reconciliation"]["reason_code"] == "spot_bonus_reward_rows_invalid":
+                    return {**result, "reason_code": "balance_history_reward_validation_failed", "failed_surface": name}
+        if name == "earn_subscriptions" and all(
+            all(isinstance(row.get(key), str) for key in ("type", "status", "sourceAccount")) for row in rows
+        ):
+            result["automatic_spot_earn_subscriptions"] = sum(
+                row.get("type") == "AUTO" and row.get("status") == "SUCCESS"
+                and row.get("sourceAccount") == "SPOT" for row in rows
+            )
+    result["history_complete_for_requested_surfaces"] = True
+    return result

@@ -14,6 +14,7 @@ import json
 import os
 import sys
 from argparse import ArgumentParser
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # GitHub Actions invokes this file directly, which otherwise makes only the
@@ -28,6 +29,9 @@ from application.broker_reconciliation import (
     BinanceReconciliationReadError,
     build_reconciliation_candidate,
     collect_read_only_reconciliation_observations,
+    diagnose_balance_snapshot,
+    diagnose_balance_flows,
+    _expected_digests,
 )
 from infra.state_store import load_runtime_trade_state
 from quant_platform_kit.binance import connect_client
@@ -42,6 +46,7 @@ _FAILURE_CLASS_BY_STAGE = {
     "client_connect": "connectivity",
     "reconciliation_collect": "broker_read",
     "candidate_build": "evidence_build",
+    "balance_diagnostic": "broker_read",
     "receipt_write": "persistence",
 }
 
@@ -126,9 +131,31 @@ def _parse_args(argv: list[str] | None = None):
         type=Path,
         help="Optional private/short-lived path for the redacted candidate JSON.",
     )
+    parser.add_argument(
+        "--diagnose-balances", action="store_true",
+        help="Only diagnose the frozen balance hashes; no ledger read, candidate, or write.",
+    )
+    parser.add_argument("--history-start", help="Optional bounded activity window start, ISO 8601 with timezone.")
+    parser.add_argument("--history-end", help="Optional bounded activity window end, ISO 8601 with timezone.")
     args = parser.parse_args(argv)
     if args.no_persist and args.output is not None:
         parser.error("--no-persist cannot be combined with --output")
+    if args.diagnose_balances and args.output is not None:
+        parser.error("balance diagnostics cannot persist a candidate")
+    if args.history_start or args.history_end:
+        if not args.diagnose_balances or not (args.history_start and args.history_end):
+            parser.error("history requires balance diagnostics and both window bounds")
+        try:
+            args.history_start = datetime.fromisoformat(args.history_start.replace("Z", "+00:00"))
+            args.history_end = datetime.fromisoformat(args.history_end.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc)
+            if (args.history_start.tzinfo is None or args.history_end.tzinfo is None
+                    or not args.history_start < args.history_end <= now
+                    or args.history_end - args.history_start > timedelta(days=7)
+                    or now - args.history_start > timedelta(days=30)):
+                raise ValueError
+        except (TypeError, ValueError):
+            parser.error("history requires a past, timezone-aware window of at most seven days within thirty days")
     return args
 
 
@@ -148,6 +175,22 @@ def main() -> int:
         api_secret = str(os.environ.get("BINANCE_API_SECRET") or "").strip()
         if not api_key or not api_secret:
             raise BinanceReconciliationReadError("Binance reconciliation requires the existing private API credentials.")
+        if args.diagnose_balances:
+            stage = "client_connect"
+            client = connect_client(api_key, api_secret, timeout=30)
+            stage = "balance_diagnostic"
+            account = client.get_account()
+            expected = _expected_digests()
+            result = diagnose_balance_snapshot(account, expected_digests=expected)
+            if args.history_start:
+                result["balance_history"] = diagnose_balance_flows(
+                    client, start=args.history_start, end=args.history_end,
+                    account=account, expected_digests=expected,
+                )
+            print(json.dumps(result, sort_keys=True))
+            if args.history_start and not result["balance_history"]["history_complete_for_requested_surfaces"]:
+                return 2
+            return 0
         stage = "local_execution_ledger_load"
         state = load_runtime_trade_state(
             normalize_fn=normalize_trade_state,
