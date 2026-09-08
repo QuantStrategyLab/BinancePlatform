@@ -376,3 +376,65 @@ def build_reconciliation_candidate(
         recovery_blockers=blockers,
         expected_digests_configured=expected is not None,
     )
+
+
+def diagnose_balance_flows(
+    client: Any, *, start: datetime, end: datetime, now: datetime | None = None,
+) -> dict[str, object]:
+    """Read a bounded activity summary, never an enrollment or reconciliation.
+
+    Only documented GET surfaces are used. Each gets one finite page; a full
+    list or a total exceeding the page stops collection. No amounts, asset
+    names, account rows, provider text, or observed baseline hashes are emitted.
+    """
+    now = now or datetime.now(timezone.utc)
+    if (start.tzinfo is None or end.tzinfo is None or not start < end <= now
+            or end - start > timedelta(days=7) or now - start > timedelta(days=30)):
+        raise ValueError("balance_history_window_invalid")
+    bounds = {"startTime": int(start.timestamp() * 1000), "endTime": int(end.timestamp() * 1000)}
+    surfaces = [
+        ("deposits", "capital/deposit/hisrec", {"limit": 1000, "offset": 0}, True),
+        ("withdrawals", "capital/withdraw/history", {"limit": 1000, "offset": 0}, True),
+        ("earn_subscriptions", "simple-earn/flexible/history/subscriptionRecord", {"size": 100, "current": 1}, False),
+        ("earn_redemptions", "simple-earn/flexible/history/redemptionRecord", {"size": 100, "current": 1}, False),
+        ("earn_rewards", "simple-earn/flexible/history/rewardsRecord", {"size": 100, "current": 1, "type": "ALL"}, False),
+    ]
+    for transfer_type in (
+        "MAIN_FUNDING", "FUNDING_MAIN", "MAIN_MARGIN", "MARGIN_MAIN",
+        "MAIN_UMFUTURE", "UMFUTURE_MAIN", "MAIN_CMFUTURE", "CMFUTURE_MAIN",
+        "MAIN_OPTION", "OPTION_MAIN", "MAIN_PORTFOLIO_MARGIN", "PORTFOLIO_MARGIN_MAIN",
+    ):
+        surfaces.append((f"transfer_{transfer_type.lower()}", "asset/transfer",
+                         {"size": 100, "current": 1, "type": transfer_type}, False))
+    counts = dict.fromkeys(name for name, *_ in surfaces)
+    result = {
+        "reason_code": "balance_history_activity_summary",
+        "history_complete_for_requested_surfaces": False,
+        "history_counts": counts,
+        "automatic_spot_earn_subscriptions": None,
+        "complete_balance_reconciliation": False,
+        "baseline_rows_available": False,
+        "execution_authority_granted": False,
+    }
+    for name, path, parameters, is_list in surfaces:
+        try:
+            response = client._request_margin_api("get", path, signed=True, data={**bounds, **parameters})
+        except Exception:
+            return {**result, "reason_code": "balance_history_read_failed", "failed_surface": name}
+        rows = response if is_list else response.get("rows") if isinstance(response, Mapping) else None
+        total = None if is_list or not isinstance(response, Mapping) else response.get("total")
+        total_valid = (type(total) is int and total >= 0) or (isinstance(total, str) and total.isdecimal())
+        if (not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows)
+                or len(rows) >= parameters.get("limit", parameters.get("size"))
+                or (not is_list and (not total_valid or int(total) != len(rows)))):
+            return {**result, "reason_code": "balance_history_incomplete", "failed_surface": name}
+        counts[name] = len(rows)
+        if name == "earn_subscriptions" and all(
+            all(isinstance(row.get(key), str) for key in ("type", "status", "sourceAccount")) for row in rows
+        ):
+            result["automatic_spot_earn_subscriptions"] = sum(
+                row.get("type") == "AUTO" and row.get("status") == "SUCCESS"
+                and row.get("sourceAccount") == "SPOT" for row in rows
+            )
+    result["history_complete_for_requested_surfaces"] = True
+    return result

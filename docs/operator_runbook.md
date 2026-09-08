@@ -298,3 +298,29 @@ python3 -m unittest discover -s tests -v
 - If the runtime falls to `static`, treat it as an operator-visible degraded incident.
 - If Firestore state cannot load, do not bypass the abort by force-running live trades.
 - If upstream remains stale for multiple cycles, coordinate with the upstream publisher before changing degraded-mode buy policy.
+
+### Bounded balance-activity history
+
+When zero-row diagnosis cannot explain a frozen digest difference, the same
+private diagnostic dispatch can accept `balance_history_start` and
+`balance_history_end` (ISO 8601 with timezone). Both must be supplied, describe
+at most seven days, and fall within the past thirty days. The script validates
+the window before contacting the broker. Use the independently recorded
+baseline observation time as the start, not an inferred balance timestamp.
+
+The additional GET-only diagnostic counts deposits, withdrawals, Flexible Earn
+subscriptions/redemptions/rewards, and twelve Spot-related universal transfer
+directions. Each surface is limited to one page. A full page, inconsistent
+total, malformed response or failed read stops collection without a retry;
+unknown counts remain null. It prints no asset names, amounts or provider
+errors and never changes the baseline or runtime state.
+
+An activity count is a lead for investigation, not proof that the old balance
+has been reconstructed. These surfaces omit other account operations such as
+Convert, dust and isolated-margin movements. `complete_balance_reconciliation`
+and `execution_authority_granted` always remain false. Recovery still needs an
+independent account/ledger check and an explicitly confirmed baseline.
+
+API contracts: [Wallet capital history](https://developers.binance.com/en/docs/catalog/core-trading-wallet/api/rest-api/capital),
+[Flexible Earn history](https://developers.binance.com/en/docs/catalog/investment-and-services-simple-earn/api/rest-api/flexible-locked),
+[Universal transfers](https://developers.binance.com/en/docs/catalog/core-trading-wallet/api/rest-api/asset).
