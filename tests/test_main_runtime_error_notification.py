@@ -2,6 +2,7 @@ import os
 import sys
 import types
 import unittest
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -99,6 +100,20 @@ import main
 
 
 class MainRuntimeErrorNotificationTests(unittest.TestCase):
+    def test_workflow_deduplication_requires_acknowledged_delivery(self):
+        for acknowledged in (False, True):
+            with self.subTest(acknowledged=acknowledged), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "output"
+                with patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}), \
+                     patch.object(main, "run_cli_entrypoint", side_effect=ValueError("PRIVATE_SENTINEL")), \
+                     patch.object(main, "_notify_runtime_error", return_value=acknowledged), \
+                     patch("builtins.print") as printed:
+                    with self.assertRaisesRegex(RuntimeError, "runtime_setup_failed"):
+                        main.main()
+                self.assertEqual(output.read_text() if output.exists() else "", "runtime_failure_notified=true\n" if acknowledged else "")
+                self.assertNotIn("PRIVATE_SENTINEL", str(printed.call_args_list))
+                self.assertIn("error_type=ValueError", str(printed.call_args_list))
+
     def test_runtime_error_message_uses_chinese_without_exposing_exception(self):
         with patch.dict(os.environ, {"NOTIFY_LANG": "zh-CN", "STRATEGY_PROFILE": "crypto_live_pool_rotation"}):
             message = main._runtime_error_notification_message(RuntimeError("PRIVATE_SENTINEL"))

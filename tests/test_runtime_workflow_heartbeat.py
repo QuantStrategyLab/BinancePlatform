@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import urllib.error
+import urllib.parse
 import unittest
 from unittest.mock import patch
 
@@ -34,6 +35,26 @@ def _runtime_run(
 
 
 class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
+    def test_reconciliation_and_disabled_success_do_not_attest_strategy_execution(self):
+        now = dt.datetime.now(dt.timezone.utc)
+        runs = [dict(_runtime_run(created_at=now, run_number=i), display_title=title, path=".github/workflows/main.yml")
+                for i, title in enumerate(["Runtime · reconciliation", "Runtime · validation", "Runtime · disabled", "Runtime"], 1)]
+        with patch.object(heartbeat, "_github_request", return_value={"workflow_runs": runs}):
+            result = heartbeat._list_runtime_runs(repository="org/repo", workflow="main.yml", token="test",
+                                                 branch="main", per_page=30, since=now - dt.timedelta(hours=3))
+        self.assertEqual(result, [])
+
+    def test_runtime_query_is_bounded_and_rejects_a_stale_response(self):
+        now = dt.datetime(2026, 9, 9, tzinfo=dt.timezone.utc)
+        since = now - dt.timedelta(hours=3)
+        old = _runtime_run(created_at=now - dt.timedelta(days=35))
+        with patch.object(heartbeat, "_github_request", return_value={"workflow_runs": [old]}) as request:
+            with self.assertRaises(ValueError):
+                heartbeat._list_runtime_runs(repository="org/repo", workflow="main.yml", token="test",
+                                             branch="main", per_page=30, since=since)
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(request.call_args.args[0]).query)
+        self.assertEqual(query["created"], [">=2026-09-08T21:00:00Z"])
+
     def test_alert_message_uses_configured_chinese_locale(self) -> None:
         with patch.dict(os.environ, {"NOTIFY_LANG": "zh-CN"}, clear=True):
             message = heartbeat._format_runtime_workflow_alert(
@@ -234,6 +255,7 @@ class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
             "conclusion": "success",
             "created_at": _timestamp(30),
             "path": ".github/workflows/main.yml",
+            "display_title": "Runtime · strategy",
             "html_url": "https://github.com/QuantStrategyLab/BinancePlatform/actions/runs/1",
         }
         heartbeat_run = {
