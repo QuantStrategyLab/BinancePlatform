@@ -200,6 +200,7 @@ def collect_read_only_reconciliation_observations(
     local_execution_ledger: Mapping[str, object],
     now: datetime | None = None,
     lookback: timedelta = timedelta(days=7),
+    account_snapshot: Mapping[str, object] | None = None,
 ) -> BinanceReconciliationObservations:
     """Read exchange balances, orders and fills without mutating exchange state."""
 
@@ -209,7 +210,7 @@ def collect_read_only_reconciliation_observations(
     for method_name in ("get_account", "get_open_orders", "get_my_trades"):
         if not callable(getattr(client, method_name, None)):
             raise BinanceReconciliationReadError(f"Binance reconciliation requires read-only {method_name} support.")
-    account = client.get_account()
+    account = client.get_account() if account_snapshot is None else account_snapshot
     if not isinstance(account, Mapping):
         raise BinanceReconciliationReadError("Binance reconciliation received an invalid account response.")
     # Binance exposes an account uid on the signed account response used by

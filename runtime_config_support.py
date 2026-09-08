@@ -111,6 +111,8 @@ def _resolve_runtime_target():
                 raise ValueError(
                     "BINANCE_DRY_RUN does not match RUNTIME_TARGET_JSON.dry_run_only"
                 )
+        from application.reconciliation_recovery import load_activated_target
+        runtime_target = load_activated_target(runtime_target)
         return runtime_target, strategy_definition
 
     strategy_definition = resolve_strategy_definition(
