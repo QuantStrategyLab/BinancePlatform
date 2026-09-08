@@ -34,6 +34,16 @@ jobs:
         id: target
         run: python scripts/runtime_target_lifecycle_status.py
 
+      - name: Set up uv
+        if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
+
+      - name: Install locked dependencies
+        if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
+        run: |
+          set -euo pipefail
+          uv sync --frozen --no-dev
+
       - name: Check Runtime workflow heartbeat
         id: workflow-heartbeat
         if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
@@ -48,7 +58,7 @@ jobs:
           RUNTIME_HEARTBEAT_OUTPUT_PATH: ${{ runner.temp }}/runtime-workflow-heartbeat.json
         run: |
           set -euo pipefail
-          python scripts/runtime_workflow_heartbeat.py
+          uv run --no-sync python scripts/runtime_workflow_heartbeat.py
           test -s "$RUNTIME_HEARTBEAT_OUTPUT_PATH"
           echo "path=$RUNTIME_HEARTBEAT_OUTPUT_PATH" >> "$GITHUB_OUTPUT"
 

@@ -4,6 +4,16 @@ from pathlib import Path
 
 
 class UvDependencyWorkflowTests(unittest.TestCase):
+    def test_heartbeat_callers_install_and_use_locked_dependencies(self) -> None:
+        for name in ("runtime-heartbeat.yml", "runtime-target-lifecycle.yml"):
+            with self.subTest(workflow=name):
+                workflow = Path(".github/workflows", name).read_text(encoding="utf-8")
+                invocation = "uv run --no-sync python scripts/runtime_workflow_heartbeat.py"
+                self.assertIn("astral-sh/setup-uv@", workflow)
+                self.assertIn("uv sync --frozen --no-dev", workflow)
+                self.assertIn(invocation, workflow)
+                self.assertLess(workflow.index("uv sync --frozen --no-dev"), workflow.index(invocation))
+
     def test_pyproject_declares_runtime_and_test_dependencies(self) -> None:
         pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
 
