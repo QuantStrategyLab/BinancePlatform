@@ -17,7 +17,9 @@ from runtime_support import ExecutionRuntime
 from strategy_registry import (
     BINANCE_PLATFORM,
     resolve_strategy_definition,
-    resolve_strategy_metadata,
+    resolve_research_strategy_metadata,
+    resolve_research_strategy_definition,
+    resolve_runtime_target_strategy,
 )
 
 
@@ -57,7 +59,7 @@ class CycleExecutionSettings:
 def load_cycle_execution_settings() -> CycleExecutionSettings:
     notify_lang = get_notify_lang()
     runtime_target, strategy_definition = _resolve_runtime_target()
-    strategy_metadata = resolve_strategy_metadata(
+    strategy_metadata = resolve_research_strategy_metadata(
         strategy_definition.profile,
         platform_id=BINANCE_PLATFORM,
     )
@@ -92,12 +94,9 @@ def _resolve_runtime_target():
             env=os.environ,
             expected_platform_id=BINANCE_PLATFORM,
         )
-        strategy_definition = resolve_strategy_definition(
-            runtime_target.strategy_profile,
-            platform_id=BINANCE_PLATFORM,
-        )
+        runtime_target, strategy_definition = resolve_runtime_target_strategy(runtime_target)
         if raw_strategy_profile:
-            legacy_definition = resolve_strategy_definition(
+            legacy_definition = resolve_research_strategy_definition(
                 raw_strategy_profile,
                 platform_id=BINANCE_PLATFORM,
             )
@@ -111,8 +110,6 @@ def _resolve_runtime_target():
                 raise ValueError(
                     "BINANCE_DRY_RUN does not match RUNTIME_TARGET_JSON.dry_run_only"
                 )
-        from application.reconciliation_recovery import load_activated_target
-        runtime_target = load_activated_target(runtime_target)
         return runtime_target, strategy_definition
 
     strategy_definition = resolve_strategy_definition(

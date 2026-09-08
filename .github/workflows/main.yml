@@ -1,4 +1,5 @@
 name: Runtime
+run-name: Runtime · ${{ inputs.validate_only && 'validation' || inputs.reconcile_only && 'reconciliation' || vars.RUNTIME_TARGET_ENABLED == 'true' && 'strategy' || 'disabled' }}
 
 on:
   workflow_dispatch:
@@ -235,6 +236,7 @@ jobs:
       # credentials are scoped only here.  `reconcile_only` exits before
       # `main.py` and has no order path.
       - name: 4. Run trading strategy
+        id: strategy
         if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' }}
         run: |
           set -euo pipefail
@@ -340,7 +342,7 @@ jobs:
           retention-days: 7
 
       - name: 6. Notify Telegram on runtime workflow failure
-        if: ${{ failure() && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
+        if: ${{ failure() && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' && steps.strategy.outputs.runtime_failure_notified != 'true' }}
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -355,14 +357,13 @@ jobs:
             exit 0
           fi
 
+          case "${NOTIFY_LANG:-zh}" in
+            zh*) TITLE="⚠️ Binance 启动失败，尚未生成执行报告。请查看运行日志。" ;;
+            *) TITLE="⚠️ Binance startup failed before an execution report was written. Check the run log." ;;
+          esac
           MESSAGE=$(printf '%s\n' \
-            "Binance Runtime workflow failed before execution report was written" \
-            "repo: ${GITHUB_REPOSITORY}" \
-            "workflow: ${GITHUB_WORKFLOW}" \
+            "$TITLE" \
             "run: #${GITHUB_RUN_NUMBER} attempt ${GITHUB_RUN_ATTEMPT}" \
-            "ref: ${GITHUB_REF_NAME}" \
-            "sha: ${GITHUB_SHA}" \
-            "actor: ${GITHUB_ACTOR}" \
             "url: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")
           RESPONSE="$(curl -fsS -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
             --data-urlencode "chat_id=${GLOBAL_TELEGRAM_CHAT_ID}" \
@@ -379,6 +380,7 @@ jobs:
               raise SystemExit("Telegram did not acknowledge workflow failure notification")
           PY
         env:
+          NOTIFY_LANG: ${{ vars.NOTIFY_LANG || 'zh' }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
 

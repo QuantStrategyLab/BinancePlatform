@@ -152,6 +152,56 @@ def active_control():
     return args, {"state": "ACTIVE_LKG", "recovery_id": "binance-123-1", **package, "confirmation": confirmation, "transition_plan": plan.to_dict()}
 
 
+def test_full_runtime_setup_consumes_recovery_with_empty_catalog_allowlist(monkeypatch):
+    import runtime_config_support
+    import strategy_registry
+    import strategy_runtime
+    import application.reconciliation_recovery as recovery
+    args, control = active_control()
+    monkeypatch.setenv("RUNTIME_TARGET_JSON", json.dumps({key: value for key, value in args["runtime_target"].to_dict().items() if key in {"platform_id", "strategy_profile", "dry_run_only", "deployment_selector", "account_selector", "account_scope", "service_name", "live_continuity"}}))
+    monkeypatch.setenv("STRATEGY_PROFILE", "crypto_live_pool_rotation")
+    monkeypatch.setenv("BINANCE_DRY_RUN", "false")
+    monkeypatch.setenv("RUNTIME_TARGET_ENABLED", "true")
+    monkeypatch.setattr(recovery, "load_activated_target", lambda target: recovery.activated_target(target, control, expected=args["expected"]))
+    assert not strategy_registry.BINANCE_ENABLED_PROFILES
+    runtime = runtime_config_support.build_live_runtime(now_utc=NOW)
+    loaded = strategy_runtime.load_strategy_runtime(runtime.strategy_profile, runtime_target=runtime.runtime_target)
+    assert loaded.profile == "crypto_live_pool_rotation"
+    assert runtime.standard_execution_permitted is True
+    import main
+    monkeypatch.setattr(main, "bind_trade_state_access", lambda **_: (None, None, None, None))
+    built = main.build_live_runtime(now_utc=NOW)
+    assert built.standard_execution_permitted is True
+    assert main.STRATEGY_RUNTIME.profile == "crypto_live_pool_rotation"
+    # Loading an ordinary new profile still has no execution grant.
+    with pytest.raises(ValueError):
+        strategy_runtime.load_strategy_runtime(runtime.strategy_profile)
+    monkeypatch.setenv("RUNTIME_TARGET_ENABLED", "false")
+    assert runtime_config_support.build_live_runtime(now_utc=NOW).standard_execution_permitted is False
+
+
+@pytest.mark.parametrize("change", ["missing_control", "wrong_account", "wrong_profile", "wrong_confirmation"])
+def test_runtime_setup_never_substitutes_catalog_eligibility_for_recovery(monkeypatch, change):
+    import runtime_config_support
+    import application.reconciliation_recovery as recovery
+    args, control = active_control()
+    target = {key: value for key, value in args["runtime_target"].to_dict().items() if key in {"platform_id", "strategy_profile", "dry_run_only", "deployment_selector", "account_selector", "account_scope", "service_name", "live_continuity"}}
+    if change == "missing_control":
+        control = None
+    elif change == "wrong_account":
+        args["expected"]["account_scope_sha256"] = "f" * 64
+    elif change == "wrong_profile":
+        target["strategy_profile"] = "crypto_equity_combo"
+    else:
+        control["confirmation"]["candidate_sha256"] = "f" * 64
+    monkeypatch.setenv("RUNTIME_TARGET_JSON", json.dumps(target))
+    monkeypatch.delenv("STRATEGY_PROFILE", raising=False)
+    monkeypatch.setenv("BINANCE_DRY_RUN", "false")
+    monkeypatch.setattr(recovery, "load_activated_target", lambda target: recovery.activated_target(target, control, expected=args["expected"]))
+    with pytest.raises(ValueError):
+        runtime_config_support.build_live_runtime(now_utc=NOW)
+
+
 def test_active_override_requires_complete_matching_atomic_record():
     from application.reconciliation_recovery import activated_target
     args, control = active_control()

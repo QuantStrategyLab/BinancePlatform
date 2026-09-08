@@ -11,6 +11,7 @@ from strategy_registry import (
     BINANCE_PLATFORM,
     resolve_research_strategy_definition,
     resolve_strategy_definition,
+    resolve_runtime_target_strategy,
 )
 
 
@@ -21,8 +22,13 @@ def load_strategy_definition(raw_profile: str | None) -> StrategyDefinition:
     )
 
 
-def load_strategy_entrypoint_for_profile(raw_profile: str | None) -> StrategyEntrypoint:
-    definition = load_strategy_definition(raw_profile)
+def load_strategy_entrypoint_for_profile(raw_profile: str | None, *, runtime_target=None) -> StrategyEntrypoint:
+    if runtime_target is None:
+        definition = load_strategy_definition(raw_profile)
+    else:
+        if raw_profile != runtime_target.strategy_profile:
+            raise ValueError("runtime_strategy_target_mismatch")
+        _, definition = resolve_runtime_target_strategy(runtime_target)
     runtime_adapter = get_platform_runtime_adapter(
         definition.profile,
         platform_id=BINANCE_PLATFORM,
