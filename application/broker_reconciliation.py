@@ -12,6 +12,7 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, DecimalException, localcontext
 from typing import Any
 
 from quant_platform_kit.common.broker_reconciliation import (
@@ -378,8 +379,86 @@ def build_reconciliation_candidate(
     )
 
 
+def diagnose_bonus_reward_balance(
+    account: Mapping[str, object], *, rewards: Sequence[Mapping[str, object]],
+    expected_digests: Mapping[str, str], start: datetime, end: datetime,
+) -> dict[str, object]:
+    """Test one exact explanation in memory, without replacing frozen hashes.
+
+    Flexible BONUS rewards credit Spot; REALTIME rewards accrue inside Earn.
+    Subtract only documented BONUS credits using decimal arithmetic, then use
+    the unchanged legacy normalizer and both original hashes. This cannot
+    establish complete account reconciliation or authorize baseline migration.
+    """
+    diagnose_balance_snapshot(account, expected_digests=expected_digests)
+    result = {
+        "reason_code": "spot_bonus_rewards_do_not_explain_balance_difference",
+        "historical_balance_hashes_match": False,
+        "reward_type_counts": None,
+        "complete_balance_reconciliation": False,
+        "execution_authority_granted": False,
+    }
+
+    def amount(value):
+        if not isinstance(value, str) or not value or len(value) > 80:
+            raise ValueError
+        number = Decimal(value)
+        if not number.is_finite() or number < 0:
+            raise ValueError
+        return number
+
+    counts = dict.fromkeys(("BONUS", "REALTIME", "REWARDS"), 0)
+    try:
+        if not isinstance(rewards, (list, tuple)) or len(rewards) >= 100:
+            raise ValueError
+        if start.tzinfo is None or end.tzinfo is None or not start < end:
+            raise ValueError
+        start_ms, end_ms = int(start.timestamp()*1000), int(end.timestamp()*1000)
+        seen = set()
+        with localcontext() as context:
+            context.prec = 100
+            credits: dict[str, Decimal] = {}
+            for row in rewards:
+                if not isinstance(row, Mapping):
+                    raise ValueError
+                asset, project, kind, timestamp = (row.get(k) for k in ("asset", "projectId", "type", "time"))
+                if (not isinstance(asset, str) or not asset.strip() or not isinstance(project, str) or not project.strip()
+                        or not isinstance(kind, str) or kind not in counts
+                        or type(timestamp) is not int or not start_ms <= timestamp <= end_ms):
+                    raise ValueError
+                identity = (asset, project, kind, timestamp)
+                if identity in seen:
+                    raise ValueError
+                seen.add(identity)
+                credit = amount(row.get("rewards"))
+                counts[kind] += 1
+                if kind == "BONUS":
+                    credits[asset.upper()] = credits.get(asset.upper(), Decimal(0)) + credit
+            result["reward_type_counts"] = counts
+            historical = {"uid": account["uid"], "balances": []}
+            remaining = set(credits)
+            for row in account["balances"]:
+                asset = _text(row["asset"]).upper()
+                free, locked = amount(row.get("free")), amount(row.get("locked"))
+                previous_free = free - credits.get(asset, Decimal(0))
+                if previous_free < 0:
+                    return result
+                historical["balances"].append({"asset": asset, "free": str(previous_free), "locked": str(locked)})
+                remaining.discard(asset)
+            if remaining or not counts["BONUS"]:
+                return result
+        comparison = diagnose_balance_snapshot(historical, expected_digests=expected_digests)
+    except (ValueError, TypeError, KeyError, DecimalException):
+        return {**result, "reason_code": "spot_bonus_reward_rows_invalid", "reward_type_counts": None}
+    if comparison["balance_difference_explained"]:
+        result["reason_code"] = "spot_bonus_rewards_explain_balance_difference"
+        result["historical_balance_hashes_match"] = True
+    return result
+
+
 def diagnose_balance_flows(
     client: Any, *, start: datetime, end: datetime, now: datetime | None = None,
+    account: Mapping[str, object] | None = None, expected_digests: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Read a bounded activity summary, never an enrollment or reconciliation.
 
@@ -416,6 +495,7 @@ def diagnose_balance_flows(
         "baseline_rows_available": False,
         "execution_authority_granted": False,
     }
+    reward_rows = None
     for name, path, parameters, is_list in surfaces:
         try:
             response = client._request_margin_api("get", path, signed=True, data={**bounds, **parameters})
@@ -439,6 +519,8 @@ def diagnose_balance_flows(
                 },
             }
         counts[name] = len(rows)
+        if name == "earn_rewards":
+            reward_rows = rows
         if name == "earn_subscriptions" and all(
             all(isinstance(row.get(key), str) for key in ("type", "status", "sourceAccount")) for row in rows
         ):
@@ -447,4 +529,8 @@ def diagnose_balance_flows(
                 and row.get("sourceAccount") == "SPOT" for row in rows
             )
     result["history_complete_for_requested_surfaces"] = True
+    if account is not None and expected_digests is not None:
+        result["spot_bonus_reconciliation"] = diagnose_bonus_reward_balance(
+            account, rewards=reward_rows, expected_digests=expected_digests, start=start, end=end,
+        )
     return result

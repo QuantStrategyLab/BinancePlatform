@@ -179,10 +179,13 @@ def main() -> int:
             stage = "client_connect"
             client = connect_client(api_key, api_secret, timeout=30)
             stage = "balance_diagnostic"
-            result = diagnose_balance_snapshot(client.get_account(), expected_digests=_expected_digests())
+            account = client.get_account()
+            expected = _expected_digests()
+            result = diagnose_balance_snapshot(account, expected_digests=expected)
             if args.history_start:
                 result["balance_history"] = diagnose_balance_flows(
                     client, start=args.history_start, end=args.history_end,
+                    account=account, expected_digests=expected,
                 )
             print(json.dumps(result, sort_keys=True))
             if args.history_start and not result["balance_history"]["history_complete_for_requested_surfaces"]:

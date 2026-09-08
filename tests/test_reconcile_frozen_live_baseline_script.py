@@ -8,6 +8,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -26,6 +27,37 @@ def _script_module():
 
 
 class ReconciliationScriptTests(unittest.TestCase):
+    def test_history_reuses_one_account_read_without_persisting_private_inputs(self):
+        module = _script_module()
+        now = datetime.now(timezone.utc)
+        args = SimpleNamespace(diagnose_balances=True, output=None, history_start=now-timedelta(days=5), history_end=now)
+        target = SimpleNamespace(live_continuity=SimpleNamespace(state="RECONCILE_ONLY"))
+        account = {"uid": "private-synthetic-account", "balances": []}
+        client = SimpleNamespace(get_account=lambda: account)
+        stdout = io.StringIO()
+        with (
+            patch.object(module, "_parse_args", return_value=args),
+            patch.object(module, "resolve_runtime_target_from_env", return_value=target),
+            patch.object(module, "connect_client", return_value=client),
+            patch.object(client, "get_account", wraps=client.get_account) as account_read,
+            patch.object(module, "_expected_digests", return_value={"private": "synthetic-hash"}),
+            patch.object(module, "diagnose_balance_snapshot", return_value={"status": "diagnostic"}),
+            patch.object(module, "diagnose_balance_flows", return_value={"history_complete_for_requested_surfaces": True}) as history,
+            patch.object(module, "load_runtime_trade_state") as ledger,
+            patch.object(module, "build_reconciliation_candidate") as candidate,
+            patch.object(module, "_write_receipt") as writer,
+            patch.dict(module.os.environ, {"BINANCE_API_KEY": "test", "BINANCE_API_SECRET": "test"}),
+            redirect_stdout(stdout),
+        ):
+            self.assertEqual(module.main(), 0)
+        self.assertIs(history.call_args.kwargs["account"], account)
+        account_read.assert_called_once_with()
+        self.assertEqual(history.call_args.kwargs["expected_digests"], {"private": "synthetic-hash"})
+        ledger.assert_not_called()
+        candidate.assert_not_called()
+        writer.assert_not_called()
+        self.assertNotIn("private", stdout.getvalue())
+
     def test_balance_diagnostic_never_reads_ledger_builds_candidate_or_writes(self):
         module = _script_module()
         target = SimpleNamespace(live_continuity=SimpleNamespace(state="RECONCILE_ONLY"))

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from application.broker_reconciliation import diagnose_balance_flows
+from quant_platform_kit.common.broker_reconciliation import calculate_broker_observation_sha256 as digest
 
 
 NOW = datetime(2026, 9, 8, tzinfo=timezone.utc)
@@ -79,3 +80,28 @@ def test_unknown_or_nonzero_total_does_not_imply_empty_rows(payload):
     result = diagnose_balance_flows(c, start=NOW-timedelta(days=5), end=NOW, now=NOW)
     assert result['history_complete_for_requested_surfaces'] is False
     assert result['history_counts']['earn_subscriptions'] is None
+
+
+def test_complete_history_reconciles_bonus_rows_without_additional_broker_reads():
+    calls = []
+    def read(method, path, **kwargs):
+        calls.append((method, path))
+        if path.startswith('capital/'):
+            return []
+        if path.endswith('/rewardsRecord'):
+            return {'rows': [{'asset': 'USDT', 'rewards': '0.1', 'type': 'BONUS',
+                              'projectId': 'synthetic', 'time': int(NOW.timestamp()*1000)}], 'total': 1}
+        return {'rows': [], 'total': 0}
+    rows = ({'asset': 'USDT', 'free': 1.0, 'locked': 0.0},)
+    expected = {'account_scope_sha256': digest({'account_uid': 'synthetic'}),
+                'positions_sha256': digest(rows), 'cash_sha256': digest({'balances': list(rows)})}
+    result = diagnose_balance_flows(
+        SimpleNamespace(_request_margin_api=read), start=NOW-timedelta(days=5), end=NOW, now=NOW,
+        account={'uid': 'synthetic', 'balances': [{'asset': 'USDT', 'free': '1.1', 'locked': '0'}]},
+        expected_digests=expected,
+    )
+    assert result['spot_bonus_reconciliation']['historical_balance_hashes_match'] is True
+    assert result['complete_balance_reconciliation'] is False
+    assert result['execution_authority_granted'] is False
+    assert len(calls) == 17
+    assert all(method == 'get' for method, _ in calls)
