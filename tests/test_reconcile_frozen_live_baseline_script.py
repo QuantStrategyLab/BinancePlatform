@@ -194,3 +194,23 @@ class ReconciliationScriptTests(unittest.TestCase):
             module._parse_args(["--no-persist", "--output", "candidate.json"])
         with self.assertRaises(SystemExit):
             module._parse_args(["--diagnose-balances", "--output", "candidate.json"])
+
+
+def test_history_options_require_diagnostic_mode_and_valid_bounded_dates():
+    from datetime import datetime, timedelta, timezone
+    import pytest
+    module = _script_module()
+    now = datetime.now(timezone.utc) - timedelta(seconds=5)
+    start = (now - timedelta(days=5)).isoformat()
+    end = now.isoformat()
+    with pytest.raises(SystemExit):
+        module._parse_args(["--history-start", start, "--history-end", end])
+    with pytest.raises(SystemExit):
+        module._parse_args(["--diagnose-balances", "--history-start", start])
+    with pytest.raises(SystemExit):
+        module._parse_args(["--diagnose-balances", "--history-start", "invalid", "--history-end", end])
+    with pytest.raises(SystemExit):
+        module._parse_args(["--diagnose-balances", "--history-start", (now-timedelta(days=8)).isoformat(), "--history-end", end])
+    args = module._parse_args(["--diagnose-balances", "--history-start", start, "--history-end", end])
+    assert args.history_start.tzinfo is not None
+    assert args.history_end.tzinfo is not None

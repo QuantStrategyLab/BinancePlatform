@@ -23,6 +23,14 @@ on:
         required: false
         default: false
         type: boolean
+      balance_history_start:
+        description: "Optional balance diagnosis history start (ISO 8601 with timezone, at most 7 days)."
+        type: string
+        required: false
+      balance_history_end:
+        description: "Optional balance diagnosis history end (ISO 8601 with timezone)."
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -59,8 +67,16 @@ jobs:
           RECONCILE_ONLY_INPUT: ${{ inputs.reconcile_only || 'false' }}
           RECONCILE_PERSIST_INPUT: ${{ inputs.reconcile_persist_candidate || 'false' }}
           VALIDATE_ONLY_INPUT: ${{ inputs.validate_only || 'false' }}
+          BALANCE_HISTORY_START: ${{ inputs.balance_history_start }}
+          BALANCE_HISTORY_END: ${{ inputs.balance_history_end }}
         run: |
           set -euo pipefail
+          if [ -n "${BALANCE_HISTORY_START:-}${BALANCE_HISTORY_END:-}" ]; then
+            if [ "$DIAGNOSE_BALANCES_INPUT" != "true" ] || [ -z "${BALANCE_HISTORY_START:-}" ] || [ -z "${BALANCE_HISTORY_END:-}" ]; then
+              echo "::error::Balance history requires balance diagnostics and both window bounds."
+              exit 1
+            fi
+          fi
           if [ "$DIAGNOSE_BALANCES_INPUT" = "true" ]; then
             if [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ]; then
               echo "::error::Balance diagnostics require reconcile_only and forbid persistence or validate_only."
@@ -207,7 +223,11 @@ jobs:
           fi
           if [ "${RECONCILE_ONLY:-false}" = "true" ]; then
             if [ "${DIAGNOSE_BALANCES:-false}" = "true" ]; then
-              "$VENV_PATH/bin/python" scripts/reconcile_frozen_live_baseline.py --no-persist --diagnose-balances
+              args=(--no-persist --diagnose-balances)
+              if [ -n "${BALANCE_HISTORY_START:-}" ]; then
+                args+=(--history-start "$BALANCE_HISTORY_START" --history-end "$BALANCE_HISTORY_END")
+              fi
+              "$VENV_PATH/bin/python" scripts/reconcile_frozen_live_baseline.py "${args[@]}"
               exit 0
             fi
             args=(--no-persist)
@@ -259,6 +279,8 @@ jobs:
           VALIDATE_ONLY: ${{ github.event.inputs.validate_only || 'false' }}
           RECONCILE_ONLY: ${{ github.event.inputs.reconcile_only || 'false' }}
           DIAGNOSE_BALANCES: ${{ github.event.inputs.diagnose_balances || 'false' }}
+          BALANCE_HISTORY_START: ${{ inputs.balance_history_start }}
+          BALANCE_HISTORY_END: ${{ inputs.balance_history_end }}
           RECONCILE_PERSIST_CANDIDATE: ${{ github.event.inputs.reconcile_persist_candidate || 'false' }}
 
       - name: Confirm target is intentionally disabled
