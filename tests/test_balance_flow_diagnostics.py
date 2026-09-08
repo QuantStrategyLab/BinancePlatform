@@ -105,3 +105,26 @@ def test_complete_history_reconciles_bonus_rows_without_additional_broker_reads(
     assert result['execution_authority_granted'] is False
     assert len(calls) == 17
     assert all(method == 'get' for method, _ in calls)
+
+
+def test_invalid_reward_rows_stop_before_transfer_reads():
+    calls = []
+    def read(method, path, **kwargs):
+        calls.append(path)
+        if path.startswith('capital/'):
+            return []
+        if path.endswith('/rewardsRecord'):
+            return {'rows': [{'asset': 'USDT', 'rewards': '0.1', 'type': 'BONUS',
+                              'time': int(NOW.timestamp()*1000)}], 'total': 1}
+        return {'rows': [], 'total': 0}
+    rows = ({'asset': 'USDT', 'free': 1.0, 'locked': 0.0},)
+    result = diagnose_balance_flows(
+        SimpleNamespace(_request_margin_api=read), start=NOW-timedelta(days=5), end=NOW, now=NOW,
+        account={'uid': 'synthetic', 'balances': [{'asset': 'USDT', 'free': '1.1', 'locked': '0'}]},
+        expected_digests={'account_scope_sha256': digest({'account_uid': 'synthetic'}),
+                          'positions_sha256': digest(rows), 'cash_sha256': digest({'balances': list(rows)})},
+    )
+    assert len(calls) == 5
+    assert result['history_complete_for_requested_surfaces'] is False
+    assert result['history_counts']['transfer_main_funding'] is None
+    assert result['spot_bonus_reconciliation']['validation_failure_code'] == 'reward_project_invalid'

@@ -408,9 +408,11 @@ def diagnose_bonus_reward_balance(
         return number
 
     counts = dict.fromkeys(("BONUS", "REALTIME", "REWARDS"), 0)
+    failure_code = "reward_page_invalid"
     try:
         if not isinstance(rewards, (list, tuple)) or len(rewards) >= 100:
             raise ValueError
+        failure_code = "reward_window_invalid"
         if start.tzinfo is None or end.tzinfo is None or not start < end:
             raise ValueError
         start_ms, end_ms = int(start.timestamp()*1000), int(end.timestamp()*1000)
@@ -419,17 +421,26 @@ def diagnose_bonus_reward_balance(
             context.prec = 100
             credits: dict[str, Decimal] = {}
             for row in rewards:
+                failure_code = "reward_row_invalid"
                 if not isinstance(row, Mapping):
                     raise ValueError
                 asset, project, kind, timestamp = (row.get(k) for k in ("asset", "projectId", "type", "time"))
-                if (not isinstance(asset, str) or not asset.strip() or not isinstance(project, str) or not project.strip()
-                        or not isinstance(kind, str) or kind not in counts
-                        or type(timestamp) is not int or not start_ms <= timestamp <= end_ms):
-                    raise ValueError
+                checks = (
+                    ("reward_asset_invalid", isinstance(asset, str) and bool(asset.strip())),
+                    ("reward_project_invalid", isinstance(project, str) and bool(project.strip())),
+                    ("reward_type_invalid", isinstance(kind, str) and kind in counts),
+                    ("reward_timestamp_type_invalid", type(timestamp) is int),
+                    ("reward_timestamp_outside_window", type(timestamp) is int and start_ms <= timestamp <= end_ms),
+                )
+                for failure_code, valid in checks:
+                    if not valid:
+                        raise ValueError
                 identity = (asset, project, kind, timestamp)
+                failure_code = "reward_record_duplicate"
                 if identity in seen:
                     raise ValueError
                 seen.add(identity)
+                failure_code = "reward_amount_invalid"
                 credit = amount(row.get("rewards"))
                 counts[kind] += 1
                 if kind == "BONUS":
@@ -438,6 +449,7 @@ def diagnose_bonus_reward_balance(
             historical = {"uid": account["uid"], "balances": []}
             remaining = set(credits)
             for row in account["balances"]:
+                failure_code = "account_balance_amount_invalid"
                 asset = _text(row["asset"]).upper()
                 free, locked = amount(row.get("free")), amount(row.get("locked"))
                 previous_free = free - credits.get(asset, Decimal(0))
@@ -449,7 +461,8 @@ def diagnose_bonus_reward_balance(
                 return result
         comparison = diagnose_balance_snapshot(historical, expected_digests=expected_digests)
     except (ValueError, TypeError, KeyError, DecimalException):
-        return {**result, "reason_code": "spot_bonus_reward_rows_invalid", "reward_type_counts": None}
+        return {**result, "reason_code": "spot_bonus_reward_rows_invalid", "reward_type_counts": None,
+                "validation_failure_code": failure_code}
     if comparison["balance_difference_explained"]:
         result["reason_code"] = "spot_bonus_rewards_explain_balance_difference"
         result["historical_balance_hashes_match"] = True
@@ -521,6 +534,12 @@ def diagnose_balance_flows(
         counts[name] = len(rows)
         if name == "earn_rewards":
             reward_rows = rows
+            if account is not None and expected_digests is not None:
+                result["spot_bonus_reconciliation"] = diagnose_bonus_reward_balance(
+                    account, rewards=reward_rows, expected_digests=expected_digests, start=start, end=end,
+                )
+                if result["spot_bonus_reconciliation"]["reason_code"] == "spot_bonus_reward_rows_invalid":
+                    return {**result, "reason_code": "balance_history_reward_validation_failed", "failed_surface": name}
         if name == "earn_subscriptions" and all(
             all(isinstance(row.get(key), str) for key in ("type", "status", "sourceAccount")) for row in rows
         ):
@@ -529,8 +548,4 @@ def diagnose_balance_flows(
                 and row.get("sourceAccount") == "SPOT" for row in rows
             )
     result["history_complete_for_requested_surfaces"] = True
-    if account is not None and expected_digests is not None:
-        result["spot_bonus_reconciliation"] = diagnose_bonus_reward_balance(
-            account, rewards=reward_rows, expected_digests=expected_digests, start=start, end=end,
-        )
     return result
