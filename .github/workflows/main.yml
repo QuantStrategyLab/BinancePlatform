@@ -31,6 +31,16 @@ on:
         description: "Optional balance diagnosis history end (ISO 8601 with timezone)."
         type: string
         required: false
+      recovery_action:
+        description: "Explicit no-order recovery step; requires disabled runtime and reconcile_only"
+        type: choice
+        required: false
+        default: none
+        options: [none, prepare, verify, activate]
+      recovery_id:
+        description: "Exact prepared recovery ID; required for verify or activate"
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -63,6 +73,7 @@ jobs:
         id: runtime-target-control
         shell: bash
         env:
+          RECOVERY_ACTION_INPUT: ${{ inputs.recovery_action || 'none' }}
           DIAGNOSE_BALANCES_INPUT: ${{ inputs.diagnose_balances || 'false' }}
           RECONCILE_ONLY_INPUT: ${{ inputs.reconcile_only || 'false' }}
           RECONCILE_PERSIST_INPUT: ${{ inputs.reconcile_persist_candidate || 'false' }}
@@ -71,6 +82,16 @@ jobs:
           BALANCE_HISTORY_END: ${{ inputs.balance_history_end }}
         run: |
           set -euo pipefail
+          case "${RECOVERY_ACTION_INPUT:-none}" in
+            none) ;;
+            prepare|verify|activate)
+              if [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
+                echo "::error::Recovery requires disabled main runtime, reconcile_only, and no other diagnostic mode."
+                exit 1
+              fi
+              ;;
+            *) echo "::error::Unknown recovery action."; exit 1 ;;
+          esac
           if [ -n "${BALANCE_HISTORY_START:-}${BALANCE_HISTORY_END:-}" ]; then
             if [ "$DIAGNOSE_BALANCES_INPUT" != "true" ] || [ -z "${BALANCE_HISTORY_START:-}" ] || [ -z "${BALANCE_HISTORY_END:-}" ]; then
               echo "::error::Balance history requires balance diagnostics and both window bounds."
@@ -222,6 +243,10 @@ jobs:
             exit 0
           fi
           if [ "${RECONCILE_ONLY:-false}" = "true" ]; then
+            if [ "${RECOVERY_ACTION:-none}" != "none" ]; then
+              "$VENV_PATH/bin/python" scripts/binance_recovery_controller.py "$RECOVERY_ACTION" --recovery-id "${RECOVERY_ID:-}"
+              exit 0
+            fi
             if [ "${DIAGNOSE_BALANCES:-false}" = "true" ]; then
               args=(--no-persist --diagnose-balances)
               if [ -n "${BALANCE_HISTORY_START:-}" ]; then
@@ -239,6 +264,12 @@ jobs:
           fi
           "$VENV_PATH/bin/python" main.py
         env:
+          RECOVERY_ACTION: ${{ inputs.recovery_action || 'none' }}
+          RECOVERY_ID: ${{ inputs.recovery_id }}
+          RECONCILIATION_RECOVERY_SYNC_TOKEN: ${{ inputs.recovery_action == 'prepare' && secrets.RECONCILIATION_RECOVERY_SYNC_TOKEN || '' }}
+          RECONCILIATION_RECOVERY_CONTROLLER_TOKEN: ${{ (inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.RECONCILIATION_RECOVERY_CONTROLLER_TOKEN || '' }}
+          GITHUB_TOKEN: ${{ (inputs.recovery_action == 'prepare' || inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.GITHUB_TOKEN || '' }}
+          BINANCE_RECOVERY_CONTROL_ENABLED: ${{ vars.BINANCE_RECOVERY_CONTROL_ENABLED || 'false' }}
           BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
           BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
           STRATEGY_PROFILE: ${{ vars.STRATEGY_PROFILE || 'crypto_live_pool_rotation' }}
