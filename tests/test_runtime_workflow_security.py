@@ -162,7 +162,7 @@ def test_disabled_host_does_not_require_cloud_identity_or_runtime_dependencies()
     workflow = WORKFLOW.read_text(encoding="utf-8")
     broker_job = _job_block(workflow, "deploy", "publish-execution-log")
     identity = broker_job.split("      - name: 0. Validate deployment identity configuration", 1)[1].split("      - name:", 1)[0]
-    assert "if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' }}" in identity
+    assert "if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}" in identity
     assert broker_job.index("Publish disabled host observation") < broker_job.index("Authenticate to Google Cloud")
     assert broker_job.index("Publish disabled host observation") < broker_job.index("Prepare or update dependency environment")
 

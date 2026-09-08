@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       validate_only:
-        description: "Skip live trading and only validate GitHub OIDC + Firestore access"
+        description: "Validate actual configuration, recovery control and strategy startup without broker credentials or execution"
         required: false
         default: false
         type: boolean
@@ -145,7 +145,7 @@ jobs:
 
       - name: Publish disabled host observation
         if: ${{ steps.disabled-host.outputs.publish_ready == 'true' }}
-        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-target-lifecycle@c2e46314fd749fd40f4d5fbdbaedadc8b7b27dff
+        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-target-lifecycle@1c2e09802b6a31463445d8429826d20e93c6432c
         with:
           source-id: binance.runtime-target-lifecycle
           target-id: ${{ steps.disabled-host.outputs.target_id }}
@@ -160,7 +160,7 @@ jobs:
           EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}
 
       - name: 0. Validate deployment identity configuration
-        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' }}
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -184,11 +184,11 @@ jobs:
             exit 1
           fi
       - name: 1. Checkout latest code
-        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' }}
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: 2. Authenticate to Google Cloud
-        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' }}
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           project_id: ${{ env.GCP_PROJECT_ID }}
@@ -199,7 +199,7 @@ jobs:
           cleanup_credentials: true
 
       - name: 3. Prepare or update dependency environment
-        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' }}
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}
         run: |
           set -euo pipefail
           LOCK_FILE="uv.lock"
@@ -283,11 +283,12 @@ jobs:
       # `main.py` and has no order path.
       - name: 4. Run trading strategy
         id: strategy
-        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' }}
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}
         run: |
           set -euo pipefail
           if [ "${VALIDATE_ONLY:-false}" = "true" ]; then
-            "$VENV_PATH/bin/python" -c "from google.cloud import firestore; client = firestore.Client(); collections = [collection.id for _, collection in zip(range(3), client.collections())]; print(f'Validated Google Cloud auth and Firestore access. project={client.project} sample_collections={collections}')"
+            env -u BINANCE_API_KEY -u BINANCE_API_SECRET RUNTIME_TARGET_ENABLED=false \
+              "$VENV_PATH/bin/python" scripts/validate_runtime_startup.py
             exit 0
           fi
           if [ "${RECONCILE_ONLY:-false}" = "true" ]; then

@@ -290,7 +290,7 @@ python3 -m unittest discover -s tests -v
 ## Workflow Runtime Auth
 
 - The runtime workflow now authenticates to Google Cloud with GitHub OIDC + Workload Identity Federation.
-- For safe runner-side verification, dispatch `main.yml` with `validate_only=true`; that checks Google Cloud + Firestore auth without running live trades.
+- For safe runner-side verification, dispatch `main.yml` with `validate_only=true`; that loads the actual configuration, committed recovery control and strategy entrypoint without broker credentials or live execution. It also works while the runtime is paused.
 - Local manual runs can still use `GOOGLE_APPLICATION_CREDENTIALS=/path/to/gcp-sa.json` when needed.
 
 ## Escalation Guidelines
