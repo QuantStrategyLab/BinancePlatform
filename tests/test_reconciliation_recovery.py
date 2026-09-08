@@ -229,3 +229,37 @@ def test_confirmation_failure_never_collects_broker_or_applies_state(monkeypatch
     monkeypatch.setattr(controller, "_save_control", lambda *a, **kw: pytest.fail("write without confirmation"))
     with pytest.raises(ValueError, match="confirmation"):
         controller.run("activate", control["recovery_id"])
+
+
+def test_console_request_identifies_the_platform_and_never_redirects(monkeypatch):
+    from scripts import binance_recovery_controller as controller
+    calls = []
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self, size): return b'{"ok":true}'
+    class Opener:
+        def open(self, request, **kwargs):
+            calls.append(request)
+            return Response()
+    def build(handler):
+        assert handler().redirect_request(None) is None
+        return Opener()
+    monkeypatch.setattr(controller, "build_opener", build)
+    assert controller.request_json(controller.CONSOLE, "test-token", payload={}) == {"ok": True}
+    assert len(calls) == 1
+    assert calls[0].get_header("User-agent") == "QuantStrategyLab-BinancePlatform/1.0 (reconciliation-controller)"
+    assert calls[0].get_header("Authorization") == "Bearer test-token"
+
+
+def test_http_failure_reports_only_status_without_provider_body(monkeypatch, capsys):
+    from urllib.error import HTTPError
+    from scripts import binance_recovery_controller as controller
+    def fail(*args):
+        raise HTTPError(controller.CONSOLE, 403, "private provider message", {}, None)
+    monkeypatch.setattr(controller, "run", fail)
+    assert controller.main(["prepare"]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["http_status"] == 403
+    assert "private provider" not in json.dumps(result)
