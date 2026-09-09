@@ -30,6 +30,7 @@ def _observed_report():
         "started_at": "2026-08-30T10:00:00.123456+08:00",
         "standard_execution_permitted": False,
         "dry_run": True,
+        "scheduler_state": "enabled",
         "runtime_target": {
             "platform_id": "binance",
             "strategy_profile": "crypto_live_pool_rotation",
@@ -91,12 +92,35 @@ class ExecutionReportHeartbeatTests(unittest.TestCase):
 
         self.assertEqual(result["deployment"], {
             "runtime_enabled": False,
-            "scheduler_state": "unknown",
+            "scheduler_state": "enabled",
             "strategy_profile": "crypto_live_pool_rotation",
             "execution_mode": "dry_run",
             "observed_at": "2026-08-30T02:00:00Z",
         })
         self.assertEqual(result["observed_at"], "2026-08-30T03:00:00Z")
+
+    def test_scheduler_state_is_strictly_projected(self) -> None:
+        now = dt.datetime(2026, 8, 30, 3, tzinfo=dt.timezone.utc)
+        for report_state, expected in (
+            ("enabled", "enabled"),
+            ("disabled", "paused"),
+            ("unknown", "unknown"),
+            ("paused", "unknown"),
+            (True, "unknown"),
+            (1, "unknown"),
+            ({}, "unknown"),
+            ([], "unknown"),
+            (None, "unknown"),
+        ):
+            with self.subTest(report_state=report_state):
+                report = _observed_report()
+                if report_state is None:
+                    report.pop("scheduler_state")
+                else:
+                    report["scheduler_state"] = report_state
+                observed = heartbeat._deployment_observation(report, now=now)
+                self.assertEqual(observed["scheduler_state"], expected)
+                self.assertEqual(observed["observed_at"], "2026-08-30T02:00:00Z")
 
     def test_missing_invalid_or_future_run_time_omits_observation(self) -> None:
         now = dt.datetime(2026, 8, 30, 3, tzinfo=dt.timezone.utc)

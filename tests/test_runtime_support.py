@@ -192,6 +192,14 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertEqual(report["gating_summary"], {})
         self.assertEqual(report["gating_events"], [])
 
+    def test_report_contains_observed_scheduler_state(self):
+        runtime = owned_runtime(dry_run=True, run_id="scheduler-state")
+        with patch("runtime_support.observe_runtime_scheduler_state", return_value="enabled"):
+            report = build_execution_report(runtime)
+
+        self.assertEqual(report["scheduler_state"], "enabled")
+
+
     def test_report_preserves_existing_fields(self):
         runtime = owned_runtime(dry_run=False, run_id="test-002")
         with patch.dict(
