@@ -183,9 +183,15 @@ def _deployment_observation(payload: dict[str, Any], *, now: dt.datetime) -> dic
     elif (mode == "live" and dry_run is True) or (mode != "live" and dry_run is False):
         mode = None
     permitted = payload.get("standard_execution_permitted")
+    scheduler_state = payload.get("scheduler_state")
+    scheduler_projection = {
+        "enabled": "enabled",
+        "disabled": "paused",
+        "unknown": "unknown",
+    }.get(scheduler_state, "unknown") if isinstance(scheduler_state, str) else "unknown"
     return {
         "runtime_enabled": permitted if isinstance(permitted, bool) else None,
-        "scheduler_state": "unknown",
+        "scheduler_state": scheduler_projection,
         "strategy_profile": profile,
         "execution_mode": mode,
         "observed_at": observed.astimezone(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),

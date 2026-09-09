@@ -89,6 +89,12 @@ control does not silently change the established paper-runtime behaviour.
   in Cloud Storage, then publishes only sanitized status to the central
   QuantRuntimeSettings lifecycle endpoint.  It never starts the self-hosted
   runner, contacts Binance, or changes this control.
+- The existing Runtime report reads the reviewed Ubuntu hourly cron entry and
+  the `cron` daemon state on `main` from `binance-quant-runner`. It records only
+  `enabled`, `disabled`, or `unknown`; an unexpected runner context, ambiguous
+  cron entry, timeout, or read failure remains `unknown`. The lifecycle monitor
+  projects that report field and keeps the Runtime report's original timestamp;
+  it does not schedule or control execution.
 - A disabled target is reported as intentionally disabled, not as a failed
   broker or a successful execution.  A missing report, unavailable monitor,
   malformed target declaration, or failed runtime dispatch is parked for

@@ -19,6 +19,7 @@ from application.execution_receipt_adapter import (
     record_order_submission_attempt,
     record_order_transport_uncertainty,
 )
+from runtime_scheduler_observation import observe_runtime_scheduler_state
 
 # Binance rate limits (public API: 1200 weight/min, order placement: 50 orders/10s)
 _BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC = 0.25  # max ~4 orders/sec
@@ -368,6 +369,7 @@ def build_execution_report(runtime):
         "trend_equity_usdt": None,
         "circuit_breaker_triggered": False,
         "degraded_mode_level": None,
+        "scheduler_state": observe_runtime_scheduler_state(),
         "upstream_pool_symbols": [],
         "summary": {
             "strategy_display_name": str(runtime.strategy_display_name or ""),
