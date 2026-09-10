@@ -1,4 +1,5 @@
 import builtins
+import inspect
 import json
 import os
 import tempfile
@@ -648,8 +649,54 @@ class CycleServiceTests(unittest.TestCase):
         self.assertEqual(report["status"], "error")
         self.assertEqual(observed["errors"], [("execute_cycle", "cycle_execution_failed")])
         self.assertEqual(observed["tracebacks"], 0)
+        self.assertEqual(report["diagnostics"]["cycle_failure"], {"stage": "state_load", "error_type": "runtime_error"})
         self.assertEqual(observed["notifications"], ["system_crash\ncycle_execution_failed"])
         self.assertNotIn("provider-secret-cycle-error", str(report) + str(observed))
+
+    def test_owner_failure_is_safe_and_does_not_reach_client_or_release_lock(self):
+        from runtime_support import StatePersistenceError
+
+        secret = "private-provider-message"
+        custom_error = type("private-provider-class", (Exception,), {})
+        cases = [
+            (StatePersistenceError(secret), "state_persistence_error"),
+            (TimeoutError(secret), "timeout_error"),
+            (custom_error(secret), "unclassified_error"),
+        ]
+        for error, expected_type in cases:
+            with self.subTest(expected_type=expected_type):
+                runtime = SimpleNamespace(dry_run=False, state_owner_held=True)
+                callbacks = {
+                    name: Mock()
+                    for name in inspect.signature(execute_strategy_cycle).parameters
+                    if name != "runtime"
+                }
+                callbacks["build_execution_report"].return_value = {
+                    "status": "ok", "diagnostics": {"existing": "preserved"},
+                }
+                callbacks["load_cycle_execution_settings"].return_value = SimpleNamespace(
+                    btc_status_report_interval_hours=24,
+                    allow_new_trend_entries_on_degraded=False,
+                )
+                callbacks["translate_fn"].return_value = "system_crash"
+                with patch("application.cycle_service.acquire_runtime_state_owner", side_effect=error), patch(
+                    "application.cycle_service.release_runtime_state_owner"
+                ) as release:
+                    report = execute_strategy_cycle(runtime, **callbacks)
+                self.assertEqual(report["status"], "error")
+                self.assertEqual(report["diagnostics"], {
+                    "existing": "preserved",
+                    "cycle_failure": {"stage": "state_owner_claim", "error_type": expected_type},
+                })
+                callbacks["ensure_runtime_client"].assert_not_called()
+                callbacks["load_cycle_state"].assert_not_called()
+                callbacks["execute_trend_rotation"].assert_not_called()
+                callbacks["execute_btc_dca_cycle"].assert_not_called()
+                callbacks["runtime_set_trade_state"].assert_not_called()
+                release.assert_not_called()
+                self.assertTrue(runtime.state_owner_held)
+                self.assertIn("stage=state_owner_claim", report["log_lines"][0])
+                self.assertNotIn("private-provider", str(report) + str(callbacks["runtime_notify"].call_args))
 
     def test_reconciliation_exhaustion_stops_second_logical_order_and_fails_report(self):
         observed = {"submissions": [], "reconciliations": []}
@@ -764,6 +811,7 @@ class CycleServiceTests(unittest.TestCase):
         )
         self.assertEqual(len({order_id for _symbol, order_id in observed["submissions"]}), 1)
         self.assertEqual(report["status"], "error")
+        self.assertEqual(report["diagnostics"]["cycle_failure"], {"stage": "trend_execution", "error_type": "order_reconciliation_error"})
         self.assertEqual(
             report["error_summary"]["errors"],
             [{"stage": "execute_cycle", "message": "cycle_execution_failed"}],
