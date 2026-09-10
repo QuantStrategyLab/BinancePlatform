@@ -12,6 +12,7 @@ from runtime_logging import RuntimeLogContext, emit_runtime_log
 from runtime_support import (
     append_report_error, finalize_notification_delivery, acquire_runtime_state_owner,
     release_runtime_state_owner, reconcile_runtime_cash_effects, ExecutionIntegrityError,
+    StatePersistenceError, OrderReconciliationError, ClientCallError,
 )
 
 
@@ -62,13 +63,16 @@ def execute_strategy_cycle(
         )
 
     state_healthy = False
+    failure_stage = "state_owner_claim"
     try:
         if not acquire_runtime_state_owner(runtime):
             report["execution_blocked_reason"] = "state_owner_busy"
             return report
+        failure_stage = "client_connect"
         if not ensure_runtime_client(runtime, report):
             return report
 
+        failure_stage = "state_load"
         cycle_state = load_cycle_state(runtime, report, allow_new_trend_entries_on_degraded)
         if cycle_state is None:
             return report
@@ -77,12 +81,14 @@ def execute_strategy_cycle(
         runtime.trade_state = state
         if state.get("order_submission", {}).get("state") == "SUBMISSION_UNKNOWN":
             raise ExecutionIntegrityError("order_reconciliation_uncertain")
+        failure_stage = "pool_diagnostics"
         append_trend_pool_source_logs(log_buffer, trend_pool_resolution, allow_new_trend_entries)
 
         report["upstream_pool_symbols"] = list(runtime_trend_universe.keys())
         if trend_pool_resolution["degraded"]:
             report["degraded_mode_level"] = trend_pool_resolution.get("source_kind", "unknown")
 
+        failure_stage = "market_snapshot"
         market_snapshot = capture_market_snapshot(
             runtime,
             report,
@@ -98,6 +104,7 @@ def execute_strategy_cycle(
         trend_indicators = market_snapshot["trend_indicators"]
 
         state_healthy = True
+        failure_stage = "portfolio_allocation"
         allocation = compute_portfolio_allocation(
             runtime,
             runtime_trend_universe,
@@ -119,6 +126,7 @@ def execute_strategy_cycle(
             report["execution_blocked_reason"] = "risk_execution_not_permitted"
             return report
 
+        failure_stage = "daily_state"
         now_utc = runtime.now_utc
         today_utc = now_utc.strftime("%Y-%m-%d")
         today_id_str = now_utc.strftime("%Y%m%d")
@@ -141,6 +149,7 @@ def execute_strategy_cycle(
             log_buffer.insert(0, translate_fn("circuit_breaker_latched_line", total_equity=total_equity))
             return report
 
+        failure_stage = "circuit_breaker"
         if run_daily_circuit_breaker(
             runtime,
             report,
@@ -155,6 +164,7 @@ def execute_strategy_cycle(
         ):
             return report
 
+        failure_stage = "fuel_execution"
         _u_total, _fuel_val, fuel_status = top_up_bnb_fuel(
             runtime,
             report,
@@ -173,6 +183,7 @@ def execute_strategy_cycle(
                 state_healthy = False
             return report
 
+        failure_stage = "trend_execution"
         u_total = execute_trend_rotation(
             runtime,
             report,
@@ -190,6 +201,7 @@ def execute_strategy_cycle(
             allow_pool_refresh=not trend_pool_resolution["degraded"],
         )
 
+        failure_stage = "post_trade_allocation"
         post_trade_allocation = compute_portfolio_allocation(
             runtime,
             runtime_trend_universe,
@@ -217,6 +229,7 @@ def execute_strategy_cycle(
         btc_base_order_usdt = post_trade_allocation["btc_base_order_usdt"]
         _, trend_daily_pnl = compute_daily_pnls(state, total_equity, trend_val_equity)
 
+        failure_stage = "btc_execution"
         u_total = execute_btc_dca_cycle(
             runtime,
             report,
@@ -234,6 +247,7 @@ def execute_strategy_cycle(
             log_buffer,
         )
 
+        failure_stage = "earn_execution"
         manage_usdt_earn_buffer_runtime(
             runtime,
             report,
@@ -242,6 +256,7 @@ def execute_strategy_cycle(
             spot_free_override=u_total if runtime.dry_run else None,
         )
 
+        failure_stage = "status_notification"
         maybe_send_periodic_btc_status_report(
             state,
             runtime.tg_token,
@@ -258,13 +273,34 @@ def execute_strategy_cycle(
             notifier_fn=lambda text: runtime_notify(runtime, report, text),
         )
 
+        failure_stage = "state_persistence"
         state["last_balance_snapshot"] = build_balance_snapshot(runtime_trend_universe, balances, u_total)
         reconcile_runtime_cash_effects(runtime, state)
         runtime_set_trade_state(runtime, report, state, reason="cycle_complete")
 
-    except Exception:
+    except Exception as exc:
         state_healthy = False
         report["status"] = "error"
+        # Exact types only: provider messages and custom exception names may
+        # contain credentials or account data. Unknown types stay unclassified.
+        error_type = {
+            StatePersistenceError: "state_persistence_error",
+            OrderReconciliationError: "order_reconciliation_error",
+            ExecutionIntegrityError: "execution_integrity_error",
+            ClientCallError: "client_call_error",
+            TimeoutError: "timeout_error",
+            ConnectionError: "connection_error",
+            PermissionError: "permission_error",
+            OSError: "io_error",
+            ValueError: "value_error",
+            TypeError: "type_error",
+            KeyError: "key_error",
+            RuntimeError: "runtime_error",
+        }.get(type(exc), "unclassified_error")
+        report.setdefault("diagnostics", {})["cycle_failure"] = {
+            "stage": failure_stage, "error_type": error_type,
+        }
+        log_buffer.append(f"cycle_execution_failed stage={failure_stage} error_type={error_type}")
         append_report_error(report, "cycle_execution_failed", stage="execute_cycle")
         try:
             runtime_notify(runtime, report, f"{translate_fn('system_crash')}\ncycle_execution_failed")
