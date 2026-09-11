@@ -17,6 +17,8 @@ import math
 import os
 import re
 import sys
+import subprocess
+import tempfile
 from argparse import ArgumentParser
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -46,6 +48,7 @@ CONTROL_DOCUMENT = "MULTI_ASSET_STATE__recovery"
 SCHEMA_VERSION = "binance_daily_accounting_migration_candidate.v1"
 NEW_BASIS = "trend_mark_plus_cash_flow_v1"
 PREVIEW_PATH = Path("reports/binance-accounting-migration-preview/candidate.json")
+REBASE_PROPOSAL_PATH = Path("reports/binance-accounting-rebase-proposal/proposal.cms")
 # Operator-approved control from read-only Runtime 34586531344. One exact downgrade.
 QUIESCE_CONTROL_SHA256 = "68318adcf853fe755409814c8707d3338f0af7927da396a60547c8375e9af5c4"
 QUIESCE_CONTROL_UPDATE_TIME = "2026-09-08T18:31:35.004893Z"
@@ -170,6 +173,78 @@ def _zero_activity(evidence: Mapping[str, object]) -> None:
 def _same_balance(left, right, *, asset: str) -> bool:
     tolerance = 1e-4 if asset == "USDT" else 1e-8
     return abs(_finite(left) - _finite(right)) <= tolerance
+
+
+def build_rebase_proposal(*, ledger, evidence, observed_at):
+    """Informational new-start preview, deliberately not an apply candidate."""
+    _validate_safe_order_state(ledger)
+    if (evidence.get("history_complete") is not True
+            or type(evidence.get("open_order_count")) is not int
+            or evidence["open_order_count"] != 0
+            or type(evidence.get("recent_execution_count")) is not int
+            or evidence["recent_execution_count"] != 0):
+        raise MigrationBlocked("rebase_proposal_current_state_unsettled")
+    balances = evidence.get("balance_snapshot")
+    prices = evidence.get("prices")
+    if (not isinstance(balances, Mapping) or not {"USDT", "BTC", "BNB"}.issubset(balances)
+            or not isinstance(prices, Mapping)):
+        raise MigrationBlocked("rebase_proposal_balances_incomplete")
+    assets = []
+    for asset, raw_quantity in sorted(balances.items()):
+        if not isinstance(asset, str) or not re.fullmatch(r"[A-Z0-9]{1,20}", asset):
+            raise MigrationBlocked("rebase_proposal_asset_invalid")
+        quantity = _finite(raw_quantity)
+        price = 1.0 if asset == "USDT" else _finite(prices.get(f"{asset}USDT", 0.0))
+        if quantity > 0 and price <= 0:
+            raise MigrationBlocked("price_snapshot_incomplete")
+        assets.append({"asset": asset, "quantity": quantity, "price_usdt": price,
+                       "value_usdt": _finite(quantity * price)})
+    total = _finite(sum(row["value_usdt"] for row in assets))
+    trend = _finite(sum(row["value_usdt"] for row in assets if row["asset"] not in {"USDT", "BTC", "BNB"}))
+    if total <= 0 or observed_at.tzinfo is None:
+        raise MigrationBlocked("rebase_proposal_valuation_invalid")
+    proposed = {
+        "daily_trend_pnl_basis": NEW_BASIS,
+        "daily_trend_cash_flow_usdt": 0.0, "daily_trend_net_invested_usdt": 0.0,
+        "daily_trend_third_fee_usdt": 0.0, "daily_trend_risk_base_usdt": trend,
+        "daily_equity_base": total, "daily_trend_equity_base": trend,
+        "last_balance_snapshot": {row["asset"]: row["quantity"] for row in assets},
+        "last_reset_date": observed_at.astimezone(timezone.utc).date().isoformat(),
+    }
+    return {
+        "status": "awaiting_operator_decision", "executable_candidate": False,
+        "historical_difference_unresolved": True, "complete_balance_reconciliation": False,
+        "observed_at": observed_at.isoformat(), "assets": assets,
+        "valuation_scope": "managed_assets_spot_plus_flexible_earn",
+        "valuation_price_source": "binance_get_avg_price_estimate",
+        "old_fields": {key: copy.deepcopy(ledger[key]) for key in proposed if key in ledger},
+        "old_missing_fields": sorted(set(proposed) - set(ledger)),
+        "proposed_fields": proposed,
+        "preserved_circuit_breaker_latch": ledger.get("is_circuit_broken"),
+        "preserve_all_other_ledger_fields": True,
+        "requires_full_old_ledger_archive_before_apply": True,
+        "requires_fresh_preflight_and_separate_apply_approval": True,
+        "pre_start_income_classification": "unreconstructed_history",
+        "current_day_activity_counts": copy.deepcopy(evidence.get("history_counts")),
+        "no_order": True, "write_performed": False, "execution_authority_granted": False,
+    }
+
+
+def encrypt_rebase_proposal(proposal, *, certificate):
+    """Use standard CMS encryption; plaintext stays in memory on the runner."""
+    if not isinstance(certificate, str) or not 100 <= len(certificate) <= 12000:
+        raise MigrationBlocked("proposal_recipient_certificate_invalid")
+    try:
+        with tempfile.TemporaryDirectory() as directory:
+            cert_path = Path(directory) / "recipient.pem"
+            cert_path.write_text(certificate, encoding="utf-8")
+            return subprocess.run(
+                ["openssl", "cms", "-encrypt", "-aes-256-cbc", "-binary", "-outform", "DER", str(cert_path)],
+                input=json.dumps(proposal, sort_keys=True, allow_nan=False).encode(),
+                capture_output=True, check=True, timeout=20,
+            ).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        raise MigrationBlocked("proposal_encryption_failed") from None
 
 
 def build_candidate(
@@ -478,7 +553,7 @@ def _ledger_scope(ledger):
     return assets, symbols
 
 
-def _collect_evidence(client, *, ledger, now, expected):
+def _collect_evidence(client, *, ledger, now, expected, require_prices=False):
     assets, symbols = _ledger_scope(ledger)
     midnight = now.astimezone(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -500,7 +575,7 @@ def _collect_evidence(client, *, ledger, now, expected):
         raise MigrationBlocked("spot_balance_rows_invalid")
     snapshot = _strict_balance_snapshot(client, raw_positions, assets)
     prices = {}
-    if str(ledger.get("last_reset_date") or "") != now.date().isoformat():
+    if require_prices or str(ledger.get("last_reset_date") or "") != now.date().isoformat():
         for asset, quantity in snapshot.items():
             if asset != "USDT" and quantity > 0:
                 try:
@@ -795,10 +870,25 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
     )
     if action == "audit":
         return audit_ledger(refs, client=client, expected=expected, now=now)
-    evidence = _collect_evidence(client, ledger=ledger, now=now, expected=expected)
+    evidence = _collect_evidence(client, ledger=ledger, now=now, expected=expected,
+                                 require_prices=action == "rebase-proposal")
     decision_now = now if fixed_now else datetime.now(timezone.utc)
     if evidence["utc_date"] != decision_now.date().isoformat():
         raise MigrationBlocked("utc_day_changed_during_evidence")
+    if action == "rebase-proposal":
+        proposal = build_rebase_proposal(ledger=ledger, evidence=evidence, observed_at=decision_now)
+        after_snapshot, after_ledger, after_control = _read_source(refs)
+        if (digest(ledger) != digest(after_ledger) or digest(control) != digest(after_control)
+                or _timestamp(ledger_snapshot.update_time) != _timestamp(after_snapshot.update_time)):
+            raise MigrationBlocked("proposal_ledger_changed_during_read")
+        proposal.update(source_sha=os.environ["GITHUB_SHA"], ledger_update_time=_timestamp(ledger_snapshot.update_time),
+                        ledger_sha256=digest(ledger), control_sha256=digest(control))
+        encrypted = encrypt_rebase_proposal(proposal, certificate=os.environ.get("PROPOSAL_RECIPIENT_CERTIFICATE", ""))
+        REBASE_PROPOSAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        REBASE_PROPOSAL_PATH.write_bytes(encrypted)
+        return {"status": "encrypted_proposal_ready", "stage": "accounting_rebase_proposal",
+                "executable_candidate": False, "ledger_unchanged": True, "no_order": True,
+                "write_performed": False, "execution_authority_granted": False}
     if action == "preview":
         candidate = build_candidate(
             ledger=ledger,
@@ -860,7 +950,7 @@ def main(argv=None) -> int:
     parser = ArgumentParser(
         description="Preview or apply the bounded Binance daily-accounting migration"
     )
-    parser.add_argument("action", choices=("inspect", "quiesce", "audit", "preview", "apply"))
+    parser.add_argument("action", choices=("inspect", "quiesce", "audit", "preview", "rebase-proposal", "apply"))
     parser.add_argument("--expected-digest", default="")
     args = parser.parse_args(argv)
     if args.action != "apply" and args.expected_digest:

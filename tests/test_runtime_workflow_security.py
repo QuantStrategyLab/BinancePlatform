@@ -255,7 +255,7 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
     inputs = workflow[workflow.index("    inputs:") : workflow.index("permissions:")]
 
     assert "accounting_migration_action:" in inputs
-    assert "options: [none, inspect, quiesce, audit, preview, apply]" in inputs
+    assert "options: [none, inspect, quiesce, audit, preview, rebase-proposal, apply]" in inputs
     assert "accounting_migration_preview_run_id:" in inputs
     assert "accounting_migration_expected_digest:" in inputs
 
@@ -264,6 +264,10 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
     "action,run_id,digest,reconcile,enabled,ref,allowed",
     [
         ("preview", "", "", "true", "false", "refs/heads/main", True),
+        ("rebase-proposal", "", "", "true", "false", "refs/heads/main", True),
+        ("rebase-proposal", "", "", "true", "true", "refs/heads/main", False),
+        ("rebase-proposal", "", "", "false", "false", "refs/heads/main", False),
+        ("rebase-proposal", "12345", "", "true", "false", "refs/heads/main", False),
         ("quiesce", "", "", "true", "false", "refs/heads/main", True),
         ("quiesce", "12345", "", "true", "false", "refs/heads/main", False),
         ("quiesce", "", "", "false", "false", "refs/heads/main", False),
@@ -299,6 +303,7 @@ def test_accounting_migration_guard_is_disabled_main_only(
     )
     env = {
         "ACCOUNTING_MIGRATION_ACTION_INPUT": action,
+        "PROPOSAL_RECIPIENT_CERTIFICATE": "synthetic public certificate" if action == "rebase-proposal" else "",
         "ACCOUNTING_MIGRATION_PREVIEW_RUN_ID": run_id,
         "ACCOUNTING_MIGRATION_EXPECTED_DIGEST": digest,
         "RECOVERY_ACTION_INPUT": "none",

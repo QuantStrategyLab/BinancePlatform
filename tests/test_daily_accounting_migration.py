@@ -574,6 +574,108 @@ def test_audit_does_not_infer_missing_asset_holding_or_btc_growth(monkeypatch, b
     assert result["btc_has_flexible_earn_balance"] is False
 
 
+def test_rebase_proposal_prices_current_assets_without_claiming_old_reconciliation():
+    from scripts import migrate_daily_accounting_state as migration
+    ledger = _ledger(last_reset_date="2026-08-11")
+    evidence = _evidence(history_counts={"earn_rewards": 1})
+    original = copy.deepcopy(ledger)
+    result = migration.build_rebase_proposal(ledger=ledger, evidence=evidence, observed_at=NOW)
+    assert ledger == original
+    assert result["proposed_fields"]["daily_equity_base"] == 14750.0
+    assert result["proposed_fields"]["daily_trend_risk_base_usdt"] == 4000.0
+    assert result["proposed_fields"]["last_balance_snapshot"]["BNB"] == 0.25
+    assert result["old_fields"]["last_reset_date"] == "2026-08-11"
+    assert "is_circuit_broken" not in result["proposed_fields"]
+    assert result["preserved_circuit_breaker_latch"] is True
+    assert result["historical_difference_unresolved"] is True
+    assert result["executable_candidate"] is False
+    assert result["pre_start_income_classification"] == "unreconstructed_history"
+    with pytest.raises(ValueError, match="candidate_schema_invalid"):
+        migration.validate_candidate(result, expected_digest="a" * 64, now=NOW)
+    # A proposal must not accidentally relax the existing migration gate.
+    with pytest.raises(migration.MigrationBlocked, match="current_day_activity_present"):
+        _candidate(ledger=ledger, evidence=evidence)
+
+
+@pytest.mark.parametrize("changes", [{"open_order_count": 1}, {"recent_execution_count": 1}, {"history_complete": False}, {"prices": {} }])
+def test_rebase_proposal_stops_on_unsettled_or_incomplete_current_evidence(changes):
+    from scripts import migrate_daily_accounting_state as migration
+    with pytest.raises(migration.MigrationBlocked):
+        migration.build_rebase_proposal(ledger=_ledger(), evidence=_evidence(**changes), observed_at=NOW)
+
+
+def test_rebase_proposal_encryption_roundtrip_does_not_emit_plaintext(tmp_path, capsys):
+    import subprocess
+    from scripts import migrate_daily_accounting_state as migration
+    key, cert = tmp_path / "key.pem", tmp_path / "cert.pem"
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", str(key),
+                    "-out", str(cert), "-days", "1", "-subj", "/CN=synthetic-proposal-test"],
+                   capture_output=True, check=True)
+    private = {"synthetic_private_balance": 123.456}
+    encrypted = migration.encrypt_rebase_proposal(private, certificate=cert.read_text())
+    assert b"synthetic_private_balance" not in encrypted
+    decoded = subprocess.run(["openssl", "cms", "-decrypt", "-binary", "-inform", "DER", "-inkey", str(key)],
+                             input=encrypted, capture_output=True, check=True).stdout
+    assert json.loads(decoded) == private
+    assert "123.456" not in capsys.readouterr().out
+
+
+def test_rebase_proposal_runtime_writes_only_encrypted_local_artifact(monkeypatch, tmp_path, capsys):
+    from scripts import migrate_daily_accounting_state as migration
+    now = datetime.now(timezone.utc)
+    ledger = _ledger(last_reset_date="2026-08-11")
+    refs = {"ledger_ref": Ref(Snapshot(ledger)), "owner_ref": Ref(Snapshot(None)),
+            "control_ref": Ref(Snapshot({"state": "RECONCILE_ONLY"}))}
+    monkeypatch.setattr(migration, "require_runtime_context", lambda: None)
+    monkeypatch.setattr(migration, "resolve_runtime_target_from_env", lambda **kw: SimpleNamespace(
+        live_continuity=SimpleNamespace(state="RECONCILE_ONLY")))
+    monkeypatch.setattr(migration, "_expected_digests", lambda: {"account_scope_sha256": "a" * 64})
+    monkeypatch.setattr(migration, "_refs", lambda: refs)
+    monkeypatch.setattr(migration, "connect_client", lambda *a, **kw: object())
+    monkeypatch.setattr(migration, "_collect_evidence", lambda *a, **kw: _evidence(
+        utc_date=now.date().isoformat(), history_counts={"earn_rewards": 1}))
+    encrypted_payloads = []
+    def encrypt(proposal, **kwargs):
+        encrypted_payloads.append(proposal)
+        return b"synthetic encrypted bytes"
+    monkeypatch.setattr(migration, "encrypt_rebase_proposal", encrypt)
+    monkeypatch.setattr(migration, "REBASE_PROPOSAL_PATH", tmp_path / "proposal.cms")
+    def forbidden(*a, **kw): raise AssertionError("proposal must not apply or make a migration candidate")
+    monkeypatch.setattr(migration, "build_candidate", forbidden)
+    monkeypatch.setattr(migration, "get_firestore_client", forbidden)
+    for key, value in {"GITHUB_SHA": "f" * 40, "BINANCE_API_KEY": "synthetic", "BINANCE_API_SECRET": "synthetic"}.items():
+        monkeypatch.setenv(key, value)
+    assert migration.main(["rebase-proposal"]) == 0
+    output = capsys.readouterr().out
+    assert json.loads(output)["executable_candidate"] is False
+    assert "14750" not in output and "500.0" not in output
+    assert len(encrypted_payloads) == 1
+    assert (tmp_path / "proposal.cms").read_bytes() == b"synthetic encrypted bytes"
+    assert refs["ledger_ref"].snapshot.value == ledger
+
+
+def test_rebase_proposal_encryption_errors_are_sanitized():
+    from scripts import migrate_daily_accounting_state as migration
+    with pytest.raises(migration.MigrationBlocked, match="^proposal_encryption_failed$"):
+        migration.encrypt_rebase_proposal({"private_value": 123}, certificate="invalid certificate " * 30)
+
+
+def test_rebase_proposal_collects_prices_even_for_same_day_ledger(monkeypatch):
+    migration, _, client, expected, _, _ = _audit_setup(monkeypatch)
+    quotes = []
+    def quote(*, symbol):
+        quotes.append(symbol)
+        return {"price": str(_evidence()["prices"][symbol])}
+    client.get_avg_price = quote
+    ledger = _ledger()
+    ordinary = migration._collect_evidence(client, ledger=ledger, now=NOW, expected=expected)
+    assert ordinary["prices"] == {} and quotes == []
+    evidence = migration._collect_evidence(client, ledger=ledger, now=NOW, expected=expected, require_prices=True)
+    proposal = migration.build_rebase_proposal(ledger=ledger, evidence=evidence, observed_at=NOW)
+    assert proposal["proposed_fields"]["daily_equity_base"] == 14750.0
+    assert set(quotes) == {"BTCUSDT", "BNBUSDT", "ETHUSDT"}
+
+
 @pytest.mark.parametrize("change", ["control", "owner", "identity", "window", "ledger_during_read", "spot_during_read", "earn_during_read", "incomplete_history"])
 def test_audit_rejects_untrusted_incomplete_or_changing_evidence(monkeypatch, change):
     migration, refs, client, expected, balances, calls = _audit_setup(monkeypatch)
