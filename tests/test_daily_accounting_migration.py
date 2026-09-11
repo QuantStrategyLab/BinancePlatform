@@ -501,11 +501,13 @@ def test_inspect_control_does_not_export_arbitrary_state(monkeypatch):
 
 def _audit_setup(monkeypatch):
     from scripts import migrate_daily_accounting_state as migration
-    expected = {"account_scope_sha256": migration.digest({"account_uid": "synthetic"})}
-    baseline = {**expected, "positions_sha256": "b" * 64, "cash_sha256": "c" * 64}
-    control = {"state": "RECONCILE_ONLY", "candidate": {"expected_digests": baseline},
-               "source": {"original_evidence": {**baseline, "observed_at": "2026-09-08T18:18:20Z"},
-                          "frozen_expected_sha256": migration.digest(expected)}}
+    from application.reconciliation_recovery import collect_recovery_source
+    from tests.test_reconciliation_recovery import inputs
+    args = inputs()
+    expected = args["expected"]
+    # Use the real producer serialization; expected_digests is an in-memory
+    # property, not a field in the persisted candidate.
+    control = {"state": "RECONCILE_ONLY", **collect_recovery_source(**args)}
     monkeypatch.setattr(migration, "QUIESCE_CONTROL_SHA256", migration.digest({**control, "state": "ACTIVE_LKG"}))
     refs = {"control_ref": Ref(Snapshot(control)), "ledger_ref": Ref(Snapshot(_ledger())),
             "owner_ref": Ref(Snapshot(None))}
@@ -513,11 +515,11 @@ def _audit_setup(monkeypatch):
     balances = _evidence()["balance_snapshot"]
     class Client:
         def get_account(self):
-            return {"uid": "synthetic", "balances": [{"asset": a, "free": str(v), "locked": "0"} for a, v in balances.items()]}
+            return {"uid": "123", "balances": [{"asset": a, "free": str(v), "locked": "0"} for a, v in balances.items()]}
         def get_simple_earn_flexible_product_position(self, **kwargs):
             return {"rows": [], "total": 0}
     monkeypatch.setattr(migration, "collect_read_only_reconciliation_observations", lambda *a, **kw: SimpleNamespace(
-        account_scope={"account_uid": "synthetic"}, positions=(), open_orders=(), recent_executions=()))
+        account_scope={"account_uid": "123"}, positions=(), open_orders=(), recent_executions=()))
     calls = []
     def history(*args, **kwargs):
         calls.append(kwargs)
@@ -532,8 +534,8 @@ def test_audit_uses_recovered_window_and_distinguishes_missing_from_mismatch(mon
     balances["ETH"] = 2.5
     result = migration.audit_ledger(refs, client=client, expected=expected, now=NOW)
     assert result["ledger_balance_comparison"] == {"BTC": "MATCH", "BNB": "MISSING_IN_LEDGER", "ETH": "MISMATCH", "USDT": "MATCH"}
-    assert calls[0]["start"] == datetime(2026, 9, 8, 18, 18, 20, tzinfo=timezone.utc)
-    assert calls[0]["expected_digests"]["positions_sha256"] == "b" * 64
+    assert calls[0]["start"] == datetime(2026, 9, 8, 17, tzinfo=timezone.utc)
+    assert calls[0]["expected_digests"]["positions_sha256"] == refs["control_ref"].snapshot.value["candidate"]["positions_sha256"]
     assert result["recovered_spot_history"]["spot_bonus_reconciliation"]["historical_balance_hashes_match"] is True
     assert result["complete_balance_reconciliation"] is False
     assert result["write_performed"] is False and result["no_order"] is True

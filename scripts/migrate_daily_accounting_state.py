@@ -35,6 +35,7 @@ from application.broker_reconciliation import (
 )
 from live_services import get_firestore_client
 from quant_platform_kit.binance import connect_client
+from quant_platform_kit.common.broker_reconciliation_enrollment import BrokerReconciliationBaselineCandidate
 from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
 
 
@@ -596,7 +597,7 @@ def audit_ledger(refs, *, client, expected, now):
     try:
         source = control["source"]
         original = source["original_evidence"]
-        baseline = control["candidate"]["expected_digests"]
+        baseline = BrokerReconciliationBaselineCandidate.from_dict(control["candidate"]).expected_digests
         recovered_expected = {**baseline, "account_scope_sha256": expected["account_scope_sha256"]}
         if (source["frozen_expected_sha256"] != digest(expected)
                 or original["account_scope_sha256"] != expected["account_scope_sha256"]
