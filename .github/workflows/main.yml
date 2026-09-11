@@ -47,7 +47,7 @@ on:
         type: choice
         required: false
         default: none
-        options: [none, inspect, quiesce, audit, preview, rebase-proposal, apply]
+        options: [none, inspect, quiesce, audit, preview, rebase-proposal, rebase-apply, apply]
       proposal_recipient_certificate:
         description: "Public X.509 encryption certificate for rebase-proposal only; never provide a private key"
         type: string
@@ -122,7 +122,7 @@ jobs:
                 exit 1
               fi
               ;;
-            inspect|quiesce|audit|preview|rebase-proposal|apply)
+            inspect|quiesce|audit|preview|rebase-proposal|rebase-apply|apply)
               if [ "${RECOVERY_ACTION_INPUT:-none}" != "none" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
                 echo "::error::Accounting migration requires disabled main runtime, reconcile_only, and no other recovery or diagnostic mode."
                 exit 1
