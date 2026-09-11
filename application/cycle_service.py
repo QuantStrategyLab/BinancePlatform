@@ -79,8 +79,11 @@ def execute_strategy_cycle(
 
         state, trend_pool_resolution, runtime_trend_universe, allow_new_trend_entries = cycle_state
         runtime.trade_state = state
-        if state.get("order_submission", {}).get("state") == "SUBMISSION_UNKNOWN":
+        submission_state = state.get("order_submission", {}).get("state", "RESERVED")
+        if submission_state == "SUBMISSION_UNKNOWN":
             raise ExecutionIntegrityError("order_reconciliation_uncertain")
+        if submission_state == "FILLED_ACCOUNTING_PENDING":
+            raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
         failure_stage = "pool_diagnostics"
         append_trend_pool_source_logs(log_buffer, trend_pool_resolution, allow_new_trend_entries)
 
@@ -202,6 +205,9 @@ def execute_strategy_cycle(
         )
 
         failure_stage = "post_trade_allocation"
+        fuel_symbol = str(getattr(runtime, "fuel_symbol", "BNBUSDT") or "BNBUSDT")
+        if fuel_symbol in balances and fuel_symbol in prices:
+            fuel_val = balances[fuel_symbol] * prices[fuel_symbol]
         post_trade_allocation = compute_portfolio_allocation(
             runtime,
             runtime_trend_universe,
@@ -246,6 +252,19 @@ def execute_strategy_cycle(
             today_id_str,
             log_buffer,
         )
+        if fuel_symbol in balances and fuel_symbol in prices:
+            fuel_val = balances[fuel_symbol] * prices[fuel_symbol]
+        trend_val_equity = sum(
+            balances[symbol] * prices[symbol] for symbol in runtime_trend_universe
+        )
+        total_equity = (
+            u_total
+            + fuel_val
+            + trend_val_equity
+            + balances["BTCUSDT"] * prices["BTCUSDT"]
+        )
+        report["total_equity_usdt"] = total_equity
+        report["trend_equity_usdt"] = trend_val_equity
 
         failure_stage = "earn_execution"
         manage_usdt_earn_buffer_runtime(

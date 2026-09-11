@@ -614,7 +614,19 @@ class TestBuildExecutionReport(unittest.TestCase):
 
         self.assertEqual(result["status"], "FILLED")
         self.assertEqual([event[0] for event in store.events], ["query", "write"])
-        self.assertEqual(store.data["order_submission"], {"state": "TERMINAL"})
+        self.assertEqual(store.data["order_submission"]["state"], "FILLED_ACCOUNTING_PENDING")
+        self.assertEqual(store.data["order_submission"]["known_fill"]["executed_qty"], "0.01")
+
+        with self.assertRaisesRegex(OrderReconciliationError, "filled_order_accounting_unverifiable"):
+            runtime_call_client(
+                runtime,
+                build_execution_report(runtime),
+                method_name="order_market_buy",
+                payload=payload,
+                effect_type="order_buy",
+                max_retries=0,
+            )
+        self.assertEqual([event[0] for event in store.events], ["query", "write"])
 
     def test_unknown_order_cannot_complete_a_different_requested_order(self):
         variants = (
@@ -792,7 +804,8 @@ class TestBuildExecutionReport(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "FILLED")
-        self.assertEqual(store.data["order_submission"], {"state": "TERMINAL"})
+        self.assertEqual(store.data["order_submission"]["state"], "FILLED_ACCOUNTING_PENDING")
+        self.assertEqual(store.data["order_submission"]["known_fill"]["cummulative_quote_qty"], "19.5")
 
     def test_verified_terminal_query_response_is_required_to_write_terminal(self):
         store = DurableSubmissionStateStore()
@@ -827,7 +840,7 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertEqual(store.data["order_submission"], {"state": "TERMINAL"})
         self.assertEqual([event[0] for event in store.events], ["write", "submit", "query", "write"])
 
-    def test_terminal_write_failure_keeps_unknown_and_restart_does_not_resubmit(self):
+    def test_filled_accounting_pending_survives_restart_without_resubmit(self):
         class TerminalWriteFailureStore(DurableSubmissionStateStore):
             def write(self, state):
                 record = copy.deepcopy(state["order_submission"])
@@ -852,15 +865,16 @@ class TestBuildExecutionReport(unittest.TestCase):
             state_writer=store.write,
         )
 
-        with self.assertRaisesRegex(RuntimeError, "state_persistence_failed"):
-            runtime_call_client(
-                initial_runtime,
-                build_execution_report(initial_runtime),
-                method_name="order_market_buy",
-                payload={"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "terminal-write-failure"},
-                effect_type="order_buy",
-                max_retries=0,
-            )
+        result = runtime_call_client(
+            initial_runtime,
+            build_execution_report(initial_runtime),
+            method_name="order_market_buy",
+            payload={"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "terminal-write-failure"},
+            effect_type="order_buy",
+            max_retries=0,
+        )
+        self.assertEqual(result["status"], "FILLED")
+        self.assertEqual(store.data["order_submission"]["state"], "FILLED_ACCOUNTING_PENDING")
 
         class RestartClient:
             def order_market_buy(self, **_kwargs):
@@ -879,7 +893,7 @@ class TestBuildExecutionReport(unittest.TestCase):
             state_writer=store.write,
         )
 
-        with self.assertRaisesRegex(RuntimeError, "state_persistence_failed"):
+        with self.assertRaisesRegex(OrderReconciliationError, "filled_order_accounting_unverifiable"):
             runtime_call_client(
                 restart_runtime,
                 build_execution_report(restart_runtime),
@@ -889,8 +903,8 @@ class TestBuildExecutionReport(unittest.TestCase):
                 max_retries=0,
             )
 
-        self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
-        self.assertEqual([event[0] for event in store.events], ["write", "submit", "write", "query", "write"])
+        self.assertEqual(store.data["order_submission"]["state"], "FILLED_ACCOUNTING_PENDING")
+        self.assertEqual([event[0] for event in store.events], ["write", "submit", "write"])
 
     def test_local_pre_submit_failure_does_not_call_client_or_write_unknown(self):
         store = DurableSubmissionStateStore()

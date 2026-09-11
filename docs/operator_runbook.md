@@ -255,6 +255,33 @@ Operator action:
 - Check Binance API key validity, IP restrictions, and runner connectivity
 - Re-run manually only after the connectivity issue is confirmed resolved
 
+### Fill accounting and daily loss state
+
+Market orders consume Binance's `FULL` response: `executedQty`,
+`cummulativeQuoteQty`, and every fill's `price`, `qty`, `commission`, and
+`commissionAsset`. Base-asset fees reduce the received or remaining position,
+quote-asset fees adjust USDT, and BNB fees use the BNBUSDT price and balance
+already captured in the same market snapshot. A missing, non-finite, or
+inconsistent field, or a third-asset fee without a same-cycle USDT price and
+balance, leaves the durable order state at `FILLED_ACCOUNTING_PENDING`. The
+fill is known and must not be resubmitted; new funding calls remain blocked
+until reconciliation completes.
+
+Trend daily loss uses marked trend holdings plus the cash returned to or spent
+by that sleeve. Internal rotation does not create PnL; slippage and fees do.
+When the sleeve starts the UTC day empty, the first net investment establishes
+the risk denominator. A new UTC day resets this basis under the existing
+policy. A same-day state using the old `trend_val` basis, or a new-basis state
+with missing/non-finite fields, blocks instead of clearing accumulated loss or
+the circuit-breaker latch.
+
+Balance snapshots include USDT, BTC, BNB, and trend assets. Changes not already
+persisted from a known fill or the observed Earn/fuel reconciliation are
+`balance_change_unexplained`: keep the prior daily bases and latch, stop new
+submissions, and reconcile the account. Do not assume that an unexplained
+difference is a deposit, withdrawal, or zero PnL. Dry-run effects remain
+explicit estimates and are not actual-fill evidence.
+
 ### Telegram unavailable
 
 Expected behavior:
