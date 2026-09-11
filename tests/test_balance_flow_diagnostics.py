@@ -3,11 +3,154 @@ from types import SimpleNamespace
 
 import pytest
 
-from application.broker_reconciliation import diagnose_balance_flows
+from application.broker_reconciliation import (
+    collect_spot_usdt_external_cash_flows,
+    diagnose_balance_flows,
+)
 from quant_platform_kit.common.broker_reconciliation import calculate_broker_observation_sha256 as digest
 
 
 NOW = datetime(2026, 9, 8, tzinfo=timezone.utc)
+
+
+def deposit(*, event_id="deposit-1", amount="100", status=1, complete_time=None, coin="USDT", wallet_type=0):
+    completed = complete_time or int(NOW.timestamp() * 1000)
+    return {
+        "id": event_id,
+        "amount": amount,
+        "coin": coin,
+        "status": status,
+        "insertTime": completed - 1000,
+        "completeTime": completed,
+        "walletType": wallet_type,
+        "transferType": 0,
+        "txId": f"tx-{event_id}",
+    }
+
+
+def cash_flow_client(*, deposits=None, withdrawals=None):
+    calls = []
+
+    def read(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path == "capital/deposit/hisrec":
+            return list(deposits or [])
+        if path == "capital/withdraw/history":
+            return list(withdrawals or [])
+        raise AssertionError(path)
+
+    return SimpleNamespace(_request_margin_api=read), calls
+
+
+def test_external_cash_flow_bootstrap_records_history_without_reaccounting_old_deposit():
+    c, calls = cash_flow_client(deposits=[deposit()])
+
+    result = collect_spot_usdt_external_cash_flows(c, now=NOW, cursor=None)
+
+    assert result["bootstrap"] is True
+    assert result["new_deposit_principal_usdt"] == "0"
+    assert len(result["cursor"]["records"]) == 1
+    assert len(calls) == 2
+    assert all(call[0] == "get" for call in calls)
+    assert "deposit-1" not in str(result)
+
+
+def test_external_cash_flow_new_confirmed_deposit_is_returned_once_and_then_deduplicated():
+    c, _ = cash_flow_client()
+    initial = collect_spot_usdt_external_cash_flows(c, now=NOW - timedelta(hours=1), cursor=None)
+    c, _ = cash_flow_client(deposits=[deposit()])
+
+    observed = collect_spot_usdt_external_cash_flows(c, now=NOW, cursor=initial["cursor"])
+    repeated = collect_spot_usdt_external_cash_flows(
+        c, now=NOW + timedelta(days=1), cursor=observed["cursor"]
+    )
+
+    assert observed["new_deposit_principal_usdt"] == "100"
+    assert observed["new_confirmed_deposit_count"] == 1
+    assert observed["new_deposit_completed_at"] == [NOW.isoformat()]
+    assert repeated["new_deposit_principal_usdt"] == "0"
+    assert repeated["new_confirmed_deposit_count"] == 0
+
+
+def test_external_cash_flow_pending_deposit_can_become_final_inside_overlap_window():
+    pending_client, _ = cash_flow_client(deposits=[deposit(status=0)])
+    initial = collect_spot_usdt_external_cash_flows(
+        pending_client, now=NOW, cursor=None
+    )
+    final_client, _ = cash_flow_client(deposits=[deposit()])
+
+    result = collect_spot_usdt_external_cash_flows(
+        final_client, now=NOW + timedelta(minutes=1), cursor=initial["cursor"]
+    )
+
+    assert result["new_deposit_principal_usdt"] == "100"
+    assert result["new_confirmed_deposit_count"] == 1
+
+
+def test_external_cash_flow_rejects_changed_final_identity_payload():
+    c, _ = cash_flow_client(deposits=[deposit()])
+    initial = collect_spot_usdt_external_cash_flows(c, now=NOW, cursor=None)
+    changed, _ = cash_flow_client(deposits=[deposit(amount="101")])
+
+    with pytest.raises(ValueError, match="external_cash_flow_record_changed"):
+        collect_spot_usdt_external_cash_flows(changed, now=NOW, cursor=initial["cursor"])
+
+
+@pytest.mark.parametrize(
+    "deposits,withdrawals,field",
+    [
+        ([deposit(coin="BTC")], [], "new_unsupported_deposit_count"),
+        ([deposit(wallet_type=1)], [], "new_unsupported_deposit_count"),
+        ([], [{"id": "withdraw-1", "status": 6}], "new_or_changed_withdrawal_count"),
+    ],
+)
+def test_external_cash_flow_marks_new_unsupported_activity_without_blocking_unchanged_balance(
+    deposits, withdrawals, field
+):
+    empty, _ = cash_flow_client()
+    initial = collect_spot_usdt_external_cash_flows(empty, now=NOW - timedelta(hours=1), cursor=None)
+    changed, _ = cash_flow_client(deposits=deposits, withdrawals=withdrawals)
+
+    result = collect_spot_usdt_external_cash_flows(changed, now=NOW, cursor=initial["cursor"])
+
+    assert result[field] == 1
+    assert result["new_deposit_principal_usdt"] == "0"
+
+
+def test_external_cash_flow_bootstraps_old_withdrawal_without_permanent_block_and_rejects_full_page():
+    pending, _ = cash_flow_client(withdrawals=[{"id": "withdraw-1", "status": 0}])
+    initial = collect_spot_usdt_external_cash_flows(pending, now=NOW, cursor=None)
+    repeated = collect_spot_usdt_external_cash_flows(
+        pending, now=NOW + timedelta(days=1), cursor=initial["cursor"]
+    )
+
+    assert initial["new_or_changed_withdrawal_count"] == 0
+    assert repeated["new_or_changed_withdrawal_count"] == 0
+
+    full, _ = cash_flow_client(deposits=[deposit(event_id=str(index)) for index in range(1000)])
+    with pytest.raises(ValueError, match="external_cash_flow_history_incomplete"):
+        collect_spot_usdt_external_cash_flows(full, now=NOW, cursor=None)
+
+
+def test_external_cash_flow_cursor_has_a_hard_bounded_capacity_before_provider_reads():
+    c, calls = cash_flow_client()
+    records = {
+        f"{index:064x}": {
+            "kind": "deposit",
+            "payload_sha256": "b" * 64,
+            "status": "pending",
+        }
+        for index in range(257)
+    }
+
+    with pytest.raises(ValueError, match="external_cash_flow_cursor_invalid"):
+        collect_spot_usdt_external_cash_flows(
+            c,
+            now=NOW,
+            cursor={"version": 1, "observed_at": NOW.isoformat(), "records": records},
+        )
+
+    assert calls == []
 
 
 def client(response=None):

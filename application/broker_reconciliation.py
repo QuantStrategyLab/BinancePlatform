@@ -35,6 +35,10 @@ _EXPECTED_DIGEST_KEYS = (
 )
 _MAX_MY_TRADES_WINDOW_MS = 24 * 60 * 60 * 1000
 _MAX_MY_TRADES_PAGE_SIZE = 1000
+_EXTERNAL_CASH_FLOW_LOOKBACK = timedelta(days=7)
+_EXTERNAL_CASH_FLOW_PAGE_SIZE = 1000
+_EXTERNAL_CASH_FLOW_MAX_RECORDS = 256
+_EXTERNAL_CASH_FLOW_CURSOR_VERSION = 1
 
 
 class BinanceReconciliationReadError(RuntimeError):
@@ -43,6 +47,245 @@ class BinanceReconciliationReadError(RuntimeError):
 
 def _text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _external_cash_flow_cursor(
+    cursor: Mapping[str, object] | None, *, now: datetime
+) -> tuple[bool, dict[str, dict[str, object]]]:
+    if cursor is None:
+        return True, {}
+    if not isinstance(cursor, Mapping) or cursor.get("version") != _EXTERNAL_CASH_FLOW_CURSOR_VERSION:
+        raise ValueError("external_cash_flow_cursor_invalid")
+    observed_at = cursor.get("observed_at")
+    records = cursor.get("records")
+    try:
+        observed = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("external_cash_flow_cursor_invalid") from exc
+    if (
+        observed.tzinfo is None
+        or observed.astimezone(timezone.utc) > now
+        or not isinstance(records, Mapping)
+        or len(records) > _EXTERNAL_CASH_FLOW_MAX_RECORDS
+    ):
+        raise ValueError("external_cash_flow_cursor_invalid")
+    normalized = {}
+    for identity, record in records.items():
+        if (
+            not isinstance(identity, str)
+            or len(identity) != 64
+            or any(char not in "0123456789abcdef" for char in identity)
+            or not isinstance(record, Mapping)
+            or record.get("kind") not in {"deposit", "withdrawal"}
+            or record.get("status") not in {"pending", "final", "observed"}
+            or not isinstance(record.get("payload_sha256"), str)
+            or len(record["payload_sha256"]) != 64
+        ):
+            raise ValueError("external_cash_flow_cursor_invalid")
+        normalized[identity] = dict(record)
+    return False, normalized
+
+
+def _external_cash_flow_rows(client: Any, *, path: str, start_ms: int, end_ms: int) -> list[Mapping[str, object]]:
+    try:
+        response = client._request_margin_api(
+            "get",
+            path,
+            signed=True,
+            data={"startTime": start_ms, "endTime": end_ms, "offset": 0, "limit": _EXTERNAL_CASH_FLOW_PAGE_SIZE},
+        )
+    except Exception:
+        raise ValueError("external_cash_flow_history_read_failed") from None
+    if (
+        not isinstance(response, list)
+        or len(response) >= _EXTERNAL_CASH_FLOW_PAGE_SIZE
+        or any(not isinstance(row, Mapping) for row in response)
+    ):
+        raise ValueError("external_cash_flow_history_incomplete")
+    return response
+
+
+def _external_identity(kind: str, provider_id: str) -> str:
+    return calculate_broker_observation_sha256({"kind": kind, "provider_id": provider_id})
+
+
+def _external_amount(value: object) -> Decimal:
+    if not isinstance(value, str) or not value or len(value) > 80:
+        raise ValueError("external_cash_flow_record_invalid")
+    try:
+        amount = Decimal(value)
+    except DecimalException as exc:
+        raise ValueError("external_cash_flow_record_invalid") from exc
+    if not amount.is_finite() or amount <= 0:
+        raise ValueError("external_cash_flow_record_invalid")
+    return amount
+
+
+def collect_spot_usdt_external_cash_flows(
+    client: Any, *, now: datetime, cursor: Mapping[str, object] | None
+) -> dict[str, object]:
+    """Collect one bounded, deduplicated Spot-USDT deposit slice.
+
+    Withdrawals are fingerprinted so unchanged history can be ignored. Their
+    accounting amount remains unsupported because the official history contract
+    does not specify whether ``amount`` includes the separate ``transactionFee``
+    debit; new or changed rows are only used as evidence when a balance change
+    would otherwise need an explanation.
+    """
+    if not isinstance(now, datetime) or now.tzinfo is None:
+        raise ValueError("external_cash_flow_window_invalid")
+    observed_at = now.astimezone(timezone.utc)
+    bootstrap, records = _external_cash_flow_cursor(cursor, now=observed_at)
+    start_ms = int((observed_at - _EXTERNAL_CASH_FLOW_LOOKBACK).timestamp() * 1000)
+    end_ms = int(observed_at.timestamp() * 1000)
+    deposits = _external_cash_flow_rows(
+        client, path="capital/deposit/hisrec", start_ms=start_ms, end_ms=end_ms
+    )
+    withdrawals = _external_cash_flow_rows(
+        client, path="capital/withdraw/history", start_ms=start_ms, end_ms=end_ms
+    )
+
+    new_principal = Decimal(0)
+    new_completed_at: list[str] = []
+    new_count = 0
+    unsupported_deposit_count = 0
+    withdrawal_count = 0
+    observed_identities = set()
+    for row in deposits:
+        provider_id = row.get("id")
+        status = row.get("status")
+        insert_time = row.get("insertTime")
+        if (
+            not isinstance(provider_id, str)
+            or not provider_id
+            or len(provider_id) > 160
+            or type(status) is not int
+            or status not in {0, 1, 2, 6, 7, 8}
+            or type(insert_time) is not int
+            or not start_ms <= insert_time <= end_ms
+        ):
+            raise ValueError("external_cash_flow_record_invalid")
+        amount = _external_amount(row.get("amount"))
+        coin = row.get("coin")
+        wallet_type = row.get("walletType")
+        transfer_type = row.get("transferType")
+        if (
+            not isinstance(coin, str)
+            or not coin.strip()
+            or type(wallet_type) is not int
+            or type(transfer_type) is not int
+        ):
+            raise ValueError("external_cash_flow_record_invalid")
+        identity = _external_identity("deposit", provider_id)
+        if identity in observed_identities:
+            raise ValueError("external_cash_flow_history_incomplete")
+        observed_identities.add(identity)
+        core = {
+            "kind": "deposit",
+            "id": provider_id,
+            "amount": format(amount, "f"),
+            "coin": coin.strip().upper(),
+            "wallet_type": wallet_type,
+            "transfer_type": transfer_type,
+            "insert_time": insert_time,
+        }
+        core_sha256 = calculate_broker_observation_sha256(core)
+        previous = records.get(identity)
+        if previous is not None and previous.get("payload_sha256") != core_sha256:
+            raise ValueError("external_cash_flow_record_changed")
+        if status == 1:
+            complete_time = row.get("completeTime")
+            tx_id = row.get("txId")
+            if (
+                type(complete_time) is not int
+                or complete_time < insert_time
+                or complete_time > end_ms
+                or not isinstance(tx_id, str)
+                or not tx_id
+                or len(tx_id) > 256
+            ):
+                raise ValueError("external_cash_flow_record_invalid")
+            final_sha256 = calculate_broker_observation_sha256(
+                {**core, "status": status, "complete_time": complete_time, "tx_id": tx_id}
+            )
+            if previous is not None and previous.get("status") == "final":
+                if previous.get("final_sha256") != final_sha256:
+                    raise ValueError("external_cash_flow_record_changed")
+                continue
+            if not bootstrap:
+                if core["coin"] != "USDT" or wallet_type != 0 or transfer_type != 0:
+                    unsupported_deposit_count += 1
+                else:
+                    new_principal += amount
+                    new_count += 1
+                    new_completed_at.append(
+                        datetime.fromtimestamp(complete_time / 1000, tz=timezone.utc).isoformat()
+                    )
+            records[identity] = {
+                "kind": "deposit",
+                "payload_sha256": core_sha256,
+                "final_sha256": final_sha256,
+                "status": "final",
+                "source_time_ms": insert_time,
+            }
+        else:
+            if previous is not None and previous.get("status") == "final":
+                raise ValueError("external_cash_flow_record_changed")
+            records[identity] = {
+                "kind": "deposit",
+                "payload_sha256": core_sha256,
+                "status": "pending",
+                "source_time_ms": insert_time,
+            }
+
+    for row in withdrawals:
+        provider_id = row.get("id")
+        status = row.get("status")
+        if (
+            not isinstance(provider_id, str)
+            or not provider_id
+            or len(provider_id) > 160
+            or type(status) is not int
+        ):
+            raise ValueError("external_cash_flow_record_invalid")
+        identity = _external_identity("withdrawal", provider_id)
+        if identity in observed_identities:
+            raise ValueError("external_cash_flow_history_incomplete")
+        observed_identities.add(identity)
+        payload_sha256 = calculate_broker_observation_sha256(dict(row))
+        previous = records.get(identity)
+        if previous is None or previous.get("payload_sha256") != payload_sha256:
+            if not bootstrap:
+                withdrawal_count += 1
+            records[identity] = {
+                "kind": "withdrawal",
+                "payload_sha256": payload_sha256,
+                "status": "observed",
+            }
+
+    # Final rows that have aged out of the seven-day request can be discarded;
+    # pending deposits stay until they are observed final or require review.
+    for identity, record in tuple(records.items()):
+        source_time = record.get("source_time_ms")
+        if record.get("kind") == "withdrawal" and identity not in observed_identities:
+            del records[identity]
+        elif record.get("status") == "final" and type(source_time) is int and source_time < start_ms:
+            del records[identity]
+    if len(records) > _EXTERNAL_CASH_FLOW_MAX_RECORDS:
+        raise ValueError("external_cash_flow_cursor_capacity_exceeded")
+    return {
+        "bootstrap": bootstrap,
+        "new_deposit_principal_usdt": format(new_principal, "f") if new_principal else "0",
+        "new_confirmed_deposit_count": new_count,
+        "new_deposit_completed_at": new_completed_at,
+        "new_unsupported_deposit_count": unsupported_deposit_count,
+        "new_or_changed_withdrawal_count": withdrawal_count,
+        "cursor": {
+            "version": _EXTERNAL_CASH_FLOW_CURSOR_VERSION,
+            "observed_at": observed_at.isoformat(),
+            "records": records,
+        },
+    }
 
 
 def _canonical_records(records: Sequence[Mapping[str, object]]) -> tuple[dict[str, object], ...]:
