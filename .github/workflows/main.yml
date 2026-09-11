@@ -37,7 +37,7 @@ on:
         type: choice
         required: false
         default: none
-        options: [none, prepare, verify, activate]
+        options: [none, diagnose, prepare, verify, activate]
       recovery_id:
         description: "Exact prepared recovery ID; required for verify or activate"
         type: string
@@ -107,7 +107,7 @@ jobs:
           set -euo pipefail
           case "${RECOVERY_ACTION_INPUT:-none}" in
             none) ;;
-            prepare|verify|activate)
+            diagnose|prepare|verify|activate)
               if [ "${ACCOUNTING_MIGRATION_ACTION_INPUT:-none}" != "none" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
                 echo "::error::Recovery requires disabled main runtime, reconcile_only, and no other diagnostic mode."
                 exit 1
@@ -390,7 +390,7 @@ jobs:
           RECOVERY_ID: ${{ inputs.recovery_id }}
           RECONCILIATION_RECOVERY_SYNC_TOKEN: ${{ inputs.recovery_action == 'prepare' && secrets.RECONCILIATION_RECOVERY_SYNC_TOKEN || '' }}
           RECONCILIATION_RECOVERY_CONTROLLER_TOKEN: ${{ (inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.RECONCILIATION_RECOVERY_CONTROLLER_TOKEN || '' }}
-          GITHUB_TOKEN: ${{ (inputs.recovery_action == 'prepare' || inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.GITHUB_TOKEN || '' }}
+          GITHUB_TOKEN: ${{ (inputs.recovery_action == 'diagnose' || inputs.recovery_action == 'prepare' || inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.GITHUB_TOKEN || '' }}
           BINANCE_RECOVERY_CONTROL_ENABLED: ${{ vars.BINANCE_RECOVERY_CONTROL_ENABLED || 'false' }}
           BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
           BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}

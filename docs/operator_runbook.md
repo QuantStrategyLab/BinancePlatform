@@ -244,6 +244,15 @@ runtime activation or trading.
 
 ### Post-rebase recovery
 
+If a post-rebase preparation fails at broker collection with only a generic
+code, use one explicit `recovery_action=diagnose` with `reconcile_only=true` and
+the runtime disabled on main. It runs the same archive and account validators,
+then returns before saving control or publishing a candidate. It receives no
+console synchronization or confirmation credentials. Only exact allowlisted
+application reason codes are reported; provider payloads and amounts remain
+hidden. A diagnosis failure stops the operation; do not repeat prepare or
+weaken its evidence checks. Diagnosis success never grants recovery authority.
+
 After the approved accounting rebase, the legacy recovery source cannot be
 reused because it is bound to the archived ledger digest and its older history
 window. A new recovery `prepare` uses the existing recovery controller and

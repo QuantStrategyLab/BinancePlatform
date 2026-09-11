@@ -50,6 +50,22 @@ FROZEN_EXPECTED_SHA256 = "c4d1820390935d4bbad52094b21c671e68a58b04c3a0e32869fa6a
 BASELINE_ID = "crypto-binance-lkg-20260830"
 BASELINE_TARGET_SHA256 = "f24b854707c62e8b9266c49a25fba2756e3dd708043595206d8b93d281c51245"
 
+# Only exact application-owned codes may leave the read-only diagnostic.
+# Never expose exception text, provider responses, quantities or account IDs.
+DIAGNOSTIC_REASON_CODES = frozenset({
+    "post_rebase_account_identity_mismatch", "post_rebase_archive_invalid",
+    "post_rebase_archive_missing", "post_rebase_balance_amount_invalid",
+    "post_rebase_candidate_source_mismatch", "post_rebase_earn_page_incomplete",
+    "post_rebase_earn_read_failed", "post_rebase_enrollment_blocked",
+    "post_rebase_history_incomplete", "post_rebase_history_window_invalid",
+    "post_rebase_ledger_invalid", "post_rebase_locked_balance_present",
+    "post_rebase_migration_run_invalid", "post_rebase_non_reward_activity_present",
+    "post_rebase_open_orders_present", "post_rebase_order_state_unsafe",
+    "post_rebase_quantity_changed_during_read", "post_rebase_quantity_mismatch",
+    "post_rebase_recent_executions_present", "post_rebase_source_binding_mismatch",
+    "post_rebase_source_run_invalid", "post_rebase_unknown_spot_balance",
+})
+
 
 class RecoveryWriteUncertain(RuntimeError):
     """A post-rebase write or publication may already be durable."""
@@ -239,9 +255,11 @@ def run(action, recovery_id=""):
     symbols = _symbols_from_env()
     if digest(list(symbols)) != MANAGED_SYMBOLS_SHA256:
         raise ValueError("recovery_managed_symbols_changed")
-    if action == "prepare":
+    if action in {"prepare", "diagnose"}:
         if previous is not None and previous.get("state") != "RECONCILE_ONLY":
             raise ValueError("recovery_already_active")
+        if action == "diagnose" and not is_post_rebase:
+            raise ValueError("post_rebase_archive_missing")
         STAGE = "broker_collection"
         client = connect_client(os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30)
         if is_post_rebase:
@@ -268,6 +286,10 @@ def run(action, recovery_id=""):
             package = collect_recovery_source(client=client, runtime_target=target, expected=expected, ledger=ledger,
                                               symbols=symbols, history_start=HISTORY_START, source_run=current_run)
             candidate = validate_source(package, runtime_target=target, expected=expected)
+        if action == "diagnose":
+            return {"status": "diagnosed", "source_kind": "post_rebase",
+                    "historical_difference_unresolved": True, "no_order": True,
+                    "write_performed": False, "execution_authority_granted": False}
         recovery_id = f"binance-{current_run['id']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
         value = {"state": "RECONCILE_ONLY", "recovery_id": recovery_id, **package}
         STAGE = "candidate_storage"
@@ -425,10 +447,10 @@ def run(action, recovery_id=""):
 
 def main(argv=None):
     parser = ArgumentParser(description="Prepare, verify or adopt the designated Binance recovery; never trade")
-    parser.add_argument("action", choices=("prepare", "verify", "activate"))
+    parser.add_argument("action", choices=("diagnose", "prepare", "verify", "activate"))
     parser.add_argument("--recovery-id", default="")
     args = parser.parse_args(argv)
-    if args.action != "prepare" and not re.fullmatch(r"binance-[0-9]+-[0-9]+", args.recovery_id):
+    if args.action not in {"prepare", "diagnose"} and not re.fullmatch(r"binance-[0-9]+-[0-9]+", args.recovery_id):
         parser.error("verify/activate require the exact recovery ID shown by prepare")
     try:
         result = run(args.action, args.recovery_id)
@@ -438,9 +460,12 @@ def main(argv=None):
     except HTTPError as exc:
         print(json.dumps({"status": "blocked", "stage": STAGE, "reason_code": "recovery_http_request_failed", "http_status": exc.code, "no_order": True}))
         return 2
-    except Exception:
+    except Exception as exc:
         # Never serialize provider messages, credentials or broker payloads.
-        print(json.dumps({"status": "blocked", "stage": STAGE, "reason_code": "recovery_operation_failed", "no_order": True}))
+        reason = "recovery_operation_failed"
+        if args.action == "diagnose" and type(exc) is ValueError and str(exc) in DIAGNOSTIC_REASON_CODES:
+            reason = str(exc)
+        print(json.dumps({"status": "blocked", "stage": STAGE, "reason_code": reason, "no_order": True}))
         return 2
     print(json.dumps(result, sort_keys=True))
     return 0

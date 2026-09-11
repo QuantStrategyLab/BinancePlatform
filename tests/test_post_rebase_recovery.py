@@ -684,9 +684,9 @@ def test_post_rebase_unknown_cli_outcome_is_sanitized_and_no_retry(monkeypatch, 
     }
 
 
-@pytest.mark.parametrize("publication_unknown", [False, True])
+@pytest.mark.parametrize("action,publication_unknown", [("prepare", False), ("prepare", True), ("diagnose", False)])
 def test_controller_prepare_routes_real_post_rebase_archive_and_returns_unresolved_status(
-    monkeypatch, publication_unknown
+    monkeypatch, action, publication_unknown
 ):
     from scripts import binance_recovery_controller as controller
 
@@ -776,6 +776,16 @@ def test_controller_prepare_routes_real_post_rebase_archive_and_returns_unresolv
 
     monkeypatch.setattr(controller, "request_json", request)
 
+    if action == "diagnose":
+        monkeypatch.setattr(controller, "save_post_rebase_control", lambda *_args, **_kwargs: pytest.fail("diagnosis wrote control"))
+        monkeypatch.setattr(controller, "_save_control", lambda *_args, **_kwargs: pytest.fail("diagnosis wrote legacy control"))
+        result = controller.run(action)
+        assert result == {"status": "diagnosed", "source_kind": "post_rebase", "historical_difference_unresolved": True,
+                          "no_order": True, "write_performed": False, "execution_authority_granted": False}
+        assert not requests
+        assert docs[controller.CONTROL_DOCUMENT].snapshot.value == control
+        return
+
     if publication_unknown:
         with pytest.raises(controller.RecoveryWriteUncertain):
             controller.run("prepare")
@@ -786,6 +796,26 @@ def test_controller_prepare_routes_real_post_rebase_archive_and_returns_unresolv
         assert result["historical_difference_unresolved"] is True
     assert len(requests) == 1
     assert docs[controller.CONTROL_DOCUMENT].snapshot.value["source"]["kind"] == "post_rebase"
+
+
+@pytest.mark.parametrize("error,expected", [
+    (ValueError("post_rebase_quantity_mismatch"), "post_rebase_quantity_mismatch"),
+    (ValueError("post_rebase_history_incomplete"), "post_rebase_history_incomplete"),
+    (ValueError("post_rebase_quantity_mismatch private account payload"), "recovery_operation_failed"),
+    (RuntimeError("private provider payload"), "recovery_operation_failed"),
+])
+def test_diagnose_cli_reports_only_exact_safe_reason_codes(monkeypatch, capsys, error, expected):
+    from scripts import binance_recovery_controller as controller
+
+    def fail(*_args):
+        raise error
+
+    monkeypatch.setattr(controller, "run", fail)
+    assert controller.main(["diagnose"]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["reason_code"] == expected
+    assert result["no_order"] is True
+    assert "private" not in json.dumps(result)
 
 
 def test_controller_verify_rejects_archive_metadata_change_before_confirmation_or_broker_read(monkeypatch):

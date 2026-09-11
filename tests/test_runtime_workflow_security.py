@@ -223,6 +223,10 @@ def test_balance_diagnostic_guard_rejects_unsafe_input_combinations(reconcile, p
 
 
 @pytest.mark.parametrize("action,reconcile,enabled,ref,allowed", [
+    ("diagnose", "true", "false", "refs/heads/main", True),
+    ("diagnose", "false", "false", "refs/heads/main", False),
+    ("diagnose", "true", "true", "refs/heads/main", False),
+    ("diagnose", "true", "false", "refs/heads/feature", False),
     ("prepare", "true", "false", "refs/heads/main", True),
     ("activate", "true", "false", "refs/heads/main", True),
     ("verify", "false", "false", "refs/heads/main", False),
@@ -248,6 +252,10 @@ def test_recovery_credentials_are_scoped_to_explicit_recovery_actions():
     step = workflow.split("      - name: 4. Run trading strategy", 1)[1].split("        env:", 1)[0]
     assert 'scripts/binance_recovery_controller.py "$RECOVERY_ACTION"' in step
     assert step.index("binance_recovery_controller.py") < step.index('main.py')
+    token_lines = [line for line in workflow.splitlines() if line.strip().startswith(("RECONCILIATION_RECOVERY_SYNC_TOKEN:", "RECONCILIATION_RECOVERY_CONTROLLER_TOKEN:"))]
+    assert all("diagnose" not in line for line in token_lines)
+    github_token_line = next(line for line in workflow.splitlines() if line.strip().startswith("GITHUB_TOKEN:"))
+    assert "inputs.recovery_action == 'diagnose'" in github_token_line
 
 
 def test_accounting_migration_has_explicit_preview_and_apply_inputs():
