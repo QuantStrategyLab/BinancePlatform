@@ -120,6 +120,28 @@ independently explained balance change before any baseline enrollment.
 
 ### Daily-accounting state migration
 
+`accounting_migration_action=rebase-proposal` prepares an **informational new
+accounting start** for an operator who chooses to retain unresolved history.
+It requires a disabled target, `reconcile_only=true`, no current open orders or
+current-day fills, and complete current evidence. It lists managed Spot +
+Flexible Earn quantities, average-price valuation estimates, old fields and
+proposed new fields. Zero new-period counters do not classify or erase prior
+income; the entire old ledger must be archived before any separately approved
+write. The circuit-breaker latch and all other fields must remain unchanged.
+This output is not an executable migration candidate; existing `preview`/`apply`
+schema and zero-activity checks are unchanged. No rebase apply action is added.
+
+This repository is public. Never print the proposal or upload it unencrypted.
+The operator generates an X.509 recipient certificate and keeps its private key
+on their own computer. Pass only the **public certificate** through
+`proposal_recipient_certificate`. The existing runner's OpenSSL CMS encrypts
+the in-memory proposal with AES-256; only `proposal.cms` is retained in the
+`binance-accounting-rebase-proposal` artifact for one day. Download the artifact
+from the verified run and decrypt it locally with the retained private key.
+Log output contains status flags only. Execution, if later approved, requires
+fresh quantities/prices and a separate guarded write; the proposal's valuation
+time and estimates are not a standing permission to overwrite balances.
+
 `accounting_migration_action=audit` with `reconcile_only=true` and a disabled
 target performs a read-only ledger diagnosis. It requires the exact preserved
 recovery source inspected in Runtime `34586531344`, after its approved downgrade.
