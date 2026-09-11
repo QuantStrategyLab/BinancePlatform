@@ -47,7 +47,7 @@ on:
         type: choice
         required: false
         default: none
-        options: [none, inspect, quiesce, preview, apply]
+        options: [none, inspect, quiesce, audit, preview, apply]
       accounting_migration_preview_run_id:
         description: "Exact successful preview run ID; required only for apply"
         type: string
@@ -117,7 +117,7 @@ jobs:
                 exit 1
               fi
               ;;
-            inspect|quiesce|preview|apply)
+            inspect|quiesce|audit|preview|apply)
               if [ "${RECOVERY_ACTION_INPUT:-none}" != "none" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
                 echo "::error::Accounting migration requires disabled main runtime, reconcile_only, and no other recovery or diagnostic mode."
                 exit 1

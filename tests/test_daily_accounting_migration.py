@@ -499,6 +499,93 @@ def test_inspect_control_does_not_export_arbitrary_state(monkeypatch):
     assert "private payload" not in json.dumps(result)
 
 
+def _audit_setup(monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+    expected = {"account_scope_sha256": migration.digest({"account_uid": "synthetic"})}
+    baseline = {**expected, "positions_sha256": "b" * 64, "cash_sha256": "c" * 64}
+    control = {"state": "RECONCILE_ONLY", "candidate": {"expected_digests": baseline},
+               "source": {"original_evidence": {**baseline, "observed_at": "2026-09-08T18:18:20Z"},
+                          "frozen_expected_sha256": migration.digest(expected)}}
+    monkeypatch.setattr(migration, "QUIESCE_CONTROL_SHA256", migration.digest({**control, "state": "ACTIVE_LKG"}))
+    refs = {"control_ref": Ref(Snapshot(control)), "ledger_ref": Ref(Snapshot(_ledger())),
+            "owner_ref": Ref(Snapshot(None))}
+    monkeypatch.setenv("BINANCE_RECONCILIATION_SYMBOLS", "ETHUSDT")
+    balances = _evidence()["balance_snapshot"]
+    class Client:
+        def get_account(self):
+            return {"uid": "synthetic", "balances": [{"asset": a, "free": str(v), "locked": "0"} for a, v in balances.items()]}
+        def get_simple_earn_flexible_product_position(self, **kwargs):
+            return {"rows": [], "total": 0}
+    monkeypatch.setattr(migration, "collect_read_only_reconciliation_observations", lambda *a, **kw: SimpleNamespace(
+        account_scope={"account_uid": "synthetic"}, positions=(), open_orders=(), recent_executions=()))
+    calls = []
+    def history(*args, **kwargs):
+        calls.append(kwargs)
+        return {"history_complete_for_requested_surfaces": True, "history_counts": {"earn_rewards": 3},
+                "spot_bonus_reconciliation": {"historical_balance_hashes_match": True}}
+    monkeypatch.setattr(migration, "diagnose_balance_flows", history)
+    return migration, refs, Client(), expected, balances, calls
+
+
+def test_audit_uses_recovered_window_and_distinguishes_missing_from_mismatch(monkeypatch):
+    migration, refs, client, expected, balances, calls = _audit_setup(monkeypatch)
+    balances["ETH"] = 2.5
+    result = migration.audit_ledger(refs, client=client, expected=expected, now=NOW)
+    assert result["ledger_balance_comparison"] == {"BTC": "MATCH", "BNB": "MISSING_IN_LEDGER", "ETH": "MISMATCH", "USDT": "MATCH"}
+    assert calls[0]["start"] == datetime(2026, 9, 8, 18, 18, 20, tzinfo=timezone.utc)
+    assert calls[0]["expected_digests"]["positions_sha256"] == "b" * 64
+    assert result["recovered_spot_history"]["spot_bonus_reconciliation"]["historical_balance_hashes_match"] is True
+    assert result["complete_balance_reconciliation"] is False
+    assert result["write_performed"] is False and result["no_order"] is True
+    assert "500.0" not in json.dumps(result) and "synthetic" not in json.dumps(result)
+    assert refs["ledger_ref"].snapshot.value == _ledger()
+
+
+@pytest.mark.parametrize("change", ["control", "owner", "identity", "window", "ledger_during_read", "spot_during_read", "earn_during_read", "incomplete_history"])
+def test_audit_rejects_untrusted_incomplete_or_changing_evidence(monkeypatch, change):
+    migration, refs, client, expected, balances, calls = _audit_setup(monkeypatch)
+    if change == "control": refs["control_ref"].snapshot.value["private"] = True
+    if change == "owner": refs["owner_ref"] = Ref(Snapshot({"owner": "busy"}))
+    if change == "identity": expected["account_scope_sha256"] = "d" * 64
+    if change == "window":
+        # A known source still cannot extend the finite history window.
+        control = refs["control_ref"].snapshot.value
+        control["source"]["original_evidence"]["observed_at"] = "2026-09-01T00:00:00Z"
+        monkeypatch.setattr(migration, "QUIESCE_CONTROL_SHA256", migration.digest({**control, "state": "ACTIVE_LKG"}))
+    original = migration.diagnose_balance_flows
+    def history(*args, **kwargs):
+        result = original(*args, **kwargs)
+        if change == "ledger_during_read": refs["ledger_ref"].snapshot.value["daily_equity_base"] += 1
+        if change == "spot_during_read": balances["USDT"] += 1
+        if change == "earn_during_read":
+            client.get_simple_earn_flexible_product_position = lambda **kw: {"rows": [{"asset": kw["asset"], "totalAmount": "1"}], "total": 1}
+        if change == "incomplete_history": result["history_complete_for_requested_surfaces"] = False
+        return result
+    monkeypatch.setattr(migration, "diagnose_balance_flows", history)
+    with pytest.raises(migration.MigrationBlocked):
+        migration.audit_ledger(refs, client=client, expected=expected, now=NOW)
+
+
+def test_audit_runtime_never_enters_candidate_or_write_path(monkeypatch, capsys):
+    migration, refs, client, expected, _, _ = _audit_setup(monkeypatch)
+    monkeypatch.setattr(migration, "require_runtime_context", lambda: None)
+    monkeypatch.setattr(migration, "resolve_runtime_target_from_env", lambda **kw: SimpleNamespace(
+        live_continuity=SimpleNamespace(state="RECONCILE_ONLY")))
+    monkeypatch.setattr(migration, "_expected_digests", lambda: expected)
+    monkeypatch.setattr(migration, "_refs", lambda: refs)
+    monkeypatch.setattr(migration, "connect_client", lambda *a, **kw: client)
+    monkeypatch.setenv("BINANCE_API_KEY", "synthetic")
+    monkeypatch.setenv("BINANCE_API_SECRET", "synthetic")
+    monkeypatch.setattr(migration, "datetime", SimpleNamespace(
+        now=lambda *_: NOW, fromisoformat=datetime.fromisoformat, strptime=datetime.strptime))
+    def forbidden(*a, **kw): raise AssertionError("audit must not prepare or apply a migration")
+    monkeypatch.setattr(migration, "_collect_evidence", forbidden)
+    monkeypatch.setattr(migration, "build_candidate", forbidden)
+    monkeypatch.setattr(migration, "get_firestore_client", forbidden)
+    assert migration.main(["audit"]) == 0
+    assert json.loads(capsys.readouterr().out)["stage"] == "accounting_ledger_audit"
+
+
 @pytest.mark.parametrize("changed", [None, "owner", "control", "version", "missing_ledger"])
 def test_quiesce_only_updates_approved_control_state(monkeypatch, changed):
     from scripts import migrate_daily_accounting_state as migration
