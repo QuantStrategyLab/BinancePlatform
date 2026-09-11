@@ -1418,8 +1418,14 @@ def test_owner_release_requires_confirmed_fill_and_existing_persisted_action():
     import pytest
     from unittest.mock import Mock
     from runtime_support import StatePersistenceError
+    from application.execution_service import (
+        _parse_filled_order, _apply_fill_balances, _record_trend_fill, _prepare_accounting_state,
+    )
     client = Mock()
-    client.order_market_buy.return_value = {'status': 'FILLED'}
+    response = {'status': 'FILLED', 'symbol': 'ETHUSDT', 'side': 'BUY',
+                'executedQty': '1', 'cummulativeQuoteQty': '100',
+                'fills': [{'price': '100', 'qty': '1', 'commission': '0', 'commissionAsset': 'USDT'}]}
+    client.order_market_buy.return_value = response
     runtime = build_order_runtime(client=client)
     release = runtime.state_owner_release = Mock(return_value=True)
     report = build_execution_report(runtime)
@@ -1428,6 +1434,12 @@ def test_owner_release_requires_confirmed_fill_and_existing_persisted_action():
     assert release_runtime_state_owner(runtime) is False
     release.assert_not_called()
     state = runtime.trade_state
+    assert state['order_submission']['state'] == 'FILLED_ACCOUNTING_PENDING'
+    balances = {'ETHUSDT': 0.0}
+    fill = _parse_filled_order(response, symbol='ETHUSDT', side='BUY', prices={'ETHUSDT': 100.0})
+    cash, quote_delta = _apply_fill_balances(fill, side='BUY', symbol='ETHUSDT', balances=balances, u_total=200.0)
+    _record_trend_fill(state, fill, quote_delta=quote_delta)
+    _prepare_accounting_state(state, symbol='ETHUSDT', base_asset='ETH', balances=balances, u_total=cash)
     state['trend_action_history'] = {'ETHUSDT': {'action': 'buy', 'date': runtime.now_utc.strftime('%Y%m%d')}}
     writer = runtime.state_writer
     runtime.state_writer = lambda _state: False
@@ -1462,7 +1474,10 @@ def test_confirmed_earn_and_fuel_require_fresh_balances_and_successful_state_wri
     from unittest.mock import Mock
     from runtime_support import ExecutionIntegrityError, StatePersistenceError
     for method, payload, effect, asset, response in [
-        ('order_market_buy', {'symbol': 'BNBUSDT', 'quantity': 1}, 'order_buy', None, {'status': 'FILLED'}),
+        ('order_market_buy', {'symbol': 'BNBUSDT', 'quantity': 1}, 'order_buy', None,
+         {'status': 'FILLED', 'symbol': 'BNBUSDT', 'side': 'BUY', 'executedQty': '1',
+          'cummulativeQuoteQty': '1',
+          'fills': [{'price': '1', 'qty': '1', 'commission': '0', 'commissionAsset': 'BNB'}]}),
         ('subscribe_simple_earn_flexible_product', {'productId': 'synthetic', 'amount': 1}, 'earn_subscribe', 'USDT', {'success': True, 'purchaseId': 1}),
     ]:
         client = Mock()
@@ -1470,6 +1485,8 @@ def test_confirmed_earn_and_fuel_require_fresh_balances_and_successful_state_wri
         client.get_asset_balance.return_value = {'free': '10', 'locked': '0'}
         client.get_simple_earn_flexible_product_position.return_value = {'rows': []}
         runtime = build_order_runtime(client=client)
+        runtime.trade_state = {'order_submission': {'state': 'RESERVED'},
+                               'last_balance_snapshot': {'BNB': 9.0, 'USDT': 11.0}}
         runtime.state_owner_release = Mock(return_value=True)
         report = build_execution_report(runtime)
         runtime_call_client(runtime, report, method_name=method, payload=payload, effect_type=effect, accounting_asset=asset)
