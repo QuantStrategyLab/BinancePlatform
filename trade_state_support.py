@@ -1,4 +1,5 @@
 import math
+import copy
 
 
 def safe_float(value, default=0.0):
@@ -104,6 +105,12 @@ def normalize_trade_state(
     )
     if not isinstance(state, dict):
         return normalized
+
+    # The approved accounting rebase marker is durable audit state.  Preserve
+    # it when it already exists, while legacy states continue to have no such
+    # field and unrelated unknown top-level fields remain filtered out.
+    if isinstance(state.get("accounting_rebase"), dict):
+        normalized["accounting_rebase"] = copy.deepcopy(state["accounting_rebase"])
 
     for key, value in normalized.items():
         if key in trend_universe or key == retired_positions_key:

@@ -149,10 +149,20 @@ def activated_target(target, control, *, expected):
         return target
     if control.get("state") != "ACTIVE_LKG":
         raise ValueError("recovery_control_state_invalid")
-    candidate = BrokerReconciliationBaselineCandidate.from_dict(control["candidate"])
+    source = control["source"]
+    if source.get("kind") == "post_rebase":
+        from application.rebased_recovery import validate_post_rebase_source
+
+        candidate = validate_post_rebase_source(
+            control,
+            runtime_target=target,
+            legacy_expected=expected,
+            require_fresh=False,
+        )
+    else:
+        candidate = BrokerReconciliationBaselineCandidate.from_dict(control["candidate"])
     plan = ReconciliationRecoveryTransitionPlan.from_dict(control["transition_plan"])
     confirmation = ReconciliationRecoveryConfirmation.from_dict(control["confirmation"])
-    source = control["source"]
     if (source["runtime_target_sha256"] != digest(target.to_dict())
             or source["frozen_expected_sha256"] != digest(expected)
             or candidate.source_receipts_sha256 != digest(source)
