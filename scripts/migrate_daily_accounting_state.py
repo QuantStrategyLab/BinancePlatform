@@ -460,7 +460,7 @@ def _strict_balance_snapshot(client, positions, assets):
     return result
 
 
-def _collect_evidence(client, *, ledger, now, expected):
+def _ledger_scope(ledger):
     configured = tuple(dict.fromkeys((*_symbols_from_env(), "BTCUSDT", "BNBUSDT")))
     old_snapshot = ledger.get("last_balance_snapshot")
     old_assets = set(old_snapshot) if isinstance(old_snapshot, Mapping) else set()
@@ -474,6 +474,11 @@ def _collect_evidence(client, *, ledger, now, expected):
             (*configured, *(f"{asset}USDT" for asset in old_assets if asset != "USDT"))
         )
     )
+    return assets, symbols
+
+
+def _collect_evidence(client, *, ledger, now, expected):
+    assets, symbols = _ledger_scope(ledger)
     midnight = now.astimezone(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
     )
@@ -579,6 +584,83 @@ def _read_source(refs):
     _validate_control(control_value)
     _validate_safe_order_state(ledger_value)
     return ledger, ledger_value, control_value
+
+
+def audit_ledger(refs, *, client, expected, now):
+    """Compare two distinct balance bases without granting migration authority."""
+    ledger_snapshot, ledger, control = _read_source(refs)
+    # Reuse the exact reviewed control, allowing only its approved downgrade.
+    if (not isinstance(control, Mapping)
+            or digest({**control, "state": "ACTIVE_LKG"}) != QUIESCE_CONTROL_SHA256):
+        raise MigrationBlocked("audit_recovery_source_changed")
+    try:
+        source = control["source"]
+        original = source["original_evidence"]
+        baseline = control["candidate"]["expected_digests"]
+        recovered_expected = {**baseline, "account_scope_sha256": expected["account_scope_sha256"]}
+        if (source["frozen_expected_sha256"] != digest(expected)
+                or original["account_scope_sha256"] != expected["account_scope_sha256"]
+                or any(baseline[key] != original[key] for key in ("positions_sha256", "cash_sha256"))):
+            raise ValueError("source binding")
+        start = datetime.fromisoformat(original["observed_at"].replace("Z", "+00:00"))
+        if now.tzinfo is None or start.tzinfo is None or not start < now or now - start > timedelta(days=7):
+            raise ValueError("window")
+        old = ledger["last_balance_snapshot"]
+        if not isinstance(old, Mapping) or not old:
+            raise ValueError("snapshot")
+        assets, symbols = _ledger_scope(ledger)
+        if any(not isinstance(asset, str) or not re.fullmatch(r"[A-Z0-9]{1,20}", asset) for asset in assets):
+            raise ValueError("asset")
+        reset_date = datetime.strptime(ledger["last_reset_date"], "%Y-%m-%d").date().isoformat()
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise MigrationBlocked("audit_source_invalid") from None
+    midnight = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    account = client.get_account()
+    observations = collect_read_only_reconciliation_observations(
+        client, strategy_symbols=symbols, local_execution_ledger=ledger,
+        now=now, lookback=now - midnight, account_snapshot=account,
+    )
+    if digest(observations.account_scope) != expected["account_scope_sha256"]:
+        raise MigrationBlocked("account_scope_unverified")
+    balances = _strict_balance_snapshot(client, account["balances"], assets)
+    comparison = {
+        asset: "MISSING_IN_LEDGER" if asset not in old else
+        "MATCH" if _same_balance(old[asset], balances[asset], asset=asset) else "MISMATCH"
+        for asset in sorted(assets)
+    }
+    history = diagnose_balance_flows(
+        client, start=start, end=now, now=now, account=account,
+        expected_digests=recovered_expected,
+    )
+    if history.get("history_complete_for_requested_surfaces") is not True:
+        raise MigrationBlocked("audit_history_incomplete")
+    after_account = client.get_account()
+    after_balances = _strict_balance_snapshot(client, after_account["balances"], assets)
+    after_snapshot, after_ledger, after_control = _read_source(refs)
+    if (digest(account["balances"]) != digest(after_account["balances"])
+            or any(not _same_balance(balances[a], after_balances[a], asset=a) for a in assets)
+            or digest(after_ledger) != digest(ledger)
+            or _timestamp(after_snapshot.update_time) != _timestamp(ledger_snapshot.update_time)
+            or digest(after_control) != digest(control)):
+        raise MigrationBlocked("audit_state_changed_during_read")
+    return {
+        "status": "audited", "stage": "accounting_ledger_audit",
+        "observed_at": now.isoformat(),
+        "ledger_update_time": _timestamp(ledger_snapshot.update_time),
+        "ledger_last_reset_date": reset_date,
+        "ledger_uses_new_accounting_basis": ledger.get("daily_trend_pnl_basis") == NEW_BASIS,
+        "circuit_breaker_latched": ledger.get("is_circuit_broken") is True,
+        "ledger_balance_scope": "managed_assets_spot_plus_flexible_earn",
+        "ledger_balance_comparison": comparison,
+        "recent_execution_window_start": midnight.isoformat(),
+        "recent_execution_count": len(observations.recent_executions),
+        "open_order_count": len(observations.open_orders),
+        "recovered_spot_window_start": start.isoformat(),
+        "recovered_spot_history": history,
+        "complete_balance_reconciliation": False,
+        "ledger_unchanged": True, "no_order": True, "write_performed": False,
+        "execution_authority_granted": False,
+    }
 
 
 def inspect_control(refs):
@@ -688,6 +770,8 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
     client = connect_client(
         os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30
     )
+    if action == "audit":
+        return audit_ledger(refs, client=client, expected=expected, now=now)
     evidence = _collect_evidence(client, ledger=ledger, now=now, expected=expected)
     decision_now = now if fixed_now else datetime.now(timezone.utc)
     if evidence["utc_date"] != decision_now.date().isoformat():
@@ -753,7 +837,7 @@ def main(argv=None) -> int:
     parser = ArgumentParser(
         description="Preview or apply the bounded Binance daily-accounting migration"
     )
-    parser.add_argument("action", choices=("inspect", "quiesce", "preview", "apply"))
+    parser.add_argument("action", choices=("inspect", "quiesce", "audit", "preview", "apply"))
     parser.add_argument("--expected-digest", default="")
     args = parser.parse_args(argv)
     if args.action != "apply" and args.expected_digest:

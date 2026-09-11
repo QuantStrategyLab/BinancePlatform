@@ -120,6 +120,19 @@ independently explained balance change before any baseline enrollment.
 
 ### Daily-accounting state migration
 
+`accounting_migration_action=audit` with `reconcile_only=true` and a disabled
+target performs a read-only ledger diagnosis. It requires the exact preserved
+recovery source inspected in Runtime `34586531344`, after its approved downgrade.
+It compares current Spot plus Flexible Earn totals with the ledger's managed
+asset snapshot, reporting missing assets separately from mismatches. Separately,
+it checks BONUS rewards since the recovered source observation against that
+source's Spot hashes (at most seven days). Today's rewards must not be compared
+against an older frozen baseline as if they cover the entire intervening period.
+The output includes bounded current-day trade and open-order counts, not account
+amounts. Incomplete history or changing balances/ledger blocks the audit. A match
+does not reconcile the whole account, authorize migration, or restore trading;
+the existing zero-activity preview/apply checks remain unchanged.
+
 The migration is a separate, one-time `Runtime` workflow mode for an old
 `trend_val` ledger. It does not activate recovery control, grant execution
 authority, clear the circuit-breaker latch, or reconstruct historical
