@@ -263,7 +263,7 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
     inputs = workflow[workflow.index("    inputs:") : workflow.index("permissions:")]
 
     assert "accounting_migration_action:" in inputs
-    assert "options: [none, inspect, quiesce, audit, preview, rebase-proposal, rebase-apply, apply]" in inputs
+    assert "options: [none, inspect, quiesce, audit, preview, scope-preview, rebase-proposal, rebase-apply, apply]" in inputs
     assert "accounting_migration_preview_run_id:" in inputs
     assert "accounting_migration_expected_digest:" in inputs
 
@@ -272,6 +272,9 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
     "action,run_id,digest,reconcile,enabled,ref,allowed",
     [
         ("preview", "", "", "true", "false", "refs/heads/main", True),
+        ("scope-preview", "", "", "true", "false", "refs/heads/main", True),
+        ("scope-preview", "", "", "true", "true", "refs/heads/main", False),
+        ("scope-preview", "", "", "false", "false", "refs/heads/main", False),
         ("rebase-proposal", "", "", "true", "false", "refs/heads/main", True),
         ("rebase-proposal", "", "", "true", "true", "refs/heads/main", False),
         ("rebase-proposal", "", "", "false", "false", "refs/heads/main", False),
@@ -315,7 +318,9 @@ def test_accounting_migration_guard_is_disabled_main_only(
     )
     env = {
         "ACCOUNTING_MIGRATION_ACTION_INPUT": action,
-        "PROPOSAL_RECIPIENT_CERTIFICATE": "synthetic public certificate" if action == "rebase-proposal" else "",
+        "PROPOSAL_RECIPIENT_CERTIFICATE": "synthetic public certificate"
+        if action in {"rebase-proposal", "scope-preview"}
+        else "",
         "ACCOUNTING_MIGRATION_PREVIEW_RUN_ID": run_id,
         "ACCOUNTING_MIGRATION_EXPECTED_DIGEST": digest,
         "RECOVERY_ACTION_INPUT": "none",
@@ -367,3 +372,59 @@ def test_accounting_migration_uses_fixed_artifact_and_never_falls_through_to_str
         in upload
     )
     assert "retention-days: 1" in upload
+
+
+def test_private_scope_preview_uses_separate_success_only_encrypted_artifact():
+    workflow = WORKFLOW.read_text()
+    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    upload = broker_job.split(
+        "      - name: Retain encrypted private Spot scope preview", 1
+    )[1].split("      - name:", 1)[0]
+
+    assert "success() && inputs.accounting_migration_action == 'scope-preview'" in upload
+    assert "name: binance-private-spot-scope-preview" in upload
+    assert "path: reports/binance-private-spot-scope-preview/scope.cms" in upload
+    assert "if-no-files-found: error" in upload
+    assert "retention-days: 1" in upload
+
+
+@pytest.mark.parametrize(
+    "action,has_certificate,allowed",
+    [
+        ("scope-preview", True, True),
+        ("scope-preview", False, False),
+        ("rebase-proposal", True, True),
+        ("rebase-proposal", False, False),
+        ("preview", True, False),
+        ("none", True, False),
+    ],
+)
+def test_encryption_certificate_is_isolated_to_private_artifact_actions(
+    action, has_certificate, allowed
+):
+    workflow = WORKFLOW.read_text()
+    first_step = workflow.split(
+        "      - name: 0. Validate deployment identity configuration", 1
+    )[0]
+    guard = textwrap.dedent(
+        first_step.split("        run: |\n", 1)[1].split(
+            '          case "${RUNTIME_TARGET_ENABLED,,}"', 1
+        )[0]
+    )
+    env = {
+        "ACCOUNTING_MIGRATION_ACTION_INPUT": action,
+        "PROPOSAL_RECIPIENT_CERTIFICATE": "synthetic public certificate"
+        if has_certificate
+        else "",
+        "ACCOUNTING_MIGRATION_PREVIEW_RUN_ID": "",
+        "ACCOUNTING_MIGRATION_EXPECTED_DIGEST": "",
+        "RECOVERY_ACTION_INPUT": "none",
+        "DIAGNOSE_BALANCES_INPUT": "false",
+        "RECONCILE_ONLY_INPUT": "true",
+        "RECONCILE_PERSIST_INPUT": "false",
+        "VALIDATE_ONLY_INPUT": "false",
+        "RUNTIME_TARGET_ENABLED": "false",
+        "GITHUB_REF": "refs/heads/main",
+    }
+    result = subprocess.run(["/bin/bash", "-c", guard], env=env, capture_output=True)
+    assert (result.returncode == 0) is allowed
