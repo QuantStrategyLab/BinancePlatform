@@ -543,6 +543,37 @@ def test_audit_uses_recovered_window_and_distinguishes_missing_from_mismatch(mon
     assert refs["ledger_ref"].snapshot.value == _ledger()
 
 
+def test_audit_covers_recovery_period_and_identifies_missing_nonzero_assets(monkeypatch):
+    migration, refs, client, expected, balances, _ = _audit_setup(monkeypatch)
+    calls = []
+    def observations(*args, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(account_scope={"account_uid": "123"}, open_orders=(),
+                               recent_executions=({"symbol": "BTCUSDT", "is_buyer": True},))
+    monkeypatch.setattr(migration, "collect_read_only_reconciliation_observations", observations)
+    balances["BTC"] = 0.11
+    result = migration.audit_ledger(refs, client=client, expected=expected, now=NOW)
+    start = datetime(2026, 9, 8, 17, tzinfo=timezone.utc)
+    assert calls[0]["lookback"] == NOW - start
+    assert result["recent_execution_window_start"] == start.isoformat()
+    assert result["recent_execution_counts_by_symbol"] == {"BTCUSDT": 1}
+    assert result["missing_ledger_nonzero_assets"] == ["BNB"]
+    assert result["btc_total_balance_change"] == "INCREASE"
+    assert result["btc_ledger_matches_current_spot_only"] is False
+    assert result["ledger_snapshot_observation_time_available"] is False
+    assert result["complete_balance_reconciliation"] is False
+
+
+@pytest.mark.parametrize("btc,expected_change", [(0.09, "DECREASE"), (0.1, "UNCHANGED")])
+def test_audit_does_not_infer_missing_asset_holding_or_btc_growth(monkeypatch, btc, expected_change):
+    migration, refs, client, expected, balances, _ = _audit_setup(monkeypatch)
+    balances.update(BTC=btc, BNB=0)
+    result = migration.audit_ledger(refs, client=client, expected=expected, now=NOW)
+    assert result["missing_ledger_nonzero_assets"] == []
+    assert result["btc_total_balance_change"] == expected_change
+    assert result["btc_has_flexible_earn_balance"] is False
+
+
 @pytest.mark.parametrize("change", ["control", "owner", "identity", "window", "ledger_during_read", "spot_during_read", "earn_during_read", "incomplete_history"])
 def test_audit_rejects_untrusted_incomplete_or_changing_evidence(monkeypatch, change):
     migration, refs, client, expected, balances, calls = _audit_setup(monkeypatch)

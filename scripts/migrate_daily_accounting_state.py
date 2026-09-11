@@ -615,11 +615,10 @@ def audit_ledger(refs, *, client, expected, now):
         reset_date = datetime.strptime(ledger["last_reset_date"], "%Y-%m-%d").date().isoformat()
     except (KeyError, TypeError, ValueError, AttributeError):
         raise MigrationBlocked("audit_source_invalid") from None
-    midnight = now.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
     account = client.get_account()
     observations = collect_read_only_reconciliation_observations(
         client, strategy_symbols=symbols, local_execution_ledger=ledger,
-        now=now, lookback=now - midnight, account_snapshot=account,
+        now=now, lookback=now - start, account_snapshot=account,
     )
     if digest(observations.account_scope) != expected["account_scope_sha256"]:
         raise MigrationBlocked("account_scope_unverified")
@@ -629,6 +628,21 @@ def audit_ledger(refs, *, client, expected, now):
         "MATCH" if _same_balance(old[asset], balances[asset], asset=asset) else "MISMATCH"
         for asset in sorted(assets)
     }
+    execution_counts = {}
+    for trade in observations.recent_executions:
+        symbol = trade.get("symbol")
+        if symbol not in symbols:
+            raise MigrationBlocked("audit_execution_symbol_invalid")
+        execution_counts[symbol] = execution_counts.get(symbol, 0) + 1
+    btc_spot = next(
+        float(Decimal(row["free"]) + Decimal(row["locked"]))
+        for row in account["balances"] if row["asset"] == "BTC"
+    )
+    btc_change = "UNKNOWN"
+    if "BTC" in old:
+        btc_change = "UNCHANGED" if _same_balance(old["BTC"], balances["BTC"], asset="BTC") else (
+            "INCREASE" if balances["BTC"] > _finite(old["BTC"]) else "DECREASE"
+        )
     history = diagnose_balance_flows(
         client, start=start, end=now, now=now, account=account,
         expected_digests=recovered_expected,
@@ -653,8 +667,16 @@ def audit_ledger(refs, *, client, expected, now):
         "circuit_breaker_latched": ledger.get("is_circuit_broken") is True,
         "ledger_balance_scope": "managed_assets_spot_plus_flexible_earn",
         "ledger_balance_comparison": comparison,
-        "recent_execution_window_start": midnight.isoformat(),
+        # Legacy snapshot stores quantities only. Document update/reset times
+        # cannot establish when those quantities were observed.
+        "ledger_snapshot_observation_time_available": False,
+        "missing_ledger_nonzero_assets": [a for a in sorted(assets) if a not in old and balances[a] > 0],
+        "btc_total_balance_change": btc_change,
+        "btc_ledger_matches_current_spot_only": "BTC" in old and _same_balance(old["BTC"], btc_spot, asset="BTC"),
+        "btc_has_flexible_earn_balance": balances["BTC"] > btc_spot + 1e-8,
+        "recent_execution_window_start": start.isoformat(),
         "recent_execution_count": len(observations.recent_executions),
+        "recent_execution_counts_by_symbol": execution_counts,
         "open_order_count": len(observations.open_orders),
         "recovered_spot_window_start": start.isoformat(),
         "recovered_spot_history": history,
