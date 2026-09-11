@@ -161,6 +161,39 @@ class StateServiceTests(unittest.TestCase):
 
 
 class StateStoreTests(unittest.TestCase):
+    def test_accounting_rebase_marker_survives_normalize_then_save_payload(self):
+        kwargs = {
+            "trend_universe": {},
+            "last_good_payload_key": "last_good",
+            "action_history_key": "actions",
+            "retired_positions_key": "retired",
+        }
+        marker = {
+            "archive_document": "MULTI_ASSET_STATE__before_rebase_34601984051",
+            "approved_proposal_run_id": "34601984051",
+            "historical_difference_unresolved": True,
+        }
+        observed = {}
+        normalized = normalize_trade_state({"accounting_rebase": marker}, **kwargs)
+
+        save_runtime_trade_state(
+            normalized,
+            normalize_fn=lambda value: normalize_trade_state(value, **kwargs),
+            saver_fn=lambda data, **_kwargs: observed.update(data=data) or True,
+        )
+
+        self.assertEqual(observed["data"]["accounting_rebase"], marker)
+
+    def test_normalization_does_not_add_accounting_rebase_to_legacy_state(self):
+        kwargs = {
+            "trend_universe": {},
+            "last_good_payload_key": "last_good",
+            "action_history_key": "actions",
+            "retired_positions_key": "retired",
+        }
+
+        self.assertNotIn("accounting_rebase", normalize_trade_state({}, **kwargs))
+
     def test_load_runtime_trade_state_uses_default_collection_document(self):
         observed = {}
 

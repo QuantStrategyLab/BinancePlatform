@@ -19,12 +19,21 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from google.cloud import firestore
+from google.cloud.firestore_v1.transaction import Transaction as FirestoreTransaction
 from quant_platform_kit.binance import connect_client
-from quant_platform_kit.common.broker_reconciliation import calculate_broker_observation_sha256 as digest
+from quant_platform_kit.common.broker_reconciliation import BrokerReconciliationEvidence, calculate_broker_observation_sha256 as digest
 from quant_platform_kit.common.reconciliation_recovery import evaluate_reconciliation_recovery_activation
 from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
 from application.broker_reconciliation import _expected_digests, build_reconciliation_candidate, collect_read_only_reconciliation_observations, diagnose_balance_snapshot
 from application.reconciliation_recovery import collect_recovery_source, console_snapshot, validate_source, verify_confirmation
+from application.rebased_recovery import (
+    ARCHIVE_DOCUMENT,
+    MIGRATION_RUN_ID,
+    MIGRATION_RUN_SHA,
+    collect_post_rebase_source,
+    validate_post_rebase_material,
+    validate_post_rebase_source,
+)
 from live_services import get_firestore_client
 from scripts.reconcile_frozen_live_baseline import _symbols_from_env
 
@@ -40,6 +49,39 @@ HISTORY_START = datetime(2026, 9, 3, 14, 38, 58, tzinfo=timezone.utc)
 FROZEN_EXPECTED_SHA256 = "c4d1820390935d4bbad52094b21c671e68a58b04c3a0e32869fa6aadb9ea3b90"
 BASELINE_ID = "crypto-binance-lkg-20260830"
 BASELINE_TARGET_SHA256 = "f24b854707c62e8b9266c49a25fba2756e3dd708043595206d8b93d281c51245"
+
+
+class RecoveryWriteUncertain(RuntimeError):
+    """A post-rebase write or publication may already be durable."""
+
+
+class PostRebaseAtomicPrecondition(ValueError):
+    """The post-rebase CAS failed before scheduling its control write."""
+
+
+class _PostRebaseNoRetryCommitTransaction(FirestoreTransaction):
+    """Firestore transaction whose mutating Commit RPC is never retried."""
+
+    def _commit(self):
+        if not self.in_progress:
+            raise ValueError("post_rebase_transaction_not_started")
+        commit_response = self._client._firestore_api.commit(
+            request={
+                "database": self._client._database_string,
+                "writes": self._write_pbs,
+                "transaction": self._id,
+            },
+            retry=None,
+            metadata=self._client._rpc_metadata,
+        )
+        self._clean_up()
+        self.write_results = list(commit_response.write_results)
+        self.commit_time = commit_response.commit_time
+        return self.write_results
+
+
+def _post_rebase_transaction(db):
+    return _PostRebaseNoRetryCommitTransaction(db, max_attempts=1)
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -99,6 +141,68 @@ def _save_control(db, refs, *, previous, next_value, ledger_sha256):
     apply(db.transaction(max_attempts=1))
 
 
+def compare_and_set_post_rebase_control(
+    transaction, *, refs, previous, next_value, ledger_sha256, archive_sha256
+):
+    owner = refs["owner_ref"].get(transaction=transaction, retry=None)
+    ledger = refs["ledger_ref"].get(transaction=transaction, retry=None)
+    control = refs["control_ref"].get(transaction=transaction, retry=None)
+    archive = refs["archive_ref"].get(transaction=transaction, retry=None)
+    actual = control.to_dict() if control.exists else None
+    if (
+        owner.exists
+        or not ledger.exists
+        or digest(ledger.to_dict()) != ledger_sha256
+        or not archive.exists
+        or digest(archive.to_dict()) != archive_sha256
+        or actual != previous
+        or (actual is not None and actual.get("state") != "RECONCILE_ONLY")
+    ):
+        raise PostRebaseAtomicPrecondition("post_rebase_atomic_precondition_changed")
+    transaction.set(refs["control_ref"], next_value)
+
+
+def save_post_rebase_control(
+    db, refs, *, previous, next_value, ledger_sha256, archive_sha256
+):
+    @firestore.transactional
+    def apply(transaction):
+        compare_and_set_post_rebase_control(
+            transaction,
+            refs=refs,
+            previous=previous,
+            next_value=next_value,
+            ledger_sha256=ledger_sha256,
+            archive_sha256=archive_sha256,
+        )
+
+    try:
+        apply(_post_rebase_transaction(db))
+    except PostRebaseAtomicPrecondition:
+        raise
+    except Exception as exc:
+        raise RecoveryWriteUncertain("post_rebase_control_commit_unknown") from exc
+    try:
+        control = refs["control_ref"].get(retry=None)
+        ledger = refs["ledger_ref"].get(retry=None)
+        archive = refs["archive_ref"].get(retry=None)
+        owner = refs["owner_ref"].get(retry=None)
+        if (
+            not control.exists
+            or control.to_dict() != next_value
+            or not ledger.exists
+            or digest(ledger.to_dict()) != ledger_sha256
+            or not archive.exists
+            or digest(archive.to_dict()) != archive_sha256
+            or owner.exists
+        ):
+            raise RecoveryWriteUncertain("post_rebase_control_readback_mismatch")
+    except RecoveryWriteUncertain:
+        raise
+    except Exception as exc:
+        raise RecoveryWriteUncertain("post_rebase_control_readback_unknown") from exc
+
+
 def run(action, recovery_id=""):
     global STAGE
     if (os.getenv("GITHUB_REPOSITORY") != REPOSITORY or os.getenv("GITHUB_REF") != "refs/heads/main"
@@ -117,13 +221,21 @@ def run(action, recovery_id=""):
     STAGE = "control_read"
     db = get_firestore_client()
     collection = db.collection("strategy")
-    refs = {"control_ref": collection.document(CONTROL_DOCUMENT), "owner_ref": collection.document("MULTI_ASSET_STATE__owner"), "ledger_ref": collection.document("MULTI_ASSET_STATE")}
+    refs = {
+        "control_ref": collection.document(CONTROL_DOCUMENT),
+        "owner_ref": collection.document("MULTI_ASSET_STATE__owner"),
+        "ledger_ref": collection.document("MULTI_ASSET_STATE"),
+        "archive_ref": collection.document(ARCHIVE_DOCUMENT),
+    }
     snapshot = refs["control_ref"].get(retry=None)
     previous = snapshot.to_dict() if snapshot.exists else None
     ledger_snapshot = refs["ledger_ref"].get(retry=None)
     if not ledger_snapshot.exists or refs["owner_ref"].get(retry=None).exists:
         raise ValueError("recovery_ledger_unavailable_or_owned")
     ledger = ledger_snapshot.to_dict()
+    archive_snapshot = refs["archive_ref"].get(retry=None)
+    archive = archive_snapshot.to_dict() if archive_snapshot.exists else None
+    is_post_rebase = archive is not None
     symbols = _symbols_from_env()
     if digest(list(symbols)) != MANAGED_SYMBOLS_SHA256:
         raise ValueError("recovery_managed_symbols_changed")
@@ -132,26 +244,95 @@ def run(action, recovery_id=""):
             raise ValueError("recovery_already_active")
         STAGE = "broker_collection"
         client = connect_client(os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30)
-        package = collect_recovery_source(client=client, runtime_target=target, expected=expected, ledger=ledger,
-                                          symbols=symbols, history_start=HISTORY_START, source_run=current_run)
-        candidate = validate_source(package, runtime_target=target, expected=expected)
+        if is_post_rebase:
+            collected_at = datetime.now(timezone.utc)
+            migration_run = verified_run(MIGRATION_RUN_ID, expected_sha=MIGRATION_RUN_SHA)
+            package = collect_post_rebase_source(
+                client=client,
+                runtime_target=target,
+                legacy_expected=expected,
+                ledger=ledger,
+                archive=archive,
+                symbols=symbols,
+                source_run=current_run,
+                migration_run=migration_run,
+                now=collected_at,
+            )
+            candidate = validate_post_rebase_source(
+                package,
+                runtime_target=target,
+                legacy_expected=expected,
+                now=collected_at,
+            )
+        else:
+            package = collect_recovery_source(client=client, runtime_target=target, expected=expected, ledger=ledger,
+                                              symbols=symbols, history_start=HISTORY_START, source_run=current_run)
+            candidate = validate_source(package, runtime_target=target, expected=expected)
         recovery_id = f"binance-{current_run['id']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
         value = {"state": "RECONCILE_ONLY", "recovery_id": recovery_id, **package}
         STAGE = "candidate_storage"
-        _save_control(db, refs, previous=previous, next_value=value, ledger_sha256=candidate.local_execution_ledger_sha256)
+        if is_post_rebase:
+            save_post_rebase_control(
+                db,
+                refs,
+                previous=previous,
+                next_value=value,
+                ledger_sha256=candidate.local_execution_ledger_sha256,
+                archive_sha256=digest(archive),
+            )
+        else:
+            _save_control(
+                db,
+                {key: refs[key] for key in ("control_ref", "owner_ref", "ledger_ref")},
+                previous=previous,
+                next_value=value,
+                ledger_sha256=candidate.local_execution_ledger_sha256,
+            )
         STAGE = "console_publication"
-        payload = console_snapshot(candidate, recovery_id=recovery_id)
-        acknowledgement = request_json(CONSOLE + "/api/internal/sync-reconciliation-recovery-source", os.getenv("RECONCILIATION_RECOVERY_SYNC_TOKEN", ""), payload=payload)
-        if (acknowledgement.get("ok") is not True or acknowledgement.get("source_id") != payload["source_id"]
-                or acknowledgement.get("recovery_count") != 1 or acknowledgement.get("generated_at") != payload["generated_at"]):
-            raise ValueError("recovery_publication_not_acknowledged")
-        return {"status": "awaiting_human_confirmation", "recovery_id": recovery_id, "candidate_sha256": candidate.candidate_sha256, "no_order": True, "execution_authority_granted": False}
+        payload = console_snapshot(
+            candidate,
+            recovery_id=recovery_id,
+            now=collected_at if is_post_rebase else None,
+        )
+        try:
+            acknowledgement = request_json(CONSOLE + "/api/internal/sync-reconciliation-recovery-source", os.getenv("RECONCILIATION_RECOVERY_SYNC_TOKEN", ""), payload=payload)
+            if (acknowledgement.get("ok") is not True or acknowledgement.get("source_id") != payload["source_id"]
+                    or acknowledgement.get("recovery_count") != 1 or acknowledgement.get("generated_at") != payload["generated_at"]):
+                raise ValueError("recovery_publication_not_acknowledged")
+        except Exception as exc:
+            if is_post_rebase:
+                raise RecoveryWriteUncertain("post_rebase_publication_unknown") from exc
+            raise
+        result = {"status": "awaiting_human_confirmation", "recovery_id": recovery_id, "candidate_sha256": candidate.candidate_sha256, "no_order": True, "execution_authority_granted": False}
+        if is_post_rebase:
+            result.update(source_kind="post_rebase", historical_difference_unresolved=True)
+        return result
     if not previous or previous.get("recovery_id") != recovery_id or previous.get("state") != "RECONCILE_ONLY":
         raise ValueError("recovery_request_missing_or_changed")
     source_run = previous["source"]["run"]
     if verified_run(source_run["id"], expected_sha=source_run["head_sha"]) != source_run:
         raise ValueError("recovery_source_run_changed")
-    candidate = validate_source(previous, runtime_target=target, expected=expected)
+    is_post_rebase = previous.get("source", {}).get("kind") == "post_rebase"
+    if is_post_rebase:
+        validation_at = datetime.now(timezone.utc)
+        migration_run = previous["source"]["migration_run"]
+        if verified_run(
+            migration_run["id"], expected_sha=MIGRATION_RUN_SHA
+        ) != migration_run:
+            raise ValueError("post_rebase_migration_run_changed")
+        if archive is None:
+            raise ValueError("post_rebase_archive_missing")
+        if digest(archive) != previous["source"].get("archive_sha256"):
+            raise ValueError("post_rebase_archive_changed")
+        validate_post_rebase_material(ledger, archive)
+        candidate = validate_post_rebase_source(
+            previous,
+            runtime_target=target,
+            legacy_expected=expected,
+            now=validation_at,
+        )
+    else:
+        candidate = validate_source(previous, runtime_target=target, expected=expected)
     if previous["source"]["symbols_sha256"] != digest(list(symbols)):
         raise ValueError("recovery_managed_symbols_changed")
     STAGE = "confirmation_read"
@@ -165,28 +346,85 @@ def run(action, recovery_id=""):
     if not ledger_snapshot.exists or refs["owner_ref"].get(retry=None).exists:
         raise ValueError("recovery_ledger_unavailable_or_owned")
     ledger = ledger_snapshot.to_dict()
-    observations = collect_read_only_reconciliation_observations(client, strategy_symbols=symbols, local_execution_ledger=ledger, now=observed_at)
-    if observations.open_orders:
-        raise ValueError("recovery_open_orders_present")
-    current_expected = {"account_scope_sha256": candidate.account_scope_sha256, **candidate.expected_digests}
-    current = build_reconciliation_candidate(observations=observations, runtime_target=target, env_reader=lambda *_: json.dumps(current_expected), observed_at=observed_at)
-    if diagnose_balance_snapshot(client.get_account(), expected_digests=current_expected)["reason_code"] != "balance_snapshot_matches":
-        raise ValueError("recovery_balance_changed_during_read")
-    validate_source(previous, runtime_target=target, expected=expected)
+    if is_post_rebase:
+        archive_snapshot = refs["archive_ref"].get(retry=None)
+        if not archive_snapshot.exists:
+            raise ValueError("post_rebase_archive_missing")
+        archive = archive_snapshot.to_dict()
+        if digest(archive) != previous["source"].get("archive_sha256"):
+            raise ValueError("post_rebase_archive_changed")
+        validate_post_rebase_material(ledger, archive)
+        fresh = collect_post_rebase_source(
+            client=client,
+            runtime_target=target,
+            legacy_expected=expected,
+            ledger=ledger,
+            archive=archive,
+            symbols=symbols,
+            source_run=current_run,
+            migration_run=migration_run,
+            now=observed_at,
+        )
+        fresh_candidate = validate_post_rebase_source(
+            fresh, runtime_target=target, legacy_expected=expected, now=observed_at
+        )
+        if (
+            fresh_candidate.account_scope_sha256 != candidate.account_scope_sha256
+            or fresh_candidate.expected_digests != candidate.expected_digests
+        ):
+            raise ValueError("post_rebase_fresh_candidate_changed")
+        current_evidence = BrokerReconciliationEvidence.from_dict(
+            fresh["source"]["reconciled_evidence"]
+        )
+        validate_post_rebase_source(
+            previous,
+            runtime_target=target,
+            legacy_expected=expected,
+            now=observed_at,
+        )
+    else:
+        observations = collect_read_only_reconciliation_observations(client, strategy_symbols=symbols, local_execution_ledger=ledger, now=observed_at)
+        if observations.open_orders:
+            raise ValueError("recovery_open_orders_present")
+        current_expected = {"account_scope_sha256": candidate.account_scope_sha256, **candidate.expected_digests}
+        current = build_reconciliation_candidate(observations=observations, runtime_target=target, env_reader=lambda *_: json.dumps(current_expected), observed_at=observed_at)
+        if diagnose_balance_snapshot(client.get_account(), expected_digests=current_expected)["reason_code"] != "balance_snapshot_matches":
+            raise ValueError("recovery_balance_changed_during_read")
+        validate_source(previous, runtime_target=target, expected=expected)
+        current_evidence = current.evidence
     evaluation = evaluate_reconciliation_recovery_activation(recovery_id=recovery_id, candidate=candidate, confirmation=confirmation,
-        current_evidence=current.evidence, current_live_continuity_state=target.live_continuity.state)
+        current_evidence=current_evidence, current_live_continuity_state=target.live_continuity.state)
     if not evaluation.ready_for_atomic_state_transition:
         raise ValueError("recovery_post_confirmation_reconciliation_blocked")
     if action == "activate":
         STAGE = "atomic_activation"
         value = {**previous, "state": "ACTIVE_LKG", "transition_plan": evaluation.transition_plan.to_dict(), "confirmation": confirmation.to_dict()}
-        _save_control(db, refs, previous=previous, next_value=value, ledger_sha256=candidate.local_execution_ledger_sha256)
-    return {"status": "active_lkg" if action == "activate" else "verified", "recovery_id": recovery_id,
-            "no_order": True, "execution_authority_granted": False, "runtime_target_enabled": False}
+        if is_post_rebase:
+            save_post_rebase_control(
+                db,
+                refs,
+                previous=previous,
+                next_value=value,
+                ledger_sha256=candidate.local_execution_ledger_sha256,
+                archive_sha256=digest(archive),
+            )
+        else:
+            _save_control(
+                db,
+                {key: refs[key] for key in ("control_ref", "owner_ref", "ledger_ref")},
+                previous=previous,
+                next_value=value,
+                ledger_sha256=candidate.local_execution_ledger_sha256,
+            )
+    result = {"status": "active_lkg" if action == "activate" else "verified", "recovery_id": recovery_id,
+              "no_order": True, "execution_authority_granted": False, "runtime_target_enabled": False}
+    if is_post_rebase:
+        result.update(source_kind="post_rebase", historical_difference_unresolved=True)
+    return result
 
 
 def main(argv=None):
-    parser = ArgumentParser(description="Prepare, verify or adopt the designated Binance legacy recovery; never trade")
+    parser = ArgumentParser(description="Prepare, verify or adopt the designated Binance recovery; never trade")
     parser.add_argument("action", choices=("prepare", "verify", "activate"))
     parser.add_argument("--recovery-id", default="")
     args = parser.parse_args(argv)
@@ -194,6 +432,9 @@ def main(argv=None):
         parser.error("verify/activate require the exact recovery ID shown by prepare")
     try:
         result = run(args.action, args.recovery_id)
+    except RecoveryWriteUncertain:
+        print(json.dumps({"status": "uncertain", "stage": STAGE, "reason_code": "post_rebase_outcome_unknown", "no_retry": True, "no_order": True}))
+        return 2
     except HTTPError as exc:
         print(json.dumps({"status": "blocked", "stage": STAGE, "reason_code": "recovery_http_request_failed", "http_status": exc.code, "no_order": True}))
         return 2

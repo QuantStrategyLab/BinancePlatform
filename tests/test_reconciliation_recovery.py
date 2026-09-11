@@ -272,7 +272,12 @@ def test_confirmation_failure_never_collects_broker_or_applies_state(monkeypatch
     class Ref:
         def __init__(self, data): self.data = data
         def get(self, **kw): return SimpleNamespace(exists=self.data is not None, to_dict=lambda: self.data)
-    docs = {controller.CONTROL_DOCUMENT: control, "MULTI_ASSET_STATE": args["ledger"], "MULTI_ASSET_STATE__owner": None}
+    docs = {
+        controller.CONTROL_DOCUMENT: control,
+        "MULTI_ASSET_STATE": args["ledger"],
+        "MULTI_ASSET_STATE__owner": None,
+        controller.ARCHIVE_DOCUMENT: None,
+    }
     monkeypatch.setattr(controller, "get_firestore_client", lambda: SimpleNamespace(collection=lambda _: SimpleNamespace(document=lambda name: Ref(docs[name]))))
     monkeypatch.setattr(controller, "request_json", lambda *a, **kw: {"ok": False})
     monkeypatch.setattr(controller, "connect_client", lambda *a, **kw: pytest.fail("broker read before actual confirmation"))

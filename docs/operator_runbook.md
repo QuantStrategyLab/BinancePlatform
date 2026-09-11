@@ -242,6 +242,55 @@ same prerequisites can be proven again. The management-site recovery approval
 does not approve this ledger write, and migration completion does not permit
 runtime activation or trading.
 
+### Post-rebase recovery
+
+After the approved accounting rebase, the legacy recovery source cannot be
+reused because it is bound to the archived ledger digest and its older history
+window. A new recovery `prepare` uses the existing recovery controller and
+console contract, but records `source_kind=post_rebase` and keeps
+`historical_difference_unresolved=true`. Human confirmation applies to resuming
+from the approved new-account opening. It does not state that the earlier
+accounting difference was reconstructed or cleared.
+
+Keep `RUNTIME_TARGET_ENABLED=false`, `reconcile_only=true`, and the recovery
+control at `RECONCILE_ONLY`. The controller accepts only migration Runtime
+`34606795875` on `ed7ee6e96cea0addb292f3f45338652095d0da58`, the private archive
+`strategy/MULTI_ASSET_STATE__before_rebase_34601984051`, and the approved old
+ledger, old control, opening-quantity hashes and marker. The current ledger must
+still equal the archive's `new_ledger_sha256`; every field outside the accounting
+patch must equal the archived ledger. The runtime state normalizer preserves an
+existing `accounting_rebase` marker during ordinary saves and does not add one
+to an older state.
+
+The opening must be no more than seven days old. The controller requires zero
+open orders, zero fills for every configured strategy symbol, complete bounded
+history pages, and zero non-reward deposits, withdrawals, Earn subscriptions or
+redemptions, and configured universal transfers since that opening. Reward rows
+may be present but do not explain or excuse a quantity difference. Spot and
+Flexible Earn totals for each approved opening asset must equal the opening at
+the explicit eight-decimal comparison basis on two reads. Every Spot `free` and
+`locked` value and each returned Earn `totalAmount` must be finite and
+nonnegative; any locked amount, nonzero Spot asset outside the approved opening,
+incomplete page, identity change, or quantity change blocks recovery.
+
+The Earn endpoint is read once per approved asset. This proves the configured
+managed-asset scope; it does not prove that an unknown asset has no Earn
+position elsewhere in the account. Likewise, fill history is complete only for
+the configured strategy symbols. Do not describe this bounded evidence as a
+whole-account audit.
+
+The stored source contains workflow metadata, hashes and aggregate counters,
+not balance rows or amounts. `verify` and `activate` revalidate its workflow
+provenance, exact archive digest, current ledger and fresh broker evidence.
+Activation uses the existing candidate, dual-review confirmation and atomic
+transition. The transaction reads the owner, ledger, previous control and
+archive together with `max_attempts=1`, then checks all four again after the
+write. A committed ACTIVE control remains valid after the short candidate
+review window; runtime consumption still validates every source, candidate,
+confirmation and transition binding. An uncertain control write, readback, or
+candidate publication returns `uncertain/no_retry`; inspect the stored control
+and console state before deciding any later action.
+
 ### Notification language and format
 
 Set `NOTIFY_LANG` to `zh` or `en`; Chinese locale variants such as `zh-CN`
