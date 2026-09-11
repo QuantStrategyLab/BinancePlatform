@@ -247,15 +247,28 @@ def test_recovery_action_cannot_run_as_standard_trading(action, reconcile, enabl
 
 def test_recovery_credentials_are_scoped_to_explicit_recovery_actions():
     workflow = WORKFLOW.read_text()
-    assert "inputs.recovery_action == 'prepare' && secrets.RECONCILIATION_RECOVERY_SYNC_TOKEN" in workflow
+    sync_token_line = next(
+        line
+        for line in workflow.splitlines()
+        if line.strip().startswith("RECONCILIATION_RECOVERY_SYNC_TOKEN:")
+    )
+    assert "inputs.recovery_action == 'prepare'" in sync_token_line
+    assert "inputs.accounting_migration_action == 'scope-preview'" in sync_token_line
     assert "inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate'" in workflow
     step = workflow.split("      - name: 4. Run trading strategy", 1)[1].split("        env:", 1)[0]
     assert 'scripts/binance_recovery_controller.py "$RECOVERY_ACTION"' in step
     assert step.index("binance_recovery_controller.py") < step.index('main.py')
     token_lines = [line for line in workflow.splitlines() if line.strip().startswith(("RECONCILIATION_RECOVERY_SYNC_TOKEN:", "RECONCILIATION_RECOVERY_CONTROLLER_TOKEN:"))]
     assert all("diagnose" not in line for line in token_lines)
+    controller_token_line = next(
+        line
+        for line in token_lines
+        if line.strip().startswith("RECONCILIATION_RECOVERY_CONTROLLER_TOKEN:")
+    )
+    assert "scope-preview" not in controller_token_line
     github_token_line = next(line for line in workflow.splitlines() if line.strip().startswith("GITHUB_TOKEN:"))
     assert "inputs.recovery_action == 'diagnose'" in github_token_line
+    assert "scope-preview" not in github_token_line
 
 
 def test_accounting_migration_has_explicit_preview_and_apply_inputs():
@@ -319,7 +332,7 @@ def test_accounting_migration_guard_is_disabled_main_only(
     env = {
         "ACCOUNTING_MIGRATION_ACTION_INPUT": action,
         "PROPOSAL_RECIPIENT_CERTIFICATE": "synthetic public certificate"
-        if action in {"rebase-proposal", "scope-preview"}
+        if action == "rebase-proposal"
         else "",
         "ACCOUNTING_MIGRATION_PREVIEW_RUN_ID": run_id,
         "ACCOUNTING_MIGRATION_EXPECTED_DIGEST": digest,
@@ -374,32 +387,25 @@ def test_accounting_migration_uses_fixed_artifact_and_never_falls_through_to_str
     assert "retention-days: 1" in upload
 
 
-def test_private_scope_preview_uses_separate_success_only_encrypted_artifact():
+def test_private_scope_preview_does_not_publish_an_artifact():
     workflow = WORKFLOW.read_text()
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
-    upload = broker_job.split(
-        "      - name: Retain encrypted private Spot scope preview", 1
-    )[1].split("      - name:", 1)[0]
-
-    assert "success() && inputs.accounting_migration_action == 'scope-preview'" in upload
-    assert "name: binance-private-spot-scope-preview" in upload
-    assert "path: reports/binance-private-spot-scope-preview/scope.cms" in upload
-    assert "if-no-files-found: error" in upload
-    assert "retention-days: 1" in upload
+    assert "Retain encrypted private Spot scope preview" not in workflow
+    assert "binance-private-spot-scope-preview" not in workflow
+    assert "reports/binance-private-spot-scope-preview/scope.cms" not in workflow
 
 
 @pytest.mark.parametrize(
     "action,has_certificate,allowed",
     [
-        ("scope-preview", True, True),
-        ("scope-preview", False, False),
+        ("scope-preview", True, False),
+        ("scope-preview", False, True),
         ("rebase-proposal", True, True),
         ("rebase-proposal", False, False),
         ("preview", True, False),
         ("none", True, False),
     ],
 )
-def test_encryption_certificate_is_isolated_to_private_artifact_actions(
+def test_encryption_certificate_is_isolated_to_rebase_proposal(
     action, has_certificate, allowed
 ):
     workflow = WORKFLOW.read_text()

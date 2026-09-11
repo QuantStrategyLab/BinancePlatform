@@ -5,7 +5,7 @@ The command has no order, transfer, redemption, subscription, cancellation, or
 notification path.  Preview writes one short-lived redacted candidate file.
 Apply accepts only that fixed artifact path, repeats the read-only evidence, and
 updates an allowlist of fields in the existing Firestore ledger transaction.
-The private Spot scope preview writes only CMS-encrypted bytes.
+The private Spot scope preview publishes once to the authenticated console.
 """
 
 # ruff: noqa: E402
@@ -50,8 +50,9 @@ SCHEMA_VERSION = "binance_daily_accounting_migration_candidate.v1"
 NEW_BASIS = "trend_mark_plus_cash_flow_v1"
 PREVIEW_PATH = Path("reports/binance-accounting-migration-preview/candidate.json")
 REBASE_PROPOSAL_PATH = Path("reports/binance-accounting-rebase-proposal/proposal.cms")
-PRIVATE_SCOPE_PREVIEW_PATH = Path(
-    "reports/binance-private-spot-scope-preview/scope.cms"
+PRIVATE_SCOPE_CONSOLE_URL = (
+    "https://qsl-strategy-switch-console.pigbibi.workers.dev"
+    "/api/internal/binance-private-scope"
 )
 # Operator-approved control from read-only Runtime 34586531344. One exact downgrade.
 QUIESCE_CONTROL_SHA256 = "68318adcf853fe755409814c8707d3338f0af7927da396a60547c8375e9af5c4"
@@ -65,6 +66,7 @@ REBASE_ARCHIVE_DOCUMENT = "MULTI_ASSET_STATE__before_rebase_34601984051"
 TTL = timedelta(minutes=10)
 _EARN_PAGE_SIZE = 100
 _MAX_SPOT_BALANCE_ROWS = 5000
+_MAX_PRIVATE_SCOPE_BODY_BYTES = 256 * 1024
 _ACCOUNTING_FIELDS = frozenset(
     {
         "daily_trend_pnl_basis",
@@ -889,6 +891,78 @@ def collect_private_spot_scope_preview(
     }
 
 
+def _private_scope_publication_context():
+    token = os.environ.get("RECONCILIATION_RECOVERY_SYNC_TOKEN", "")
+    source_run_id = os.environ.get("GITHUB_RUN_ID", "")
+    if not token or not re.fullmatch(r"[1-9][0-9]{0,19}", source_run_id):
+        raise MigrationBlocked("private_scope_publication_config_invalid")
+    return token, source_run_id
+
+
+def build_private_spot_scope_payload(preview, *, source_run_id, source_sha):
+    """Build the one private console request without adding account surfaces."""
+    if (
+        type(source_run_id) is not str
+        or not re.fullmatch(r"[1-9][0-9]{0,19}", source_run_id)
+        or type(source_sha) is not str
+        or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
+    ):
+        raise MigrationBlocked("private_scope_payload_invalid")
+    try:
+        assets = [
+            {
+                "asset": row["asset"],
+                "free": format(Decimal(row["free"]), "f"),
+                "locked": format(Decimal(row["locked"]), "f"),
+            }
+            for row in preview["non_managed_nonzero_spot_assets"]
+        ]
+        payload = {
+            "platform": "binance",
+            "observed_at": preview["observed_at"],
+            "source_run_id": source_run_id,
+            "source_sha": source_sha,
+            "account_scope_sha256": preview["source"]["account_scope_sha256"],
+            "assets": assets,
+            "historical_difference_unresolved": True,
+            "no_order": True,
+            "execution_authority_granted": False,
+        }
+        encoded = json.dumps(payload).encode()
+    except (InvalidOperation, KeyError, TypeError, ValueError):
+        raise MigrationBlocked("private_scope_payload_invalid") from None
+    if len(encoded) > _MAX_PRIVATE_SCOPE_BODY_BYTES:
+        raise MigrationBlocked("private_scope_payload_too_large")
+    return payload
+
+
+def publish_private_spot_scope_preview(preview, *, token, source_run_id, source_sha):
+    """POST one bounded private report and require its exact acknowledgement."""
+    from scripts.binance_recovery_controller import request_json
+
+    payload = build_private_spot_scope_payload(
+        preview, source_run_id=source_run_id, source_sha=source_sha
+    )
+    try:
+        acknowledgement = request_json(
+            PRIVATE_SCOPE_CONSOLE_URL, token, payload=payload
+        )
+        expected_keys = {"ok", "observed_at", "source_run_id", "asset_count"}
+        if (
+            set(acknowledgement) != expected_keys
+            or acknowledgement.get("ok") is not True
+            or type(acknowledgement.get("observed_at")) is not str
+            or acknowledgement["observed_at"] != payload["observed_at"]
+            or type(acknowledgement.get("source_run_id")) is not str
+            or acknowledgement["source_run_id"] != source_run_id
+            or type(acknowledgement.get("asset_count")) is not int
+            or acknowledgement["asset_count"] != len(payload["assets"])
+        ):
+            raise ValueError("private scope acknowledgement mismatch")
+    except Exception:
+        raise MigrationApplyUncertain("private_scope_publication_unknown") from None
+
+
 def audit_ledger(refs, *, client, expected, now):
     """Compare two distinct balance bases without granting migration authority."""
     ledger_snapshot, ledger, control = _read_source(refs)
@@ -1077,6 +1151,9 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
         return inspect_control(_refs())
     if action == "quiesce":
         return _quiesce_control(_refs())
+    publication = (
+        _private_scope_publication_context() if action == "scope-preview" else None
+    )
     fixed_now = now is not None
     now = now or datetime.now(timezone.utc)
     target = resolve_runtime_target_from_env(
@@ -1104,21 +1181,19 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
             source_sha=os.environ["GITHUB_SHA"],
             initial_source=(ledger_snapshot, ledger, control),
         )
-        encrypted = encrypt_rebase_proposal(
+        publish_private_spot_scope_preview(
             preview,
-            certificate=os.environ.get("PROPOSAL_RECIPIENT_CERTIFICATE", ""),
+            token=publication[0],
+            source_run_id=publication[1],
+            source_sha=os.environ["GITHUB_SHA"],
         )
-        if not isinstance(encrypted, bytes) or not encrypted:
-            raise MigrationBlocked("proposal_encryption_failed")
-        PRIVATE_SCOPE_PREVIEW_PATH.parent.mkdir(parents=True, exist_ok=True)
-        PRIVATE_SCOPE_PREVIEW_PATH.write_bytes(encrypted)
         return {
-            "status": "encrypted_scope_preview_ready",
-            "stage": "private_spot_scope_preview",
+            "status": "private_scope_published",
+            "stage": "private_scope_publication",
             "ledger_unchanged": True,
             "no_order": True,
-            "write_performed": False,
             "execution_authority_granted": False,
+            "report_write_performed": True,
         }
     if action == "audit":
         return audit_ledger(refs, client=client, expected=expected, now=now)
@@ -1232,7 +1307,9 @@ def main(argv=None) -> int:
             json.dumps(
                 {
                     "status": "uncertain",
-                    "stage": "accounting_migration_apply",
+                    "stage": "private_scope_publication"
+                    if args.action == "scope-preview"
+                    else "accounting_migration_apply",
                     "reason_code": str(exc),
                     "no_retry": True,
                     "no_order": True,
