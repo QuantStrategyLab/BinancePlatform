@@ -1,18 +1,25 @@
 import builtins
+import copy
 import inspect
 import json
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from application.cycle_service import execute_strategy_cycle, run_live_cycle, write_execution_report
 from application.execution_service import execute_trend_buys
+from application.portfolio_service import (
+    maybe_rebase_daily_state_for_balance_change,
+    maybe_reset_daily_state,
+)
 from infra.binance_runtime import ensure_runtime_client
 from runtime_support import (
     ExecutionIntegrityError,
     ExecutionRuntime,
+    StatePersistenceError,
     append_report_error,
     build_execution_report,
     runtime_call_client,
@@ -31,6 +38,9 @@ class CycleServiceTests(unittest.TestCase):
         earn_failure=False,
         runtime=None,
         ownership_events=None,
+        balance_snapshot=None,
+        rebase_fn=None,
+        reset_fn=None,
     ):
         events = []
         state = {} if state is None else state
@@ -104,9 +114,9 @@ class CycleServiceTests(unittest.TestCase):
                 if allocation_permissions
                 else execution_permitted,
             },
-            build_balance_snapshot=lambda *_args: {},
-            maybe_reset_daily_state=lambda *_args: events.append("state_reset"),
-            maybe_rebase_daily_state_for_balance_change=lambda *_args: events.append("state_rebase"),
+            build_balance_snapshot=lambda *_args: {} if balance_snapshot is None else balance_snapshot,
+            maybe_reset_daily_state=reset_fn or (lambda *_args: events.append("state_reset")),
+            maybe_rebase_daily_state_for_balance_change=rebase_fn or (lambda *_args: events.append("state_rebase")),
             compute_daily_pnls=lambda *_args: (0.0, 0.0),
             append_portfolio_report=lambda *_args: None,
             run_daily_circuit_breaker=lambda *_args: events.append("circuit_breaker") or False,
@@ -207,10 +217,172 @@ class CycleServiceTests(unittest.TestCase):
         self.assertIn("state_write", events)
         monitor.beat.assert_called_once_with(status="ok", error="")
 
+    def test_platform_performance_record_marks_external_cash_flow_incomparable(self):
+        with patch("application.cycle_service.try_record_platform_execution") as record:
+            self._run_funds_cycle(True)
+
+        record.assert_called_once()
+        self.assertIn("external_cash_flow", record.call_args.args[1])
+        self.assertIsNone(record.call_args.args[1]["external_cash_flow"])
+
     def test_approved_execution_permission_preserves_fuel_trend_dca_and_earn_actions(self):
         _report, events = self._run_funds_cycle(True)
 
-        self.assertEqual(events, ["state_reset", "state_rebase", "circuit_breaker", "fuel", "trend", "dca", "earn", "state_write"])
+        self.assertEqual(events, ["state_rebase", "state_reset", "circuit_breaker", "fuel", "trend", "dca", "earn", "state_write"])
+
+    def test_new_day_cash_flow_read_failure_prevents_reset_in_real_cycle(self):
+        state = {
+            "last_reset_date": "2026-09-11",
+            "last_balance_snapshot": {"USDT": 100.0},
+            "daily_equity_base": 100.0,
+            "daily_external_principal_usdt": 0.0,
+            "external_cash_flow_cursor": {"version": 1, "observed_at": "2026-09-11T23:00:00+00:00", "records": {}},
+        }
+        runtime = ExecutionRuntime(
+            now_utc=datetime(2026, 9, 12, 1, tzinfo=timezone.utc),
+            client=object(),
+            state_owner_claim=lambda _owner: True,
+            state_owner_release=lambda _owner: True,
+        )
+        reset_calls = []
+
+        def reconcile(*args):
+            return maybe_rebase_daily_state_for_balance_change(
+                *args,
+                collect_external_cash_flows_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    ValueError("external_cash_flow_history_read_failed")
+                ),
+                runtime_set_trade_state_fn=lambda *_args, **_kwargs: self.fail("unsafe state write"),
+                append_log_fn=lambda *_args: None,
+                translate_fn=lambda key, **_kwargs: key,
+            )
+
+        report, _events = self._run_funds_cycle(
+            True,
+            state=state,
+            runtime=runtime,
+            balance_snapshot={"USDT": 200.0},
+            rebase_fn=reconcile,
+            reset_fn=lambda *_args: reset_calls.append("reset"),
+        )
+
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(reset_calls, [])
+        self.assertEqual(state["daily_equity_base"], 100.0)
+        self.assertEqual(state["last_reset_date"], "2026-09-11")
+
+    def test_reconciled_new_day_state_resumes_after_reset_write_failure_without_double_count(self):
+        state = {
+            "last_reset_date": "2026-09-11",
+            "last_balance_snapshot": {"USDT": 100.0},
+            "daily_equity_base": 100.0,
+            "daily_external_principal_usdt": 0.0,
+            "daily_trend_pnl_basis": "trend_mark_plus_cash_flow_v1",
+            "daily_trend_cash_flow_usdt": 0.0,
+            "daily_trend_net_invested_usdt": 0.0,
+            "daily_trend_risk_base_usdt": 0.0,
+            "daily_trend_third_fee_usdt": 0.0,
+            "external_cash_flow_cursor": {"version": 1, "observed_at": "2026-09-11T23:00:00+00:00", "records": {}},
+        }
+        now = datetime(2026, 9, 12, 1, tzinfo=timezone.utc)
+        cursor = {"version": 1, "observed_at": now.isoformat(), "records": {}}
+        persisted = {}
+
+        def reconcile_deposit(*args):
+            return maybe_rebase_daily_state_for_balance_change(
+                *args,
+                collect_external_cash_flows_fn=lambda *_args, **_kwargs: {
+                    "bootstrap": False,
+                    "new_deposit_principal_usdt": "100",
+                    "new_confirmed_deposit_count": 1,
+                    "new_deposit_completed_at": ["2026-09-12T00:30:00+00:00"],
+                    "new_unsupported_deposit_count": 0,
+                    "new_or_changed_withdrawal_count": 0,
+                    "cursor": cursor,
+                },
+                runtime_set_trade_state_fn=lambda _runtime, _report, current, **_kwargs: (
+                    persisted.clear(), persisted.update(copy.deepcopy(current))
+                ),
+                append_log_fn=lambda *_args: None,
+                translate_fn=lambda key, **_kwargs: key,
+            )
+
+        def fail_reset(*args):
+            return maybe_reset_daily_state(
+                *args,
+                runtime_set_trade_state_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    StatePersistenceError("state_persistence_failed")
+                ),
+            )
+
+        runtime = ExecutionRuntime(
+            now_utc=now,
+            client=object(),
+            state_owner_claim=lambda _owner: True,
+            state_owner_release=lambda _owner: True,
+        )
+        report, _events = self._run_funds_cycle(
+            True,
+            state=state,
+            runtime=runtime,
+            balance_snapshot={"USDT": 200.0},
+            rebase_fn=reconcile_deposit,
+            reset_fn=fail_reset,
+        )
+
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(persisted["last_balance_snapshot"], {"USDT": 200.0})
+        self.assertEqual(persisted["daily_equity_base"], 100.0)
+        self.assertEqual(persisted["daily_external_principal_usdt"], 0.0)
+        self.assertEqual(persisted["last_reset_date"], "2026-09-11")
+
+        reloaded = copy.deepcopy(persisted)
+        reset_persisted = {}
+
+        def reconcile_duplicate(*args):
+            return maybe_rebase_daily_state_for_balance_change(
+                *args,
+                collect_external_cash_flows_fn=lambda *_args, **_kwargs: {
+                    "bootstrap": False,
+                    "new_deposit_principal_usdt": "0",
+                    "new_confirmed_deposit_count": 0,
+                    "new_deposit_completed_at": [],
+                    "new_unsupported_deposit_count": 0,
+                    "new_or_changed_withdrawal_count": 0,
+                    "cursor": cursor,
+                },
+                runtime_set_trade_state_fn=lambda *_args, **_kwargs: self.fail("duplicate wrote state"),
+                append_log_fn=lambda *_args: None,
+                translate_fn=lambda key, **_kwargs: key,
+            )
+
+        def complete_reset(*args):
+            return maybe_reset_daily_state(
+                *args,
+                runtime_set_trade_state_fn=lambda _runtime, _report, current, **_kwargs: (
+                    reset_persisted.clear(), reset_persisted.update(copy.deepcopy(current))
+                ),
+            )
+
+        resumed_runtime = ExecutionRuntime(
+            now_utc=now,
+            client=object(),
+            state_owner_claim=lambda _owner: True,
+            state_owner_release=lambda _owner: True,
+        )
+        resumed, _events = self._run_funds_cycle(
+            True,
+            state=reloaded,
+            runtime=resumed_runtime,
+            balance_snapshot={"USDT": 200.0},
+            rebase_fn=reconcile_duplicate,
+            reset_fn=complete_reset,
+        )
+
+        self.assertEqual(resumed["status"], "ok")
+        self.assertEqual(reset_persisted["daily_equity_base"], 200.0)
+        self.assertEqual(reset_persisted["daily_external_principal_usdt"], 0.0)
+        self.assertEqual(reset_persisted["last_reset_date"], "2026-09-12")
 
     def test_snapshot_read_failure_blocks_all_funds_actions(self):
         report, events = self._run_funds_cycle(True, snapshot_error=True)

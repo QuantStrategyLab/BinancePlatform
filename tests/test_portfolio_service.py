@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from runtime_support import ExecutionIntegrityError
@@ -76,6 +77,7 @@ class PortfolioServiceTests(unittest.TestCase):
         self.assertEqual(state["daily_trend_pnl_basis"], "trend_mark_plus_cash_flow_v1")
         self.assertEqual(state["daily_trend_cash_flow_usdt"], 0.0)
         self.assertEqual(state["daily_trend_risk_base_usdt"], 400.0)
+        self.assertEqual(state["daily_external_principal_usdt"], 0.0)
         self.assertEqual(state["last_reset_date"], "2026-03-29")
         self.assertFalse(state["is_circuit_broken"])
 
@@ -182,6 +184,193 @@ class PortfolioServiceTests(unittest.TestCase):
             )
 
         self.assertEqual(report["diagnostics"]["balance_change"]["assets"], ["USDT"])
+
+    def test_confirmed_spot_usdt_deposit_updates_cursor_and_principal_without_diluting_loss(self):
+        now = datetime(2026, 9, 12, 10, tzinfo=timezone.utc)
+        runtime = SimpleNamespace(name="runtime", client=object(), now_utc=now)
+        report = {"status": "ok"}
+        state = {
+            "last_reset_date": "2026-09-12",
+            "last_balance_snapshot": {"USDT": 800.0, "BTC": 0.1, "ETH": 2.0},
+            "daily_equity_base": 1000.0,
+            "daily_external_principal_usdt": 0.0,
+            "daily_trend_equity_base": 400.0,
+            "daily_trend_pnl_basis": "trend_mark_plus_cash_flow_v1",
+            "daily_trend_cash_flow_usdt": 0.0,
+            "daily_trend_net_invested_usdt": 0.0,
+            "daily_trend_risk_base_usdt": 400.0,
+            "daily_trend_third_fee_usdt": 0.0,
+            "is_circuit_broken": True,
+            "external_cash_flow_cursor": {"version": 1, "observed_at": "2026-09-12T09:00:00+00:00", "records": {}},
+        }
+        next_cursor = {"version": 1, "observed_at": "2026-09-12T10:00:00+00:00", "records": {"hash": {}}}
+        writes = []
+
+        changed = maybe_rebase_daily_state_for_balance_change(
+            state,
+            runtime,
+            report,
+            900.0,
+            400.0,
+            {"USDT": 900.0, "BTC": 0.1, "ETH": 2.0},
+            [],
+            collect_external_cash_flows_fn=lambda *_args, **_kwargs: {
+                "bootstrap": False,
+                "new_deposit_principal_usdt": "100",
+                "new_confirmed_deposit_count": 1,
+                "new_deposit_completed_at": ["2026-09-12T09:30:00+00:00"],
+                "cursor": next_cursor,
+            },
+            runtime_set_trade_state_fn=lambda _runtime, _report, current, reason: writes.append(
+                (reason, dict(current))
+            ),
+            append_log_fn=lambda *_args: None,
+            translate_fn=lambda key, **_kwargs: key,
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(state["daily_equity_base"], 1000.0)
+        self.assertEqual(state["daily_external_principal_usdt"], 100.0)
+        self.assertEqual(state["last_balance_snapshot"]["USDT"], 900.0)
+        self.assertEqual(state["external_cash_flow_cursor"], next_cursor)
+        self.assertTrue(state["is_circuit_broken"])
+        self.assertEqual(state["daily_trend_equity_base"], 400.0)
+        self.assertEqual(writes[0][0], "external_cash_flow_reconciliation")
+        self.assertAlmostEqual(compute_daily_pnls(state, 900.0, 400.0)[0], -0.2)
+
+    def test_external_deposit_must_exactly_explain_only_usdt_balance_change(self):
+        runtime = SimpleNamespace(client=object(), now_utc=datetime(2026, 9, 12, 10, tzinfo=timezone.utc))
+        base = {
+            "last_reset_date": "2026-09-12",
+            "last_balance_snapshot": {"USDT": 800.0, "BTC": 0.1},
+            "external_cash_flow_cursor": {"version": 1, "observed_at": "2026-09-12T09:00:00+00:00", "records": {}},
+        }
+        def proof(*_args, **_kwargs):
+            return {
+                "bootstrap": False,
+                "new_deposit_principal_usdt": "100",
+                "new_confirmed_deposit_count": 1,
+                "new_deposit_completed_at": ["2026-09-12T09:30:00+00:00"],
+                "cursor": {"version": 1, "observed_at": "2026-09-12T10:00:00+00:00", "records": {}},
+            }
+
+        for snapshot in ({"USDT": 850.0, "BTC": 0.1}, {"USDT": 900.0, "BTC": 0.2}):
+            with self.subTest(snapshot=snapshot), self.assertRaises(ExecutionIntegrityError):
+                maybe_rebase_daily_state_for_balance_change(
+                    dict(base), runtime, {"status": "ok"}, 0.0, 0.0, snapshot, [],
+                    collect_external_cash_flows_fn=proof,
+                    runtime_set_trade_state_fn=lambda *_args, **_kwargs: self.fail("unsafe state write"),
+                    append_log_fn=lambda *_args: None,
+                    translate_fn=lambda key, **_kwargs: key,
+                )
+
+    def test_late_deposit_is_not_silently_booked_into_current_day(self):
+        runtime = SimpleNamespace(client=object(), now_utc=datetime(2026, 9, 12, 10, tzinfo=timezone.utc))
+        state = {
+            "last_reset_date": "2026-09-12",
+            "last_balance_snapshot": {"USDT": 800.0},
+            "external_cash_flow_cursor": {"version": 1, "observed_at": "2026-09-12T09:00:00+00:00", "records": {}},
+        }
+        with self.assertRaises(ExecutionIntegrityError):
+            maybe_rebase_daily_state_for_balance_change(
+                state, runtime, {"status": "ok"}, 900.0, 0.0, {"USDT": 900.0}, [],
+                collect_external_cash_flows_fn=lambda *_args, **_kwargs: {
+                    "bootstrap": False,
+                    "new_deposit_principal_usdt": "100",
+                    "new_confirmed_deposit_count": 1,
+                    "new_deposit_completed_at": ["2026-09-11T23:59:00+00:00"],
+                    "cursor": {},
+                },
+                runtime_set_trade_state_fn=lambda *_args, **_kwargs: self.fail("unsafe state write"),
+                append_log_fn=lambda *_args: None,
+                translate_fn=lambda key, **_kwargs: key,
+            )
+
+    def test_first_cursor_is_only_bootstrapped_when_balance_is_unchanged(self):
+        runtime = SimpleNamespace(client=object(), now_utc=datetime(2026, 9, 12, 10, tzinfo=timezone.utc))
+        cursor = {"version": 1, "observed_at": "2026-09-12T10:00:00+00:00", "records": {}}
+        writes = []
+        state = {"last_balance_snapshot": {"USDT": 800.0}, "last_reset_date": "2026-09-12"}
+        result = maybe_rebase_daily_state_for_balance_change(
+            state, runtime, {"status": "ok"}, 800.0, 0.0, {"USDT": 800.0}, [],
+            collect_external_cash_flows_fn=lambda *_args, **_kwargs: {
+                "bootstrap": True,
+                "new_deposit_principal_usdt": "0",
+                "new_confirmed_deposit_count": 0,
+                "new_deposit_completed_at": [],
+                "cursor": cursor,
+            },
+            runtime_set_trade_state_fn=lambda *_args, **kwargs: writes.append(kwargs["reason"]),
+            append_log_fn=lambda *_args: None,
+            translate_fn=lambda key, **_kwargs: key,
+        )
+        self.assertFalse(result)
+        self.assertEqual(state["external_cash_flow_cursor"], cursor)
+        self.assertEqual(writes, ["external_cash_flow_cursor"])
+
+        with self.assertRaises(ExecutionIntegrityError):
+            maybe_rebase_daily_state_for_balance_change(
+                {"last_balance_snapshot": {"USDT": 800.0}}, runtime, {"status": "ok"},
+                900.0, 0.0, {"USDT": 900.0}, [],
+                collect_external_cash_flows_fn=lambda *_args, **_kwargs: self.fail("must not backfill"),
+                runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
+                append_log_fn=lambda *_args: None,
+                translate_fn=lambda key, **_kwargs: key,
+            )
+
+    def test_new_day_deposit_is_retriable_when_history_read_fails_before_daily_reset(self):
+        now = datetime(2026, 9, 12, 1, tzinfo=timezone.utc)
+        runtime = SimpleNamespace(client=object(), now_utc=now)
+        original = {
+            "last_reset_date": "2026-09-11",
+            "last_balance_snapshot": {"USDT": 800.0},
+            "daily_equity_base": 800.0,
+            "daily_external_principal_usdt": 0.0,
+            "daily_trend_pnl_basis": "trend_mark_plus_cash_flow_v1",
+            "daily_trend_cash_flow_usdt": 0.0,
+            "daily_trend_net_invested_usdt": 0.0,
+            "daily_trend_risk_base_usdt": 0.0,
+            "daily_trend_third_fee_usdt": 0.0,
+            "external_cash_flow_cursor": {"version": 1, "observed_at": "2026-09-11T23:00:00+00:00", "records": {}},
+        }
+        first = dict(original)
+        with self.assertRaises(ExecutionIntegrityError):
+            maybe_rebase_daily_state_for_balance_change(
+                first, runtime, {"status": "ok"}, 900.0, 0.0, {"USDT": 900.0}, [],
+                collect_external_cash_flows_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                    ValueError("external_cash_flow_history_read_failed")
+                ),
+                runtime_set_trade_state_fn=lambda *_args, **_kwargs: self.fail("unsafe state write"),
+                append_log_fn=lambda *_args: None,
+                translate_fn=lambda key, **_kwargs: key,
+            )
+        self.assertEqual(first["daily_equity_base"], 800.0)
+        self.assertEqual(first["last_reset_date"], "2026-09-11")
+
+        reloaded = dict(original)
+        maybe_rebase_daily_state_for_balance_change(
+            reloaded, runtime, {"status": "ok"}, 900.0, 0.0, {"USDT": 900.0}, [],
+            collect_external_cash_flows_fn=lambda *_args, **_kwargs: {
+                "bootstrap": False,
+                "new_deposit_principal_usdt": "100",
+                "new_confirmed_deposit_count": 1,
+                "new_deposit_completed_at": ["2026-09-12T00:30:00+00:00"],
+                "new_or_changed_withdrawal_count": 0,
+                "new_unsupported_deposit_count": 0,
+                "cursor": {"version": 1, "observed_at": now.isoformat(), "records": {}},
+            },
+            runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
+            append_log_fn=lambda *_args: None,
+            translate_fn=lambda key, **_kwargs: key,
+        )
+        self.assertEqual(reloaded["daily_equity_base"], 800.0)
+        self.assertEqual(reloaded["daily_external_principal_usdt"], 0.0)
+        maybe_reset_daily_state(
+            reloaded, runtime, {"status": "ok"}, "2026-09-12", 900.0, 0.0,
+            runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
+        )
+        self.assertEqual(reloaded["daily_equity_base"], 900.0)
+        self.assertEqual(reloaded["daily_external_principal_usdt"], 0.0)
 
     def test_compute_daily_pnls_returns_zero_when_bases_missing_for_empty_portfolio(self):
         daily_pnl, trend_daily_pnl = compute_daily_pnls({}, 0.0, 0.0)

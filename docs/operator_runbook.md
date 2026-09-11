@@ -568,3 +568,50 @@ independent account/ledger check and an explicitly confirmed baseline.
 API contracts: [Wallet capital history](https://developers.binance.com/en/docs/catalog/core-trading-wallet/api/rest-api/capital),
 [Flexible Earn history](https://developers.binance.com/en/docs/catalog/investment-and-services-simple-earn/api/rest-api/flexible-locked),
 [Universal transfers](https://developers.binance.com/en/docs/catalog/core-trading-wallet/api/rest-api/asset).
+
+### Automatic external cash-flow accounting
+
+The ordinary strategy cycle has one deliberately narrow automatic path for a
+manual external deposit: a confirmed (`status=1`) USDT row from the capital
+deposit history, credited to Spot (`walletType=0`, `transferType=0`). The cycle
+reads deposit and withdrawal history once each over a rolling seven-day window,
+with no retry. It accepts fewer than 1,000 rows per surface, hashes provider IDs
+and payloads into the existing private trade state, and stops if the page is
+full, a finalized record changes, the cursor reaches its bounded capacity, or
+the balance evidence is incomplete.
+
+The first unchanged cycle establishes the cursor and does not re-account old
+deposits. A later confirmed deposit is applied once only when its completion is
+in the current UTC accounting day and its principal exactly explains the Spot
+USDT quantity increase while every other managed quantity is unchanged. The
+daily opening equity remains frozen. `daily_external_principal_usdt` is removed
+from the daily return numerator, so a deposit is not P&L and cannot dilute an
+existing loss percentage. Trend-sleeve cash flow, risk base, and a latched
+circuit breaker are unchanged. A UTC-day reset clears only the new day's
+external-principal accumulator under the existing reset policy.
+
+Withdrawals remain outside automatic accounting. The official history response
+exposes separate `amount` and `transactionFee` values but does not define their
+combined Spot debit; its `applyTime` and `completeTime` strings have no timezone,
+and the documented `startTime`/`endTime` filter does not say which one it uses.
+The cursor hashes withdrawal rows so an unchanged historical row inside the
+rolling window does not stop an otherwise unchanged cycle. A new or changed row
+combined with an unexplained balance change blocks before orders; the cycle does
+not guess principal, fee, or accounting day.
+
+Non-USDT deposits, Funding-wallet deposits, nonzero/unknown transfer types,
+Flexible Earn rewards, and internal transfers are also outside the automatic
+path. Unchanged historical rows can be enrolled only while establishing an
+unchanged balance cursor; a current quantity change still blocks unless a new
+supported deposit explains it exactly. None of these rows modifies the frozen
+opening, enrolls the post-rebase recovery source, clears the historical
+difference, resets the breaker, or grants execution authority. A supported
+deposit whose completion arrives outside the current accounting day is held for
+operator review rather than posted to a later day.
+
+This adjustment protects the local daily-loss calculation only. The existing
+per-cycle performance record has no exactly-once delivery for a cash-flow amount:
+emitting a daily cumulative value would double count it, while emitting it once
+could lose it if the performance write failed after the private cursor advanced.
+Binance therefore records `external_cash_flow=null` and remains incomparable in
+cross-cycle performance monitoring until that separate durable contract exists.

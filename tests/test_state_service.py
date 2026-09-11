@@ -43,6 +43,27 @@ class StateServiceTests(unittest.TestCase):
         for key, value in raw.items():
             self.assertEqual(normalized[key], value)
 
+    def test_external_cash_flow_state_survives_normalization_without_resetting_daily_principal(self):
+        kwargs = {
+            "trend_universe": {},
+            "last_good_payload_key": "last_good",
+            "action_history_key": "trend_actions",
+            "retired_positions_key": "retired",
+        }
+        cursor = {
+            "version": 1,
+            "observed_at": "2026-09-12T10:00:00+00:00",
+            "records": {"a" * 64: {"kind": "deposit", "payload_sha256": "b" * 64, "status": "final"}},
+        }
+
+        normalized = normalize_trade_state(
+            {"daily_external_principal_usdt": 25.0, "external_cash_flow_cursor": cursor},
+            **kwargs,
+        )
+
+        self.assertEqual(normalized["daily_external_principal_usdt"], 25.0)
+        self.assertEqual(normalized["external_cash_flow_cursor"], cursor)
+
     def test_incomplete_or_non_finite_daily_trend_accounting_is_marked_invalid(self):
         kwargs = {
             "trend_universe": {},

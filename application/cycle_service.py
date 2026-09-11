@@ -135,7 +135,6 @@ def execute_strategy_cycle(
         today_id_str = now_utc.strftime("%Y%m%d")
         current_balance_snapshot = build_balance_snapshot(runtime_trend_universe, balances, u_total)
 
-        maybe_reset_daily_state(state, runtime, report, today_utc, total_equity, trend_val_equity)
         maybe_rebase_daily_state_for_balance_change(
             state,
             runtime,
@@ -145,6 +144,7 @@ def execute_strategy_cycle(
             current_balance_snapshot,
             log_buffer,
         )
+        maybe_reset_daily_state(state, runtime, report, today_utc, total_equity, trend_val_equity)
         daily_pnl, trend_daily_pnl = compute_daily_pnls(state, total_equity, trend_val_equity)
         append_portfolio_report(log_buffer, allocation, fuel_val, daily_pnl, trend_daily_pnl, btc_snapshot)
 
@@ -342,6 +342,10 @@ def execute_strategy_cycle(
                 "status": report.get("status"),
                 "total_equity_usdt": report.get("total_equity_usdt"),
                 "trend_equity_usdt": report.get("trend_equity_usdt"),
+                # The local daily-loss state excludes supported deposits, but
+                # this per-cycle record has no exactly-once external-flow
+                # delivery. Keep cross-cycle performance explicitly incomparable.
+                "external_cash_flow": None,
                 "degraded_mode_level": report.get("degraded_mode_level"),
                 "error": report.get("error"),
             },
