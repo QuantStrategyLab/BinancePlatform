@@ -128,8 +128,12 @@ asset snapshot, reporting missing assets separately from mismatches. Separately,
 it checks BONUS rewards since the recovered source observation against that
 source's Spot hashes (at most seven days). Today's rewards must not be compared
 against an older frozen baseline as if they cover the entire intervening period.
-The output includes bounded current-day trade and open-order counts, not account
-amounts. Incomplete history or changing balances/ledger blocks the audit. A match
+The output includes trade counts over the same recovered-source window (using
+the existing bounded daily requests), open-order counts, missing assets with
+nonzero balances, and the direction of the BTC balance change, not account
+amounts. The legacy snapshot has no observation timestamp; document update time
+and daily reset date cannot supply that missing provenance. Incomplete history
+or changing balances/ledger blocks the audit. A match
 does not reconcile the whole account, authorize migration, or restore trading;
 the existing zero-activity preview/apply checks remain unchanged.
 
