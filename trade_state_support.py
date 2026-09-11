@@ -1,3 +1,6 @@
+import math
+
+
 def safe_float(value, default=0.0):
     try:
         return float(value)
@@ -48,9 +51,13 @@ def build_default_state(
         "BTCUSDT": {"holding_qty": 0.0, "avg_cost": 0.0},
         "daily_equity_base": 0.0,
         "daily_trend_equity_base": 0.0,
-        # Where `daily_trend_equity_base` comes from (e.g. "trend_val").
-        # Used to avoid false circuit-breaker triggers after strategy changes/deploys.
+        # Intraday trend-sleeve accounting keeps internal buy/sell cash flows
+        # separate from PnL so rotation does not look like an investment loss.
         "daily_trend_pnl_basis": "",
+        "daily_trend_cash_flow_usdt": 0.0,
+        "daily_trend_net_invested_usdt": 0.0,
+        "daily_trend_risk_base_usdt": 0.0,
+        "daily_trend_third_fee_usdt": 0.0,
         "last_reset_date": "",
         "is_circuit_broken": False,
         "dca_last_buy_date": "",
@@ -109,6 +116,23 @@ def normalize_trade_state(
             normalized[key] = merged
         else:
             normalized[key] = state.get(key, value)
+
+    if state.get("daily_trend_pnl_basis") == "trend_mark_plus_cash_flow_v1":
+        accounting_fields = (
+            "daily_trend_cash_flow_usdt",
+            "daily_trend_net_invested_usdt",
+            "daily_trend_risk_base_usdt",
+            "daily_trend_third_fee_usdt",
+        )
+        try:
+            values = {field: float(state[field]) for field in accounting_fields}
+        except (KeyError, TypeError, ValueError):
+            normalized["daily_trend_pnl_basis"] = "invalid_trend_accounting"
+        else:
+            if not all(math.isfinite(value) for value in values.values()) or values[
+                "daily_trend_risk_base_usdt"
+            ] < 0:
+                normalized["daily_trend_pnl_basis"] = "invalid_trend_accounting"
 
     existing_retired = state.get(retired_positions_key, {})
     retired_positions = {}

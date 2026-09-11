@@ -31,6 +31,7 @@ _ORDER_SUBMISSION_STATE_KEY = "order_submission"
 _ORDER_SUBMISSION_RESERVED = "RESERVED"
 _ORDER_SUBMISSION_UNKNOWN = "SUBMISSION_UNKNOWN"
 _ORDER_SUBMISSION_TERMINAL = "TERMINAL"
+_ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING = "FILLED_ACCOUNTING_PENDING"
 _ORDER_CLIENT_ID_PREFIX = "QSL_"
 _EARN_METHOD_BY_EFFECT_TYPE = {
     "earn_redeem": "redeem_simple_earn_flexible_product",
@@ -546,7 +547,10 @@ def require_runtime_state_owner(runtime):
 def release_runtime_state_owner(runtime):
     require_runtime_state_owner(runtime)
     record = (runtime.trade_state or {}).get(_ORDER_SUBMISSION_STATE_KEY, {})
-    if runtime.pending_funds or record.get("state") == _ORDER_SUBMISSION_UNKNOWN:
+    if runtime.pending_funds or record.get("state") in {
+        _ORDER_SUBMISSION_UNKNOWN,
+        _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING,
+    }:
         return False
     try:
         released = runtime.state_owner_release(runtime.state_owner_id)
@@ -583,6 +587,24 @@ def reconcile_runtime_cash_effects(runtime, state):
                 raise ValueError("invalid_balance")
     except Exception:
         raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None
+    submission = state.get(_ORDER_SUBMISSION_STATE_KEY, {})
+    if (
+        submission.get("state") == _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING
+        and submission.get("symbol") == getattr(runtime, "fuel_symbol", None)
+    ):
+        if not _known_fill_is_complete(
+            submission.get("known_fill"),
+            allowed_fee_assets={str(getattr(runtime, "fuel_asset", "BNB") or "BNB"), "USDT"},
+        ):
+            raise ExecutionIntegrityError("filled_order_accounting_unverifiable") from None
+        if not _fuel_fill_matches_observed_balances(
+            submission.get("known_fill"),
+            previous=state.get("last_balance_snapshot"),
+            observed=observations,
+            fuel_asset=str(getattr(runtime, "fuel_asset", "BNB") or "BNB"),
+        ):
+            raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None
+        state[_ORDER_SUBMISSION_STATE_KEY] = {"state": _ORDER_SUBMISSION_TERMINAL}
     state.setdefault("last_balance_snapshot", {}).update(observations)
     runtime.cash_balance_observation = observations
 
@@ -717,6 +739,14 @@ def _load_order_submission_state(runtime):
     if status in {_ORDER_SUBMISSION_RESERVED, _ORDER_SUBMISSION_TERMINAL}:
         if set(record) != {"state"}:
             raise StatePersistenceError("submission_state_invalid") from None
+    elif status == _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING:
+        required = {"state", "identity_sha256", "symbol", "known_fill"}
+        if set(record) != required or not _is_sha256(record.get("identity_sha256")):
+            raise StatePersistenceError("submission_state_invalid") from None
+        if not re.fullmatch(r"[A-Z0-9]{3,30}", str(record.get("symbol") or "")):
+            raise StatePersistenceError("submission_state_invalid") from None
+        if not isinstance(record.get("known_fill"), Mapping):
+            raise StatePersistenceError("submission_state_invalid") from None
     elif status == _ORDER_SUBMISSION_UNKNOWN:
         if not _is_sha256(record.get("identity_sha256")):
             raise StatePersistenceError("submission_state_invalid") from None
@@ -750,7 +780,107 @@ def _persist_order_submission_state(runtime, state, record):
     runtime.trade_state = state
 
 
-def _complete_order_response(runtime, report, state, response):
+def _known_fill_record(response):
+    fills = response.get("fills") if isinstance(response, Mapping) else None
+    commissions = []
+    if isinstance(fills, list):
+        for fill in fills:
+            if not isinstance(fill, Mapping):
+                continue
+            commissions.append(
+                {
+                    "price": str(fill.get("price", "")),
+                    "qty": str(fill.get("qty", "")),
+                    "commission": str(fill.get("commission", "")),
+                    "commission_asset": str(fill.get("commissionAsset", "")),
+                }
+            )
+    return {
+        "client_order_id": str(response.get("clientOrderId", "")),
+        "side": str(response.get("side", "")),
+        "executed_qty": str(response.get("executedQty", "")),
+        "cummulative_quote_qty": str(response.get("cummulativeQuoteQty", "")),
+        "commissions": commissions,
+    }
+
+
+def _known_fill_is_complete(known_fill, *, allowed_fee_assets):
+    if not isinstance(known_fill, Mapping):
+        return False
+    try:
+        executed = Decimal(str(known_fill["executed_qty"]))
+        quote = Decimal(str(known_fill["cummulative_quote_qty"]))
+    except (KeyError, InvalidOperation, TypeError):
+        return False
+    fills = known_fill.get("commissions")
+    if not executed.is_finite() or executed <= 0 or not quote.is_finite() or quote <= 0:
+        return False
+    if not isinstance(fills, list) or not fills:
+        return False
+    fill_qty = Decimal("0")
+    fill_quote = Decimal("0")
+    for fill in fills:
+        if not isinstance(fill, Mapping):
+            return False
+        try:
+            price = Decimal(str(fill["price"]))
+            qty = Decimal(str(fill["qty"]))
+            commission = Decimal(str(fill["commission"]))
+        except (KeyError, InvalidOperation, TypeError):
+            return False
+        asset = str(fill.get("commission_asset") or "").upper()
+        if (
+            not price.is_finite()
+            or price <= 0
+            or not qty.is_finite()
+            or qty <= 0
+            or not commission.is_finite()
+            or commission < 0
+            or asset not in allowed_fee_assets
+        ):
+            return False
+        fill_qty += qty
+        fill_quote += price * qty
+    return abs(fill_qty - executed) <= max(Decimal("1e-8"), executed * Decimal("1e-8")) and abs(
+        fill_quote - quote
+    ) <= max(Decimal("1e-8"), quote * Decimal("1e-8"))
+
+
+def _fuel_fill_matches_observed_balances(known_fill, *, previous, observed, fuel_asset):
+    if not isinstance(previous, Mapping) or not isinstance(observed, Mapping):
+        return False
+    try:
+        executed = Decimal(str(known_fill["executed_qty"]))
+        quote = Decimal(str(known_fill["cummulative_quote_qty"]))
+        previous_fuel = Decimal(str(previous[fuel_asset]))
+        previous_usdt = Decimal(str(previous["USDT"]))
+        observed_fuel = Decimal(str(observed[fuel_asset]))
+        observed_usdt = Decimal(str(observed["USDT"]))
+    except (KeyError, InvalidOperation, TypeError):
+        return False
+    fuel_fee = Decimal("0")
+    usdt_fee = Decimal("0")
+    for fill in known_fill.get("commissions", []):
+        try:
+            commission = Decimal(str(fill["commission"]))
+        except (KeyError, InvalidOperation, TypeError):
+            return False
+        asset = str(fill.get("commission_asset") or "").upper()
+        if asset == fuel_asset:
+            fuel_fee += commission
+        elif asset == "USDT":
+            usdt_fee += commission
+        else:
+            return False
+    expected_fuel = previous_fuel + executed - fuel_fee
+    expected_usdt = previous_usdt - quote - usdt_fee
+    return (
+        abs(observed_fuel - expected_fuel) <= Decimal("1e-8")
+        and abs(observed_usdt - expected_usdt) <= Decimal("1e-4")
+    )
+
+
+def _complete_order_response(runtime, report, state, response, *, fill_accounting_required=False):
     record_order_response(report, response)
     status = str(response.get("status") or "").strip().upper() if isinstance(response, Mapping) else ""
     if status in _BINANCE_ORDER_FAILED_STATUSES:
@@ -762,7 +892,16 @@ def _complete_order_response(runtime, report, state, response):
         if not no_fill:
             raise OrderReconciliationError("order_reconciliation_uncertain") from None
     if status == _BINANCE_ORDER_FILLED_STATUS or status in _BINANCE_ORDER_FAILED_STATUSES:
-        _persist_order_submission_state(runtime, state, {"state": _ORDER_SUBMISSION_TERMINAL})
+        terminal_record = {"state": _ORDER_SUBMISSION_TERMINAL}
+        if status == _BINANCE_ORDER_FILLED_STATUS and fill_accounting_required:
+            previous = state.get(_ORDER_SUBMISSION_STATE_KEY, {})
+            terminal_record = {
+                "state": _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING,
+                "identity_sha256": str(previous.get("identity_sha256") or ""),
+                "symbol": str(previous.get("symbol") or response.get("symbol") or "").upper(),
+                "known_fill": _known_fill_record(response),
+            }
+        _persist_order_submission_state(runtime, state, terminal_record)
         if runtime.pending_funds:
             if status == _BINANCE_ORDER_FILLED_STATUS:
                 runtime.pending_funds[-1]["confirmed"] = True
@@ -836,6 +975,7 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
         raise RuntimeError("runtime.client is not configured")
 
     is_order_call = str(effect_type or "").startswith("order_")
+    fill_accounting_required = is_order_call
     earn_method = _EARN_METHOD_BY_EFFECT_TYPE.get(str(effect_type or ""))
     is_earn_call = earn_method == str(method_name)
     if str(effect_type or "").startswith("earn_") and not is_earn_call:
@@ -863,7 +1003,15 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 raise OrderReconciliationError("order_reconciliation_intent_mismatch") from None
             if not runtime.pending_funds:
                 runtime.pending_funds.append({"confirmed": False, "action": association["side"].lower(), "symbol": association["symbol"], "asset": None})
-            return _complete_order_response(runtime, report, trade_state, reconciled_response)
+            return _complete_order_response(
+                runtime,
+                report,
+                trade_state,
+                reconciled_response,
+                fill_accounting_required=fill_accounting_required,
+            )
+        if submission_status == _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING:
+            raise OrderReconciliationError("filled_order_accounting_unverifiable") from None
         if submission_status == _ORDER_SUBMISSION_TERMINAL:
             _persist_order_submission_state(
                 runtime,
@@ -969,7 +1117,13 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                     raise
                 if not _reconciled_order_matches_request(reconciled_response, association):
                     raise OrderReconciliationError("order_reconciliation_intent_mismatch") from None
-                return _complete_order_response(runtime, report, trade_state, reconciled_response)
+                return _complete_order_response(
+                    runtime,
+                    report,
+                    trade_state,
+                    reconciled_response,
+                    fill_accounting_required=fill_accounting_required,
+                )
             if attempt < max_retries:
                 delay = retry_base_sec * (2 ** attempt)
                 time.sleep(delay)
@@ -979,7 +1133,13 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 target=method_name, payload=dict(client_payload), executed=True,
             )
             if is_order_call:
-                return _complete_order_response(runtime, report, trade_state, response)
+                return _complete_order_response(
+                    runtime,
+                    report,
+                    trade_state,
+                    response,
+                    fill_accounting_required=fill_accounting_required,
+                )
             return response
     # All retries exhausted — log and raise
     record_side_effect(

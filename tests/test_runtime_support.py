@@ -614,7 +614,19 @@ class TestBuildExecutionReport(unittest.TestCase):
 
         self.assertEqual(result["status"], "FILLED")
         self.assertEqual([event[0] for event in store.events], ["query", "write"])
-        self.assertEqual(store.data["order_submission"], {"state": "TERMINAL"})
+        self.assertEqual(store.data["order_submission"]["state"], "FILLED_ACCOUNTING_PENDING")
+        self.assertEqual(store.data["order_submission"]["known_fill"]["executed_qty"], "0.01")
+
+        with self.assertRaisesRegex(OrderReconciliationError, "filled_order_accounting_unverifiable"):
+            runtime_call_client(
+                runtime,
+                build_execution_report(runtime),
+                method_name="order_market_buy",
+                payload=payload,
+                effect_type="order_buy",
+                max_retries=0,
+            )
+        self.assertEqual([event[0] for event in store.events], ["query", "write"])
 
     def test_unknown_order_cannot_complete_a_different_requested_order(self):
         variants = (
@@ -792,7 +804,8 @@ class TestBuildExecutionReport(unittest.TestCase):
         )
 
         self.assertEqual(result["status"], "FILLED")
-        self.assertEqual(store.data["order_submission"], {"state": "TERMINAL"})
+        self.assertEqual(store.data["order_submission"]["state"], "FILLED_ACCOUNTING_PENDING")
+        self.assertEqual(store.data["order_submission"]["known_fill"]["cummulative_quote_qty"], "19.5")
 
     def test_verified_terminal_query_response_is_required_to_write_terminal(self):
         store = DurableSubmissionStateStore()
@@ -827,7 +840,7 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertEqual(store.data["order_submission"], {"state": "TERMINAL"})
         self.assertEqual([event[0] for event in store.events], ["write", "submit", "query", "write"])
 
-    def test_terminal_write_failure_keeps_unknown_and_restart_does_not_resubmit(self):
+    def test_filled_accounting_pending_survives_restart_without_resubmit(self):
         class TerminalWriteFailureStore(DurableSubmissionStateStore):
             def write(self, state):
                 record = copy.deepcopy(state["order_submission"])
@@ -852,15 +865,16 @@ class TestBuildExecutionReport(unittest.TestCase):
             state_writer=store.write,
         )
 
-        with self.assertRaisesRegex(RuntimeError, "state_persistence_failed"):
-            runtime_call_client(
-                initial_runtime,
-                build_execution_report(initial_runtime),
-                method_name="order_market_buy",
-                payload={"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "terminal-write-failure"},
-                effect_type="order_buy",
-                max_retries=0,
-            )
+        result = runtime_call_client(
+            initial_runtime,
+            build_execution_report(initial_runtime),
+            method_name="order_market_buy",
+            payload={"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "terminal-write-failure"},
+            effect_type="order_buy",
+            max_retries=0,
+        )
+        self.assertEqual(result["status"], "FILLED")
+        self.assertEqual(store.data["order_submission"]["state"], "FILLED_ACCOUNTING_PENDING")
 
         class RestartClient:
             def order_market_buy(self, **_kwargs):
@@ -879,7 +893,7 @@ class TestBuildExecutionReport(unittest.TestCase):
             state_writer=store.write,
         )
 
-        with self.assertRaisesRegex(RuntimeError, "state_persistence_failed"):
+        with self.assertRaisesRegex(OrderReconciliationError, "filled_order_accounting_unverifiable"):
             runtime_call_client(
                 restart_runtime,
                 build_execution_report(restart_runtime),
@@ -889,8 +903,8 @@ class TestBuildExecutionReport(unittest.TestCase):
                 max_retries=0,
             )
 
-        self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
-        self.assertEqual([event[0] for event in store.events], ["write", "submit", "write", "query", "write"])
+        self.assertEqual(store.data["order_submission"]["state"], "FILLED_ACCOUNTING_PENDING")
+        self.assertEqual([event[0] for event in store.events], ["write", "submit", "write"])
 
     def test_local_pre_submit_failure_does_not_call_client_or_write_unknown(self):
         store = DurableSubmissionStateStore()
@@ -1404,8 +1418,14 @@ def test_owner_release_requires_confirmed_fill_and_existing_persisted_action():
     import pytest
     from unittest.mock import Mock
     from runtime_support import StatePersistenceError
+    from application.execution_service import (
+        _parse_filled_order, _apply_fill_balances, _record_trend_fill, _prepare_accounting_state,
+    )
     client = Mock()
-    client.order_market_buy.return_value = {'status': 'FILLED'}
+    response = {'status': 'FILLED', 'symbol': 'ETHUSDT', 'side': 'BUY',
+                'executedQty': '1', 'cummulativeQuoteQty': '100',
+                'fills': [{'price': '100', 'qty': '1', 'commission': '0', 'commissionAsset': 'USDT'}]}
+    client.order_market_buy.return_value = response
     runtime = build_order_runtime(client=client)
     release = runtime.state_owner_release = Mock(return_value=True)
     report = build_execution_report(runtime)
@@ -1414,6 +1434,12 @@ def test_owner_release_requires_confirmed_fill_and_existing_persisted_action():
     assert release_runtime_state_owner(runtime) is False
     release.assert_not_called()
     state = runtime.trade_state
+    assert state['order_submission']['state'] == 'FILLED_ACCOUNTING_PENDING'
+    balances = {'ETHUSDT': 0.0}
+    fill = _parse_filled_order(response, symbol='ETHUSDT', side='BUY', prices={'ETHUSDT': 100.0})
+    cash, quote_delta = _apply_fill_balances(fill, side='BUY', symbol='ETHUSDT', balances=balances, u_total=200.0)
+    _record_trend_fill(state, fill, quote_delta=quote_delta)
+    _prepare_accounting_state(state, symbol='ETHUSDT', base_asset='ETH', balances=balances, u_total=cash)
     state['trend_action_history'] = {'ETHUSDT': {'action': 'buy', 'date': runtime.now_utc.strftime('%Y%m%d')}}
     writer = runtime.state_writer
     runtime.state_writer = lambda _state: False
@@ -1448,7 +1474,10 @@ def test_confirmed_earn_and_fuel_require_fresh_balances_and_successful_state_wri
     from unittest.mock import Mock
     from runtime_support import ExecutionIntegrityError, StatePersistenceError
     for method, payload, effect, asset, response in [
-        ('order_market_buy', {'symbol': 'BNBUSDT', 'quantity': 1}, 'order_buy', None, {'status': 'FILLED'}),
+        ('order_market_buy', {'symbol': 'BNBUSDT', 'quantity': 1}, 'order_buy', None,
+         {'status': 'FILLED', 'symbol': 'BNBUSDT', 'side': 'BUY', 'executedQty': '1',
+          'cummulativeQuoteQty': '1',
+          'fills': [{'price': '1', 'qty': '1', 'commission': '0', 'commissionAsset': 'BNB'}]}),
         ('subscribe_simple_earn_flexible_product', {'productId': 'synthetic', 'amount': 1}, 'earn_subscribe', 'USDT', {'success': True, 'purchaseId': 1}),
     ]:
         client = Mock()
@@ -1456,6 +1485,8 @@ def test_confirmed_earn_and_fuel_require_fresh_balances_and_successful_state_wri
         client.get_asset_balance.return_value = {'free': '10', 'locked': '0'}
         client.get_simple_earn_flexible_product_position.return_value = {'rows': []}
         runtime = build_order_runtime(client=client)
+        runtime.trade_state = {'order_submission': {'state': 'RESERVED'},
+                               'last_balance_snapshot': {'BNB': 9.0, 'USDT': 11.0}}
         runtime.state_owner_release = Mock(return_value=True)
         report = build_execution_report(runtime)
         runtime_call_client(runtime, report, method_name=method, payload=payload, effect_type=effect, accounting_asset=asset)

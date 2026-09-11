@@ -23,6 +23,46 @@ class StateServiceTests(unittest.TestCase):
         self.assertEqual(build_default_state(**kwargs)["order_submission"], {"state": "RESERVED"})
         self.assertEqual(normalize_trade_state({"order_submission": unknown}, **kwargs)["order_submission"], unknown)
 
+    def test_daily_trend_accounting_survives_state_normalization(self):
+        kwargs = {
+            "trend_universe": {"ETHUSDT": {"base_asset": "ETH"}},
+            "last_good_payload_key": "last_good",
+            "action_history_key": "trend_actions",
+            "retired_positions_key": "retired",
+        }
+        raw = {
+            "daily_trend_pnl_basis": "trend_mark_plus_cash_flow_v1",
+            "daily_trend_cash_flow_usdt": 125.0,
+            "daily_trend_net_invested_usdt": -125.0,
+            "daily_trend_risk_base_usdt": 1000.0,
+            "daily_trend_third_fee_usdt": 1.5,
+        }
+
+        normalized = normalize_trade_state(raw, **kwargs)
+
+        for key, value in raw.items():
+            self.assertEqual(normalized[key], value)
+
+    def test_incomplete_or_non_finite_daily_trend_accounting_is_marked_invalid(self):
+        kwargs = {
+            "trend_universe": {},
+            "last_good_payload_key": "last_good",
+            "action_history_key": "trend_actions",
+            "retired_positions_key": "retired",
+        }
+        base = {
+            "daily_trend_pnl_basis": "trend_mark_plus_cash_flow_v1",
+            "daily_trend_cash_flow_usdt": -100.0,
+            "daily_trend_net_invested_usdt": 100.0,
+            "daily_trend_third_fee_usdt": 0.0,
+        }
+        for raw in (base, {**base, "daily_trend_risk_base_usdt": float("nan")}):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    normalize_trade_state(raw, **kwargs)["daily_trend_pnl_basis"],
+                    "invalid_trend_accounting",
+                )
+
     def test_load_cycle_state_marks_report_aborted_when_state_load_fails(self):
         report = {"status": "ok"}
         observed_errors = []

@@ -19,6 +19,27 @@ from runtime_support import (
 from tests.test_runtime_support import owned_runtime
 
 
+def _filled_response(payload, method_name, price):
+    quantity = float(payload["quantity"])
+    side = "BUY" if method_name == "order_market_buy" else "SELL"
+    return {
+        "status": "FILLED",
+        "symbol": payload["symbol"],
+        "side": side,
+        "clientOrderId": payload.get("newClientOrderId", "test-order"),
+        "executedQty": str(quantity),
+        "cummulativeQuoteQty": str(quantity * price),
+        "fills": [
+            {
+                "price": str(price),
+                "qty": str(quantity),
+                "commission": "0",
+                "commissionAsset": "USDT",
+            }
+        ],
+    }
+
+
 class ExecutionServiceTests(unittest.TestCase):
     def test_trend_buy_state_persistence_failure_stops_remaining_orders(self):
         observed = {"client_calls": [], "notifications": []}
@@ -51,8 +72,9 @@ class ExecutionServiceTests(unittest.TestCase):
                 translate_fn=lambda key, **_kwargs: key,
                 format_qty_fn=lambda _client, _symbol, qty: qty,
                 ensure_asset_available_fn=lambda *_args: True,
-                runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: observed["client_calls"].append(
-                    (method_name, payload, effect_type)
+                runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: (
+                    observed["client_calls"].append((method_name, payload, effect_type))
+                    or _filled_response(payload, method_name, 100.0)
                 ),
                 next_order_id_fn=lambda _runtime, _prefix, symbol: f"buy-{symbol}",
                 set_symbol_trade_state_fn=lambda state, symbol, value: state.update({symbol: value}),
@@ -73,6 +95,7 @@ class ExecutionServiceTests(unittest.TestCase):
             observed["client_calls"].append((method_name, payload, effect_type))
             if payload["symbol"] == "ETHUSDT":
                 raise RuntimeError("ordinary_order_failure")
+            return _filled_response(payload, method_name, 50.0)
 
         execute_trend_buys(
             runtime,
@@ -280,8 +303,9 @@ class ExecutionServiceTests(unittest.TestCase):
             format_qty_fn=lambda _client, _symbol, qty: round(qty - 0.5, 4),
             runtime_notify_fn=lambda _runtime, _report, text: observed["notifications"].append(text),
             ensure_asset_available_fn=lambda _runtime, _report, asset, amount, _log_buffer: observed["asset_checks"].append((asset, amount)) or True,
-            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: observed["client_calls"].append(
-                (method_name, payload, effect_type)
+            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: (
+                observed["client_calls"].append((method_name, payload, effect_type))
+                or _filled_response(payload, method_name, 100.0)
             ),
             set_symbol_trade_state_fn=lambda _state, symbol, symbol_state: observed["state_sets"].append((symbol, dict(symbol_state))),
             runtime_set_trade_state_fn=lambda _runtime, _report, _state, reason: observed["persist_reasons"].append(reason),
@@ -368,8 +392,9 @@ class ExecutionServiceTests(unittest.TestCase):
             translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
             format_qty_fn=lambda _client, _symbol, _qty: 1.5,
             ensure_asset_available_fn=lambda _runtime, _report, asset, amount, _log_buffer: observed["asset_checks"].append((asset, amount)) or True,
-            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: observed["client_calls"].append(
-                (method_name, payload, effect_type)
+            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: (
+                observed["client_calls"].append((method_name, payload, effect_type))
+                or _filled_response(payload, method_name, 100.0)
             ),
             next_order_id_fn=lambda *_args: "sell-order-id",
             set_symbol_trade_state_fn=lambda _state, symbol, symbol_state: observed["state_sets"].append((symbol, dict(symbol_state))),
@@ -458,8 +483,9 @@ class ExecutionServiceTests(unittest.TestCase):
             translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
             format_qty_fn=lambda _client, _symbol, qty: round(qty, 6),
             ensure_asset_available_fn=lambda _runtime, _report, asset, amount, _log_buffer: observed["asset_checks"].append((asset, amount)) or True,
-            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: observed["client_calls"].append(
-                (method_name, payload, effect_type)
+            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: (
+                observed["client_calls"].append((method_name, payload, effect_type))
+                or _filled_response(payload, method_name, 100.0)
             ),
             next_order_id_fn=lambda *_args: "buy-order-id",
             set_symbol_trade_state_fn=lambda _state, symbol, symbol_state: observed["state_sets"].append((symbol, dict(symbol_state))),
@@ -691,8 +717,9 @@ class ExecutionServiceTests(unittest.TestCase):
             translate_fn=lambda key, **_kwargs: key,
             format_qty_fn=lambda _client, _symbol, qty: round(qty, 6),
             ensure_asset_available_fn=lambda _runtime, _report, asset, amount, _log_buffer: observed["asset_checks"].append((asset, amount)) or True,
-            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: observed["client_calls"].append(
-                (method_name, payload, effect_type)
+            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: (
+                observed["client_calls"].append((method_name, payload, effect_type))
+                or _filled_response(payload, method_name, 50_000.0)
             ),
             next_order_id_fn=lambda *_args: "buy-order-id",
             runtime_notify_fn=lambda _runtime, _report, text: observed["notifications"].append(text),
@@ -771,8 +798,9 @@ class ExecutionServiceTests(unittest.TestCase):
             translate_fn=lambda key, **_kwargs: key,
             format_qty_fn=lambda _client, _symbol, qty: round(qty, 6),
             ensure_asset_available_fn=lambda _runtime, _report, asset, amount, _log_buffer: observed["asset_checks"].append((asset, amount)) or True,
-            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: observed["client_calls"].append(
-                (method_name, payload, effect_type)
+            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type: (
+                observed["client_calls"].append((method_name, payload, effect_type))
+                or _filled_response(payload, method_name, 10_000.0)
             ),
             next_order_id_fn=lambda *_args: "sell-order-id",
             runtime_notify_fn=lambda *_args, **_kwargs: None,

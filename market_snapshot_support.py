@@ -26,8 +26,8 @@ def capture_market_snapshot(
     bnb_price = float(runtime.client.get_avg_price(symbol=bnb_fuel_symbol)["price"])
     dynamic_usdt_buffer = max(50.0, min(u_total * 0.05, 300.0))
 
-    prices = {}
-    balances = {}
+    prices = {bnb_fuel_symbol: bnb_price}
+    balances = {bnb_fuel_symbol: bnb_total}
     for symbol, config in runtime_trend_universe.items():
         prices[symbol] = float(runtime.client.get_avg_price(symbol=symbol)["price"])
         balances[symbol] = get_total_balance_fn(runtime.client, config["base_asset"], log_buffer=log_buffer)

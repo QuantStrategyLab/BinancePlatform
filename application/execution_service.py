@@ -2,10 +2,149 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
+
 from runtime_support import ExecutionIntegrityError, record_gating_event
 
 
 _SAFE_ORDER_FAILURE_REASON = "order_execution_failed"
+_FILLED_ACCOUNTING_PENDING = "FILLED_ACCOUNTING_PENDING"
+
+
+def _required_number(value, *, positive=False):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable") from None
+    if not math.isfinite(number) or number < 0 or (positive and number <= 0):
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable") from None
+    return number
+
+
+def _parse_filled_order(response, *, symbol, side, prices):
+    if not isinstance(response, Mapping) or str(response.get("status") or "").upper() != "FILLED":
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+    if str(response.get("symbol") or symbol).upper() != symbol or str(response.get("side") or side).upper() != side:
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+
+    executed_qty = _required_number(response.get("executedQty"), positive=True)
+    quote_qty = _required_number(response.get("cummulativeQuoteQty"), positive=True)
+    fills = response.get("fills")
+    if not isinstance(fills, list) or not fills:
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+
+    fill_qty = 0.0
+    fill_quote = 0.0
+    commissions = {}
+    for fill in fills:
+        if not isinstance(fill, Mapping):
+            raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+        price = _required_number(fill.get("price"), positive=True)
+        qty = _required_number(fill.get("qty"), positive=True)
+        commission = _required_number(fill.get("commission"))
+        commission_asset = str(fill.get("commissionAsset") or "").strip().upper()
+        if not commission_asset:
+            raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+        fill_qty += qty
+        fill_quote += price * qty
+        commissions[commission_asset] = commissions.get(commission_asset, 0.0) + commission
+
+    tolerance = max(1e-8, executed_qty * 1e-8)
+    quote_tolerance = max(1e-8, quote_qty * 1e-8)
+    if abs(fill_qty - executed_qty) > tolerance or abs(fill_quote - quote_qty) > quote_tolerance:
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+
+    base_asset = symbol[:-4] if symbol.endswith("USDT") else ""
+    if not base_asset:
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+    base_fee = commissions.pop(base_asset, 0.0)
+    quote_fee = commissions.pop("USDT", 0.0)
+    third_fees = {}
+    third_fee_usdt = 0.0
+    for asset, quantity in commissions.items():
+        price_key = f"{asset}USDT"
+        fee_price = _required_number(prices.get(price_key), positive=True)
+        third_fees[price_key] = quantity
+        third_fee_usdt += quantity * fee_price
+    return {
+        "executed_qty": executed_qty,
+        "quote_qty": quote_qty,
+        "average_price": quote_qty / executed_qty,
+        "base_asset": base_asset,
+        "base_fee": base_fee,
+        "quote_fee": quote_fee,
+        "third_fees": third_fees,
+        "third_fee_usdt": third_fee_usdt,
+    }
+
+
+def _estimated_fill(*, symbol, qty, price):
+    return {
+        "executed_qty": float(qty),
+        "quote_qty": float(qty) * float(price),
+        "average_price": float(price),
+        "base_asset": symbol[:-4],
+        "base_fee": 0.0,
+        "quote_fee": 0.0,
+        "third_fees": {},
+        "third_fee_usdt": 0.0,
+    }
+
+
+def _resolve_fill(runtime, response, *, symbol, side, qty, price, prices):
+    if bool(getattr(runtime, "dry_run", False)):
+        return _estimated_fill(symbol=symbol, qty=qty, price=price)
+    return _parse_filled_order(response, symbol=symbol, side=side, prices=prices)
+
+
+def _apply_fill_balances(fill, *, side, symbol, balances, u_total):
+    base_delta = fill["executed_qty"] - fill["base_fee"]
+    quote_delta = -(fill["quote_qty"] + fill["quote_fee"])
+    if side == "SELL":
+        base_delta = -(fill["executed_qty"] + fill["base_fee"])
+        quote_delta = fill["quote_qty"] - fill["quote_fee"]
+    new_base = float(balances.get(symbol, 0.0)) + base_delta
+    if new_base < -1e-10:
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+    third_updates = {}
+    for fee_symbol, fee_qty in fill["third_fees"].items():
+        if fee_symbol not in balances:
+            raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+        updated = float(balances[fee_symbol]) - fee_qty
+        if not math.isfinite(updated) or updated < -1e-10:
+            raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+        third_updates[fee_symbol] = max(0.0, updated)
+    balances[symbol] = max(0.0, new_base)
+    balances.update(third_updates)
+    return u_total + quote_delta, quote_delta
+
+
+def _record_trend_fill(state, fill, *, quote_delta):
+    state["daily_trend_cash_flow_usdt"] = float(state.get("daily_trend_cash_flow_usdt", 0.0)) + quote_delta
+    principal_delta = fill["quote_qty"] if quote_delta < 0 else -fill["quote_qty"]
+    net_invested = float(state.get("daily_trend_net_invested_usdt", 0.0)) + principal_delta
+    state["daily_trend_net_invested_usdt"] = net_invested
+    opening_base = float(state.get("daily_trend_equity_base", 0.0) or 0.0)
+    state["daily_trend_risk_base_usdt"] = max(
+        float(state.get("daily_trend_risk_base_usdt", opening_base) or 0.0),
+        opening_base + max(0.0, net_invested),
+    )
+    state["daily_trend_third_fee_usdt"] = (
+        float(state.get("daily_trend_third_fee_usdt", 0.0)) + fill["third_fee_usdt"]
+    )
+
+
+def _prepare_accounting_state(state, *, symbol, base_asset, balances, u_total):
+    snapshot = state.setdefault("last_balance_snapshot", {})
+    if isinstance(snapshot, dict):
+        snapshot["USDT"] = round(float(u_total), 8)
+        snapshot[base_asset] = round(float(balances[symbol]), 8)
+        for fee_symbol in balances:
+            if fee_symbol.endswith("USDT") and fee_symbol not in {symbol, "BTCUSDT"}:
+                snapshot[fee_symbol[:-4]] = round(float(balances[fee_symbol]), 8)
+    if state.get("order_submission", {}).get("state") == _FILLED_ACCOUNTING_PENDING:
+        state["order_submission"] = {"state": "TERMINAL"}
 
 
 def _safe_float(value, default=0.0):
@@ -155,15 +294,23 @@ def run_daily_circuit_breaker(
                 raise RuntimeError(
                     translate_fn("asset_unavailable_for_circuit_breaker_sell", asset=config["base_asset"])
                 )
-            runtime_call_client_fn(
+            response = runtime_call_client_fn(
                 runtime,
                 report,
                 method_name="order_market_sell",
                 payload={"symbol": symbol, "quantity": qty},
                 effect_type="order_sell",
             )
-            balances[symbol] = max(0.0, balances[symbol] - qty)
-            u_total += qty * prices[symbol]
+            fill = _resolve_fill(
+                runtime, response, symbol=symbol, side="SELL", qty=qty, price=prices[symbol], prices=prices
+            )
+            u_total, quote_delta = _apply_fill_balances(
+                fill, side="SELL", symbol=symbol, balances=balances, u_total=u_total
+            )
+            _record_trend_fill(state, fill, quote_delta=quote_delta)
+            _prepare_accounting_state(
+                state, symbol=symbol, base_asset=config["base_asset"], balances=balances, u_total=u_total
+            )
             set_symbol_trade_state_fn(
                 state,
                 symbol,
@@ -249,7 +396,7 @@ def execute_trend_sells(
                 continue
             if not ensure_asset_available_fn(runtime, report, config["base_asset"], qty, log_buffer):
                 raise RuntimeError(translate_fn("asset_unavailable_for_trend_sell", asset=config["base_asset"]))
-            runtime_call_client_fn(
+            response = runtime_call_client_fn(
                 runtime,
                 report,
                 method_name="order_market_sell",
@@ -260,8 +407,16 @@ def execute_trend_sells(
                 },
                 effect_type="order_sell",
             )
-            balances[symbol] = max(0.0, balances[symbol] - qty)
-            u_total += qty * curr_price
+            fill = _resolve_fill(
+                runtime, response, symbol=symbol, side="SELL", qty=qty, price=curr_price, prices=prices
+            )
+            u_total, quote_delta = _apply_fill_balances(
+                fill, side="SELL", symbol=symbol, balances=balances, u_total=u_total
+            )
+            _record_trend_fill(state, fill, quote_delta=quote_delta)
+            _prepare_accounting_state(
+                state, symbol=symbol, base_asset=config["base_asset"], balances=balances, u_total=u_total
+            )
             set_symbol_trade_state_fn(
                 state,
                 symbol,
@@ -371,7 +526,7 @@ def execute_trend_buys(
                 continue
             if not ensure_asset_available_fn(runtime, report, "USDT", usdt_cost, log_buffer):
                 raise RuntimeError(translate_fn("usdt_unavailable_for_trend_buy"))
-            runtime_call_client_fn(
+            response = runtime_call_client_fn(
                 runtime,
                 report,
                 method_name="order_market_buy",
@@ -382,13 +537,25 @@ def execute_trend_buys(
                 },
                 effect_type="order_buy",
             )
+            fill = _resolve_fill(
+                runtime, response, symbol=symbol, side="BUY", qty=qty, price=curr_price, prices=prices
+            )
+            u_total, quote_delta = _apply_fill_balances(
+                fill, side="BUY", symbol=symbol, balances=balances, u_total=u_total
+            )
+            _record_trend_fill(state, fill, quote_delta=quote_delta)
+            _prepare_accounting_state(
+                state, symbol=symbol, base_asset=fill["base_asset"], balances=balances, u_total=u_total
+            )
             set_symbol_trade_state_fn(
                 state,
                 symbol,
-                {"is_holding": True, "entry_price": curr_price, "highest_price": curr_price},
+                {
+                    "is_holding": True,
+                    "entry_price": fill["average_price"],
+                    "highest_price": fill["average_price"],
+                },
             )
-            balances[symbol] += qty
-            u_total -= usdt_cost
             record_trend_action_fn(state, symbol, "buy", today_id_str)
             runtime_set_trade_state_fn(runtime, report, state, reason=f"trend_buy:{symbol}")
             runtime_notify_fn(
@@ -659,7 +826,7 @@ def execute_btc_dca_cycle(
             else:
                 if not ensure_asset_available_fn(runtime, report, "USDT", buy_cost, log_buffer):
                     raise RuntimeError(translate_fn("usdt_unavailable_for_btc_dca_buy"))
-                runtime_call_client_fn(
+                response = runtime_call_client_fn(
                     runtime,
                     report,
                     method_name="order_market_buy",
@@ -670,8 +837,15 @@ def execute_btc_dca_cycle(
                     },
                     effect_type="order_buy",
                 )
-                balances["BTCUSDT"] += qty
-                u_total -= buy_cost
+                fill = _resolve_fill(
+                    runtime, response, symbol="BTCUSDT", side="BUY", qty=qty, price=btc_price, prices=prices
+                )
+                u_total, _quote_delta = _apply_fill_balances(
+                    fill, side="BUY", symbol="BTCUSDT", balances=balances, u_total=u_total
+                )
+                _prepare_accounting_state(
+                    state, symbol="BTCUSDT", base_asset="BTC", balances=balances, u_total=u_total
+                )
                 state["dca_last_buy_date"] = today_id_str
                 runtime_notify_fn(
                     runtime,
@@ -730,7 +904,7 @@ def execute_btc_dca_cycle(
             else:
                 if not ensure_asset_available_fn(runtime, report, "BTC", qty, log_buffer):
                     raise RuntimeError(translate_fn("btc_unavailable_for_dca_sell"))
-                runtime_call_client_fn(
+                response = runtime_call_client_fn(
                     runtime,
                     report,
                     method_name="order_market_sell",
@@ -741,8 +915,15 @@ def execute_btc_dca_cycle(
                     },
                     effect_type="order_sell",
                 )
-                balances["BTCUSDT"] = max(0.0, balances["BTCUSDT"] - qty)
-                u_total += qty * btc_price
+                fill = _resolve_fill(
+                    runtime, response, symbol="BTCUSDT", side="SELL", qty=qty, price=btc_price, prices=prices
+                )
+                u_total, _quote_delta = _apply_fill_balances(
+                    fill, side="SELL", symbol="BTCUSDT", balances=balances, u_total=u_total
+                )
+                _prepare_accounting_state(
+                    state, symbol="BTCUSDT", base_asset="BTC", balances=balances, u_total=u_total
+                )
                 state["dca_last_sell_date"] = today_id_str
                 runtime_notify_fn(
                     runtime,

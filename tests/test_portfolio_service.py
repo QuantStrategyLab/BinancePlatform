@@ -1,6 +1,8 @@
 import unittest
 from types import SimpleNamespace
 
+from runtime_support import ExecutionIntegrityError
+
 from application.portfolio_service import (
     append_portfolio_report,
     build_balance_snapshot,
@@ -71,7 +73,9 @@ class PortfolioServiceTests(unittest.TestCase):
         self.assertEqual(observed[0][0], "daily_reset")
         self.assertEqual(state["daily_equity_base"], 1000.0)
         self.assertEqual(state["daily_trend_equity_base"], 400.0)
-        self.assertEqual(state["daily_trend_pnl_basis"], "trend_val")
+        self.assertEqual(state["daily_trend_pnl_basis"], "trend_mark_plus_cash_flow_v1")
+        self.assertEqual(state["daily_trend_cash_flow_usdt"], 0.0)
+        self.assertEqual(state["daily_trend_risk_base_usdt"], 400.0)
         self.assertEqual(state["last_reset_date"], "2026-03-29")
         self.assertFalse(state["is_circuit_broken"])
 
@@ -85,21 +89,22 @@ class PortfolioServiceTests(unittest.TestCase):
         }
         observed = []
 
-        maybe_reset_daily_state(
-            state,
-            runtime,
-            report,
-            "2026-03-29",
-            1000.0,
-            450.0,
-            runtime_set_trade_state_fn=lambda _runtime, _report, current_state, reason: observed.append(
-                (reason, dict(current_state))
-            ),
-        )
+        with self.assertRaises(ExecutionIntegrityError):
+            maybe_reset_daily_state(
+                state,
+                runtime,
+                report,
+                "2026-03-29",
+                1000.0,
+                450.0,
+                runtime_set_trade_state_fn=lambda _runtime, _report, current_state, reason: observed.append(
+                    (reason, dict(current_state))
+                ),
+            )
 
-        self.assertEqual(observed[0][0], "trend_pnl_basis_migrate")
-        self.assertEqual(state["daily_trend_equity_base"], 450.0)
-        self.assertEqual(state["daily_trend_pnl_basis"], "trend_val")
+        self.assertEqual(observed, [])
+        self.assertEqual(state["daily_trend_equity_base"], 100.0)
+        self.assertEqual(state["daily_trend_pnl_basis"], "legacy")
 
     def test_build_balance_snapshot_tracks_total_balances_by_asset(self):
         snapshot = build_balance_snapshot(
@@ -110,7 +115,14 @@ class PortfolioServiceTests(unittest.TestCase):
 
         self.assertEqual(snapshot, {"USDT": 412.3456, "BTC": 0.2, "ETH": 1.25, "SOL": 3.5})
 
-    def test_maybe_rebase_daily_state_for_balance_change_resets_bases(self):
+        with_fuel = build_balance_snapshot(
+            {"ETHUSDT": {"base_asset": "ETH"}},
+            {"ETHUSDT": 1.25, "BTCUSDT": 0.2, "BNBUSDT": 0.75},
+            412.3456,
+        )
+        self.assertEqual(with_fuel["BNB"], 0.75)
+
+    def test_maybe_rebase_daily_state_for_balance_change_blocks_without_resetting_bases(self):
         runtime = SimpleNamespace(name="runtime")
         report = {"status": "ok"}
         state = {
@@ -122,29 +134,29 @@ class PortfolioServiceTests(unittest.TestCase):
         observed = []
         log_buffer = []
 
-        changed = maybe_rebase_daily_state_for_balance_change(
-            state,
-            runtime,
-            report,
-            950.0,
-            250.0,
-            {"USDT": 850.0, "BTC": 0.1, "ETH": 1.5},
-            log_buffer,
-            runtime_set_trade_state_fn=lambda _runtime, _report, current_state, reason: observed.append(
-                (reason, dict(current_state))
-            ),
-            append_log_fn=lambda buffer, message: buffer.append(message),
-            translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
-        )
+        with self.assertRaises(ExecutionIntegrityError):
+            maybe_rebase_daily_state_for_balance_change(
+                state,
+                runtime,
+                report,
+                950.0,
+                250.0,
+                {"USDT": 850.0, "BTC": 0.1, "ETH": 1.5},
+                log_buffer,
+                runtime_set_trade_state_fn=lambda _runtime, _report, current_state, reason: observed.append(
+                    (reason, dict(current_state))
+                ),
+                append_log_fn=lambda buffer, message: buffer.append(message),
+                translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
+            )
 
-        self.assertTrue(changed)
-        self.assertEqual(observed[0][0], "external_balance_flow_rebase")
-        self.assertEqual(state["daily_equity_base"], 950.0)
-        self.assertEqual(state["daily_trend_equity_base"], 250.0)
-        self.assertEqual(state["last_balance_snapshot"], {"USDT": 850.0, "BTC": 0.1, "ETH": 1.5})
-        self.assertTrue(any("external_balance_flow_rebased" in line for line in log_buffer))
+        self.assertEqual(observed, [])
+        self.assertEqual(state["daily_equity_base"], 1200.0)
+        self.assertEqual(state["daily_trend_equity_base"], 400.0)
+        self.assertEqual(state["last_balance_snapshot"], {"USDT": 1000.0, "BTC": 0.1, "ETH": 2.0})
+        self.assertTrue(any("balance_change_unexplained" in line for line in log_buffer))
 
-    def test_maybe_rebase_daily_state_for_usdt_transfer_uses_specific_log_key(self):
+    def test_maybe_rebase_daily_state_for_usdt_transfer_is_not_assumed_external(self):
         runtime = SimpleNamespace(name="runtime")
         report = {"status": "ok"}
         state = {
@@ -155,24 +167,24 @@ class PortfolioServiceTests(unittest.TestCase):
         }
         log_buffer = []
 
-        changed = maybe_rebase_daily_state_for_balance_change(
-            state,
-            runtime,
-            report,
-            980.0,
-            400.0,
-            {"USDT": 900.0, "BTC": 0.1, "ETH": 2.0},
-            log_buffer,
-            runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
-            append_log_fn=lambda buffer, message: buffer.append(message),
-            translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
-        )
+        with self.assertRaises(ExecutionIntegrityError):
+            maybe_rebase_daily_state_for_balance_change(
+                state,
+                runtime,
+                report,
+                980.0,
+                400.0,
+                {"USDT": 900.0, "BTC": 0.1, "ETH": 2.0},
+                log_buffer,
+                runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
+                append_log_fn=lambda buffer, message: buffer.append(message),
+                translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
+            )
 
-        self.assertTrue(changed)
-        self.assertTrue(any("external_usdt_flow_rebased" in line for line in log_buffer))
+        self.assertEqual(report["diagnostics"]["balance_change"]["assets"], ["USDT"])
 
-    def test_compute_daily_pnls_returns_zero_when_bases_missing(self):
-        daily_pnl, trend_daily_pnl = compute_daily_pnls({}, 1000.0, 500.0)
+    def test_compute_daily_pnls_returns_zero_when_bases_missing_for_empty_portfolio(self):
+        daily_pnl, trend_daily_pnl = compute_daily_pnls({}, 0.0, 0.0)
 
         self.assertEqual(daily_pnl, 0.0)
         self.assertEqual(trend_daily_pnl, 0.0)
