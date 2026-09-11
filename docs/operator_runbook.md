@@ -127,6 +127,13 @@ accounting. Keep the repository runtime control disabled and use reviewed
 `main`; the workflow's existing concurrency group serializes this run with
 other `Runtime` runs on `main`.
 
+If a migration is blocked by recovery-control state, first use
+`reconcile_only=true` and `accounting_migration_action=inspect` with the target
+still disabled. This reads only the control record's sanitized state, source
+run, update time and digest, plus ledger/owner existence. It does not connect to
+the broker, write a candidate or change any record. It cannot grant approval for
+a state transition; the existing preview/apply requirements remain unchanged.
+
 First dispatch `Runtime` with `reconcile_only=true` and
 `accounting_migration_action=preview`. Leave the preview run ID, expected
 digest, recovery, balance-diagnosis, candidate-persistence, and validation

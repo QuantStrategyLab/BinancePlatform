@@ -255,7 +255,7 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
     inputs = workflow[workflow.index("    inputs:") : workflow.index("permissions:")]
 
     assert "accounting_migration_action:" in inputs
-    assert "options: [none, preview, apply]" in inputs
+    assert "options: [none, inspect, preview, apply]" in inputs
     assert "accounting_migration_preview_run_id:" in inputs
     assert "accounting_migration_expected_digest:" in inputs
 
@@ -264,6 +264,10 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
     "action,run_id,digest,reconcile,enabled,ref,allowed",
     [
         ("preview", "", "", "true", "false", "refs/heads/main", True),
+        ("inspect", "", "", "true", "false", "refs/heads/main", True),
+        ("inspect", "12345", "", "true", "false", "refs/heads/main", False),
+        ("inspect", "", "", "true", "true", "refs/heads/main", False),
+        ("inspect", "", "", "false", "false", "refs/heads/main", False),
         ("apply", "12345", "a" * 64, "true", "false", "refs/heads/main", True),
         ("apply", "", "a" * 64, "true", "false", "refs/heads/main", False),
         ("apply", "12345", "bad", "true", "false", "refs/heads/main", False),

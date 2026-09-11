@@ -461,3 +461,39 @@ def test_preview_reports_internal_guard_without_provider_details(monkeypatch, ca
     output = capsys.readouterr().out
     assert json.loads(output)["reason_code"] == expected_reason
     assert "private provider" not in output
+
+
+def test_inspect_control_reads_metadata_without_broker_or_mutation(monkeypatch, capsys):
+    from scripts import migrate_daily_accounting_state as migration
+    control = {"state": "ACTIVE_LKG", "recovery_id": "binance-12345-1",
+               "source": {"run": {"id": 12345, "head_sha": "a" * 40}},
+               "confirmation": {"private": "sensitive confirmation"},
+               "private": "sensitive account data"}
+    refs = {"control_ref": Ref(Snapshot(control)),
+            "ledger_ref": Ref(Snapshot(_ledger())), "owner_ref": Ref(Snapshot(None))}
+    monkeypatch.setattr(migration, "require_runtime_context", lambda: None)
+    monkeypatch.setattr(migration, "_refs", lambda: refs)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("inspection must not invoke broker or migration")
+    monkeypatch.setattr(migration, "connect_client", forbidden)
+    monkeypatch.setattr(migration, "_read_source", forbidden)
+    monkeypatch.setattr(migration, "resolve_runtime_target_from_env", forbidden)
+    assert migration.main(["inspect"]) == 0
+    output = capsys.readouterr().out
+    result = json.loads(output)
+    assert result["state"] == "ACTIVE_LKG"
+    assert result["source_run"] == {"id": 12345, "head_sha": "a" * 40}
+    assert result["owner_exists"] is False
+    assert result["no_order"] is True
+    assert result["write_performed"] is False
+    assert "sensitive" not in output
+
+
+def test_inspect_control_does_not_export_arbitrary_state(monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+    refs = {"control_ref": Ref(Snapshot({"state": "private payload", "source": []})),
+            "ledger_ref": Ref(Snapshot(None)), "owner_ref": Ref(Snapshot(None))}
+    result = migration.inspect_control(refs)
+    assert result["state"] == "INVALID"
+    assert result["source_run"] is None
+    assert "private payload" not in json.dumps(result)
