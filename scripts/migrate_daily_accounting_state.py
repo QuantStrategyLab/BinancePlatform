@@ -578,8 +578,46 @@ def _read_source(refs):
     return ledger, ledger_value, control_value
 
 
+def inspect_control(refs):
+    """Read only control provenance and existence flags; never enter migration."""
+    snapshot = refs["control_ref"].get(retry=None)
+    owner = refs["owner_ref"].get(retry=None)
+    ledger = refs["ledger_ref"].get(retry=None)
+    value = snapshot.to_dict() if snapshot.exists else None
+    control = value if isinstance(value, Mapping) else {}
+    state = control.get("state")
+    if not isinstance(state, str) or state not in {"RECONCILE_ONLY", "ACTIVE_LKG", "ROLLBACK_LKG", "PAUSED", "REDUCE_ONLY"}:
+        state = "INVALID" if snapshot.exists else "ABSENT"
+    recovery_id = control.get("recovery_id")
+    if not isinstance(recovery_id, str) or not re.fullmatch(r"binance-[0-9]{1,20}-[0-9]{1,5}", recovery_id):
+        recovery_id = None
+    source = control.get("source")
+    source_run = source.get("run") if isinstance(source, Mapping) else None
+    if not (isinstance(source_run, Mapping) and type(source_run.get("id")) is int
+            and 0 < source_run["id"] < 10**20
+            and isinstance(source_run.get("head_sha"), str)
+            and re.fullmatch(r"[0-9a-f]{40}", source_run["head_sha"])):
+        source_run = None
+    else:
+        source_run = {key: source_run[key] for key in ("id", "head_sha")}
+    return {
+        "status": "inspected", "stage": "accounting_migration_control_inspection",
+        "control_exists": snapshot.exists, "state": state,
+        "control_sha256": _canonical_sha(value),
+        "control_update_time": _timestamp(snapshot.update_time) if snapshot.exists else None,
+        "control_create_time": _timestamp(snapshot.create_time) if getattr(snapshot, "create_time", None) else None,
+        "recovery_id": recovery_id, "source_run": source_run,
+        "confirmation_present": isinstance(control.get("confirmation"), Mapping),
+        "transition_plan_present": isinstance(control.get("transition_plan"), Mapping),
+        "owner_exists": owner.exists, "ledger_exists": ledger.exists,
+        "no_order": True, "write_performed": False,
+    }
+
+
 def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
     require_runtime_context()
+    if action == "inspect":
+        return inspect_control(_refs())
     fixed_now = now is not None
     now = now or datetime.now(timezone.utc)
     target = resolve_runtime_target_from_env(
@@ -663,11 +701,11 @@ def main(argv=None) -> int:
     parser = ArgumentParser(
         description="Preview or apply the bounded Binance daily-accounting migration"
     )
-    parser.add_argument("action", choices=("preview", "apply"))
+    parser.add_argument("action", choices=("inspect", "preview", "apply"))
     parser.add_argument("--expected-digest", default="")
     args = parser.parse_args(argv)
-    if args.action == "preview" and args.expected_digest:
-        parser.error("preview does not accept an expected digest")
+    if args.action in {"inspect", "preview"} and args.expected_digest:
+        parser.error("inspect/preview do not accept an expected digest")
     if args.action == "apply" and not re.fullmatch(
         r"[0-9a-f]{64}", args.expected_digest
     ):
