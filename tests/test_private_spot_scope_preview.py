@@ -179,6 +179,69 @@ def test_scope_preview_encrypts_only_stable_non_managed_nonzero_spot_rows(
     assert "2.50000000" not in output
 
 
+def test_scope_preview_accepts_unicode_alphanumeric_assets_without_public_leak(
+    monkeypatch, tmp_path, capsys
+):
+    account = _account()
+    account["balances"].extend(
+        [
+            {"asset": "测试币", "free": "1.25", "locked": "0"},
+            {"asset": "１２３４５６", "free": "0.5", "locked": "0.1"},
+            {"asset": "零余额币", "free": "0", "locked": "0"},
+        ]
+    )
+    _post_rebase_setup(monkeypatch, tmp_path, [account, account])
+    plaintext = []
+
+    def encrypt(value, *, certificate):
+        plaintext.append(copy.deepcopy(value))
+        return b"encrypted-cms"
+
+    monkeypatch.setattr(migration, "encrypt_rebase_proposal", encrypt)
+
+    assert migration.main(["scope-preview"]) == 0
+    output = capsys.readouterr().out
+    rows = plaintext[0]["non_managed_nonzero_spot_assets"]
+    assert {row["asset"] for row in rows} == {"DOGE", "测试币", "１２３４５６"}
+    assert "零余额币" not in {row["asset"] for row in rows}
+    assert all(asset not in output for asset in ("测试币", "１２３４５６", "零余额币"))
+    assert all(quantity not in output for quantity in ("1.25", "0.5", "0.1"))
+
+
+@pytest.mark.parametrize("invalid_asset", ["BAD-ASSET", "BAD\x01ASSET", "资" * 21])
+def test_scope_preview_rejects_punctuation_control_or_overlong_assets(
+    monkeypatch, tmp_path, invalid_asset
+):
+    account = _account()
+    account["balances"].append(
+        {"asset": invalid_asset, "free": "0", "locked": "0"}
+    )
+    _, _, _, encrypted_path = _post_rebase_setup(
+        monkeypatch, tmp_path, [account, account]
+    )
+
+    with pytest.raises(migration.MigrationBlocked, match="private_scope_balance_invalid"):
+        migration.run("scope-preview", now=NOW)
+    assert not encrypted_path.exists()
+
+
+def test_scope_preview_rejects_duplicate_unicode_asset(monkeypatch, tmp_path):
+    account = _account()
+    account["balances"].extend(
+        [
+            {"asset": "测试币", "free": "0", "locked": "0"},
+            {"asset": "测试币", "free": "0", "locked": "0"},
+        ]
+    )
+    _, _, _, encrypted_path = _post_rebase_setup(
+        monkeypatch, tmp_path, [account, account]
+    )
+
+    with pytest.raises(migration.MigrationBlocked, match="private_scope_balance_invalid"):
+        migration.run("scope-preview", now=NOW)
+    assert not encrypted_path.exists()
+
+
 @pytest.mark.parametrize(
     "second,reason",
     [

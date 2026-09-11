@@ -779,7 +779,8 @@ def _private_spot_account(account, *, expected_account_scope_sha256):
                 raise MigrationBlocked("private_scope_balance_invalid")
             asset = str(row.get("asset") or "").strip().upper()
             if (
-                not re.fullmatch(r"[A-Z0-9]{1,20}", asset)
+                not 1 <= len(asset) <= 20
+                or not asset.isalnum()
                 or asset in normalized
             ):
                 raise MigrationBlocked("private_scope_balance_invalid")

@@ -270,7 +270,9 @@ their `free` and `locked` quantities and the observation time. Zero balances,
 managed balances, the old ledger and order records are omitted. Workflow logs
 contain only the fixed success or blocked status and the no-order/no-state-write
 flags. Decrypt the downloaded artifact only on the operator machine that holds
-the private key.
+the private key. Asset names accept 1–20 Unicode letters or digits because the
+[Binance Spot REST API](https://developers.binance.com/en/docs/products/spot/rest-api)
+may return non-ASCII asset identifiers even when a request contains none.
 
 Any archive, ledger, account identity or Spot row change between the bounded
 reads blocks the preview, as does an invalid, negative or nonfinite quantity.
