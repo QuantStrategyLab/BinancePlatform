@@ -42,6 +42,20 @@ on:
         description: "Exact prepared recovery ID; required for verify or activate"
         type: string
         required: false
+      accounting_migration_action:
+        description: "Explicit daily-accounting migration step; preview is read-only and apply requires separate approval"
+        type: choice
+        required: false
+        default: none
+        options: [none, preview, apply]
+      accounting_migration_preview_run_id:
+        description: "Exact successful preview run ID; required only for apply"
+        type: string
+        required: false
+      accounting_migration_expected_digest:
+        description: "Exact approved preview candidate digest; required only for apply"
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -81,17 +95,44 @@ jobs:
           VALIDATE_ONLY_INPUT: ${{ inputs.validate_only || 'false' }}
           BALANCE_HISTORY_START: ${{ inputs.balance_history_start }}
           BALANCE_HISTORY_END: ${{ inputs.balance_history_end }}
+          ACCOUNTING_MIGRATION_ACTION_INPUT: ${{ inputs.accounting_migration_action || 'none' }}
+          ACCOUNTING_MIGRATION_PREVIEW_RUN_ID: ${{ inputs.accounting_migration_preview_run_id }}
+          ACCOUNTING_MIGRATION_EXPECTED_DIGEST: ${{ inputs.accounting_migration_expected_digest }}
         run: |
           set -euo pipefail
           case "${RECOVERY_ACTION_INPUT:-none}" in
             none) ;;
             prepare|verify|activate)
-              if [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
+              if [ "${ACCOUNTING_MIGRATION_ACTION_INPUT:-none}" != "none" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
                 echo "::error::Recovery requires disabled main runtime, reconcile_only, and no other diagnostic mode."
                 exit 1
               fi
               ;;
             *) echo "::error::Unknown recovery action."; exit 1 ;;
+          esac
+          case "${ACCOUNTING_MIGRATION_ACTION_INPUT:-none}" in
+            none)
+              if [ -n "${ACCOUNTING_MIGRATION_PREVIEW_RUN_ID:-}${ACCOUNTING_MIGRATION_EXPECTED_DIGEST:-}" ]; then
+                echo "::error::Migration artifact inputs require an explicit apply action."
+                exit 1
+              fi
+              ;;
+            preview|apply)
+              if [ "${RECOVERY_ACTION_INPUT:-none}" != "none" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
+                echo "::error::Accounting migration requires disabled main runtime, reconcile_only, and no other recovery or diagnostic mode."
+                exit 1
+              fi
+              if [ "$ACCOUNTING_MIGRATION_ACTION_INPUT" = "preview" ]; then
+                if [ -n "${ACCOUNTING_MIGRATION_PREVIEW_RUN_ID:-}${ACCOUNTING_MIGRATION_EXPECTED_DIGEST:-}" ]; then
+                  echo "::error::Preview does not accept an artifact run or expected digest."
+                  exit 1
+                fi
+              elif [[ ! "${ACCOUNTING_MIGRATION_PREVIEW_RUN_ID:-}" =~ ^[0-9]+$ ]] || [[ ! "${ACCOUNTING_MIGRATION_EXPECTED_DIGEST:-}" =~ ^[0-9a-f]{64}$ ]]; then
+                echo "::error::Apply requires an exact preview run ID and candidate digest."
+                exit 1
+              fi
+              ;;
+            *) echo "::error::Unknown accounting migration action."; exit 1 ;;
           esac
           if [ -n "${BALANCE_HISTORY_START:-}${BALANCE_HISTORY_END:-}" ]; then
             if [ "$DIAGNOSE_BALANCES_INPUT" != "true" ] || [ -z "${BALANCE_HISTORY_START:-}" ] || [ -z "${BALANCE_HISTORY_END:-}" ]; then
@@ -100,7 +141,7 @@ jobs:
             fi
           fi
           if [ "$DIAGNOSE_BALANCES_INPUT" = "true" ]; then
-            if [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ]; then
+            if [ "${ACCOUNTING_MIGRATION_ACTION_INPUT:-none}" != "none" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ]; then
               echo "::error::Balance diagnostics require reconcile_only and forbid persistence or validate_only."
               exit 1
             fi
@@ -278,6 +319,16 @@ jobs:
             echo "$CURR_PYTHON_VERSION" > "$PYTHON_VERSION_FILE"
           fi
 
+      - name: Download approved accounting migration preview
+        if: ${{ inputs.accounting_migration_action == 'apply' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: binance-accounting-migration-preview
+          path: reports/binance-accounting-migration-preview
+          run-id: ${{ inputs.accounting_migration_preview_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+
       # Keep this stable step name: the isolation contract verifies that broker
       # credentials are scoped only here.  `reconcile_only` exits before
       # `main.py` and has no order path.
@@ -292,6 +343,14 @@ jobs:
             exit 0
           fi
           if [ "${RECONCILE_ONLY:-false}" = "true" ]; then
+            if [ "${ACCOUNTING_MIGRATION_ACTION:-none}" != "none" ]; then
+              args=("$ACCOUNTING_MIGRATION_ACTION")
+              if [ "$ACCOUNTING_MIGRATION_ACTION" = "apply" ]; then
+                args+=(--expected-digest "$ACCOUNTING_MIGRATION_EXPECTED_DIGEST")
+              fi
+              "$VENV_PATH/bin/python" scripts/migrate_daily_accounting_state.py "${args[@]}"
+              exit 0
+            fi
             if [ "${RECOVERY_ACTION:-none}" != "none" ]; then
               "$VENV_PATH/bin/python" scripts/binance_recovery_controller.py "$RECOVERY_ACTION" --recovery-id "${RECOVERY_ID:-}"
               exit 0
@@ -362,6 +421,8 @@ jobs:
           BALANCE_HISTORY_START: ${{ inputs.balance_history_start }}
           BALANCE_HISTORY_END: ${{ inputs.balance_history_end }}
           RECONCILE_PERSIST_CANDIDATE: ${{ github.event.inputs.reconcile_persist_candidate || 'false' }}
+          ACCOUNTING_MIGRATION_ACTION: ${{ inputs.accounting_migration_action || 'none' }}
+          ACCOUNTING_MIGRATION_EXPECTED_DIGEST: ${{ inputs.accounting_migration_expected_digest }}
 
       - name: Confirm target is intentionally disabled
         if: ${{ env.RUNTIME_TARGET_ENABLED == 'false' }}
@@ -387,6 +448,15 @@ jobs:
           # Repository policy caps Actions artifacts at seven days. Keep the
           # setting aligned so a successful read-only run is annotation-free.
           retention-days: 7
+
+      - name: Retain redacted accounting migration preview
+        if: ${{ always() && inputs.accounting_migration_action == 'preview' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: binance-accounting-migration-preview
+          path: reports/binance-accounting-migration-preview/candidate.json
+          if-no-files-found: error
+          retention-days: 1
 
       - name: 6. Notify Telegram on runtime workflow failure
         if: ${{ failure() && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' && steps.strategy.outputs.runtime_failure_notified != 'true' }}

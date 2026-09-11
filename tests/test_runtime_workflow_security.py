@@ -248,3 +248,93 @@ def test_recovery_credentials_are_scoped_to_explicit_recovery_actions():
     step = workflow.split("      - name: 4. Run trading strategy", 1)[1].split("        env:", 1)[0]
     assert 'scripts/binance_recovery_controller.py "$RECOVERY_ACTION"' in step
     assert step.index("binance_recovery_controller.py") < step.index('main.py')
+
+
+def test_accounting_migration_has_explicit_preview_and_apply_inputs():
+    workflow = WORKFLOW.read_text()
+    inputs = workflow[workflow.index("    inputs:") : workflow.index("permissions:")]
+
+    assert "accounting_migration_action:" in inputs
+    assert "options: [none, preview, apply]" in inputs
+    assert "accounting_migration_preview_run_id:" in inputs
+    assert "accounting_migration_expected_digest:" in inputs
+
+
+@pytest.mark.parametrize(
+    "action,run_id,digest,reconcile,enabled,ref,allowed",
+    [
+        ("preview", "", "", "true", "false", "refs/heads/main", True),
+        ("apply", "12345", "a" * 64, "true", "false", "refs/heads/main", True),
+        ("apply", "", "a" * 64, "true", "false", "refs/heads/main", False),
+        ("apply", "12345", "bad", "true", "false", "refs/heads/main", False),
+        ("preview", "12345", "", "true", "false", "refs/heads/main", False),
+        ("preview", "", "", "false", "false", "refs/heads/main", False),
+        ("preview", "", "", "true", "true", "refs/heads/main", False),
+        ("preview", "", "", "true", "false", "refs/heads/feature", False),
+    ],
+)
+def test_accounting_migration_guard_is_disabled_main_only(
+    action, run_id, digest, reconcile, enabled, ref, allowed
+):
+    workflow = WORKFLOW.read_text()
+    first_step = workflow.split(
+        "      - name: 0. Validate deployment identity configuration", 1
+    )[0]
+    guard = textwrap.dedent(
+        first_step.split("        run: |\n", 1)[1].split(
+            '          case "${RUNTIME_TARGET_ENABLED,,}"', 1
+        )[0]
+    )
+    env = {
+        "ACCOUNTING_MIGRATION_ACTION_INPUT": action,
+        "ACCOUNTING_MIGRATION_PREVIEW_RUN_ID": run_id,
+        "ACCOUNTING_MIGRATION_EXPECTED_DIGEST": digest,
+        "RECOVERY_ACTION_INPUT": "none",
+        "DIAGNOSE_BALANCES_INPUT": "false",
+        "RECONCILE_ONLY_INPUT": reconcile,
+        "RECONCILE_PERSIST_INPUT": "false",
+        "VALIDATE_ONLY_INPUT": "false",
+        "RUNTIME_TARGET_ENABLED": enabled,
+        "GITHUB_REF": ref,
+    }
+    result = subprocess.run(["/bin/bash", "-c", guard], env=env, capture_output=True)
+    assert (result.returncode == 0) is allowed
+
+
+def test_accounting_migration_uses_fixed_artifact_and_never_falls_through_to_strategy():
+    workflow = WORKFLOW.read_text()
+    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    download = broker_job.split(
+        "      - name: Download approved accounting migration preview", 1
+    )[1].split("      - name:", 1)[0]
+    strategy = broker_job.split("      - name: 4. Run trading strategy", 1)[1].split(
+        "        env:", 1
+    )[0]
+    upload = broker_job.split(
+        "      - name: Retain redacted accounting migration preview", 1
+    )[1].split("      - name:", 1)[0]
+
+    assert (
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8"
+        in download
+    )
+    assert "name: binance-accounting-migration-preview" in download
+    assert "path: reports/binance-accounting-migration-preview" in download
+    assert "run-id: ${{ inputs.accounting_migration_preview_run_id }}" in download
+    assert 'scripts/migrate_daily_accounting_state.py "${args[@]}"' in strategy
+    assert strategy.index("migrate_daily_accounting_state.py") < strategy.index(
+        "binance_recovery_controller.py"
+    )
+    assert (
+        "exit 0"
+        in strategy[
+            strategy.index("migrate_daily_accounting_state.py") : strategy.index(
+                "binance_recovery_controller.py"
+            )
+        ]
+    )
+    assert (
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7"
+        in upload
+    )
+    assert "retention-days: 1" in upload

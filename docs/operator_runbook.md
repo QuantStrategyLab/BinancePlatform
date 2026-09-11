@@ -118,6 +118,54 @@ about the balance representation only; it never permits live execution.
 `balance_difference_unexplained` leaves recovery closed and requires an
 independently explained balance change before any baseline enrollment.
 
+### Daily-accounting state migration
+
+The migration is a separate, one-time `Runtime` workflow mode for an old
+`trend_val` ledger. It does not activate recovery control, grant execution
+authority, clear the circuit-breaker latch, or reconstruct historical
+accounting. Keep the repository runtime control disabled and use reviewed
+`main`; the workflow's existing concurrency group serializes this run with
+other `Runtime` runs on `main`.
+
+First dispatch `Runtime` with `reconcile_only=true` and
+`accounting_migration_action=preview`. Leave the preview run ID, expected
+digest, recovery, balance-diagnosis, candidate-persistence, and validation
+inputs empty or disabled. Preview reads the exact ledger and owner documents,
+the recovery-control state, signed account binding, all open orders, current
+UTC-day fills and balance-flow surfaces, and complete Spot plus Flexible Earn
+positions. Any current-day trade, deposit, withdrawal, transfer, Earn activity,
+open order, owner, unsafe order state, missing page, missing BNB position, or
+other incomplete evidence blocks the candidate. The workflow retains the
+redacted candidate under the fixed artifact name
+`binance-accounting-migration-preview` for one day, but the candidate itself is
+valid for only ten minutes.
+
+Review the preview summary and its `candidate_sha256`. A successful preview is
+still read-only and is not approval to write. After an operator explicitly
+approves that exact digest, dispatch `Runtime` again within the ten-minute
+window with:
+
+- `reconcile_only=true`
+- `accounting_migration_action=apply`
+- `accounting_migration_preview_run_id` set to the exact preview workflow run
+- `accounting_migration_expected_digest` set to the approved 64-character
+  `candidate_sha256`
+
+Apply downloads only that run's fixed-name artifact, verifies its source commit
+and expiry, and repeats the account, order, activity, balance, and control
+reads. It then performs one Firestore transaction with `max_attempts=1`, bound
+to the original ledger update time and raw ledger/control hashes. The write is
+limited to the daily-accounting fields and the newly verified balance snapshot;
+order records, action history, unknown fields, and the circuit-breaker latch are
+preserved. A final readback verifies both the accounting values and the
+preserved-state hash before reporting `applied`.
+
+Treat every blocked or uncertain apply as terminal for that candidate. Do not
+retry it. Produce a fresh preview only after the reason is understood and the
+same prerequisites can be proven again. The management-site recovery approval
+does not approve this ledger write, and migration completion does not permit
+runtime activation or trading.
+
 ### Notification language and format
 
 Set `NOTIFY_LANG` to `zh` or `en`; Chinese locale variants such as `zh-CN`
