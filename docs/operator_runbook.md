@@ -129,7 +129,26 @@ proposed new fields. Zero new-period counters do not classify or erase prior
 income; the entire old ledger must be archived before any separately approved
 write. The circuit-breaker latch and all other fields must remain unchanged.
 This output is not an executable migration candidate; existing `preview`/`apply`
-schema and zero-activity checks are unchanged. No rebase apply action is added.
+schema and zero-activity checks are unchanged.
+
+The operator explicitly approved the concrete proposal from Runtime
+`34601984051`. The one-time `accounting_migration_action=rebase-apply` is bound
+to that exact old ledger, recovery-control record and managed-quantity set.
+Use disabled `main` and `reconcile_only=true`, with no artifact/digest or
+certificate inputs. It verifies account identity, current open orders/fills,
+complete activity evidence and no non-reward funding activity. Quantities or
+source changes stop the action; valuation uses fresh average prices.
+
+One Firestore transaction (`max_attempts=1`) creates the private
+`strategy/MULTI_ASSET_STATE__before_rebase_34601984051` archive with the full old
+ledger and recovery control, and updates only accounting fields plus an
+`accounting_rebase` marker retaining the unresolved-history statement and opening
+time. An existing archive blocks replay; archive creation and ledger update
+commit together. The original breaker, order records and all other fields are
+preserved. Full archive, ledger, control and absent-owner readback are checked.
+Unknown write/readback outcomes return `uncertain/no_retry`; never redispatch to
+guess the outcome. Logs contain no balances. This action does not change runtime
+enablement, recovery authority, or place orders.
 
 This repository is public. Never print the proposal or upload it unencrypted.
 The operator generates an X.509 recipient certificate and keeps its private key

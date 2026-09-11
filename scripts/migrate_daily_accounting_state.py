@@ -52,6 +52,12 @@ REBASE_PROPOSAL_PATH = Path("reports/binance-accounting-rebase-proposal/proposal
 # Operator-approved control from read-only Runtime 34586531344. One exact downgrade.
 QUIESCE_CONTROL_SHA256 = "68318adcf853fe755409814c8707d3338f0af7927da396a60547c8375e9af5c4"
 QUIESCE_CONTROL_UPDATE_TIME = "2026-09-08T18:31:35.004893Z"
+# User approved the concrete new-start proposal from Runtime 34601984051.
+# One exact ledger/control/quantity set; prices are freshly observed at execution.
+APPROVED_REBASE_LEDGER_SHA256 = "6171bd4d33196b25da6b2a9b23311f46dd1dc0e8a324aaec83f657d6a5e2a042"
+APPROVED_REBASE_CONTROL_SHA256 = "b590cdaa2f251eaff966c351dd40ba18af1d53c5742f7ac57b5f1ffd593b1e51"
+APPROVED_REBASE_BALANCES_SHA256 = "e048d378056180b41c0ebf215a1a229748abb0f6983ed3f6dd481057713383f6"
+REBASE_ARCHIVE_DOCUMENT = "MULTI_ASSET_STATE__before_rebase_34601984051"
 TTL = timedelta(minutes=10)
 _EARN_PAGE_SIZE = 100
 _ACCOUNTING_FIELDS = frozenset(
@@ -245,6 +251,96 @@ def encrypt_rebase_proposal(proposal, *, certificate):
             ).stdout
     except (OSError, ValueError, subprocess.SubprocessError):
         raise MigrationBlocked("proposal_encryption_failed") from None
+
+
+def _approved_rebase_fields(*, ledger, control, evidence, now):
+    if (digest(ledger) != APPROVED_REBASE_LEDGER_SHA256
+            or digest(control) != APPROVED_REBASE_CONTROL_SHA256
+            or digest(evidence.get("balance_snapshot")) != APPROVED_REBASE_BALANCES_SHA256):
+        raise MigrationBlocked("approved_rebase_source_changed")
+    _validate_control(control)
+    if evidence.get("account_scope_sha256") != control["source"]["original_evidence"]["account_scope_sha256"]:
+        raise MigrationBlocked("account_scope_unverified")
+    counts = evidence.get("history_counts")
+    if (not isinstance(counts, Mapping) or not counts
+            or any(type(value) is not int or value < 0 or (name != "earn_rewards" and value != 0)
+                   for name, value in counts.items())):
+        raise MigrationBlocked("approved_rebase_activity_changed")
+    return build_rebase_proposal(ledger=ledger, evidence=evidence, observed_at=now)["proposed_fields"]
+
+
+def _rebase_transaction(transaction, *, refs, archive_ref, ledger, control,
+                        ledger_update_time, proposed_fields, observed_at, started_at):
+    owner = refs["owner_ref"].get(transaction=transaction, retry=None)
+    current = refs["ledger_ref"].get(transaction=transaction, retry=None)
+    recovery = refs["control_ref"].get(transaction=transaction, retry=None)
+    archive = archive_ref.get(transaction=transaction, retry=None)
+    if (owner.exists or archive.exists or not current.exists or not recovery.exists
+            or digest(current.to_dict()) != APPROVED_REBASE_LEDGER_SHA256
+            or digest(ledger) != APPROVED_REBASE_LEDGER_SHA256
+            or digest(recovery.to_dict()) != APPROVED_REBASE_CONTROL_SHA256
+            or digest(control) != APPROVED_REBASE_CONTROL_SHA256
+            or _timestamp(current.update_time) != _timestamp(ledger_update_time)):
+        raise MigrationAtomicPrecondition("approved_rebase_atomic_precondition_changed")
+    _validate_safe_order_state(current.to_dict())
+    _validate_control(control)
+    if (set(proposed_fields) != _ACCOUNTING_FIELDS
+            or digest(proposed_fields.get("last_balance_snapshot")) != APPROVED_REBASE_BALANCES_SHA256):
+        raise MigrationAtomicPrecondition("approved_rebase_patch_invalid")
+    marker = {"archive_document": REBASE_ARCHIVE_DOCUMENT,
+              "started_at": started_at.isoformat(), "opening_balance_observed_at": observed_at.isoformat(),
+              "historical_difference_unresolved": True, "approved_proposal_run_id": "34601984051"}
+    patch = {**proposed_fields, "accounting_rebase": marker}
+    new_ledger_sha = digest({**ledger, **patch})
+    backup = {"ledger": copy.deepcopy(ledger), "recovery_control": copy.deepcopy(control),
+              "ledger_update_time": _timestamp(ledger_update_time), **marker,
+              "new_ledger_sha256": new_ledger_sha, "valuation_price_source": "binance_get_avg_price_estimate"}
+    # Both writes commit together; create prevents any archive replacement.
+    transaction.create(archive_ref, backup)
+    transaction.update(refs["ledger_ref"], patch)
+    return {"new_ledger_sha256": new_ledger_sha, "archive_sha256": digest(backup)}
+
+
+def _apply_approved_rebase(refs, *, client, expected, now, fixed_now):
+    from google.cloud import firestore
+
+    snapshot, ledger, control = _read_source(refs)
+    archive_ref = refs["ledger_ref"].parent.document(REBASE_ARCHIVE_DOCUMENT)
+    if (digest(ledger) != APPROVED_REBASE_LEDGER_SHA256
+            or digest(control) != APPROVED_REBASE_CONTROL_SHA256 or archive_ref.get(retry=None).exists):
+        raise MigrationBlocked("approved_rebase_source_changed")
+    evidence = _collect_evidence(client, ledger=ledger, now=now, expected=expected, require_prices=True)
+    decision_now = now if fixed_now else datetime.now(timezone.utc)
+    if (decision_now - now > TTL or evidence["utc_date"] != decision_now.date().isoformat()):
+        raise MigrationBlocked("approved_rebase_evidence_stale")
+    proposed = _approved_rebase_fields(ledger=ledger, control=control, evidence=evidence, now=decision_now)
+
+    @firestore.transactional
+    def apply(transaction):
+        return _rebase_transaction(transaction, refs=refs, archive_ref=archive_ref, ledger=ledger,
+            control=control, ledger_update_time=snapshot.update_time, proposed_fields=proposed,
+            observed_at=now, started_at=decision_now)
+
+    try:
+        written = apply(get_firestore_client().transaction(max_attempts=1))
+    except MigrationBlocked:
+        raise
+    except Exception:
+        raise MigrationApplyUncertain("approved_rebase_write_uncertain") from None
+    try:
+        after_snapshot, after_ledger, after_control = _read_source(refs)
+        archive = archive_ref.get(retry=None)
+        if (digest(after_ledger) != written["new_ledger_sha256"]
+                or digest(after_control) != APPROVED_REBASE_CONTROL_SHA256
+                or not archive.exists or digest(archive.to_dict()) != written["archive_sha256"]):
+            raise ValueError("readback mismatch")
+        updated_at = _timestamp(after_snapshot.update_time)
+    except Exception:
+        raise MigrationApplyUncertain("approved_rebase_readback_uncertain") from None
+    return {"status": "rebased", "stage": "accounting_rebase_apply", "archive_document": REBASE_ARCHIVE_DOCUMENT,
+            "ledger_update_time": updated_at, "historical_difference_unresolved": True,
+            "old_ledger_archived": True, "control_unchanged": True, "no_order": True,
+            "write_performed": True, "execution_authority_granted": False}
 
 
 def build_candidate(
@@ -870,6 +966,8 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
     )
     if action == "audit":
         return audit_ledger(refs, client=client, expected=expected, now=now)
+    if action == "rebase-apply":
+        return _apply_approved_rebase(refs, client=client, expected=expected, now=now, fixed_now=fixed_now)
     evidence = _collect_evidence(client, ledger=ledger, now=now, expected=expected,
                                  require_prices=action == "rebase-proposal")
     decision_now = now if fixed_now else datetime.now(timezone.utc)
@@ -950,7 +1048,7 @@ def main(argv=None) -> int:
     parser = ArgumentParser(
         description="Preview or apply the bounded Binance daily-accounting migration"
     )
-    parser.add_argument("action", choices=("inspect", "quiesce", "audit", "preview", "rebase-proposal", "apply"))
+    parser.add_argument("action", choices=("inspect", "quiesce", "audit", "preview", "rebase-proposal", "rebase-apply", "apply"))
     parser.add_argument("--expected-digest", default="")
     args = parser.parse_args(argv)
     if args.action != "apply" and args.expected_digest:
