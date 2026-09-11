@@ -442,3 +442,22 @@ def test_main_marks_successful_single_apply_with_readback_timeout_uncertain(
     }
     assert firestore_client.transaction_calls == 1
     assert len(transaction.writes) == 1
+
+
+@pytest.mark.parametrize("error, expected_reason", [
+    ("guard", "same_day_balance_changed"),
+    ("provider", "migration_blocked"),
+])
+def test_preview_reports_internal_guard_without_provider_details(monkeypatch, capsys, error, expected_reason):
+    from scripts import migrate_daily_accounting_state as migration
+
+    def fail(*args, **kwargs):
+        if error == "guard":
+            raise migration.MigrationBlocked("same_day_balance_changed")
+        raise TimeoutError("synthetic private provider detail")
+
+    monkeypatch.setattr(migration, "run", fail)
+    assert migration.main(["preview"]) == 2
+    output = capsys.readouterr().out
+    assert json.loads(output)["reason_code"] == expected_reason
+    assert "private provider" not in output

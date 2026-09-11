@@ -687,6 +687,13 @@ def main(argv=None) -> int:
             )
         )
         return 2
+    except MigrationBlocked as exc:
+        # These are fixed internal guard codes, never raw broker exceptions.
+        print(json.dumps({
+            "status": "blocked", "stage": "accounting_migration",
+            "reason_code": str(exc), "no_order": True,
+        }))
+        return 2
     except Exception:
         print(
             json.dumps(
