@@ -497,3 +497,69 @@ def test_inspect_control_does_not_export_arbitrary_state(monkeypatch):
     assert result["state"] == "INVALID"
     assert result["source_run"] is None
     assert "private payload" not in json.dumps(result)
+
+
+@pytest.mark.parametrize("changed", [None, "owner", "control", "version", "missing_ledger"])
+def test_quiesce_only_updates_approved_control_state(monkeypatch, changed):
+    from scripts import migrate_daily_accounting_state as migration
+    control = {"state": "ACTIVE_LKG", "history": {"preserve": True}}
+    monkeypatch.setattr(migration, "QUIESCE_CONTROL_SHA256", migration._canonical_sha(control))
+    snapshot = Snapshot(copy.deepcopy(control), migration.QUIESCE_CONTROL_UPDATE_TIME)
+    refs = {"control_ref": Ref(snapshot), "owner_ref": Ref(Snapshot(None)),
+            "ledger_ref": Ref(Snapshot(_ledger()))}
+    if changed == "owner": refs["owner_ref"] = Ref(Snapshot({"owner": "busy"}))
+    if changed == "control": snapshot.value["history"]["preserve"] = False
+    if changed == "version": snapshot.update_time = "2026-09-11T00:00:00Z"
+    if changed == "missing_ledger": refs["ledger_ref"] = Ref(Snapshot(None))
+    tx = Transaction()
+    if changed:
+        with pytest.raises(migration.MigrationBlocked, match="control_quiesce_precondition_changed"):
+            migration._quiesce_control_transaction(tx, refs)
+        assert tx.writes == []
+    else:
+        expected, ledger_sha = migration._quiesce_control_transaction(tx, refs)
+        assert tx.writes == [(refs["control_ref"], {"state": "RECONCILE_ONLY"})]
+        assert expected == migration._canonical_sha({**control, "state": "RECONCILE_ONLY"})
+        assert ledger_sha == migration._canonical_sha(_ledger())
+
+
+@pytest.mark.parametrize("readback_timeout", [False, True])
+def test_quiesce_has_single_transaction_and_uncertain_readback(monkeypatch, capsys, readback_timeout):
+    from google.cloud import firestore
+    from scripts import migrate_daily_accounting_state as migration
+    control = {"state": "ACTIVE_LKG", "history": {"preserve": True}}
+    monkeypatch.setattr(migration, "QUIESCE_CONTROL_SHA256", migration._canonical_sha(control))
+    class ReadbackRef(Ref):
+        calls = 0
+        def get(self, **kwargs):
+            self.calls += 1
+            if readback_timeout and self.calls > 1:
+                raise TimeoutError("synthetic sensitive provider error")
+            return super().get(**kwargs)
+    refs = {"control_ref": ReadbackRef(Snapshot(control, migration.QUIESCE_CONTROL_UPDATE_TIME)),
+            "owner_ref": Ref(Snapshot(None)), "ledger_ref": Ref(Snapshot(_ledger()))}
+    class CommittingTransaction(Transaction):
+        def update(self, ref, patch):
+            super().update(ref, patch)
+            ref.snapshot.value.update(patch)
+    tx = CommittingTransaction()
+    calls = []
+    def transaction(*, max_attempts):
+        calls.append(max_attempts); return tx
+    monkeypatch.setattr(migration, "require_runtime_context", lambda: None)
+    monkeypatch.setattr(migration, "_refs", lambda: refs)
+    monkeypatch.setattr(migration, "get_firestore_client", lambda: SimpleNamespace(transaction=transaction))
+    monkeypatch.setattr(firestore, "transactional", lambda fn: fn, raising=False)
+    def forbidden(*args, **kwargs): raise AssertionError("no broker or migration allowed")
+    monkeypatch.setattr(migration, "connect_client", forbidden)
+    monkeypatch.setattr(migration, "_read_source", forbidden)
+    rc = migration.main(["quiesce"])
+    output = capsys.readouterr().out; result = json.loads(output)
+    assert calls == [1] and len(tx.writes) == 1
+    assert "sensitive" not in output
+    if readback_timeout:
+        assert rc == 2 and result["status"] == "uncertain" and result["no_retry"] is True
+    else:
+        assert rc == 0 and result["state"] == "RECONCILE_ONLY"
+        assert result["ledger_unchanged"] is True
+    assert refs["control_ref"].snapshot.value["history"] == {"preserve": True}

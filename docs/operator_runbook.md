@@ -134,6 +134,17 @@ run, update time and digest, plus ledger/owner existence. It does not connect to
 the broker, write a candidate or change any record. It cannot grant approval for
 a state transition; the existing preview/apply requirements remain unchanged.
 
+The operator approved one downgrade of the exact control inspected by Runtime
+`34586531344`: use `reconcile_only=true` and `accounting_migration_action=quiesce`
+with the target still disabled and no other runtime in flight. This single-use
+path binds the reviewed control digest and update time in source; it changes
+only `state` from `ACTIVE_LKG` to `RECONCILE_ONLY`, inside one non-retrying
+transaction requiring no owner and an existing ledger. Readback verifies the
+entire resulting control and unchanged ledger. It preserves historical source,
+confirmation and transition material. A mismatch blocks; an uncertain commit
+or readback prohibits retry. It neither grants accounting-apply approval nor
+reactivates trading. Later controls require separately reviewed authorization.
+
 First dispatch `Runtime` with `reconcile_only=true` and
 `accounting_migration_action=preview`. Leave the preview run ID, expected
 digest, recovery, balance-diagnosis, candidate-persistence, and validation

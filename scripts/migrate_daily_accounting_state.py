@@ -45,6 +45,9 @@ CONTROL_DOCUMENT = "MULTI_ASSET_STATE__recovery"
 SCHEMA_VERSION = "binance_daily_accounting_migration_candidate.v1"
 NEW_BASIS = "trend_mark_plus_cash_flow_v1"
 PREVIEW_PATH = Path("reports/binance-accounting-migration-preview/candidate.json")
+# Operator-approved control from read-only Runtime 34586531344. One exact downgrade.
+QUIESCE_CONTROL_SHA256 = "68318adcf853fe755409814c8707d3338f0af7927da396a60547c8375e9af5c4"
+QUIESCE_CONTROL_UPDATE_TIME = "2026-09-08T18:31:35.004893Z"
 TTL = timedelta(minutes=10)
 _EARN_PAGE_SIZE = 100
 _ACCOUNTING_FIELDS = frozenset(
@@ -614,10 +617,59 @@ def inspect_control(refs):
     }
 
 
+def _quiesce_control_transaction(transaction, refs):
+    owner = refs["owner_ref"].get(transaction=transaction, retry=None)
+    ledger = refs["ledger_ref"].get(transaction=transaction, retry=None)
+    snapshot = refs["control_ref"].get(transaction=transaction, retry=None)
+    control = snapshot.to_dict() if snapshot.exists else None
+    if (owner.exists or not ledger.exists or not isinstance(control, Mapping)
+            or control.get("state") != "ACTIVE_LKG"
+            or _timestamp(snapshot.update_time) != QUIESCE_CONTROL_UPDATE_TIME
+            or _canonical_sha(control) != QUIESCE_CONTROL_SHA256):
+        raise MigrationBlocked("control_quiesce_precondition_changed")
+    next_control_sha = _canonical_sha({**control, "state": "RECONCILE_ONLY"})
+    ledger_sha = _canonical_sha(ledger.to_dict())
+    transaction.update(refs["control_ref"], {"state": "RECONCILE_ONLY"})
+    return next_control_sha, ledger_sha
+
+
+def _quiesce_control(refs):
+    from google.cloud import firestore
+
+    @firestore.transactional
+    def apply(transaction):
+        return _quiesce_control_transaction(transaction, refs)
+
+    try:
+        expected_control_sha, ledger_sha = apply(get_firestore_client().transaction(max_attempts=1))
+    except MigrationBlocked:
+        raise
+    except Exception:
+        raise MigrationApplyUncertain("control_quiesce_outcome_uncertain") from None
+    try:
+        snapshot = refs["control_ref"].get(retry=None)
+        ledger = refs["ledger_ref"].get(retry=None)
+        owner = refs["owner_ref"].get(retry=None)
+        if (not snapshot.exists or not ledger.exists or owner.exists
+                or _canonical_sha(snapshot.to_dict()) != expected_control_sha
+                or _canonical_sha(ledger.to_dict()) != ledger_sha):
+            raise ValueError("readback_mismatch")
+        return {
+            "status": "quiesced", "stage": "accounting_migration_control_quiesce",
+            "state": "RECONCILE_ONLY", "control_sha256": expected_control_sha,
+            "control_update_time": _timestamp(snapshot.update_time),
+            "ledger_unchanged": True, "no_order": True, "write_performed": True,
+        }
+    except Exception:
+        raise MigrationApplyUncertain("control_quiesce_readback_uncertain") from None
+
+
 def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
     require_runtime_context()
     if action == "inspect":
         return inspect_control(_refs())
+    if action == "quiesce":
+        return _quiesce_control(_refs())
     fixed_now = now is not None
     now = now or datetime.now(timezone.utc)
     target = resolve_runtime_target_from_env(
@@ -701,11 +753,11 @@ def main(argv=None) -> int:
     parser = ArgumentParser(
         description="Preview or apply the bounded Binance daily-accounting migration"
     )
-    parser.add_argument("action", choices=("inspect", "preview", "apply"))
+    parser.add_argument("action", choices=("inspect", "quiesce", "preview", "apply"))
     parser.add_argument("--expected-digest", default="")
     args = parser.parse_args(argv)
-    if args.action in {"inspect", "preview"} and args.expected_digest:
-        parser.error("inspect/preview do not accept an expected digest")
+    if args.action != "apply" and args.expected_digest:
+        parser.error("only apply accepts an expected digest")
     if args.action == "apply" and not re.fullmatch(
         r"[0-9a-f]{64}", args.expected_digest
     ):
