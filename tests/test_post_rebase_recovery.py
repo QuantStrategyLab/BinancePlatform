@@ -518,10 +518,13 @@ def test_post_rebase_control_write_is_single_attempt_and_read_back(monkeypatch, 
 
 
 @pytest.mark.parametrize("outcome", ["success", "response_lost_after_commit"])
-def test_post_rebase_control_uses_one_real_sdk_commit_rpc_and_keeps_transaction_id(outcome):
+def test_post_rebase_control_uses_one_real_sdk_commit_rpc_and_keeps_transaction_id(
+    monkeypatch, outcome
+):
     from google.api_core import exceptions, gapic_v1
     from google.auth.credentials import AnonymousCredentials
-    from google.cloud import firestore
+    from google.cloud.firestore_v1.client import Client as FirestoreClient
+    from google.cloud.firestore_v1.transaction import transactional as sdk_transactional
     from google.cloud.firestore_v1.types import firestore as firestore_types
     from scripts import binance_recovery_controller as controller
 
@@ -541,7 +544,7 @@ def test_post_rebase_control_uses_one_real_sdk_commit_rpc_and_keeps_transaction_
         "archive_ref": SDKRef(archive, "archive"),
     }
     next_value = {"state": "ACTIVE_LKG"}
-    client = firestore.Client(
+    client = FirestoreClient(
         project="offline-review", credentials=AnonymousCredentials()
     )
     api = client._firestore_api
@@ -566,6 +569,9 @@ def test_post_rebase_control_uses_one_real_sdk_commit_rpc_and_keeps_transaction_
         transaction=b"offline-transaction"
     )
     api.rollback = lambda **_kwargs: None
+    monkeypatch.setattr(
+        controller.firestore, "transactional", sdk_transactional, raising=False
+    )
 
     if outcome == "response_lost_after_commit":
         with pytest.raises(controller.RecoveryWriteUncertain):
@@ -912,6 +918,12 @@ def _setup_post_rebase_controller_confirmation(monkeypatch, *, response_change=N
     monkeypatch.setattr(controller, "BASELINE_TARGET_SHA256", target.live_continuity.baseline_target_sha256)
     monkeypatch.setattr(controller, "resolve_runtime_target_from_env", lambda **_: target)
     monkeypatch.setattr(controller, "datetime", SimpleNamespace(now=lambda _tz: fresh_at))
+    real_activation_evaluation = controller.evaluate_reconciliation_recovery_activation
+    monkeypatch.setattr(
+        controller,
+        "evaluate_reconciliation_recovery_activation",
+        lambda **kwargs: real_activation_evaluation(**kwargs, now=fresh_at),
+    )
     monkeypatch.setattr(controller, "_expected_digests", lambda: expected)
     monkeypatch.setattr(controller, "_symbols_from_env", lambda: ["BTCUSDT"])
     monkeypatch.setattr(controller, "MANAGED_SYMBOLS_SHA256", digest(["BTCUSDT"]))
