@@ -47,7 +47,7 @@ on:
         type: choice
         required: false
         default: none
-        options: [none, inspect, preview, apply]
+        options: [none, inspect, quiesce, preview, apply]
       accounting_migration_preview_run_id:
         description: "Exact successful preview run ID; required only for apply"
         type: string
@@ -117,14 +117,14 @@ jobs:
                 exit 1
               fi
               ;;
-            inspect|preview|apply)
+            inspect|quiesce|preview|apply)
               if [ "${RECOVERY_ACTION_INPUT:-none}" != "none" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
                 echo "::error::Accounting migration requires disabled main runtime, reconcile_only, and no other recovery or diagnostic mode."
                 exit 1
               fi
               if [ "$ACCOUNTING_MIGRATION_ACTION_INPUT" != "apply" ]; then
                 if [ -n "${ACCOUNTING_MIGRATION_PREVIEW_RUN_ID:-}${ACCOUNTING_MIGRATION_EXPECTED_DIGEST:-}" ]; then
-                  echo "::error::Inspect/preview do not accept an artifact run or expected digest."
+                  echo "::error::Only apply accepts an artifact run or expected digest."
                   exit 1
                 fi
               elif [[ ! "${ACCOUNTING_MIGRATION_PREVIEW_RUN_ID:-}" =~ ^[0-9]+$ ]] || [[ ! "${ACCOUNTING_MIGRATION_EXPECTED_DIGEST:-}" =~ ^[0-9a-f]{64}$ ]]; then
