@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Preview or atomically apply the bounded Binance daily-accounting migration.
+"""Inspect, preview, or atomically apply bounded Binance accounting operations.
 
 The command has no order, transfer, redemption, subscription, cancellation, or
 notification path.  Preview writes one short-lived redacted candidate file.
 Apply accepts only that fixed artifact path, repeats the read-only evidence, and
 updates an allowlist of fields in the existing Firestore ledger transaction.
+The private Spot scope preview writes only CMS-encrypted bytes.
 """
 
 # ruff: noqa: E402
@@ -49,6 +50,9 @@ SCHEMA_VERSION = "binance_daily_accounting_migration_candidate.v1"
 NEW_BASIS = "trend_mark_plus_cash_flow_v1"
 PREVIEW_PATH = Path("reports/binance-accounting-migration-preview/candidate.json")
 REBASE_PROPOSAL_PATH = Path("reports/binance-accounting-rebase-proposal/proposal.cms")
+PRIVATE_SCOPE_PREVIEW_PATH = Path(
+    "reports/binance-private-spot-scope-preview/scope.cms"
+)
 # Operator-approved control from read-only Runtime 34586531344. One exact downgrade.
 QUIESCE_CONTROL_SHA256 = "68318adcf853fe755409814c8707d3338f0af7927da396a60547c8375e9af5c4"
 QUIESCE_CONTROL_UPDATE_TIME = "2026-09-08T18:31:35.004893Z"
@@ -60,6 +64,7 @@ APPROVED_REBASE_BALANCES_SHA256 = "e048d378056180b41c0ebf215a1a229748abb0f6983ed
 REBASE_ARCHIVE_DOCUMENT = "MULTI_ASSET_STATE__before_rebase_34601984051"
 TTL = timedelta(minutes=10)
 _EARN_PAGE_SIZE = 100
+_MAX_SPOT_BALANCE_ROWS = 5000
 _ACCOUNTING_FIELDS = frozenset(
     {
         "daily_trend_pnl_basis",
@@ -758,6 +763,131 @@ def _read_source(refs):
     return ledger, ledger_value, control_value
 
 
+def _private_spot_account(account, *, expected_account_scope_sha256):
+    if not isinstance(account, Mapping):
+        raise MigrationBlocked("private_scope_balance_invalid")
+    uid = str(account.get("uid") or "")
+    if not uid or digest({"account_uid": uid}) != expected_account_scope_sha256:
+        raise MigrationBlocked("account_scope_unverified")
+    rows = account.get("balances")
+    if not isinstance(rows, list) or len(rows) > _MAX_SPOT_BALANCE_ROWS:
+        raise MigrationBlocked("private_scope_balance_invalid")
+    normalized = {}
+    try:
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise MigrationBlocked("private_scope_balance_invalid")
+            asset = str(row.get("asset") or "").strip().upper()
+            if (
+                not re.fullmatch(r"[A-Z0-9]{1,20}", asset)
+                or asset in normalized
+            ):
+                raise MigrationBlocked("private_scope_balance_invalid")
+            free = Decimal(str(row.get("free")))
+            locked = Decimal(str(row.get("locked")))
+            if (
+                not free.is_finite()
+                or not locked.is_finite()
+                or free < 0
+                or locked < 0
+            ):
+                raise MigrationBlocked("private_scope_balance_invalid")
+            normalized[asset] = (free, locked)
+    except (InvalidOperation, TypeError, ValueError):
+        raise MigrationBlocked("private_scope_balance_invalid") from None
+    return uid, tuple(sorted(normalized.items()))
+
+
+def _validated_private_scope_source(refs, *, initial_source=None):
+    # Lazy import avoids a module cycle: rebased_recovery aliases the approved
+    # roots from this migration module.
+    from application.rebased_recovery import validate_post_rebase_material
+
+    ledger_snapshot, ledger, control = initial_source or _read_source(refs)
+    archive_ref = refs["ledger_ref"].parent.document(REBASE_ARCHIVE_DOCUMENT)
+    archive_snapshot = archive_ref.get(retry=None)
+    if not archive_snapshot.exists:
+        raise MigrationBlocked("private_scope_source_invalid")
+    archive = archive_snapshot.to_dict()
+    try:
+        material = validate_post_rebase_material(ledger, archive)
+        approved_account_scope = archive["recovery_control"]["source"][
+            "original_evidence"
+        ]["account_scope_sha256"]
+        if not isinstance(approved_account_scope, str):
+            raise ValueError("account scope")
+    except (KeyError, TypeError, ValueError):
+        raise MigrationBlocked("private_scope_source_invalid") from None
+    return {
+        "archive_ref": archive_ref,
+        "material": material,
+        "approved_account_scope_sha256": approved_account_scope,
+        "binding": {
+            "ledger_sha256": digest(ledger),
+            "ledger_update_time": _timestamp(ledger_snapshot.update_time),
+            "control_sha256": digest(control),
+            "archive_sha256": digest(archive),
+        },
+    }
+
+
+def collect_private_spot_scope_preview(
+    refs,
+    *,
+    client,
+    expected,
+    observed_at,
+    source_sha,
+    initial_source=None,
+):
+    """Collect an encrypted-output-only view of non-managed Spot balances."""
+    before = _validated_private_scope_source(refs, initial_source=initial_source)
+    account_scope = expected.get("account_scope_sha256")
+    if (
+        not isinstance(account_scope, str)
+        or len(account_scope) != 64
+        or account_scope != before["approved_account_scope_sha256"]
+    ):
+        raise MigrationBlocked("account_scope_unverified")
+    first = _private_spot_account(
+        client.get_account(), expected_account_scope_sha256=account_scope
+    )
+    second = _private_spot_account(
+        client.get_account(), expected_account_scope_sha256=account_scope
+    )
+    if first != second:
+        raise MigrationBlocked("private_scope_snapshot_changed")
+
+    after = _validated_private_scope_source(refs)
+    if before["binding"] != after["binding"]:
+        raise MigrationBlocked("private_scope_source_changed")
+
+    managed_assets = set(before["material"]["opening_quantities"])
+    non_managed = [
+        {"asset": asset, "free": str(free), "locked": str(locked)}
+        for asset, (free, locked) in first[1]
+        if asset not in managed_assets and (free != 0 or locked != 0)
+    ]
+    return {
+        "status": "observed",
+        "observed_at": observed_at.astimezone(timezone.utc).isoformat(),
+        "source_kind": "post_rebase",
+        "source": {
+            "source_sha": source_sha,
+            "archive_document": REBASE_ARCHIVE_DOCUMENT,
+            "archive_sha256": before["binding"]["archive_sha256"],
+            "ledger_sha256": before["binding"]["ledger_sha256"],
+            "account_scope_sha256": account_scope,
+        },
+        "scope": "non_managed_nonzero_spot_assets",
+        "non_managed_nonzero_spot_assets": non_managed,
+        "historical_difference_unresolved": True,
+        "no_order": True,
+        "write_performed": False,
+        "execution_authority_granted": False,
+    }
+
+
 def audit_ledger(refs, *, client, expected, now):
     """Compare two distinct balance bases without granting migration authority."""
     ledger_snapshot, ledger, control = _read_source(refs)
@@ -964,6 +1094,31 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
     client = connect_client(
         os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30
     )
+    if action == "scope-preview":
+        preview = collect_private_spot_scope_preview(
+            refs,
+            client=client,
+            expected=expected,
+            observed_at=now,
+            source_sha=os.environ["GITHUB_SHA"],
+            initial_source=(ledger_snapshot, ledger, control),
+        )
+        encrypted = encrypt_rebase_proposal(
+            preview,
+            certificate=os.environ.get("PROPOSAL_RECIPIENT_CERTIFICATE", ""),
+        )
+        if not isinstance(encrypted, bytes) or not encrypted:
+            raise MigrationBlocked("proposal_encryption_failed")
+        PRIVATE_SCOPE_PREVIEW_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PRIVATE_SCOPE_PREVIEW_PATH.write_bytes(encrypted)
+        return {
+            "status": "encrypted_scope_preview_ready",
+            "stage": "private_spot_scope_preview",
+            "ledger_unchanged": True,
+            "no_order": True,
+            "write_performed": False,
+            "execution_authority_granted": False,
+        }
     if action == "audit":
         return audit_ledger(refs, client=client, expected=expected, now=now)
     if action == "rebase-apply":
@@ -1048,7 +1203,19 @@ def main(argv=None) -> int:
     parser = ArgumentParser(
         description="Preview or apply the bounded Binance daily-accounting migration"
     )
-    parser.add_argument("action", choices=("inspect", "quiesce", "audit", "preview", "rebase-proposal", "rebase-apply", "apply"))
+    parser.add_argument(
+        "action",
+        choices=(
+            "inspect",
+            "quiesce",
+            "audit",
+            "preview",
+            "scope-preview",
+            "rebase-proposal",
+            "rebase-apply",
+            "apply",
+        ),
+    )
     parser.add_argument("--expected-digest", default="")
     args = parser.parse_args(argv)
     if args.action != "apply" and args.expected_digest:

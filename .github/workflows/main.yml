@@ -43,13 +43,13 @@ on:
         type: string
         required: false
       accounting_migration_action:
-        description: "Explicit daily-accounting migration step; preview is read-only and apply requires separate approval"
+        description: "Explicit accounting step; scope-preview emits only a private encrypted read-only artifact"
         type: choice
         required: false
         default: none
-        options: [none, inspect, quiesce, audit, preview, rebase-proposal, rebase-apply, apply]
+        options: [none, inspect, quiesce, audit, preview, scope-preview, rebase-proposal, rebase-apply, apply]
       proposal_recipient_certificate:
-        description: "Public X.509 encryption certificate for rebase-proposal only; never provide a private key"
+        description: "Public X.509 certificate for rebase-proposal or scope-preview; never provide a private key"
         type: string
         required: false
       accounting_migration_preview_run_id:
@@ -122,7 +122,7 @@ jobs:
                 exit 1
               fi
               ;;
-            inspect|quiesce|audit|preview|rebase-proposal|rebase-apply|apply)
+            inspect|quiesce|audit|preview|scope-preview|rebase-proposal|rebase-apply|apply)
               if [ "${RECOVERY_ACTION_INPUT:-none}" != "none" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
                 echo "::error::Accounting migration requires disabled main runtime, reconcile_only, and no other recovery or diagnostic mode."
                 exit 1
@@ -139,13 +139,13 @@ jobs:
               ;;
             *) echo "::error::Unknown accounting migration action."; exit 1 ;;
           esac
-          if [ "${ACCOUNTING_MIGRATION_ACTION_INPUT:-none}" = "rebase-proposal" ]; then
+          if [ "${ACCOUNTING_MIGRATION_ACTION_INPUT:-none}" = "rebase-proposal" ] || [ "${ACCOUNTING_MIGRATION_ACTION_INPUT:-none}" = "scope-preview" ]; then
             if [ -z "${PROPOSAL_RECIPIENT_CERTIFICATE:-}" ]; then
-              echo "::error::Rebase proposal requires a public encryption certificate."
+              echo "::error::Encrypted private output requires a public encryption certificate."
               exit 1
             fi
           elif [ -n "${PROPOSAL_RECIPIENT_CERTIFICATE:-}" ]; then
-            echo "::error::Only rebase-proposal accepts a public encryption certificate."
+            echo "::error::Only rebase-proposal or scope-preview accepts a public encryption certificate."
             exit 1
           fi
           if [ -n "${BALANCE_HISTORY_START:-}${BALANCE_HISTORY_END:-}" ]; then
@@ -479,6 +479,15 @@ jobs:
         with:
           name: binance-accounting-rebase-proposal
           path: reports/binance-accounting-rebase-proposal/proposal.cms
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Retain encrypted private Spot scope preview
+        if: ${{ success() && inputs.accounting_migration_action == 'scope-preview' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: binance-private-spot-scope-preview
+          path: reports/binance-private-spot-scope-preview/scope.cms
           if-no-files-found: error
           retention-days: 1
 

@@ -253,6 +253,33 @@ application reason codes are reported; provider payloads and amounts remain
 hidden. A diagnosis failure stops the operation; do not repeat prepare or
 weaken its evidence checks. Diagnosis success never grants recovery authority.
 
+If that diagnosis reports `post_rebase_unknown_spot_balance`, an operator may
+run the separate `accounting_migration_action=scope-preview` with the runtime
+disabled and `reconcile_only=true`. Provide only a public X.509 recipient
+certificate in `proposal_recipient_certificate`; keep the private key off the
+runner and GitHub. This action validates the approved private rebase archive,
+the unchanged current ledger and the archived account identity, then calls the
+Spot account endpoint exactly twice. It does not read order, transfer, Earn,
+history or market-price endpoints and does not write Firestore or the recovery
+console.
+
+On success, the runner writes only CMS-encrypted bytes to the fixed
+`binance-private-spot-scope-preview` artifact, retained for one day. Its private
+payload lists only nonzero Spot assets outside the approved opening scope, with
+their `free` and `locked` quantities and the observation time. Zero balances,
+managed balances, the old ledger and order records are omitted. Workflow logs
+contain only the fixed success or blocked status and the no-order/no-state-write
+flags. Decrypt the downloaded artifact only on the operator machine that holds
+the private key.
+
+Any archive, ledger, account identity or Spot row change between the bounded
+reads blocks the preview, as does an invalid, negative or nonfinite quantity.
+The action performs no automatic retry. Understand a failure before starting a
+new run. The decrypted list is evidence for a later manual asset-scope decision;
+it does not approve adding or ignoring an asset, changing the ledger, preparing
+recovery, activating runtime or placing an order. It also makes no claim about
+assets outside the Spot account response.
+
 After the approved accounting rebase, the legacy recovery source cannot be
 reused because it is bound to the archived ledger digest and its older history
 window. A new recovery `prepare` uses the existing recovery controller and
