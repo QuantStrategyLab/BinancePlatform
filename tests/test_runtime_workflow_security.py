@@ -276,7 +276,7 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
     inputs = workflow[workflow.index("    inputs:") : workflow.index("permissions:")]
 
     assert "accounting_migration_action:" in inputs
-    assert "options: [none, inspect, quiesce, audit, preview, scope-preview, cash-flow-preview, rebase-proposal, rebase-apply, apply]" in inputs
+    assert "options: [none, inspect, quiesce, audit, preview, scope-preview, cash-flow-preview, rebase-proposal, rebase-apply, prospective-rebase-apply, apply]" in inputs
     assert "accounting_migration_preview_run_id:" in inputs
     assert "accounting_migration_expected_digest:" in inputs
 
@@ -298,6 +298,10 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
         ("rebase-proposal", "", "", "false", "false", "refs/heads/main", False),
         ("rebase-proposal", "12345", "", "true", "false", "refs/heads/main", False),
         ("rebase-apply", "", "", "true", "false", "refs/heads/main", True),
+        ("prospective-rebase-apply", "", "", "true", "false", "refs/heads/main", True),
+        ("prospective-rebase-apply", "", "", "true", "true", "refs/heads/main", False),
+        ("prospective-rebase-apply", "", "", "false", "false", "refs/heads/main", False),
+        ("prospective-rebase-apply", "", "", "true", "false", "refs/heads/topic", False),
         ("rebase-apply", "", "", "true", "true", "refs/heads/main", False),
         ("rebase-apply", "", "", "false", "false", "refs/heads/main", False),
         ("rebase-apply", "12345", "", "true", "false", "refs/heads/main", False),
@@ -439,3 +443,12 @@ def test_encryption_certificate_is_isolated_to_rebase_proposal(
     }
     result = subprocess.run(["/bin/bash", "-c", guard], env=env, capture_output=True)
     assert (result.returncode == 0) is allowed
+
+
+def test_approved_prospective_secret_only_reaches_explicit_migration_step():
+    from pathlib import Path
+    text = Path('.github/workflows/main.yml').read_text()
+    lines = [line for line in text.splitlines() if 'secrets.BINANCE_APPROVED_PROSPECTIVE_OPENING' in line]
+    assert len(lines) == 1
+    assert "inputs.accounting_migration_action == 'prospective-rebase-apply'" in lines[0]
+    assert text.index(lines[0]) > text.index('name: 4. Run trading strategy')
