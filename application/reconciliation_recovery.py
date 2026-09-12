@@ -150,7 +150,16 @@ def activated_target(target, control, *, expected):
     if control.get("state") != "ACTIVE_LKG":
         raise ValueError("recovery_control_state_invalid")
     source = control["source"]
-    if source.get("kind") == "post_rebase":
+    if source.get("kind") == "prospective_rebase":
+        from application.rebased_recovery import validate_prospective_rebase_source
+
+        candidate = validate_prospective_rebase_source(
+            control,
+            runtime_target=target,
+            legacy_expected=expected,
+            require_fresh=False,
+        )
+    elif source.get("kind") == "post_rebase":
         from application.rebased_recovery import validate_post_rebase_source
 
         candidate = validate_post_rebase_source(

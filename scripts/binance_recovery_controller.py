@@ -22,6 +22,7 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.transaction import Transaction as FirestoreTransaction
 from quant_platform_kit.binance import connect_client
 from quant_platform_kit.common.broker_reconciliation import BrokerReconciliationEvidence, calculate_broker_observation_sha256 as digest
+from quant_platform_kit.common.broker_reconciliation_enrollment import DEFAULT_BROKER_RECONCILIATION_ENROLLMENT_MAX_AGE
 from quant_platform_kit.common.reconciliation_recovery import evaluate_reconciliation_recovery_activation
 from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
 from application.broker_reconciliation import _expected_digests, build_reconciliation_candidate, collect_read_only_reconciliation_observations, diagnose_balance_snapshot
@@ -34,7 +35,10 @@ from application.rebased_recovery import (
     PROSPECTIVE_MIGRATION_RUN_ID,
     PROSPECTIVE_MIGRATION_RUN_SHA,
     collect_prospective_rebase_diagnosis,
+    collect_prospective_rebase_source,
     collect_post_rebase_source,
+    validate_prospective_rebase_material,
+    validate_prospective_rebase_source,
     validate_post_rebase_material,
     validate_post_rebase_source,
 )
@@ -76,6 +80,7 @@ DIAGNOSTIC_REASON_CODES = frozenset({
     "prospective_rebase_migration_run_invalid", "prospective_rebase_observation_window_invalid",
     "prospective_rebase_open_orders_present", "prospective_rebase_recent_executions_present",
     "prospective_rebase_source_run_invalid", "prospective_rebase_state_changed_during_read",
+    "prospective_rebase_spot_changed_during_read", "prospective_rebase_spot_unverified",
 })
 
 
@@ -266,69 +271,12 @@ def run(action, recovery_id=""):
         raise ValueError("recovery_ledger_unavailable_or_owned")
     ledger = ledger_snapshot.to_dict()
     marker = ledger.get("accounting_rebase")
-    if (
-        action == "diagnose"
-        and isinstance(marker, dict)
+    is_prospective_rebase = (
+        isinstance(marker, dict)
         and marker.get("archive_document") == PROSPECTIVE_ARCHIVE_DOCUMENT
-    ):
-        if previous is not None and previous.get("state") != "RECONCILE_ONLY":
-            raise ValueError("recovery_already_active")
-        prospective_ref = collection.document(PROSPECTIVE_ARCHIVE_DOCUMENT)
-        prospective_snapshot = prospective_ref.get(retry=None)
-        if not prospective_snapshot.exists:
-            raise ValueError("prospective_rebase_archive_missing")
-        prospective_archive = prospective_snapshot.to_dict()
-        initial = {
-            "ledger_sha256": digest(ledger),
-            "control_sha256": digest(previous),
-            "archive_sha256": digest(prospective_archive),
-        }
-        symbols = _symbols_from_env()
-        if digest(list(symbols)) != MANAGED_SYMBOLS_SHA256:
-            raise ValueError("recovery_managed_symbols_changed")
-        STAGE = "broker_collection"
-        client = connect_client(
-            os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30
-        )
-        migration_run = verified_run(
-            PROSPECTIVE_MIGRATION_RUN_ID,
-            expected_sha=PROSPECTIVE_MIGRATION_RUN_SHA,
-        )
-        result = collect_prospective_rebase_diagnosis(
-            client=client,
-            runtime_target=target,
-            legacy_expected=expected,
-            ledger=ledger,
-            archive=prospective_archive,
-            recovery_control=previous,
-            symbols=symbols,
-            source_run=current_run,
-            migration_run=migration_run,
-            now=datetime.now(timezone.utc),
-            clock=prospective_clock,
-        )
-        STAGE = "readback"
-        after_control = refs["control_ref"].get(retry=None)
-        after_ledger = refs["ledger_ref"].get(retry=None)
-        after_owner = refs["owner_ref"].get(retry=None)
-        after_archive = prospective_ref.get(retry=None)
-        if (
-            not after_control.exists
-            or digest(after_control.to_dict()) != initial["control_sha256"]
-            or not after_ledger.exists
-            or digest(after_ledger.to_dict()) != initial["ledger_sha256"]
-            or after_owner.exists
-            or not after_archive.exists
-            or digest(after_archive.to_dict()) != initial["archive_sha256"]
-        ):
-            raise ValueError("prospective_rebase_state_changed_during_read")
-        return {
-            **result,
-            "ledger_unchanged": True,
-            "control_unchanged": True,
-            "owner_absent": True,
-            "archive_unchanged": True,
-        }
+    )
+    if is_prospective_rebase:
+        refs["archive_ref"] = collection.document(PROSPECTIVE_ARCHIVE_DOCUMENT)
     archive_snapshot = refs["archive_ref"].get(retry=None)
     archive = archive_snapshot.to_dict() if archive_snapshot.exists else None
     is_post_rebase = archive is not None
@@ -342,7 +290,82 @@ def run(action, recovery_id=""):
             raise ValueError("post_rebase_archive_missing")
         STAGE = "broker_collection"
         client = connect_client(os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30)
-        if is_post_rebase:
+        if is_prospective_rebase:
+            if archive is None:
+                raise ValueError("prospective_rebase_archive_missing")
+            material = validate_prospective_rebase_material(ledger, archive)
+            collected_at = datetime.now(timezone.utc)
+            if previous != material["archived_control"]:
+                stored_candidate = validate_prospective_rebase_source(
+                    previous,
+                    runtime_target=target,
+                    legacy_expected=expected,
+                    now=collected_at,
+                    require_fresh=False,
+                )
+                if action == "prepare":
+                    stored_run = previous["source"]["run"]
+                    if (
+                        not re.fullmatch(
+                            rf"binance-{stored_run['id']}-[1-9][0-9]*",
+                            str(previous.get("recovery_id") or ""),
+                        )
+                        or verified_run(
+                            stored_run["id"], expected_sha=stored_run["head_sha"]
+                        )
+                        != stored_run
+                        or collected_at - stored_candidate.last_observed_at
+                        <= DEFAULT_BROKER_RECONCILIATION_ENROLLMENT_MAX_AGE
+                    ):
+                        raise ValueError("prospective_rebase_prepare_control_changed")
+            migration_run = verified_run(
+                PROSPECTIVE_MIGRATION_RUN_ID,
+                expected_sha=PROSPECTIVE_MIGRATION_RUN_SHA,
+            )
+            collect_kwargs = {
+                "client": client,
+                "runtime_target": target,
+                "legacy_expected": expected,
+                "ledger": ledger,
+                "archive": archive,
+                "symbols": symbols,
+                "source_run": current_run,
+                "migration_run": migration_run,
+                "now": collected_at,
+                "clock": prospective_clock,
+            }
+            if action == "diagnose":
+                result = collect_prospective_rebase_diagnosis(**collect_kwargs)
+                STAGE = "readback"
+                after_control = refs["control_ref"].get(retry=None)
+                after_ledger = refs["ledger_ref"].get(retry=None)
+                after_owner = refs["owner_ref"].get(retry=None)
+                after_archive = refs["archive_ref"].get(retry=None)
+                if (
+                    not after_control.exists
+                    or after_control.to_dict() != previous
+                    or not after_ledger.exists
+                    or digest(after_ledger.to_dict()) != digest(ledger)
+                    or after_owner.exists
+                    or not after_archive.exists
+                    or digest(after_archive.to_dict()) != digest(archive)
+                ):
+                    raise ValueError("prospective_rebase_state_changed_during_read")
+                return {
+                    **result,
+                    "ledger_unchanged": True,
+                    "control_unchanged": True,
+                    "owner_absent": True,
+                    "archive_unchanged": True,
+                }
+            package = collect_prospective_rebase_source(**collect_kwargs)
+            candidate = validate_prospective_rebase_source(
+                package,
+                runtime_target=target,
+                legacy_expected=expected,
+                now=prospective_clock(),
+            )
+        elif is_post_rebase:
             collected_at = datetime.now(timezone.utc)
             migration_run = verified_run(MIGRATION_RUN_ID, expected_sha=MIGRATION_RUN_SHA)
             package = collect_post_rebase_source(
@@ -397,7 +420,11 @@ def run(action, recovery_id=""):
         payload = console_snapshot(
             candidate,
             recovery_id=recovery_id,
-            now=collected_at if is_post_rebase else None,
+            now=(
+                prospective_clock()
+                if is_prospective_rebase
+                else collected_at if is_post_rebase else None
+            ),
         )
         try:
             acknowledgement = request_json(CONSOLE + "/api/internal/sync-reconciliation-recovery-source", os.getenv("RECONCILIATION_RECOVERY_SYNC_TOKEN", ""), payload=payload)
@@ -410,15 +437,38 @@ def run(action, recovery_id=""):
             raise
         result = {"status": "awaiting_human_confirmation", "recovery_id": recovery_id, "candidate_sha256": candidate.candidate_sha256, "no_order": True, "execution_authority_granted": False}
         if is_post_rebase:
-            result.update(source_kind="post_rebase", historical_difference_unresolved=True)
+            result.update(
+                source_kind="prospective_rebase" if is_prospective_rebase else "post_rebase",
+                historical_difference_unresolved=True,
+            )
         return result
     if not previous or previous.get("recovery_id") != recovery_id or previous.get("state") != "RECONCILE_ONLY":
         raise ValueError("recovery_request_missing_or_changed")
     source_run = previous["source"]["run"]
     if verified_run(source_run["id"], expected_sha=source_run["head_sha"]) != source_run:
         raise ValueError("recovery_source_run_changed")
-    is_post_rebase = previous.get("source", {}).get("kind") == "post_rebase"
-    if is_post_rebase:
+    source_kind = previous.get("source", {}).get("kind")
+    is_prospective_rebase = source_kind == "prospective_rebase"
+    is_post_rebase = source_kind in {"post_rebase", "prospective_rebase"}
+    if is_prospective_rebase:
+        validation_at = datetime.now(timezone.utc)
+        migration_run = previous["source"]["migration_run"]
+        if verified_run(
+            migration_run["id"], expected_sha=PROSPECTIVE_MIGRATION_RUN_SHA
+        ) != migration_run:
+            raise ValueError("prospective_rebase_migration_run_changed")
+        if archive is None:
+            raise ValueError("prospective_rebase_archive_missing")
+        if digest(archive) != previous["source"].get("archive_sha256"):
+            raise ValueError("prospective_rebase_archive_changed")
+        validate_prospective_rebase_material(ledger, archive)
+        candidate = validate_prospective_rebase_source(
+            previous,
+            runtime_target=target,
+            legacy_expected=expected,
+            now=validation_at,
+        )
+    elif is_post_rebase:
         validation_at = datetime.now(timezone.utc)
         migration_run = previous["source"]["migration_run"]
         if verified_run(
@@ -451,7 +501,47 @@ def run(action, recovery_id=""):
     if not ledger_snapshot.exists or refs["owner_ref"].get(retry=None).exists:
         raise ValueError("recovery_ledger_unavailable_or_owned")
     ledger = ledger_snapshot.to_dict()
-    if is_post_rebase:
+    if is_prospective_rebase:
+        archive_snapshot = refs["archive_ref"].get(retry=None)
+        if not archive_snapshot.exists:
+            raise ValueError("prospective_rebase_archive_missing")
+        archive = archive_snapshot.to_dict()
+        if digest(archive) != previous["source"].get("archive_sha256"):
+            raise ValueError("prospective_rebase_archive_changed")
+        validate_prospective_rebase_material(ledger, archive)
+        fresh = collect_prospective_rebase_source(
+            client=client,
+            runtime_target=target,
+            legacy_expected=expected,
+            ledger=ledger,
+            archive=archive,
+            symbols=symbols,
+            source_run=current_run,
+            migration_run=migration_run,
+            now=observed_at,
+            clock=prospective_clock,
+        )
+        fresh_candidate = validate_prospective_rebase_source(
+            fresh,
+            runtime_target=target,
+            legacy_expected=expected,
+            now=prospective_clock(),
+        )
+        if (
+            fresh_candidate.account_scope_sha256 != candidate.account_scope_sha256
+            or fresh_candidate.expected_digests != candidate.expected_digests
+        ):
+            raise ValueError("prospective_rebase_fresh_candidate_changed")
+        current_evidence = BrokerReconciliationEvidence.from_dict(
+            fresh["source"]["reconciled_evidence"]
+        )
+        validate_prospective_rebase_source(
+            previous,
+            runtime_target=target,
+            legacy_expected=expected,
+            now=prospective_clock(),
+        )
+    elif is_post_rebase:
         archive_snapshot = refs["archive_ref"].get(retry=None)
         if not archive_snapshot.exists:
             raise ValueError("post_rebase_archive_missing")
@@ -525,7 +615,7 @@ def run(action, recovery_id=""):
     result = {"status": "active_lkg" if action == "activate" else "verified", "recovery_id": recovery_id,
               "no_order": True, "execution_authority_granted": False, "runtime_target_enabled": False}
     if is_post_rebase:
-        result.update(source_kind="post_rebase", historical_difference_unresolved=True)
+        result.update(source_kind=source_kind, historical_difference_unresolved=True)
     return result
 
 
