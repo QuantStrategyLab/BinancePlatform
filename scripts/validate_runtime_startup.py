@@ -23,9 +23,80 @@ _SAFE_STARTUP_REASONS = {
 
 
 class FullCycleValidationError(RuntimeError):
-    def __init__(self, reason_code):
+    def __init__(self, reason_code, *, failure_stage="result", error_type="RuntimeError"):
         self.reason_code = str(reason_code)
+        self.failure_stage = str(failure_stage)
+        self.error_type = str(error_type)
         super().__init__(self.reason_code)
+
+
+_AUTHORITY_REASON_CODES = (
+    ("authority source parameters are incomplete", "authority_source_incomplete"),
+    ("authority file digest mismatch", "authority_file_digest_mismatch"),
+    ("authority file must be a regular non-symlink file", "authority_file_invalid"),
+    ("authority file size is invalid", "authority_file_invalid"),
+    ("authority file cannot be read", "authority_file_unreadable"),
+    ("authority file changed while reading", "authority_file_changed"),
+    ("invalid authority JSON", "authority_json_invalid"),
+    ("duplicate authority field", "authority_duplicate_field"),
+    ("non-finite JSON value", "authority_non_finite_value"),
+    ("authority fields are unsupported or incomplete", "authority_fields_invalid"),
+    ("authority decision is not APPROVE", "authority_decision_not_approve"),
+    ("authority scope is not LIVE", "authority_scope_not_live"),
+    ("installed strategy revision is unavailable", "strategy_revision_unavailable"),
+    ("strategy revision mismatch", "strategy_revision_mismatch"),
+    ("runner revision is unavailable", "runner_revision_unavailable"),
+    ("runner revision mismatch", "runner_revision_mismatch"),
+    ("runner checkout has tracked modifications", "runner_checkout_dirty"),
+    ("config digest mismatch", "config_digest_mismatch"),
+    ("runtime target is missing", "runtime_target_missing"),
+    ("runtime target identity is incomplete", "runtime_target_identity_incomplete"),
+    ("runtime target account identity is ambiguous", "runtime_target_identity_ambiguous"),
+    ("runtime target mismatch", "runtime_target_mismatch"),
+    ("authority expired or not yet effective", "authority_expired_or_not_effective"),
+)
+
+
+def _authority_reason_code(exc):
+    """Return only a fixed authority reason; never expose provider text."""
+    try:
+        from live_risk_authority import LiveRiskAuthorityError
+    except ImportError:
+        return None
+    if not isinstance(exc, LiveRiskAuthorityError):
+        return None
+    text = str(exc)
+    for marker, reason_code in _AUTHORITY_REASON_CODES:
+        if marker in text:
+            return reason_code
+    return "authority_material_invalid"
+
+
+def _error_type_name(exc):
+    if isinstance(exc, ValueError):
+        return "ValueError"
+    if isinstance(exc, KeyError):
+        return "KeyError"
+    if isinstance(exc, TypeError):
+        return "TypeError"
+    if isinstance(exc, OSError):
+        return "OSError"
+    if isinstance(exc, RuntimeError):
+        return "RuntimeError"
+    return "RuntimeError"
+
+
+def _wrap_full_cycle_error(exc, *, failure_stage, fallback_reason):
+    if isinstance(exc, FullCycleValidationError):
+        return exc
+    reason_code = _authority_reason_code(exc)
+    if reason_code is None and type(exc) is ValueError:
+        reason_code = _SAFE_STARTUP_REASONS.get(str(exc))
+    return FullCycleValidationError(
+        reason_code or fallback_reason,
+        failure_stage=failure_stage,
+        error_type=_error_type_name(exc),
+    )
 
 
 def _full_cycle_failure_reason(report):
@@ -147,22 +218,43 @@ class _SuppressedPerformanceMonitor:
 def validate_full_cycle(*, runtime_builder=None, client_connector=None):
     """Run one real-input cycle with every mutation port closed."""
     import importlib
-    import main
 
-    runtime = (runtime_builder or main.build_live_runtime)()
+    try:
+        import main
+    except Exception as exc:
+        raise _wrap_full_cycle_error(
+            exc, failure_stage="import", fallback_reason="full_cycle_import_failed"
+        ) from None
+
+    try:
+        runtime = (runtime_builder or main.build_live_runtime)()
+    except Exception as exc:
+        raise _wrap_full_cycle_error(
+            exc, failure_stage="build", fallback_reason="full_cycle_build_failed"
+        ) from None
     if getattr(runtime, "standard_execution_permitted", True):
-        raise ValueError("full_cycle_requires_disabled_runtime")
+        raise FullCycleValidationError(
+            "full_cycle_requires_disabled_runtime", failure_stage="build", error_type="ValueError"
+        )
     if getattr(runtime, "risk_authority", None) is None:
-        raise ValueError("full_cycle_risk_authority_missing")
+        raise FullCycleValidationError(
+            "full_cycle_risk_authority_missing", failure_stage="build", error_type="ValueError"
+        )
     if not callable(getattr(runtime, "state_loader", None)):
-        raise ValueError("full_cycle_state_loader_missing")
+        raise FullCycleValidationError(
+            "full_cycle_state_loader_missing", failure_stage="state", error_type="ValueError"
+        )
 
     try:
         snapshot = copy.deepcopy(runtime.state_loader(normalize=False))
     except Exception:
-        raise FullCycleValidationError("full_cycle_state_snapshot_unavailable") from None
+        raise FullCycleValidationError(
+            "full_cycle_state_snapshot_unavailable", failure_stage="state"
+        ) from None
     if not isinstance(snapshot, Mapping):
-        raise FullCycleValidationError("full_cycle_state_snapshot_unavailable")
+        raise FullCycleValidationError(
+            "full_cycle_state_snapshot_unavailable", failure_stage="state"
+        )
 
     runtime.dry_run = True
     runtime.state_loader = lambda *, normalize=False: copy.deepcopy(snapshot)
@@ -179,11 +271,18 @@ def validate_full_cycle(*, runtime_builder=None, client_connector=None):
             runtime.api_key, runtime.api_secret, timeout=30,
         )
     except Exception:
-        raise FullCycleValidationError("full_cycle_broker_connect_failed") from None
+        raise FullCycleValidationError(
+            "full_cycle_broker_connect_failed", failure_stage="connect"
+        ) from None
     broker = _ReadOnlyBroker(raw_client, symbols=symbols)
     runtime.client = broker
 
-    common = importlib.import_module("crypto_strategies.entrypoints._common")
+    try:
+        common = importlib.import_module("crypto_strategies.entrypoints._common")
+    except Exception as exc:
+        raise _wrap_full_cycle_error(
+            exc, failure_stage="import", fallback_reason="full_cycle_import_failed"
+        ) from None
     import builtins
     previous_monitor = getattr(common, "_performance_monitor", None)
     had_health_monitor = "_qsl_health_monitor" in builtins.__dict__
@@ -192,7 +291,12 @@ def validate_full_cycle(*, runtime_builder=None, client_connector=None):
     common._performance_monitor = monitor
     builtins.__dict__.pop("_qsl_health_monitor", None)
     try:
-        report = main.execute_cycle(runtime)
+        try:
+            report = main.execute_cycle(runtime)
+        except Exception as exc:
+            raise _wrap_full_cycle_error(
+                exc, failure_stage="cycle", fallback_reason="full_cycle_cycle_failed"
+            ) from None
     finally:
         common._performance_monitor = previous_monitor
         if had_health_monitor:
@@ -203,15 +307,15 @@ def validate_full_cycle(*, runtime_builder=None, client_connector=None):
         isinstance(item, Mapping) and item.get("reason") == "cycle_complete" for item in intents
     )
     if not cycle_complete:
-        raise FullCycleValidationError(_full_cycle_failure_reason(report))
+        raise FullCycleValidationError(_full_cycle_failure_reason(report), failure_stage="result")
     if report.get("status") != "ok" or report.get("risk_outcome") != "APPROVE":
-        raise FullCycleValidationError(_full_cycle_failure_reason(report))
+        raise FullCycleValidationError(_full_cycle_failure_reason(report), failure_stage="result")
     if report.get("execution_blocked_reason") not in {None, "runtime_target_disabled"}:
-        raise FullCycleValidationError("full_cycle_execution_blocked")
+        raise FullCycleValidationError("full_cycle_execution_blocked", failure_stage="result")
     if report.get("side_effect_summary", {}).get("executed_call_count") != 0:
-        raise FullCycleValidationError("full_cycle_side_effect_executed")
+        raise FullCycleValidationError("full_cycle_side_effect_executed", failure_stage="result")
     if any(port.calls for port in (runtime.state_writer, runtime.notifier, runtime.state_owner_claim, runtime.state_owner_release)):
-        raise FullCycleValidationError("full_cycle_write_port_called")
+        raise FullCycleValidationError("full_cycle_write_port_called", failure_stage="result")
     return {
         "status": "passed",
         "validation_scope": "full_cycle_no_submit",
@@ -270,12 +374,23 @@ if __name__ == "__main__":
         result = validate_full_cycle() if full_cycle else validate_startup()
         print(json.dumps(result, sort_keys=True))
     except Exception as exc:
-        kind = type(exc).__name__ if type(exc) in {ValueError, KeyError, TypeError, OSError, RuntimeError} else "RuntimeError"
+        kind = _error_type_name(exc)
         # Exact application reasons only; never expose provider messages or values.
         reason = "full_cycle_validation_failed" if full_cycle else "runtime_startup_validation_failed"
+        failure_stage = None
         if isinstance(exc, FullCycleValidationError):
             reason = exc.reason_code
+            failure_stage = exc.failure_stage
+            kind = exc.error_type
         if type(exc) is ValueError:
             reason = _SAFE_STARTUP_REASONS.get(str(exc), reason)
-        print(json.dumps({"status": "failed", "stage": "full_cycle_validation" if full_cycle else "runtime_startup_validation", "error_type": kind, "reason_code": reason}))
+        output = {
+            "status": "failed",
+            "stage": "full_cycle_validation" if full_cycle else "runtime_startup_validation",
+            "error_type": kind,
+            "reason_code": reason,
+        }
+        if failure_stage is not None:
+            output["failure_stage"] = failure_stage
+        print(json.dumps(output, sort_keys=True))
         raise SystemExit(1) from None
