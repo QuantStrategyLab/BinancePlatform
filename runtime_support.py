@@ -591,6 +591,37 @@ def read_managed_balance(client, asset):
         raise ExecutionIntegrityError("managed_balance_unavailable") from None
 
 
+def account_known_fill_for_earn(state):
+    """Accumulate broker-confirmed quantity/fee deltas in the accounting write."""
+    if "earn_accrual_checkpoint" not in state:
+        return
+    record = state.get(_ORDER_SUBMISSION_STATE_KEY, {})
+    if record.get("state") != _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING:
+        return
+    from application.earn_accrual import _amount
+    from decimal import localcontext
+    try:
+        assets = set(state["earn_accrual_checkpoint"]["assets"])
+        net = state["earn_accounted_net_changes"]
+        symbol = record["symbol"]
+        if set(net) != assets or not symbol.endswith("USDT") or symbol[:-4] not in assets:
+            raise ValueError
+        fill = record["known_fill"]
+        if fill.get("side") not in {"BUY", "SELL"} or not _known_fill_is_complete(fill, allowed_fee_assets=assets):
+            raise ValueError
+        with localcontext() as context:
+            context.prec = 100
+            updated = {a: _amount(net[a], signed=True) for a in assets}
+            sign = Decimal(1) if fill["side"] == "BUY" else Decimal(-1)
+            updated[symbol[:-4]] += sign * _amount(fill["executed_qty"])
+            updated["USDT"] -= sign * _amount(fill["cummulative_quote_qty"])
+            for item in fill["commissions"]:
+                updated[item["commission_asset"]] -= _amount(item["commission"])
+            state["earn_accounted_net_changes"] = {a: str(v) for a, v in updated.items()}
+    except Exception:
+        raise ExecutionIntegrityError("earn_fill_accounting_unverified") from None
+
+
 def reconcile_runtime_cash_effects(runtime, state):
     """Refresh confirmed Earn/fuel balances; no receipt or status word substitutes for this read."""
     pending = getattr(runtime, "pending_funds", [])
@@ -598,30 +629,55 @@ def reconcile_runtime_cash_effects(runtime, state):
     if not assets:
         return
     require_runtime_state_owner(runtime)
-    observations = {}
-    try:
-        for asset in assets | {"USDT"}:
-            observations[asset] = read_managed_balance(runtime.client, asset)
-    except Exception:
-        raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None
+    prospective = "earn_accrual_checkpoint" in state
     submission = state.get(_ORDER_SUBMISSION_STATE_KEY, {})
-    if (
-        submission.get("state") == _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING
-        and submission.get("symbol") == getattr(runtime, "fuel_symbol", None)
-    ):
-        if not _known_fill_is_complete(
-            submission.get("known_fill"),
-            allowed_fee_assets={str(getattr(runtime, "fuel_asset", "BNB") or "BNB"), "USDT"},
-        ):
-            raise ExecutionIntegrityError("filled_order_accounting_unverifiable") from None
-        if not _fuel_fill_matches_observed_balances(
-            submission.get("known_fill"),
-            previous=state.get("last_balance_snapshot"),
-            observed=observations,
-            fuel_asset=str(getattr(runtime, "fuel_asset", "BNB") or "BNB"),
-        ):
+    fuel_pending = (submission.get("state") == _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING
+                    and submission.get("symbol") == getattr(runtime, "fuel_symbol", None))
+    if prospective:
+        import copy
+        from application.earn_accrual import collect_earn_checkpoint, compare_earn_checkpoints
+        try:
+            pending_state = copy.deepcopy(state)
+            if fuel_pending:
+                account_known_fill_for_earn(pending_state)
+            previous = state["earn_accrual_checkpoint"]
+            current = collect_earn_checkpoint(runtime.client, assets=previous["assets"],
+                observed_at=datetime.now(timezone.utc),
+                expected_account_scope_sha256=previous["account_scope_sha256"])
+            compare_earn_checkpoints(previous, current,
+                verified_net_changes=pending_state["earn_accounted_net_changes"])
+            observations = {a: float(current["assets"][a]["quantity"]) for a in assets | {"USDT"}}
+        except Exception:
             raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None
-        state[_ORDER_SUBMISSION_STATE_KEY] = {"state": _ORDER_SUBMISSION_TERMINAL}
+        if fuel_pending:
+            state["earn_accounted_net_changes"] = pending_state["earn_accounted_net_changes"]
+            state[_ORDER_SUBMISSION_STATE_KEY] = {"state": _ORDER_SUBMISSION_TERMINAL}
+    else:
+        observations = {}
+        try:
+            for asset in assets | {"USDT"}:
+                observations[asset] = read_managed_balance(runtime.client, asset)
+        except Exception:
+            raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None
+        submission = state.get(_ORDER_SUBMISSION_STATE_KEY, {})
+        if (
+            submission.get("state") == _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING
+            and submission.get("symbol") == getattr(runtime, "fuel_symbol", None)
+        ):
+            if not _known_fill_is_complete(
+                submission.get("known_fill"),
+                allowed_fee_assets={str(getattr(runtime, "fuel_asset", "BNB") or "BNB"), "USDT"},
+            ):
+                raise ExecutionIntegrityError("filled_order_accounting_unverifiable") from None
+            if not _fuel_fill_matches_observed_balances(
+                submission.get("known_fill"),
+                previous=state.get("last_balance_snapshot"),
+                observed=observations,
+                fuel_asset=str(getattr(runtime, "fuel_asset", "BNB") or "BNB"),
+            ):
+                raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None
+            account_known_fill_for_earn(state)
+            state[_ORDER_SUBMISSION_STATE_KEY] = {"state": _ORDER_SUBMISSION_TERMINAL}
     state.setdefault("last_balance_snapshot", {}).update(observations)
     runtime.cash_balance_observation = observations
 

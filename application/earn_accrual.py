@@ -178,3 +178,55 @@ def compare_earn_checkpoints(previous, current, *, verified_net_changes):
             accrual[asset] = format(reward, 'f')
         return {'quantities_conserve': True, 'broker_reported_accrual': accrual,
                 'absolute_principal_proven': False, 'execution_authority_granted': False}
+
+
+def prepare_forward_earn_state(state, current, cash_flows):
+    """Pure next ledger from verified counters, known fills and deposit records.
+
+    No balances are converted into flow evidence. Callers persist the returned
+    state through the existing owner-protected writer, before consuming it.
+    """
+    import copy
+    with localcontext() as context:
+        context.prec = 100
+        previous = state['earn_accrual_checkpoint']
+        _validate(previous)
+        _validate(current)
+        if state.get('order_submission', {}).get('state') not in {'RESERVED', 'TERMINAL'}:
+            raise ValueError('earn_order_unsettled')
+        assets = set(previous['assets'])
+        net = state.get('earn_accounted_net_changes')
+        snapshot = state.get('last_balance_snapshot')
+        if (not isinstance(net, Mapping) or set(net) != assets
+                or not isinstance(snapshot, Mapping) or set(snapshot) != assets):
+            raise ValueError('earn_accounted_changes_missing')
+        verified = {a: _amount(net[a], signed=True) for a in assets}
+        cutoff = _time(current['observed_at'])
+        old_cursor, new_cursor = state.get('external_cash_flow_cursor'), cash_flows.get('cursor')
+        if (not isinstance(old_cursor, Mapping) or not isinstance(new_cursor, Mapping)
+                or _time(old_cursor.get('observed_at')) != _time(previous['observed_at'])
+                or _time(new_cursor.get('observed_at')) != cutoff):
+            raise ValueError('earn_cash_cursor_mismatch')
+        for key in ('new_confirmed_deposit_count', 'new_unsupported_deposit_count', 'new_or_changed_withdrawal_count'):
+            if type(cash_flows.get(key)) is not int or cash_flows[key] < 0:
+                raise ValueError('earn_cash_flow_invalid')
+        if cash_flows['new_unsupported_deposit_count'] or cash_flows['new_or_changed_withdrawal_count']:
+            raise ValueError('earn_cash_flow_unsupported')
+        principal = _amount(cash_flows['new_deposit_principal_usdt'])
+        completed = cash_flows['new_deposit_completed_at']
+        if (not isinstance(completed, list) or len(completed) != cash_flows['new_confirmed_deposit_count']
+                or (principal == 0) != (not completed)
+                or any(not _time(previous['observed_at']) < _time(t) <= cutoff or _time(t).date() != cutoff.date()
+                       for t in completed)):
+            raise ValueError('earn_cash_flow_time_unverified')
+        verified['USDT'] += principal
+        compare_earn_checkpoints(previous, current, verified_net_changes={a: str(v) for a, v in verified.items()})
+        updated = copy.deepcopy(state)
+        if principal and state.get('last_reset_date') == cutoff.date().isoformat():
+            accumulated = _amount(str(state.get('daily_external_principal_usdt', 0))) + principal
+            updated['daily_external_principal_usdt'] = float(accumulated)
+        updated['earn_accrual_checkpoint'] = copy.deepcopy(current)
+        updated['earn_accounted_net_changes'] = {a: '0' for a in assets}
+        updated['last_balance_snapshot'] = {a: round(float(_amount(r['quantity'])), 8) for a, r in current['assets'].items()}
+        updated['external_cash_flow_cursor'] = copy.deepcopy(new_cursor)
+        return updated

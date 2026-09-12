@@ -313,6 +313,7 @@ def build_rebase_proposal(*, ledger, evidence, observed_at):
     }
     if prospective:
         proposed["earn_accrual_checkpoint"] = copy.deepcopy(evidence["earn_accrual_checkpoint"])
+        proposed["earn_accounted_net_changes"] = {a: "0" for a in evidence["earn_accrual_checkpoint"]["assets"]}
         proposed["external_cash_flow_cursor"] = copy.deepcopy(evidence["external_cash_flow_cursor"])
     return {
         "opening_mode": "prospective" if prospective else "legacy_preview",

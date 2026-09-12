@@ -144,6 +144,8 @@ def _prepare_accounting_state(state, *, symbol, base_asset, balances, u_total):
             if fee_symbol.endswith("USDT") and fee_symbol not in {symbol, "BTCUSDT"}:
                 snapshot[fee_symbol[:-4]] = round(float(balances[fee_symbol]), 8)
     if state.get("order_submission", {}).get("state") == _FILLED_ACCOUNTING_PENDING:
+        from runtime_support import account_known_fill_for_earn
+        account_known_fill_for_earn(state)
         state["order_submission"] = {"state": "TERMINAL"}
 
 

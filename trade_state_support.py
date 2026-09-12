@@ -126,6 +126,10 @@ def normalize_trade_state(
         else:
             normalized[key] = state.get(key, value)
 
+    for key in ("earn_accrual_checkpoint", "earn_accounted_net_changes"):
+        if key in state:
+            normalized[key] = copy.deepcopy(state[key])
+
     if state.get("daily_trend_pnl_basis") == "trend_mark_plus_cash_flow_v1":
         accounting_fields = (
             "daily_trend_cash_flow_usdt",
