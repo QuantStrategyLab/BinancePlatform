@@ -20,12 +20,24 @@ from quant_platform_kit.common.broker_reconciliation_enrollment import (
     evaluate_broker_reconciliation_baseline_enrollment,
 )
 
-from application.broker_reconciliation import diagnose_balance_flows
+from application.broker_reconciliation import (
+    collect_read_only_reconciliation_observations,
+    collect_spot_usdt_external_cash_flows,
+    diagnose_balance_flows,
+)
+from application.earn_accrual import (
+    EarnCheckpointUnavailable,
+    collect_earn_checkpoint,
+    compare_earn_checkpoints,
+    prepare_forward_earn_state,
+)
 from application.reconciliation_recovery import _validate_frozen_target
 from scripts.migrate_daily_accounting_state import (
     APPROVED_REBASE_BALANCES_SHA256 as APPROVED_OPENING_BALANCES_SHA256,
     APPROVED_REBASE_CONTROL_SHA256 as APPROVED_OLD_CONTROL_SHA256,
     APPROVED_REBASE_LEDGER_SHA256 as APPROVED_OLD_LEDGER_SHA256,
+    APPROVED_PROSPECTIVE_SHA256,
+    PROSPECTIVE_ARCHIVE_DOCUMENT,
     REBASE_ARCHIVE_DOCUMENT as ARCHIVE_DOCUMENT,
 )
 
@@ -36,6 +48,15 @@ MIGRATION_RUN_ID = 34606795875
 MIGRATION_RUN_SHA = "ed7ee6e96cea0addb292f3f45338652095d0da58"
 QUANTITY_PRECISION = 8
 MAX_HISTORY = timedelta(days=7)
+
+# Exact roots from the user-approved prospective migration.  This separate
+# path is diagnosis-only; the existing recovery candidate and activation path
+# remains bound to the older rebase above.
+PROSPECTIVE_APPROVED_PROPOSAL_RUN_ID = "34690028846"
+PROSPECTIVE_MIGRATION_RUN_ID = 34690695663
+PROSPECTIVE_MIGRATION_RUN_SHA = "a3ef5660e6d25fcfd5a7dedd10536a32eedde203"
+PROSPECTIVE_LEDGER_SHA256 = "8c02ec9b5aa716edbffed7e98eb67bbdbf2b951d09588652478564d5e82c63b1"
+PROSPECTIVE_ARCHIVE_SHA256 = "375a38c47bf47e64ae16f6a7ba0ea6e97a70ec48d9a361264ce9ea27693fcce5"
 
 _REBASED_LEDGER_FIELDS = {
     "daily_trend_pnl_basis",
@@ -93,6 +114,200 @@ def _valid_run(value: object) -> bool:
         and value.get("event") == "workflow_dispatch"
         and value.get("path") == ".github/workflows/main.yml"
     )
+
+
+def validate_prospective_rebase_material(
+    ledger: Mapping[str, object],
+    archive: Mapping[str, object],
+    recovery_control: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate the exact new opening without enrolling it for recovery."""
+    if (
+        not isinstance(ledger, Mapping)
+        or not isinstance(archive, Mapping)
+        or not isinstance(recovery_control, Mapping)
+        or digest(archive) != PROSPECTIVE_ARCHIVE_SHA256
+    ):
+        raise ValueError("prospective_rebase_archive_invalid")
+    if digest(ledger) != PROSPECTIVE_LEDGER_SHA256:
+        raise ValueError("prospective_rebase_ledger_invalid")
+
+    old_ledger = archive.get("ledger")
+    archived_control = archive.get("recovery_control")
+    approved = archive.get("approved_proposal")
+    proposed = approved.get("proposed_fields") if isinstance(approved, Mapping) else None
+    marker = ledger.get("accounting_rebase")
+    expected_marker = {
+        key: archive.get(key)
+        for key in (
+            "archive_document",
+            "started_at",
+            "opening_balance_observed_at",
+            "historical_difference_unresolved",
+            "approved_proposal_run_id",
+            "approved_proposal_sha256",
+        )
+    }
+    if (
+        not isinstance(old_ledger, Mapping)
+        or not isinstance(archived_control, Mapping)
+        or not isinstance(approved, Mapping)
+        or not isinstance(proposed, Mapping)
+        or not isinstance(marker, Mapping)
+        or digest(approved) != APPROVED_PROSPECTIVE_SHA256
+        or approved.get("historical_difference_unresolved") is not True
+        or approved.get("ledger_sha256") != digest(old_ledger)
+        or approved.get("control_sha256") != digest(archived_control)
+        or recovery_control != archived_control
+        or archive.get("archive_document") != PROSPECTIVE_ARCHIVE_DOCUMENT
+        or archive.get("approved_proposal_run_id") != PROSPECTIVE_APPROVED_PROPOSAL_RUN_ID
+        or archive.get("approved_proposal_sha256") != APPROVED_PROSPECTIVE_SHA256
+        or archive.get("historical_difference_unresolved") is not True
+        or archive.get("new_ledger_sha256") != PROSPECTIVE_LEDGER_SHA256
+        or archive.get("valuation_price_source") != "binance_get_avg_price_estimate"
+    ):
+        raise ValueError("prospective_rebase_archive_invalid")
+    if (
+        dict(marker) != expected_marker
+        or marker.get("opening_balance_observed_at")
+        != proposed.get("earn_accrual_checkpoint", {}).get("observed_at")
+        or ledger != {**old_ledger, **proposed, "accounting_rebase": expected_marker}
+        or ledger.get("order_submission", {}).get("state") not in {"RESERVED", "TERMINAL"}
+    ):
+        raise ValueError("prospective_rebase_ledger_invalid")
+    return {
+        "opening_at": _utc(marker["opening_balance_observed_at"]),
+        "managed_assets": tuple(proposed["earn_accrual_checkpoint"]["assets"]),
+    }
+
+
+def _same_cash_flow_slice(first: Mapping[str, object], second: Mapping[str, object]) -> bool:
+    keys = (
+        "new_deposit_principal_usdt",
+        "new_confirmed_deposit_count",
+        "new_deposit_completed_at",
+        "new_unsupported_deposit_count",
+        "new_or_changed_withdrawal_count",
+    )
+    return all(first.get(key) == second.get(key) for key in keys) and (
+        first.get("cursor", {}).get("records") == second.get("cursor", {}).get("records")
+    )
+
+
+def collect_prospective_rebase_diagnosis(
+    *,
+    client: object,
+    runtime_target: object,
+    legacy_expected: Mapping[str, str],
+    ledger: Mapping[str, object],
+    archive: Mapping[str, object],
+    recovery_control: Mapping[str, object],
+    symbols: Sequence[str],
+    source_run: Mapping[str, object],
+    migration_run: Mapping[str, object],
+    now: datetime | None = None,
+    clock=None,
+) -> dict[str, object]:
+    """Prove current forward accounting in memory; never build a candidate."""
+    _validate_frozen_target(runtime_target)
+    material = validate_prospective_rebase_material(ledger, archive, recovery_control)
+    observed_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    opening_at = material["opening_at"]
+    if not opening_at < observed_at or observed_at - opening_at > MAX_HISTORY:
+        raise ValueError("prospective_rebase_history_window_invalid")
+    if not _valid_run(source_run):
+        raise ValueError("prospective_rebase_source_run_invalid")
+    if not _valid_run(migration_run) or (
+        migration_run["id"] != PROSPECTIVE_MIGRATION_RUN_ID
+        or migration_run["head_sha"] != PROSPECTIVE_MIGRATION_RUN_SHA
+    ):
+        raise ValueError("prospective_rebase_migration_run_invalid")
+
+    assets = material["managed_assets"]
+    expected_scope = legacy_expected.get("account_scope_sha256")
+    try:
+        first = collect_earn_checkpoint(
+            client,
+            assets=assets,
+            observed_at=observed_at,
+            expected_account_scope_sha256=expected_scope,
+        )
+    except EarnCheckpointUnavailable:
+        raise ValueError("prospective_rebase_checkpoint_unavailable") from None
+    try:
+        first_flows = collect_spot_usdt_external_cash_flows(
+            client,
+            now=observed_at,
+            cursor=ledger.get("external_cash_flow_cursor"),
+        )
+    except ValueError:
+        raise ValueError("prospective_rebase_cash_flow_unverified") from None
+
+    final_at = (clock or (lambda: datetime.now(timezone.utc)))().astimezone(timezone.utc)
+    if not observed_at < final_at <= observed_at + timedelta(minutes=2):
+        raise ValueError("prospective_rebase_observation_window_invalid")
+    try:
+        second = collect_earn_checkpoint(
+            client,
+            assets=assets,
+            observed_at=final_at,
+            expected_account_scope_sha256=expected_scope,
+        )
+        second_flows = collect_spot_usdt_external_cash_flows(
+            client,
+            now=final_at,
+            cursor=ledger.get("external_cash_flow_cursor"),
+        )
+    except EarnCheckpointUnavailable:
+        raise ValueError("prospective_rebase_checkpoint_unavailable") from None
+    except ValueError:
+        raise ValueError("prospective_rebase_cash_flow_unverified") from None
+    if not _same_cash_flow_slice(first_flows, second_flows):
+        raise ValueError("prospective_rebase_cash_flow_changed_during_read")
+
+    try:
+        first_state = prepare_forward_earn_state(ledger, first, first_flows)
+        second_state = prepare_forward_earn_state(ledger, second, second_flows)
+        compare_earn_checkpoints(
+            first,
+            second,
+            verified_net_changes={asset: "0" for asset in assets},
+        )
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("prospective_rebase_conservation_unverified") from None
+    if (
+        first_state.get("earn_accrual_checkpoint") != first
+        or second_state.get("earn_accrual_checkpoint") != second
+        or digest(ledger) != PROSPECTIVE_LEDGER_SHA256
+    ):
+        raise ValueError("prospective_rebase_conservation_unverified")
+
+    try:
+        observations = collect_read_only_reconciliation_observations(
+            client,
+            strategy_symbols=symbols,
+            local_execution_ledger=ledger,
+            now=final_at,
+            lookback=final_at - opening_at,
+        )
+    except Exception:
+        raise ValueError("prospective_rebase_broker_activity_unverified") from None
+    if digest(observations.account_scope) != expected_scope:
+        raise ValueError("prospective_rebase_account_identity_mismatch")
+    if observations.open_orders:
+        raise ValueError("prospective_rebase_open_orders_present")
+    if observations.recent_executions:
+        raise ValueError("prospective_rebase_recent_executions_present")
+    return {
+        "status": "diagnosed",
+        "source_kind": "prospective_rebase",
+        "historical_difference_unresolved": True,
+        "forward_accounting_conserved": True,
+        "checkpoint_samples": 2,
+        "no_order": True,
+        "write_performed": False,
+        "execution_authority_granted": False,
+    }
 
 
 def validate_post_rebase_material(
