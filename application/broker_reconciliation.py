@@ -838,13 +838,35 @@ def diagnose_bnb_wallet_activity(client, *, start: datetime, end: datetime):
     ):
         try:
             response = client._request_margin_api("get", path, signed=True, data={**bounds, **params})
-            rows, total = response.get(rows_key), response.get("total")
-            if (type(total) is not int or not isinstance(rows, list) or total != len(rows) or total >= limit
-                    or any(not isinstance(row, Mapping) or type(row.get(time_key)) is not int
-                           or not bounds["startTime"] <= row[time_key] <= bounds["endTime"]
-                           or (name == "bnb_dividends" and row.get("asset") != "BNB") for row in rows)):
-                raise ValueError("history_incomplete")
-            result["counts"][name] = len(rows)
-        except Exception:
-            return {**result, "reason_code": "bnb_wallet_history_unverified", "failed_surface": name}
+        except Exception as exc:
+            failure = {**result, "reason_code": "bnb_wallet_history_unverified", "failed_surface": name,
+                       "failure_stage": "request"}
+            status = getattr(exc, "status_code", None)
+            code = getattr(exc, "code", None)
+            if type(status) is int and 100 <= status <= 599:
+                failure["http_status"] = status
+            if type(code) is int and -4999 <= code <= -1000:
+                failure["provider_error_code"] = code
+            return failure
+        rows = response.get(rows_key) if isinstance(response, Mapping) else None
+        total = response.get("total") if isinstance(response, Mapping) else None
+        shape = {
+            "rows_present": isinstance(response, Mapping) and rows_key in response,
+            "rows_is_list": isinstance(rows, list),
+            "total_is_integer": type(total) is int,
+            "total_is_zero": type(total) is int and total == 0,
+            "total_matches_rows": isinstance(rows, list) and type(total) is int and total == len(rows),
+            "page_full": isinstance(rows, list) and len(rows) >= limit,
+        }
+        valid_rows = isinstance(rows, list) and all(
+            isinstance(row, Mapping) and type(row.get(time_key)) is int
+            and bounds["startTime"] <= row[time_key] <= bounds["endTime"]
+            and (name != "bnb_dividends" or row.get("asset") == "BNB") for row in rows
+        )
+        shape["row_time_and_asset_valid"] = valid_rows
+        if (type(total) is not int or total < 0 or not shape["total_matches_rows"]
+                or total >= limit or not valid_rows):
+            return {**result, "reason_code": "bnb_wallet_history_unverified", "failed_surface": name,
+                    "failure_stage": "response_validation", "response_shape": shape}
+        result["counts"][name] = len(rows)
     return {**result, "requested_surfaces_complete": True}

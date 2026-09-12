@@ -323,3 +323,16 @@ def test_bnb_activity_diagnosis_rejects_incomplete_or_out_of_window_data(payload
     result = diagnose_bnb_wallet_activity(c, start=NOW-timedelta(hours=2), end=NOW)
     assert result['requested_surfaces_complete'] is False
     assert 'PRIVATE' not in str(result)
+
+
+def test_bnb_wallet_diagnostic_distinguishes_read_failure_from_response_shape():
+    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    def broken(*a, **kw):
+        raise RuntimeError('private credential response')
+    failure = diagnose_bnb_wallet_activity(SimpleNamespace(_request_margin_api=broken), start=NOW-timedelta(hours=2), end=NOW)
+    assert failure['failure_stage'] == 'request'
+    assert 'private' not in str(failure)
+    bad = diagnose_bnb_wallet_activity(SimpleNamespace(_request_margin_api=lambda *a, **kw: {'total': 0}), start=NOW-timedelta(hours=2), end=NOW)
+    assert bad['failure_stage'] == 'response_validation'
+    assert bad['response_shape']['total_is_zero'] is True
+    assert bad['response_shape']['rows_present'] is False
