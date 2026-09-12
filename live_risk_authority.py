@@ -17,7 +17,7 @@ import stat
 import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -58,9 +58,17 @@ _MANDATE_FIELDS = frozenset(
         "allowed_nonzero_assets",
         "product_effective_caps",
         "max_nonzero_assets",
+        "budget_policy",
+        "validity_mode",
     }
 )
-_REQUIRED_MANDATE_FIELDS = _MANDATE_FIELDS - {"product_effective_caps", "max_nonzero_assets"}
+_OPTIONAL_MANDATE_FIELDS = frozenset(
+    {"product_effective_caps", "max_nonzero_assets", "budget_policy", "validity_mode", "loss_budget"}
+)
+_REQUIRED_MANDATE_FIELDS = _MANDATE_FIELDS - _OPTIONAL_MANDATE_FIELDS
+_DYNAMIC_BUDGET_MODE = "managed_usdt_dynamic"
+_UNTIL_REVOKED_MODE = "until_revoked"
+_FIXED_VALIDITY_MODE = "fixed_expiry"
 _FORBIDDEN_AUTHORITY_FIELDS = frozenset(
     {"no_live", "no_order", "no_paper", "no_shadow", "research_only", "paper_only"}
 )
@@ -198,12 +206,33 @@ def _validate_mandate(value: Any, *, now_utc: datetime) -> dict[str, Any]:
         if type(value.get(field)) is not str or not value[field].strip():
             raise _error(f"invalid {field}")
     effective_at = _parse_utc(value["effective_at"], field="effective_at")
-    expires_at = _parse_utc(value["expires_at"], field="expires_at")
-    if expires_at <= effective_at or now_utc < effective_at or now_utc >= expires_at:
+    validity_mode = value.get("validity_mode", _FIXED_VALIDITY_MODE)
+    if validity_mode not in {_FIXED_VALIDITY_MODE, _UNTIL_REVOKED_MODE}:
+        raise _error("invalid validity mode")
+    expires_at_value = value.get("expires_at")
+    if validity_mode == _UNTIL_REVOKED_MODE:
+        if expires_at_value is not None:
+            raise _error("until-revoked authority must not contain expires_at")
+    else:
+        expires_at = _parse_utc(expires_at_value, field="expires_at")
+        if expires_at <= effective_at or now_utc >= expires_at:
+            raise _error("authority expired or not yet effective")
+    if now_utc < effective_at:
         raise _error("authority expired or not yet effective")
     _finite(value["max_snapshot_age_seconds"], field="max_snapshot_age_seconds", minimum=0.001)
     _finite(value["effective_exposure_cap"], field="effective_exposure_cap", minimum=0.0, maximum=1.0)
-    _finite(value["loss_budget"], field="loss_budget", minimum=0.0)
+    budget_policy = value.get("budget_policy")
+    if budget_policy is None:
+        if "loss_budget" not in value:
+            raise _error("mandate fields are incomplete")
+        _finite(value["loss_budget"], field="loss_budget", minimum=0.0)
+    else:
+        if not isinstance(budget_policy, Mapping) or set(budget_policy) != {"mode"}:
+            raise _error("invalid budget policy")
+        if budget_policy.get("mode") != _DYNAMIC_BUDGET_MODE:
+            raise _error("invalid budget policy")
+        if value.get("loss_budget") is not None:
+            raise _error("dynamic budget policy cannot contain loss_budget")
     if not isinstance(value["allowed_nonzero_assets"], list) or not value["allowed_nonzero_assets"]:
         raise _error("allowed_nonzero_assets is invalid")
     if any(type(asset) is not str or not asset.strip() for asset in value["allowed_nonzero_assets"]):
@@ -212,6 +241,43 @@ def _validate_mandate(value: Any, *, now_utc: datetime) -> dict[str, Any]:
         if not isinstance(value[field], (Mapping, int, float)) or isinstance(value[field], bool):
             raise _error(f"invalid {field}")
     return dict(value)
+
+
+def _derive_period_budget_usdt(
+    mandate: Mapping[str, Any],
+    input_material: Any,
+) -> float | None:
+    budget_policy = mandate.get("budget_policy")
+    if budget_policy is None:
+        return None
+    if not isinstance(budget_policy, Mapping) or set(budget_policy) != {"mode"}:
+        raise _error("invalid budget policy")
+    if budget_policy.get("mode") != _DYNAMIC_BUDGET_MODE:
+        raise _error("invalid budget policy")
+    observation = input_material.get("budget_observation") if isinstance(input_material, Mapping) else None
+    if not isinstance(observation, Mapping):
+        raise _error("budget observation is missing")
+    managed_usdt = _finite(observation.get("managed_usdt"), field="budget observation managed_usdt", minimum=0.0)
+    total_equity = _finite(observation.get("total_equity"), field="budget observation total_equity", minimum=0.0)
+    if total_equity <= 0.0:
+        raise _error("invalid budget observation total_equity")
+    observed_exposure = _finite(
+        observation.get("observed_effective_exposure"),
+        field="budget observation observed_effective_exposure",
+        minimum=0.0,
+    )
+    exposure_cap = _finite(
+        mandate.get("effective_exposure_cap"),
+        field="effective_exposure_cap",
+        minimum=0.0,
+        maximum=1.0,
+    )
+    exposure_limit = exposure_cap * total_equity
+    observed_value = observed_exposure * total_equity
+    if not math.isfinite(exposure_limit) or not math.isfinite(observed_value):
+        raise _error("invalid budget observation")
+    headroom = max(0.0, exposure_limit - observed_value)
+    return min(managed_usdt, headroom)
 
 def resolve_strategy_revision() -> str:
     try:
@@ -371,11 +437,31 @@ def bind_live_risk_authority(
         raise _error("config digest mismatch")
     if not authority.continuous_inputs_allowed:
         raise _error("continuous inputs are not approved")
-    effective_at = _parse_utc(authority.mandate["effective_at"], field="effective_at")
-    expires_at = _parse_utc(authority.mandate["expires_at"], field="expires_at")
     current_time = now_utc.astimezone(timezone.utc)
-    if current_time < effective_at or current_time >= expires_at:
-        raise _error("authority expired or not yet effective")
+    effective_at = _parse_utc(authority.mandate["effective_at"], field="effective_at")
+    validity_mode = authority.mandate.get("validity_mode", _FIXED_VALIDITY_MODE)
+    if validity_mode not in {_FIXED_VALIDITY_MODE, _UNTIL_REVOKED_MODE}:
+        raise _error("invalid validity mode")
+    if validity_mode == _UNTIL_REVOKED_MODE:
+        max_snapshot_age_seconds = _finite(
+            authority.mandate["max_snapshot_age_seconds"],
+            field="max_snapshot_age_seconds",
+            minimum=0.001,
+        )
+        expires_at = current_time + timedelta(seconds=max_snapshot_age_seconds)
+        if current_time < effective_at:
+            raise _error("authority expired or not yet effective")
+    else:
+        expires_at = _parse_utc(authority.mandate["expires_at"], field="expires_at")
+        if current_time < effective_at or current_time >= expires_at:
+            raise _error("authority expired or not yet effective")
+    derived_budget = _derive_period_budget_usdt(authority.mandate, input_material)
+    if authority.mandate.get("budget_policy") is not None and derived_budget is None:
+        raise _error("budget policy is invalid")
+    if derived_budget is not None and not math.isfinite(derived_budget):
+        raise _error("invalid derived budget")
+    if derived_budget is not None and derived_budget < 0.0:
+        raise _error("invalid derived budget")
     input_digest = canonical_input_digest(input_material)
     candidate = CandidateRiskIdentity(
         strategy_profile=str(getattr(runtime_target, "strategy_profile", "")),
@@ -387,6 +473,9 @@ def bind_live_risk_authority(
         authority_receipt_sha256=authority.authority_receipt_sha256,
     )
     mandate = dict(authority.mandate)
+    if derived_budget is not None:
+        mandate["loss_budget"] = derived_budget
+    mandate["expires_at"] = expires_at.isoformat().replace("+00:00", "Z")
     mandate.update(
         {
             "authority_receipt_sha256": authority.authority_receipt_sha256,

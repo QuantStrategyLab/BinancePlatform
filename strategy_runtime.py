@@ -369,6 +369,13 @@ class LoadedStrategyRuntime:
                             "allow_new_trend_entries": bool(allow_new_trend_entries),
                             "allow_rotation_refresh": bool(allow_rotation_refresh),
                         },
+                        "budget_observation": {
+                            "managed_usdt": account_metrics.get("cash_usdt"),
+                            "total_equity": portfolio_snapshot.total_equity,
+                            "observed_effective_exposure": portfolio_snapshot.metadata.get(
+                                "observed_effective_exposure"
+                            ),
+                        },
                         "trend_pool_contract": trend_pool_contract,
                     },
                     config_sha256=config_sha256(self.effective_runtime_config),
