@@ -94,7 +94,6 @@ source record, the installed strategy, and the clean runner checkout; operators
 do not need to calculate or hand-enter hashes. `BINANCE_RISK_AUTHORITY_SOURCE_REVISION`
 must be the 40-character Git revision of that approved source record; a secret
 timestamp or storage-object generation is not a source revision.
-<<<<<<< HEAD
 
 The reviewed 2026-09-13 policy scope is the existing `crypto_combo` account and
 `crypto_live_pool_rotation`: all already managed Spot plus Flexible-Earn funds
@@ -110,8 +109,6 @@ state, owner, notification, performance and platform-record writes. It only
 passes after the existing cycle reaches `cycle_complete` with a real risk
 `APPROVE`; a startup pass or a synthetic replay is not a recovery or activation
 result. Missing or invalid source material fails closed before broker reads.
-=======
->>>>>>> origin/main
 
 ## Execution Boundary
 
