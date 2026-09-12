@@ -340,7 +340,7 @@ class TrendPoolLoadingTests(unittest.TestCase):
         with self.assertRaises(main.BalanceFetchError):
             main.get_total_balance(SpotFailureClient(), "USDT", log_buffer=[])
 
-    def test_get_total_balance_keeps_spot_balance_when_earn_lookup_fails(self):
+    def test_get_total_balance_rejects_incomplete_earn_balance(self):
         class EarnFailureClient:
             def get_asset_balance(self, *, asset):
                 return {"free": "1.5", "locked": "0.5"}
@@ -349,10 +349,9 @@ class TrendPoolLoadingTests(unittest.TestCase):
                 raise RuntimeError("earn api unavailable")
 
         log_buffer = []
-        total_balance = main.get_total_balance(EarnFailureClient(), "USDT", log_buffer=log_buffer)
-
-        self.assertAlmostEqual(total_balance, 2.0)
-        self.assertEqual(log_buffer, [])
+        with self.assertRaises(main.BalanceFetchError):
+            main.get_total_balance(EarnFailureClient(), "USDT", log_buffer=log_buffer)
+        self.assertEqual(log_buffer, ["managed_balance_unavailable"])
 
     def test_format_trend_pool_source_logs_highlights_degraded_buy_pause(self):
         log_lines = format_trend_pool_source_logs(

@@ -21,9 +21,11 @@ from degraded_mode_support import (
 )
 from quant_platform_kit.binance import (
     connect_client as qpk_connect_client,
+    ensure_asset_available as qpk_ensure_asset_available,
     fetch_btc_market_snapshot as qpk_fetch_btc_market_snapshot,
     fetch_daily_indicators as qpk_fetch_daily_indicators,
     format_qty as qpk_format_qty,
+    manage_usdt_earn_buffer as qpk_manage_usdt_earn_buffer,
 )
 from live_services import (
     bind_trade_state_access,
@@ -37,7 +39,7 @@ from market_snapshot_support import (
 )
 from runtime_support import (
     ExecutionRuntime as _ExecutionRuntime,
-    get_spot_balance,
+    read_managed_balance,
     append_report_error,
     build_execution_report,
     next_order_id,
@@ -77,6 +79,7 @@ from application.trend_pool_service import (
 from infra.binance_runtime import (
     ensure_asset_available_runtime as infra_ensure_asset_available_runtime,
     ensure_runtime_client as infra_ensure_runtime_client,
+    manage_usdt_earn_buffer_runtime as infra_manage_usdt_earn_buffer_runtime,
     resolve_runtime_btc_snapshot as infra_resolve_runtime_btc_snapshot,
     resolve_runtime_trend_indicators as infra_resolve_runtime_trend_indicators,
 )
@@ -496,17 +499,49 @@ def _notify_runtime_error(exc):
 # 2. Earn and balance helpers
 # ==========================================
 def get_total_balance(client, asset, log_buffer=None):
-    """Strategy-owned balance: Spot free + locked, excluding Flexible Earn."""
+    """Total balance for asset (spot + flexible earn)."""
     try:
-        return get_spot_balance(client, asset)
+        return read_managed_balance(client, asset)
     except Exception:
-        append_log(log_buffer, t("spot_balance_lookup_failed", asset=asset, error="balance_lookup_failed"))
-        raise BalanceFetchError("balance_lookup_failed") from None
+        append_log(log_buffer, "managed_balance_unavailable")
+        raise BalanceFetchError("managed_balance_unavailable") from None
 
 
 def log_and_notify(log_buffer, tg_token, tg_chat_id, text):
     append_log(log_buffer, text)
     send_tg_msg(tg_token, tg_chat_id, text)
+
+def ensure_asset_available(client, asset, required_amount, tg_token, tg_chat_id):
+    """Redeem from flexible earn if spot balance is below required amount."""
+    return qpk_ensure_asset_available(
+        client,
+        asset,
+        required_amount,
+        on_redeem=lambda amount: send_tg_msg(
+            tg_token,
+            tg_chat_id,
+            t("execution_spot_short_redeeming_from_earn", asset=asset, amount=amount),
+        ),
+        on_error=lambda _exc: send_tg_msg(
+            tg_token,
+            tg_chat_id,
+            t("execution_redeem_failed_asset", asset=asset, error="earn_redeem_failed"),
+        ),
+        sleep_fn=time.sleep,
+    )
+
+def manage_usdt_earn_buffer(client, target_buffer, tg_token, tg_chat_id, log_buffer):
+    """Keep USDT spot buffer near target by subscribing/redeeming flexible earn."""
+    qpk_manage_usdt_earn_buffer(
+        client,
+        target_buffer,
+        on_subscribe=lambda amount: append_log(log_buffer, t("cash_manager_subscribed_to_earn", amount=amount)),
+        on_redeem=lambda amount: append_log(log_buffer, t("cash_manager_redeeming_to_spot", amount=amount)),
+        on_error=lambda _exc: append_log(
+            log_buffer,
+            t("usdt_earn_buffer_maintenance_failed", error="earn_maintenance_failed"),
+        ),
+    )
 
 def format_qty(client, symbol, qty):
     """Round quantity to exchange LOT_SIZE to avoid filter errors."""
@@ -688,6 +723,19 @@ def ensure_asset_available_runtime(runtime, report, asset, required_amount, log_
         runtime_notify_fn=runtime_notify,
         translate_fn=t,
         sleep_fn=time.sleep,
+    )
+
+
+def manage_usdt_earn_buffer_runtime(runtime, report, target_buffer, log_buffer, spot_free_override=None):
+    infra_manage_usdt_earn_buffer_runtime(
+        runtime,
+        report,
+        target_buffer,
+        log_buffer,
+        runtime_call_client_fn=runtime_call_client,
+        append_log_fn=append_log,
+        translate_fn=t,
+        spot_free_override=spot_free_override,
     )
 
 
@@ -1187,6 +1235,7 @@ def execute_cycle(runtime):
             run_daily_circuit_breaker=_run_daily_circuit_breaker,
             execute_trend_rotation=_execute_trend_rotation,
             execute_btc_dca_cycle=_execute_btc_dca_cycle,
+            manage_usdt_earn_buffer_runtime=manage_usdt_earn_buffer_runtime,
             maybe_send_periodic_btc_status_report=maybe_send_periodic_btc_status_report,
             runtime_set_trade_state=runtime_set_trade_state,
             append_report_error=append_report_error,

@@ -379,8 +379,8 @@ class AccountingRegressionTests(unittest.TestCase):
             def get_asset_balance(self, *, asset):
                 return {"free": "1.0" if asset == "BNB" else "70.0", "locked": "0"}
 
-            def get_simple_earn_flexible_product_position(self, *, asset):
-                return {"rows": []}
+            def get_simple_earn_flexible_product_position(self, *, asset, current=1, size=100):
+                return {"rows": [], "total": 0}
 
         def write(current):
             persisted.append(copy.deepcopy(current))
@@ -456,8 +456,8 @@ class AccountingRegressionTests(unittest.TestCase):
             def get_asset_balance(self, *, asset):
                 return {"free": "1" if asset == "BNB" else "70", "locked": "0"}
 
-            def get_simple_earn_flexible_product_position(self, *, asset):
-                return {"rows": []}
+            def get_simple_earn_flexible_product_position(self, *, asset, current=1, size=100):
+                return {"rows": [], "total": 0}
 
         runtime = owned_runtime(dry_run=False, client=Client(), trade_state=state)
         runtime.pending_funds = [{

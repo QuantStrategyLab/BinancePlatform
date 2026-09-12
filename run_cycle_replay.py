@@ -67,10 +67,13 @@ class ReplayClient:
             self.account_snapshot.get("spot_balances", {}).get(asset, {"free": "0", "locked": "0"})
         )
 
-    def get_simple_earn_flexible_product_position(self, *, asset: str):
-        return copy.deepcopy(
-            self.account_snapshot.get("earn_positions", {}).get(asset, {"rows": []})
-        )
+    def get_simple_earn_flexible_product_position(self, *, asset: str, current=1, size=100):
+        result = copy.deepcopy(self.account_snapshot.get("earn_positions", {}).get(asset, {"rows": []}))
+        result.setdefault("total", len(result["rows"]))
+        for index, row in enumerate(result["rows"]):
+            row.setdefault("asset", asset)
+            row.setdefault("productId", f"fixture-{asset}-{index}")
+        return result
 
     def get_simple_earn_flexible_product_list(self, *, asset: str):
         return copy.deepcopy(

@@ -46,10 +46,6 @@ def load_cycle_state(
         report["status"] = "aborted"
         return None
 
-    # Never normalize a legacy combined balance into a new Spot opening.
-    if raw_state.get("balance_scope") != "spot":
-        raise ExecutionIntegrityError("spot_scope_migration_required")
-
     resolved_trend_universe, trend_pool_resolution = resolve_runtime_trend_pool(runtime, raw_state)
     _check_rebased_asset_scope(raw_state, resolved_trend_universe)
     trend_universe_setter(resolved_trend_universe)

@@ -1,5 +1,4 @@
 {
-  "balance_scope": "spot",
   "BTCUSDT": {"holding_qty": 0.0, "avg_cost": 0.0},
   "daily_equity_base": 0.0,
   "daily_trend_equity_base": 0.0,
