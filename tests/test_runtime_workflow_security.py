@@ -276,7 +276,7 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
     inputs = workflow[workflow.index("    inputs:") : workflow.index("permissions:")]
 
     assert "accounting_migration_action:" in inputs
-    assert "options: [none, inspect, quiesce, audit, preview, scope-preview, rebase-proposal, rebase-apply, apply]" in inputs
+    assert "options: [none, inspect, quiesce, audit, preview, scope-preview, cash-flow-preview, rebase-proposal, rebase-apply, apply]" in inputs
     assert "accounting_migration_preview_run_id:" in inputs
     assert "accounting_migration_expected_digest:" in inputs
 
@@ -285,6 +285,11 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
     "action,run_id,digest,reconcile,enabled,ref,allowed",
     [
         ("preview", "", "", "true", "false", "refs/heads/main", True),
+        ("cash-flow-preview", "", "", "true", "false", "refs/heads/main", True),
+        ("cash-flow-preview", "", "", "true", "true", "refs/heads/main", False),
+        ("cash-flow-preview", "", "", "false", "false", "refs/heads/main", False),
+        ("cash-flow-preview", "", "", "true", "false", "refs/heads/feature", False),
+        ("cash-flow-preview", "12345", "", "true", "false", "refs/heads/main", False),
         ("scope-preview", "", "", "true", "false", "refs/heads/main", True),
         ("scope-preview", "", "", "true", "true", "refs/heads/main", False),
         ("scope-preview", "", "", "false", "false", "refs/heads/main", False),

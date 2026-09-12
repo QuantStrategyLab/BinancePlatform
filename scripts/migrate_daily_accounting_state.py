@@ -25,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Mapping
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -34,8 +35,11 @@ from application.broker_reconciliation import (
     _expected_digests,
     calculate_broker_observation_sha256 as digest,
     collect_read_only_reconciliation_observations,
+    collect_spot_usdt_external_cash_flows,
     diagnose_balance_flows,
 )
+from application.portfolio_service import maybe_rebase_daily_state_for_balance_change
+from runtime_support import ExecutionIntegrityError
 from live_services import get_firestore_client
 from quant_platform_kit.binance import connect_client
 from quant_platform_kit.common.broker_reconciliation_enrollment import BrokerReconciliationBaselineCandidate
@@ -1062,6 +1066,64 @@ def audit_ledger(refs, *, client, expected, now):
     }
 
 
+def preview_external_cash_flow(refs, *, client, expected, now, initial_source=None):
+    """Replay the production deposit consumer on a copy, without ledger writes."""
+    snapshot, ledger, control = initial_source or _read_source(refs)
+    assets, _ = _ledger_scope(ledger)
+    if len(assets) > 32 or any(not isinstance(a, str) or not re.fullmatch(r"[A-Z0-9]{1,20}", a) for a in assets):
+        raise MigrationBlocked("cash_flow_preview_scope_invalid")
+    account = client.get_account()
+    _, spot = _private_spot_account(account, expected_account_scope_sha256=expected["account_scope_sha256"])
+    balances = _strict_balance_snapshot(client, account["balances"], assets)
+    try:
+        flows = collect_spot_usdt_external_cash_flows(
+            client, now=now, cursor=copy.deepcopy(ledger.get("external_cash_flow_cursor")),
+        )
+    except ValueError as exc:
+        safe_codes = {
+            "external_cash_flow_cursor_invalid", "external_cash_flow_history_read_failed",
+            "external_cash_flow_history_incomplete", "external_cash_flow_record_invalid",
+            "external_cash_flow_record_changed", "external_cash_flow_cursor_capacity_exceeded",
+            "external_cash_flow_window_invalid",
+        }
+        reason = str(exc) if str(exc) in safe_codes else "cash_flow_preview_read_failed"
+        raise MigrationBlocked(reason) from None
+    after_account = client.get_account()
+    _, after_spot = _private_spot_account(after_account, expected_account_scope_sha256=expected["account_scope_sha256"])
+    after_balances = _strict_balance_snapshot(client, after_account["balances"], assets)
+    after_snapshot, after_ledger, after_control = _read_source(refs)
+    if (spot != after_spot or balances != after_balances or ledger != after_ledger
+            or control != after_control or snapshot.update_time != after_snapshot.update_time):
+        raise MigrationBlocked("cash_flow_preview_state_changed")
+    result = {
+        "stage": "external_cash_flow_preview", "observed_at": now.isoformat(),
+        "cash_flow_history_read": True, "cursor_present": ledger.get("external_cash_flow_cursor") is not None,
+        "new_confirmed_deposit_count": flows["new_confirmed_deposit_count"],
+        "unmanaged_spot_asset_count": sum(1 for a, (free, locked) in spot if a not in assets and free + locked > 0),
+        "complete_balance_reconciliation": False, "write_performed": False,
+        "ledger_unchanged": True, "no_order": True, "execution_authority_granted": False,
+    }
+    state, report = copy.deepcopy(ledger), {}
+    try:
+        reconciled = maybe_rebase_daily_state_for_balance_change(
+            state, SimpleNamespace(client=client, now_utc=now), report,
+            None, None, balances, [],
+            collect_external_cash_flows_fn=lambda *_args, **_kwargs: copy.deepcopy(flows),
+            runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
+            append_log_fn=lambda *_args: None, translate_fn=lambda key, **_kwargs: key,
+        )
+    except ExecutionIntegrityError:
+        diagnostics = report.get("diagnostics", {})
+        reason = diagnostics.get("external_cash_flow", {}).get("reason_code") or diagnostics.get("balance_change", {}).get("reason_code")
+        safe_codes = {
+            "external_cash_flow_cursor_missing", "external_cash_flow_late_completion",
+            "external_cash_flow_balance_mismatch", "external_withdrawal_accounting_unsupported",
+            "external_cash_flow_scope_unsupported",
+        }
+        return {**result, "status": "blocked", "reason_code": reason if reason in safe_codes else "cash_flow_preview_unverifiable"}
+    return {**result, "status": "reconciled_preview" if reconciled else "baseline_preview" if flows["bootstrap"] else "no_new_deposit"}
+
+
 def inspect_control(refs):
     """Read only control provenance and existence flags; never enter migration."""
     snapshot = refs["control_ref"].get(retry=None)
@@ -1172,6 +1234,11 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
     client = connect_client(
         os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30
     )
+    if action == "cash-flow-preview":
+        return preview_external_cash_flow(
+            refs, client=client, expected=expected, now=now,
+            initial_source=(ledger_snapshot, ledger, control),
+        )
     if action == "scope-preview":
         preview = collect_private_spot_scope_preview(
             refs,
@@ -1287,6 +1354,7 @@ def main(argv=None) -> int:
             "audit",
             "preview",
             "scope-preview",
+            "cash-flow-preview",
             "rebase-proposal",
             "rebase-apply",
             "apply",
@@ -1337,7 +1405,7 @@ def main(argv=None) -> int:
         )
         return 2
     print(json.dumps(result, sort_keys=True))
-    return 0
+    return 2 if result.get("status") == "blocked" else 0
 
 
 if __name__ == "__main__":
