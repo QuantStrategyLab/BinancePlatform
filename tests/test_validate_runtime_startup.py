@@ -147,13 +147,25 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     replay_runtime, replay_client, state_store, _ = run_cycle_replay.build_replay_runtime(
         run_id="full-cycle-live-builder-fixture", dry_run=True, now_utc=now,
     )
+    historical_calls = []
+
+    def historical_klines(symbol, interval, lookback):
+        assert interval == "1d"
+        historical_calls.append((symbol, interval, lookback))
+        days = int(lookback.split()[0])
+        return [
+            [index * 86_400_000, 100 + index, 101 + index, 99 + index, 100 + index, 10]
+            for index in range(days)
+        ]
+
+    replay_client.get_historical_klines = historical_klines
 
     def build():
         runtime = main.build_live_runtime(now_utc=now)
         runtime.state_loader = state_store.load
         runtime.trend_pool_payload = replay_runtime.trend_pool_payload
-        runtime.btc_market_snapshot = replay_runtime.btc_market_snapshot
-        runtime.trend_indicator_snapshots = replay_runtime.trend_indicator_snapshots
+        assert runtime.btc_market_snapshot is None
+        assert runtime.trend_indicator_snapshots is None
         return runtime
 
     with patch("live_risk_authority.resolve_strategy_revision", return_value="d" * 40), patch(
@@ -167,6 +179,8 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     assert result["execution_permitted"] is False
     assert result["broker_read_count"] > 0
     assert result["suppressed_strategy_record_count"] > 0
+    assert ("BTCUSDT", "1d", "700 days ago UTC") in historical_calls
+    assert all(call[2] == "420 days ago UTC" for call in historical_calls if call[0] != "BTCUSDT")
     assert state_store.write_calls == []
 
 
@@ -216,6 +230,60 @@ def test_full_cycle_broker_proxy_rejects_unknown_methods_and_mutations():
         broker.order_market_buy(symbol="BTCUSDT", quoteOrderQty=1)
     with pytest.raises(RuntimeError, match="asset_forbidden"):
         broker.get_asset_balance(asset="DOGE")
+
+
+def test_full_cycle_broker_proxy_allows_main_qpk_btc_snapshot_window():
+    import main
+    from scripts.validate_runtime_startup import _ReadOnlyBroker
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def get_historical_klines(self, symbol, interval, lookback):
+            self.calls.append((symbol, interval, lookback))
+            return [
+                [index * 86_400_000, 100 + index, 101 + index, 99 + index, 100 + index, 10]
+                for index in range(700)
+            ]
+
+    client = Client()
+    broker = _ReadOnlyBroker(client, symbols={"BTCUSDT"})
+    logs = []
+
+    snapshot = main.fetch_btc_market_snapshot(broker, 800.0, log_buffer=logs)
+
+    assert snapshot is not None
+    assert client.calls == [("BTCUSDT", "1d", "700 days ago UTC")]
+    assert broker.read_counts == {"get_historical_klines": 1}
+    assert logs == []
+
+
+def test_full_cycle_broker_proxy_keeps_trend_window_bounded():
+    from scripts.validate_runtime_startup import _ReadOnlyBroker
+
+    broker = _ReadOnlyBroker(object(), symbols={"BTCUSDT", "ETHUSDT"})
+    with pytest.raises(RuntimeError, match="market_window_forbidden"):
+        broker.get_historical_klines("ETHUSDT", "1d", "421 days ago UTC")
+    with pytest.raises(RuntimeError, match="market_window_forbidden"):
+        broker.get_historical_klines("BTCUSDT", "1d", "701 days ago UTC")
+
+
+def test_full_cycle_failure_projection_keeps_allowlisted_report_metadata():
+    from scripts.validate_runtime_startup import _full_cycle_failure_metadata
+
+    report = {
+        "diagnostics": {
+            "cycle_failure": {
+                "stage": "market_snapshot",
+                "error_type": "client_call_error",
+            }
+        }
+    }
+    assert _full_cycle_failure_metadata(report) == ("market_snapshot", "client_call_error")
+    assert _full_cycle_failure_metadata({
+        "diagnostics": {"cycle_failure": {"stage": "private", "error_type": "secret"}}
+    }) == ("result", "RuntimeError")
 
 
 @pytest.mark.parametrize('message, expected', [

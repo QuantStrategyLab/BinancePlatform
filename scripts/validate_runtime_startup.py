@@ -21,6 +21,41 @@ _SAFE_STARTUP_REASONS = {
     "full_cycle_state_loader_missing": "full_cycle_state_loader_missing",
 }
 
+_SAFE_CYCLE_FAILURE_STAGES = frozenset({
+    "client_connect",
+    "state_load",
+    "funding_reconciliation",
+    "pool_diagnostics",
+    "market_snapshot",
+    "portfolio_allocation",
+    "daily_state",
+    "circuit_breaker",
+    "fuel_execution",
+    "trend_execution",
+    "post_trade_allocation",
+    "btc_execution",
+    "earn_execution",
+    "status_notification",
+    "state_persistence",
+    "state_owner_claim",
+    "state_owner_release",
+})
+_SAFE_CYCLE_FAILURE_TYPES = frozenset({
+    "state_persistence_error",
+    "order_reconciliation_error",
+    "execution_integrity_error",
+    "client_call_error",
+    "timeout_error",
+    "connection_error",
+    "permission_error",
+    "io_error",
+    "value_error",
+    "type_error",
+    "key_error",
+    "runtime_error",
+    "unclassified_error",
+})
+
 
 class FullCycleValidationError(RuntimeError):
     def __init__(self, reason_code, *, failure_stage="result", error_type="RuntimeError"):
@@ -116,6 +151,19 @@ def _full_cycle_failure_reason(report):
     return "full_cycle_not_complete"
 
 
+def _full_cycle_failure_metadata(report):
+    """Keep only the cycle report's existing safe stage and error type."""
+    failure = report.get("diagnostics", {}).get("cycle_failure", {})
+    if not isinstance(failure, Mapping):
+        return "result", "RuntimeError"
+    stage = failure.get("stage")
+    error_type = failure.get("error_type")
+    return (
+        stage if stage in _SAFE_CYCLE_FAILURE_STAGES else "result",
+        error_type if error_type in _SAFE_CYCLE_FAILURE_TYPES else "RuntimeError",
+    )
+
+
 class _ReadOnlyBroker:
     """Expose only the broker reads needed by one validation cycle."""
 
@@ -184,7 +232,8 @@ class _ReadOnlyBroker:
         if symbol not in self._symbols or interval != "1d":
             raise RuntimeError("full_cycle_broker_market_read_forbidden")
         match = re.fullmatch(r"([0-9]+) days ago UTC", str(lookback))
-        if match is None or not 0 < int(match.group(1)) <= 420:
+        max_lookback = 700 if symbol == "BTCUSDT" else 420
+        if match is None or not 0 < int(match.group(1)) <= max_lookback:
             raise RuntimeError("full_cycle_broker_market_window_forbidden")
         return self._read("get_historical_klines", symbol, interval, lookback)
 
@@ -307,9 +356,15 @@ def validate_full_cycle(*, runtime_builder=None, client_connector=None):
         isinstance(item, Mapping) and item.get("reason") == "cycle_complete" for item in intents
     )
     if not cycle_complete:
-        raise FullCycleValidationError(_full_cycle_failure_reason(report), failure_stage="result")
+        failure_stage, error_type = _full_cycle_failure_metadata(report)
+        raise FullCycleValidationError(
+            _full_cycle_failure_reason(report), failure_stage=failure_stage, error_type=error_type
+        )
     if report.get("status") != "ok" or report.get("risk_outcome") != "APPROVE":
-        raise FullCycleValidationError(_full_cycle_failure_reason(report), failure_stage="result")
+        failure_stage, error_type = _full_cycle_failure_metadata(report)
+        raise FullCycleValidationError(
+            _full_cycle_failure_reason(report), failure_stage=failure_stage, error_type=error_type
+        )
     if report.get("execution_blocked_reason") not in {None, "runtime_target_disabled"}:
         raise FullCycleValidationError("full_cycle_execution_blocked", failure_stage="result")
     if report.get("side_effect_summary", {}).get("executed_call_count") != 0:
