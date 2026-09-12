@@ -88,3 +88,17 @@ Spot + Flexible Earn 持有资产口径，闲置理财不等于资金退出策�
 依据：[Binance Flexible Earn FAQ](https://www.binance.com/en/support/faq/detail/3bd1a6eba20a445da1e94bf6cfa52e80)
 与 [Simple Earn REST API](https://developers.binance.com/en/docs/catalog/investment-and-services-simple-earn/api/rest-api/flexible-locked)。
 本轮自动测试使用模拟资金；代码与 CI 通过不等于真实申赎、账务恢复或策略激活。
+
+
+### BNB 差额诊断的时间粒度与范围
+
+官方 Flexible FAQ 明确余额每分钟累计收益，历史提供日记录。批准期初位于日内时，
+不能将按记录时间筛选的日收益总额解释成该期初到当前快照之间的应计收益。
+`delta_matches_*` 仅是数字比较；`realtime_reward_interval_alignment` 明确标注未验证。
+这并不证明实际差额完全来自收益，也不授权放宽恢复检查。
+
+仅当 audit 发现 BNB mismatch，额外各读一次官方 Wallet `asset/assetDividend`（BNB，最多500）
+及 `asset/dribblet`（Spot，最多100）。窗口沿用已验证期初至当前，满页、数量不符、越界或读取异常
+均标未验证；只输出计数、失败码和 BNB 变化方向，不输出金额或原始行。
+这两个检查不接入 recovery 的准入谓词，不宣称覆盖全部资金路径；交易、账本与账户设置均不修改。
+官方接口：https://developers.binance.com/en/docs/catalog/core-trading-wallet/api/rest-api/asset 。

@@ -802,3 +802,22 @@ def test_audit_uses_validated_opening_instead_of_old_recovery_window(monkeypatch
     assert result["ledger_snapshot_observation_time_available"] is True
     assert len(validations) == 2
     assert result["write_performed"] is False
+
+
+@pytest.mark.parametrize('change, direction', [(0.01, 'INCREASE'), (-0.01, 'DECREASE')])
+def test_bnb_audit_checks_wallet_activity_without_changing_ledger(monkeypatch, change, direction):
+    migration, refs, client, expected, balances, calls = _audit_setup(monkeypatch)
+    refs['ledger_ref'].snapshot.value['last_balance_snapshot']['BNB'] = 0.1
+    balances['BNB'] = 0.1 + change
+    requests = []
+    def read(method, path, **kwargs):
+        requests.append((method, path))
+        return {'total': 0, 'rows': [], 'userAssetDribblets': []}
+    client._request_margin_api = read
+    before = copy.deepcopy(refs['ledger_ref'].snapshot.value)
+    result = migration.audit_ledger(refs, client=client, expected=expected, now=NOW)
+    assert result['bnb_quantity_change'] == direction
+    assert result['bnb_wallet_activity']['requested_surfaces_complete'] is True
+    assert len(requests) == 2 and all(method == 'get' for method, _ in requests)
+    assert result['complete_balance_reconciliation'] is False
+    assert refs['ledger_ref'].snapshot.value == before

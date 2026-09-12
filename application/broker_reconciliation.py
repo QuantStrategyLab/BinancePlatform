@@ -823,3 +823,28 @@ def diagnose_balance_flows(
             )
     result["history_complete_for_requested_surfaces"] = True
     return result
+
+
+def diagnose_bnb_wallet_activity(client, *, start: datetime, end: datetime):
+    """Two audit-only wallet GETs; not a complete funding proof or recovery gate."""
+    if start.tzinfo is None or end.tzinfo is None or not start < end or end-start > timedelta(days=7):
+        raise ValueError("balance_history_window_invalid")
+    bounds = {"startTime": int(start.timestamp()*1000), "endTime": int(end.timestamp()*1000)}
+    result = {"requested_surfaces_complete": False, "counts": {},
+              "complete_balance_reconciliation": False}
+    for name, path, params, rows_key, time_key, limit in (
+        ("bnb_dividends", "asset/assetDividend", {"asset": "BNB", "limit": 500}, "rows", "divTime", 500),
+        ("spot_dust_conversions", "asset/dribblet", {"accountType": "SPOT"}, "userAssetDribblets", "operateTime", 100),
+    ):
+        try:
+            response = client._request_margin_api("get", path, signed=True, data={**bounds, **params})
+            rows, total = response.get(rows_key), response.get("total")
+            if (type(total) is not int or not isinstance(rows, list) or total != len(rows) or total >= limit
+                    or any(not isinstance(row, Mapping) or type(row.get(time_key)) is not int
+                           or not bounds["startTime"] <= row[time_key] <= bounds["endTime"]
+                           or (name == "bnb_dividends" and row.get("asset") != "BNB") for row in rows)):
+                raise ValueError("history_incomplete")
+            result["counts"][name] = len(rows)
+        except Exception:
+            return {**result, "reason_code": "bnb_wallet_history_unverified", "failed_surface": name}
+    return {**result, "requested_surfaces_complete": True}
