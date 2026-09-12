@@ -356,6 +356,137 @@ def encrypt_rebase_proposal(proposal, *, certificate):
         raise MigrationBlocked("proposal_encryption_failed") from None
 
 
+# Operator approved the complete encrypted proposal from Runtime 34690028846.
+APPROVED_PROSPECTIVE_SHA256 = "cad5cd02ebc554835492cc99f78b0639656a4261617dc8492fbc65c16f1d56a2"
+PROSPECTIVE_ARCHIVE_DOCUMENT = "MULTI_ASSET_STATE__before_rebase_34690028846"
+
+
+def _load_prospective_approval():
+    try:
+        raw = os.environ.pop("BINANCE_APPROVED_PROSPECTIVE_OPENING", "")
+        if not 0 < len(raw) <= 48000:
+            raise ValueError
+        approved = json.loads(raw)
+        _validate_prospective_approval(approved)
+        return approved
+    except Exception:
+        raise MigrationBlocked("prospective_approval_unavailable") from None
+
+
+def _validate_prospective_approval(approved):
+    if (not isinstance(approved, Mapping) or digest(approved) != APPROVED_PROSPECTIVE_SHA256
+            or approved.get("source_sha") != "c625413dcc601412358efbb5373e38788da95d0e"
+            or approved.get("historical_difference_unresolved") is not True
+            or set(approved.get("proposed_fields", {})) != _ACCOUNTING_FIELDS | {
+                "earn_accrual_checkpoint", "earn_accounted_net_changes", "external_cash_flow_cursor"}):
+        raise MigrationBlocked("prospective_approval_mismatch")
+
+
+def _prospective_preflight(*, refs, client, expected, approved, now, clock=None):
+    from application.earn_accrual import compare_earn_checkpoints, _time
+    clock = clock or (lambda: datetime.now(timezone.utc))
+    _validate_prospective_approval(approved)
+    snapshot, ledger, control = _read_source(refs)
+    if (digest(ledger) != approved["ledger_sha256"] or digest(control) != approved["control_sha256"]
+            or _timestamp(snapshot.update_time) != approved["ledger_update_time"]
+            or _finite(ledger.get("daily_external_principal_usdt", 0)) != 0):
+        raise MigrationBlocked("prospective_source_changed")
+    fields = approved["proposed_fields"]
+    previous = fields["earn_accrual_checkpoint"]
+    opened = _time(previous["observed_at"])
+    if (not opened < now <= opened + timedelta(hours=24) or opened.date() != now.date()
+            or previous["account_scope_sha256"] != expected["account_scope_sha256"]
+            or previous["account_scope_sha256"] != control["source"]["original_evidence"]["account_scope_sha256"]):
+        raise MigrationBlocked("prospective_opening_identity_or_time_changed")
+    fresh = collect_prospective_opening(client, ledger=ledger, expected=expected, now=now, clock=clock)
+    try:
+        end = _time(fresh["observation_completed_at"])
+        compare_earn_checkpoints(previous, fresh["earn_accrual_checkpoint"],
+                                verified_net_changes=fields["earn_accounted_net_changes"])
+        if (set(fields["earn_accounted_net_changes"]) != set(previous["assets"])
+                or any(v != "0" for v in fields["earn_accounted_net_changes"].values())
+                or fresh["external_cash_flow_cursor"]["records"] != fields["external_cash_flow_cursor"]["records"]):
+            raise ValueError
+        observations = collect_read_only_reconciliation_observations(client,
+            strategy_symbols=tuple(f'{a}USDT' for a in previous["assets"] if a != "USDT"),
+            local_execution_ledger=ledger, now=end, lookback=end-opened)
+        if (digest(observations.account_scope) != previous["account_scope_sha256"]
+                or observations.open_orders or observations.recent_executions):
+            raise ValueError
+        decision = clock()
+        if not end <= decision <= now + TTL or decision.date() != opened.date():
+            raise ValueError
+    except Exception:
+        raise MigrationBlocked("prospective_continuity_unverified") from None
+    return decision
+
+
+def _prospective_transaction(transaction, *, refs, archive_ref, approved, now):
+    _validate_prospective_approval(approved)
+    owner = refs["owner_ref"].get(transaction=transaction, retry=None)
+    current = refs["ledger_ref"].get(transaction=transaction, retry=None)
+    control = refs["control_ref"].get(transaction=transaction, retry=None)
+    archive = archive_ref.get(transaction=transaction, retry=None)
+    if (owner.exists or archive.exists or not current.exists or not control.exists
+            or digest(current.to_dict()) != approved["ledger_sha256"]
+            or digest(control.to_dict()) != approved["control_sha256"]
+            or _timestamp(current.update_time) != approved["ledger_update_time"]):
+        raise MigrationAtomicPrecondition("prospective_atomic_precondition_changed")
+    ledger, recovery = current.to_dict(), control.to_dict()
+    _validate_safe_order_state(ledger)
+    _validate_control(recovery)
+    proposed = copy.deepcopy(approved["proposed_fields"])
+    marker = {"archive_document": PROSPECTIVE_ARCHIVE_DOCUMENT, "started_at": now.isoformat(),
+              "opening_balance_observed_at": proposed["earn_accrual_checkpoint"]["observed_at"],
+              "historical_difference_unresolved": True, "approved_proposal_run_id": "34690028846",
+              "approved_proposal_sha256": APPROVED_PROSPECTIVE_SHA256}
+    patch = {**proposed, "accounting_rebase": marker}
+    new_digest = digest({**ledger, **patch})
+    backup = {"ledger": copy.deepcopy(ledger), "recovery_control": copy.deepcopy(recovery),
+              "ledger_update_time": _timestamp(current.update_time), **marker,
+              "approved_proposal": copy.deepcopy(approved), "new_ledger_sha256": new_digest,
+              "valuation_price_source": "binance_get_avg_price_estimate"}
+    transaction.create(archive_ref, backup)
+    transaction.update(refs["ledger_ref"], patch)
+    return {"new_ledger_sha256": new_digest, "archive_sha256": digest(backup)}
+
+
+def _apply_prospective_rebase(refs, *, client, expected, now, fixed_now):
+    from google.cloud import firestore
+    approved = _load_prospective_approval()
+    archive_ref = refs["ledger_ref"].parent.document(PROSPECTIVE_ARCHIVE_DOCUMENT)
+    if archive_ref.get(retry=None).exists:
+        raise MigrationBlocked("prospective_archive_already_exists")
+    decision = _prospective_preflight(refs=refs, client=client, expected=expected, approved=approved,
+                                     now=now, clock=(lambda: now + timedelta(seconds=1)) if fixed_now else None)
+
+    @firestore.transactional
+    def apply(transaction):
+        return _prospective_transaction(transaction, refs=refs, archive_ref=archive_ref,
+                                        approved=approved, now=decision)
+    try:
+        written = apply(get_firestore_client().transaction(max_attempts=1))
+    except MigrationBlocked:
+        raise
+    except Exception:
+        raise MigrationApplyUncertain("prospective_write_uncertain") from None
+    try:
+        after_snapshot, after_ledger, after_control = _read_source(refs)
+        archive = archive_ref.get(retry=None)
+        if (digest(after_ledger) != written["new_ledger_sha256"]
+                or digest(after_control) != approved["control_sha256"] or not archive.exists
+                or digest(archive.to_dict()) != written["archive_sha256"]):
+            raise ValueError
+        updated_at = _timestamp(after_snapshot.update_time)
+    except Exception:
+        raise MigrationApplyUncertain("prospective_readback_uncertain") from None
+    return {"status": "rebased", "stage": "prospective_accounting_apply",
+            "approved_proposal_run_id": "34690028846", "archive_document": PROSPECTIVE_ARCHIVE_DOCUMENT,
+            "ledger_update_time": updated_at, **written, "old_ledger_archived": True,
+            "historical_difference_unresolved": True, "control_unchanged": True, "no_order": True,
+            "write_performed": True, "execution_authority_granted": False}
+
+
 def _approved_rebase_fields(*, ledger, control, evidence, now):
     if (digest(ledger) != APPROVED_REBASE_LEDGER_SHA256
             or digest(control) != APPROVED_REBASE_CONTROL_SHA256
@@ -1378,6 +1509,8 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
         }
     if action == "audit":
         return audit_ledger(refs, client=client, expected=expected, now=now)
+    if action == "prospective-rebase-apply":
+        return _apply_prospective_rebase(refs, client=client, expected=expected, now=now, fixed_now=fixed_now)
     if action == "rebase-apply":
         return _apply_approved_rebase(refs, client=client, expected=expected, now=now, fixed_now=fixed_now)
     evidence = (collect_prospective_opening(client, ledger=ledger, now=now, expected=expected)
@@ -1472,6 +1605,7 @@ def main(argv=None) -> int:
             "cash-flow-preview",
             "rebase-proposal",
             "rebase-apply",
+            "prospective-rebase-apply",
             "apply",
         ),
     )
