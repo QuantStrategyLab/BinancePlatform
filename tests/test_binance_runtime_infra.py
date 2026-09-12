@@ -2,10 +2,13 @@ import unittest
 from types import SimpleNamespace
 
 from infra.binance_runtime import (
+    ensure_asset_available_runtime,
     ensure_runtime_client,
+    manage_usdt_earn_buffer_runtime,
     resolve_runtime_btc_snapshot,
     resolve_runtime_trend_indicators,
 )
+from runtime_support import ExecutionIntegrityError
 
 
 class BinanceRuntimeInfraTests(unittest.TestCase):
@@ -88,8 +91,113 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
         self.assertEqual(indicators["ETHUSDT"]["symbol"], "ETHUSDT")
         self.assertEqual(indicators["SOLUSDT"]["symbol"], "SOLUSDT")
 
+    def test_ensure_asset_available_runtime_redeems_from_earn_when_spot_short(self):
+        class Client:
+            def get_asset_balance(self, *, asset):
+                return {"free": "3.001" if observed["calls"] else "2.0"}
 
+            def get_simple_earn_flexible_product_position(self, *, asset):
+                return {"rows": [{"productId": "earn-1", "totalAmount": "5.0", "canRedeem": True, "collateralAmount": "0"}]}
 
+        runtime = SimpleNamespace(client=Client(), dry_run=False)
+        report = {"redemption_subscription_intents": []}
+        observed = {"calls": [], "logs": [], "notifications": [], "sleep": []}
+
+        available = ensure_asset_available_runtime(
+            runtime,
+            report,
+            "ETH",
+            3.0,
+            [],
+            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type, accounting_asset: observed["calls"].append(
+                (method_name, payload, effect_type)
+            ),
+            append_log_fn=lambda _buffer, message: observed["logs"].append(message),
+            runtime_notify_fn=lambda _runtime, _report, text: observed["notifications"].append(text),
+            translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
+            sleep_fn=lambda seconds: observed["sleep"].append(seconds),
+        )
+
+        self.assertTrue(available)
+        self.assertEqual(report["redemption_subscription_intents"][0]["action"], "redeem")
+        self.assertEqual(observed["calls"][0][0], "redeem_simple_earn_flexible_product")
+        self.assertEqual(observed["sleep"], [3])
+        self.assertEqual(observed["notifications"], [])
+        self.assertEqual(len(observed["logs"]), 1)
+
+    def test_manage_usdt_earn_buffer_runtime_subscribes_excess_spot(self):
+        class Client:
+            def get_asset_balance(self, *, asset):
+                return {"free": "100.0" if observed["calls"] else "150.0"}
+
+            def get_simple_earn_flexible_product_list(self, *, asset):
+                return {"rows": [{"productId": "earn-1"}]}
+
+        runtime = SimpleNamespace(client=Client(), dry_run=False)
+        report = {"redemption_subscription_intents": []}
+        observed = {"calls": [], "logs": []}
+
+        manage_usdt_earn_buffer_runtime(
+            runtime,
+            report,
+            100.0,
+            [],
+            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type, accounting_asset: observed["calls"].append(
+                (method_name, payload, effect_type)
+            ),
+            append_log_fn=lambda _buffer, message: observed["logs"].append(message),
+            translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
+        )
+
+        self.assertEqual(report["redemption_subscription_intents"][0]["action"], "subscribe")
+        self.assertEqual(report["redemption_subscription_intents"][0]["amount"], 50.0)
+        self.assertEqual(observed["calls"][0][0], "subscribe_simple_earn_flexible_product")
+        self.assertEqual(len(observed["logs"]), 1)
+
+    def test_earn_integrity_errors_are_not_swallowed(self):
+        failure = ExecutionIntegrityError("order_reconciliation_uncertain")
+        observed = {"notifications": [], "logs": [], "sleeps": []}
+
+        class RedemptionClient:
+            def get_asset_balance(self, *, asset):
+                return {"free": "2.0"}
+
+            def get_simple_earn_flexible_product_position(self, *, asset):
+                return {"rows": [{"productId": "earn-1", "totalAmount": "5.0", "canRedeem": True, "collateralAmount": "0"}]}
+
+        with self.assertRaises(ExecutionIntegrityError):
+            ensure_asset_available_runtime(
+                SimpleNamespace(client=RedemptionClient(), dry_run=False),
+                {"redemption_subscription_intents": []},
+                "ETH",
+                3.0,
+                [],
+                runtime_call_client_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+                append_log_fn=lambda _buffer, message: observed["logs"].append(message),
+                runtime_notify_fn=lambda _runtime, _report, text: observed["notifications"].append(text),
+                translate_fn=lambda key, **_kwargs: key,
+                sleep_fn=lambda seconds: observed["sleeps"].append(seconds),
+            )
+
+        class SubscriptionClient:
+            def get_asset_balance(self, *, asset):
+                return {"free": "150.0"}
+
+            def get_simple_earn_flexible_product_list(self, *, asset):
+                return {"rows": [{"productId": "earn-1"}]}
+
+        with self.assertRaises(ExecutionIntegrityError):
+            manage_usdt_earn_buffer_runtime(
+                SimpleNamespace(client=SubscriptionClient()),
+                {"redemption_subscription_intents": []},
+                100.0,
+                [],
+                runtime_call_client_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
+                append_log_fn=lambda _buffer, message: observed["logs"].append(message),
+                translate_fn=lambda key, **_kwargs: key,
+            )
+
+        self.assertEqual(observed, {"notifications": [], "logs": [], "sleeps": []})
 
     def test_ensure_runtime_client_marks_report_aborted_after_retries(self):
         runtime = SimpleNamespace(client=None, api_key="key", api_secret="secret")
@@ -116,7 +224,36 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
         self.assertEqual(len(observed["notifications"]), 1)
         self.assertNotIn("SENSITIVE_PROVIDER_SENTINEL", str(report) + str(observed))
 
+    def test_asset_and_earn_errors_use_safe_messages(self):
+        sentinel = "SENSITIVE_PROVIDER_SENTINEL"
+        class Client:
+            def get_asset_balance(self, **kwargs):
+                raise RuntimeError(sentinel)
+        runtime = SimpleNamespace(client=Client(), dry_run=False)
+        report = {"redemption_subscription_intents": []}
+        with self.assertRaisesRegex(ExecutionIntegrityError, "asset_availability_failed") as first:
+            ensure_asset_available_runtime(runtime, report, "ETH", 3.0, [], runtime_call_client_fn=lambda **kwargs: None,
+                append_log_fn=lambda *args: None, runtime_notify_fn=lambda *args: None,
+                translate_fn=lambda key, **kwargs: key, sleep_fn=lambda *args: None)
+        with self.assertRaisesRegex(ExecutionIntegrityError, "earn_buffer_maintenance_failed") as second:
+            manage_usdt_earn_buffer_runtime(runtime, report, 100.0, [], runtime_call_client_fn=lambda **kwargs: None,
+                append_log_fn=lambda *args: None, translate_fn=lambda key, **kwargs: key)
+        self.assertNotIn(sentinel, str(first.exception) + str(second.exception) + str(report))
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_earn_success_with_stale_or_nonfinite_spot_read_does_not_continue():
+    import pytest
+    from unittest.mock import Mock
+    for fresh in ('150', 'NaN', 'Infinity'):
+        client = Mock()
+        client.get_asset_balance.side_effect = [{'free': '150'}, {'free': fresh}]
+        client.get_simple_earn_flexible_product_list.return_value = {'rows': [{'productId': 'synthetic'}]}
+        runtime = SimpleNamespace(client=client, dry_run=False)
+        with pytest.raises(ExecutionIntegrityError, match='earn_reconciliation_pending'):
+            manage_usdt_earn_buffer_runtime(runtime, {'redemption_subscription_intents': []}, 100, [],
+                runtime_call_client_fn=lambda *args, **kwargs: {'success': True, 'purchaseId': 1},
+                append_log_fn=lambda *args: None, translate_fn=lambda key, **kwargs: key)

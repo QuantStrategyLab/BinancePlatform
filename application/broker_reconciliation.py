@@ -718,12 +718,13 @@ def diagnose_bonus_reward_balance(
 def diagnose_balance_flows(
     client: Any, *, start: datetime, end: datetime, now: datetime | None = None,
     account: Mapping[str, object] | None = None, expected_digests: Mapping[str, str] | None = None,
+    reward_quantity_changes: Mapping[str, Decimal] | None = None,
 ) -> dict[str, object]:
     """Read a bounded activity summary, never an enrollment or reconciliation.
 
     Only documented GET surfaces are used. Each gets one finite page; a full
-    list or a total exceeding the page stops collection. No amounts, asset
-    names, account rows, provider text, or observed baseline hashes are emitted.
+    list or a total exceeding the page stops collection. No amounts, private account rows, provider text, or observed baseline hashes
+    are emitted. Optional delta checks name only the supplied managed assets.
     """
     now = now or datetime.now(timezone.utc)
     if (start.tzinfo is None or end.tzinfo is None or not start < end <= now
@@ -780,6 +781,33 @@ def diagnose_balance_flows(
         counts[name] = len(rows)
         if name == "earn_rewards":
             reward_rows = rows
+            if reward_quantity_changes is not None:
+                try:
+                    sums = {asset: {"BONUS": Decimal(0), "REALTIME": Decimal(0)} for asset in reward_quantity_changes}
+                    counts_by_asset = {asset: {"BONUS": 0, "REALTIME": 0} for asset in reward_quantity_changes}
+                    seen = set()
+                    for row in rows:
+                        asset, kind = row.get("asset"), row.get("type")
+                        if asset not in sums or kind not in {"BONUS", "REALTIME"}:
+                            continue
+                        timestamp = row.get("time")
+                        quantity = Decimal(str(row.get("rewards")))
+                        identity = (asset, kind, row.get("projectId"), timestamp)
+                        if (type(timestamp) is not int or not bounds["startTime"] <= timestamp <= bounds["endTime"]
+                                or not quantity.is_finite() or quantity < 0 or identity in seen):
+                            raise ValueError("reward_row_invalid")
+                        seen.add(identity)
+                        sums[asset][kind] += quantity
+                        counts_by_asset[asset][kind] += 1
+                    result["reward_quantity_checks"] = {
+                        asset: {"delta_matches_bonus": delta == sums[asset]["BONUS"],
+                                "delta_matches_realtime": delta == sums[asset]["REALTIME"],
+                                "delta_matches_visible_total": delta == sum(sums[asset].values()),
+                                "reward_counts": counts_by_asset[asset], "causal_reconciliation": False}
+                        for asset, delta in reward_quantity_changes.items()
+                    }
+                except (ValueError, TypeError, DecimalException):
+                    return {**result, "reason_code": "balance_history_reward_validation_failed", "failed_surface": name}
             if account is not None and expected_digests is not None:
                 result["spot_bonus_reconciliation"] = diagnose_bonus_reward_balance(
                     account, rewards=reward_rows, expected_digests=expected_digests, start=start, end=end,

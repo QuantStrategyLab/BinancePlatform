@@ -62,18 +62,11 @@ def test_bound_trade_state_access_shares_one_store_and_uses_native_create():
     from google.api_core.exceptions import AlreadyExists
     store = Mock()
     document = store.client.collection.return_value.document.return_value
-    document.get.return_value = Mock(exists=True)
-    document.get.return_value.to_dict.return_value = {"balance_scope": "spot"}
-    tx = store.client.transaction.return_value
-    tx._max_attempts, tx._read_only = 1, False
-    from google.cloud import firestore
-    from google.cloud.firestore_v1.transaction import transactional
-    with patch.object(firestore, "transactional", transactional, create=True), patch('live_services._get_document_store', return_value=store) as factory:
+    with patch('live_services._get_document_store', return_value=store) as factory:
         load, save, claim, _release = bind_trade_state_access(normalize_fn=lambda x: x, default_state_factory=dict)
         assert claim('owner-one') is True
-        tx.create.assert_called_once_with(document, {'owner_id': 'owner-one'})
-        document.get.assert_called_once_with(transaction=tx, retry=None)
-        tx._commit.side_effect = AlreadyExists('exists')
+        document.create.assert_called_once_with({'owner_id': 'owner-one'}, retry=None)
+        document.create.side_effect = AlreadyExists('exists')
         assert claim('owner-one') is False
         store.get.return_value = {'existing': True}
         assert load(normalize=False) == {'existing': True}
@@ -116,14 +109,7 @@ def test_native_claim_does_not_treat_uncertain_or_permission_failure_as_busy():
     from google.api_core.exceptions import DeadlineExceeded, PermissionDenied
     from live_services import bind_trade_state_access
     store = Mock()
-    document = store.client.collection.return_value.document.return_value
-    document.get.return_value = Mock(exists=True)
-    document.get.return_value.to_dict.return_value = {"balance_scope": "spot"}
-    tx = store.client.transaction.return_value
-    tx._max_attempts, tx._read_only = 1, False
-    from google.cloud import firestore
-    from google.cloud.firestore_v1.transaction import transactional
-    with patch.object(firestore, "transactional", transactional, create=True), patch('live_services._get_document_store', return_value=store):
+    with patch('live_services._get_document_store', return_value=store):
         _, _, claim, release = bind_trade_state_access(normalize_fn=lambda x: x, default_state_factory=dict)
         for owner in ('', ' ', None):
             with pytest.raises(ValueError, match='state_owner_required'):
@@ -131,28 +117,6 @@ def test_native_claim_does_not_treat_uncertain_or_permission_failure_as_busy():
             with pytest.raises(ValueError, match='state_owner_required'):
                 release(owner)
         for error in (DeadlineExceeded('unknown'), PermissionDenied('denied')):
-            tx._commit.side_effect = error
+            store.client.collection.return_value.document.return_value.create.side_effect = error
             with pytest.raises(type(error)):
                 claim('owner')
-
-
-def test_legacy_ledger_cannot_create_an_owner_or_strand_migration():
-    import pytest
-    from google.cloud import firestore
-    from google.cloud.firestore_v1.transaction import transactional
-    from live_services import bind_trade_state_access
-    from runtime_support import ExecutionIntegrityError
-    for ledger in ({}, {"balance_scope": "spot_plus_earn"}, None):
-        store = Mock()
-        ref = store.client.collection.return_value.document.return_value
-        ref.get.return_value = Mock(exists=ledger is not None)
-        ref.get.return_value.to_dict.return_value = ledger
-        tx = store.client.transaction.return_value
-        tx._max_attempts, tx._read_only = 1, False
-        with patch.object(firestore, "transactional", transactional, create=True), patch('live_services._get_document_store', return_value=store):
-            _, _, claim, _ = bind_trade_state_access(normalize_fn=lambda x: x, default_state_factory=dict)
-            with pytest.raises(ExecutionIntegrityError, match="spot_scope_migration_required"):
-                claim('synthetic')
-        tx.create.assert_not_called()
-        tx._commit.assert_not_called()
-        store.set.assert_not_called()

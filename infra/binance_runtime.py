@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from math import isfinite
 
-from runtime_support import ExecutionIntegrityError, get_spot_balance
+from runtime_support import ExecutionIntegrityError
 
 
 def resolve_runtime_btc_snapshot(
@@ -68,12 +68,143 @@ def ensure_asset_available_runtime(
     sleep_fn,
 ):
     try:
-        required = float(required_amount)
-        if not isfinite(required) or required < 0:
-            raise ValueError("invalid_required_amount")
-        return get_spot_balance(runtime.client, asset, free_only=True) >= required
+        spot_free = float(runtime.client.get_asset_balance(asset=asset)["free"])
+        if not isfinite(spot_free) or spot_free < 0 or not isfinite(required_amount) or required_amount <= 0:
+            raise ExecutionIntegrityError("asset_availability_failed")
+        if spot_free >= required_amount:
+            return True
+
+        shortfall = required_amount - spot_free
+        earn_positions = runtime.client.get_simple_earn_flexible_product_position(asset=asset)
+        if earn_positions and "rows" in earn_positions and len(earn_positions["rows"]) > 0:
+            row = earn_positions["rows"][0]
+            product_id = row["productId"]
+            earn_free = float(row["totalAmount"])
+            if (not isfinite(earn_free) or earn_free < shortfall
+                    or row.get("canRedeem") is not True
+                    or float(row.get("collateralAmount", "nan")) != 0):
+                return False
+            if earn_free > 0:
+                redeem_amt = round(min(shortfall * 1.001, earn_free), 8)
+                intent = {
+                    "asset": str(asset),
+                    "action": "redeem",
+                    "product_id": str(product_id),
+                    "amount": float(redeem_amt),
+                    "reason": "asset_availability",
+                }
+                report["redemption_subscription_intents"].append(intent)
+                runtime_call_client_fn(
+                    runtime,
+                    report,
+                    method_name="redeem_simple_earn_flexible_product",
+                    payload={"productId": product_id, "amount": redeem_amt},
+                    effect_type="earn_redeem",
+                    accounting_asset=asset,
+                )
+                append_log_fn(
+                    log_buffer,
+                    translate_fn("execution_spot_short_redeeming_from_earn", asset=asset, amount=redeem_amt),
+                )
+                if not runtime.dry_run:
+                    sleep_fn(3)
+                    observed_free = float(runtime.client.get_asset_balance(asset=asset)["free"])
+                    if not isfinite(observed_free) or observed_free < required_amount or observed_free + 1e-8 < spot_free + redeem_amt:
+                        raise ExecutionIntegrityError("earn_reconciliation_pending")
+                return True
+    except ExecutionIntegrityError:
+        raise
     except Exception:
         raise ExecutionIntegrityError("asset_availability_failed") from None
+    return False
+
+
+def manage_usdt_earn_buffer_runtime(
+    runtime,
+    report,
+    target_buffer,
+    log_buffer,
+    *,
+    runtime_call_client_fn,
+    append_log_fn,
+    translate_fn,
+    spot_free_override=None,
+):
+    try:
+        asset = "USDT"
+        if spot_free_override is None:
+            spot_free = float(runtime.client.get_asset_balance(asset=asset)["free"])
+        else:
+            spot_free = max(0.0, float(spot_free_override))
+
+        earn_list = runtime.client.get_simple_earn_flexible_product_list(asset=asset)
+        if not earn_list or "rows" not in earn_list or len(earn_list["rows"]) == 0:
+            return
+        product_id = earn_list["rows"][0]["productId"]
+
+        if spot_free > target_buffer + 5.0:
+            excess = round(spot_free - target_buffer, 4)
+            if excess >= 0.1:
+                report["redemption_subscription_intents"].append(
+                    {
+                        "asset": asset,
+                        "action": "subscribe",
+                        "product_id": str(product_id),
+                        "amount": float(excess),
+                        "reason": "maintain_usdt_buffer",
+                    }
+                )
+                runtime_call_client_fn(
+                    runtime,
+                    report,
+                    method_name="subscribe_simple_earn_flexible_product",
+                    payload={"productId": product_id, "amount": excess},
+                    effect_type="earn_subscribe",
+                    accounting_asset=asset,
+                )
+                if not runtime.dry_run:
+                    observed_free = float(runtime.client.get_asset_balance(asset=asset)["free"])
+                    if not isfinite(observed_free) or observed_free < 0 or observed_free > spot_free - excess + 1e-8:
+                        raise ExecutionIntegrityError("earn_reconciliation_pending")
+                append_log_fn(log_buffer, translate_fn("cash_manager_subscribed_to_earn", amount=excess))
+        elif spot_free < target_buffer - 5.0:
+            shortfall = round(target_buffer - spot_free, 4)
+            earn_positions = runtime.client.get_simple_earn_flexible_product_position(asset=asset)
+            if earn_positions and "rows" in earn_positions and len(earn_positions["rows"]) > 0:
+                row = earn_positions["rows"][0]
+                earn_free = float(row["totalAmount"])
+                if (not isfinite(earn_free) or row.get("canRedeem") is not True
+                        or float(row.get("collateralAmount", "nan")) != 0):
+                    return
+                product_id = row["productId"]
+                if earn_free > 0:
+                    redeem_amt = round(min(shortfall, earn_free), 8)
+                    report["redemption_subscription_intents"].append(
+                        {
+                            "asset": asset,
+                            "action": "redeem",
+                            "product_id": str(product_id),
+                            "amount": float(redeem_amt),
+                            "reason": "maintain_usdt_buffer",
+                        }
+                    )
+                    runtime_call_client_fn(
+                        runtime,
+                        report,
+                        method_name="redeem_simple_earn_flexible_product",
+                        payload={"productId": product_id, "amount": redeem_amt},
+                        effect_type="earn_redeem",
+                        accounting_asset=asset,
+                    )
+                    if not runtime.dry_run:
+                        observed_free = float(runtime.client.get_asset_balance(asset=asset)["free"])
+                        if not isfinite(observed_free) or observed_free + 1e-8 < spot_free + redeem_amt:
+                            raise ExecutionIntegrityError("earn_reconciliation_pending")
+                    append_log_fn(log_buffer, translate_fn("cash_manager_redeeming_to_spot", amount=redeem_amt))
+    except ExecutionIntegrityError:
+        raise
+    except Exception:
+        raise ExecutionIntegrityError("earn_buffer_maintenance_failed") from None
 
 
 def ensure_runtime_client(

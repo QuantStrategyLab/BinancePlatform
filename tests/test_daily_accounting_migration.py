@@ -620,8 +620,7 @@ def test_rebase_proposal_encryption_roundtrip_does_not_emit_plaintext(tmp_path, 
     assert "123.456" not in capsys.readouterr().out
 
 
-@pytest.mark.parametrize("action", ["rebase-proposal", "spot-proposal"])
-def test_rebase_proposal_runtime_writes_only_encrypted_local_artifact(monkeypatch, tmp_path, capsys, action):
+def test_rebase_proposal_runtime_writes_only_encrypted_local_artifact(monkeypatch, tmp_path, capsys):
     from scripts import migrate_daily_accounting_state as migration
     now = datetime.now(timezone.utc)
     ledger = _ledger(last_reset_date="2026-08-11")
@@ -646,16 +645,7 @@ def test_rebase_proposal_runtime_writes_only_encrypted_local_artifact(monkeypatc
     monkeypatch.setattr(migration, "get_firestore_client", forbidden)
     for key, value in {"GITHUB_SHA": "f" * 40, "BINANCE_API_KEY": "synthetic", "BINANCE_API_SECRET": "synthetic"}.items():
         monkeypatch.setenv(key, value)
-    if action == "spot-proposal":
-        monkeypatch.setattr(migration, "_ledger_scope", lambda ledger: (set(_evidence()["balance_snapshot"]), ()))
-        monkeypatch.setattr(migration, "_validated_private_scope_source", lambda *args, **kwargs: {
-            "material": {"opening_quantities": _evidence()["balance_snapshot"]},
-            "approved_account_scope_sha256": "a" * 64,
-            "binding": {"archive_sha256": "e" * 64},
-        })
-        monkeypatch.setattr(migration, "_collect_evidence", lambda *args, **kwargs:
-            _evidence(utc_date=now.date().isoformat(), balance_scope="spot"))
-    assert migration.main([action]) == 0
+    assert migration.main(["rebase-proposal"]) == 0
     output = capsys.readouterr().out
     assert json.loads(output)["executable_candidate"] is False
     assert "14750" not in output and "500.0" not in output
@@ -797,20 +787,18 @@ def test_quiesce_has_single_transaction_and_uncertain_readback(monkeypatch, caps
     assert refs["control_ref"].snapshot.value["history"] == {"preserve": True}
 
 
-def test_spot_proposal_uses_only_spot_and_preserves_unknown_history():
-    from scripts import migrate_daily_accounting_state as migration
-    from unittest.mock import Mock
-    client = Mock()
-    positions = [{"asset": asset, "free": str(qty), "locked": "0"}
-                 for asset, qty in {"USDT": 100, "BTC": .01, "BNB": .02, "ETH": .1}.items()]
-    snapshot = migration._strict_balance_snapshot(client, positions, {row["asset"] for row in positions}, spot_only=True)
-    client.get_simple_earn_flexible_product_position.assert_not_called()
-    evidence = {**_evidence(), "balance_snapshot": snapshot, "balance_scope": "spot"}
-    proposal = migration.build_rebase_proposal(ledger=_ledger(), evidence=evidence, observed_at=NOW)
-    assert proposal["valuation_scope"] == "managed_assets_spot"
-    assert proposal["proposed_fields"]["balance_scope"] == "spot"
-    assert proposal["proposed_fields"]["last_balance_snapshot"] == snapshot
-    assert proposal["historical_difference_unresolved"] is True
-    assert proposal["executable_candidate"] is False
-    assert proposal["write_performed"] is False
-    assert proposal["execution_authority_granted"] is False
+def test_audit_uses_validated_opening_instead_of_old_recovery_window(monkeypatch):
+    migration, refs, client, expected, balances, calls = _audit_setup(monkeypatch)
+    refs["ledger_ref"].snapshot.value["accounting_rebase"] = {"synthetic": True}
+    opening = NOW - timedelta(hours=2)
+    validations = []
+    def validated(_refs, **kwargs):
+        validations.append(kwargs)
+        return {"material": {"opening_balance_observed_at": opening}, "binding": "same-archive"}
+    monkeypatch.setattr(migration, "_validated_private_scope_source", validated)
+    result = migration.audit_ledger(refs, client=client, expected=expected, now=NOW)
+    assert calls[0]["start"] == opening
+    assert result["history_window_basis"] == "approved_opening"
+    assert result["ledger_snapshot_observation_time_available"] is True
+    assert len(validations) == 2
+    assert result["write_performed"] is False

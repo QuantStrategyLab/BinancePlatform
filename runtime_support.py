@@ -529,8 +529,6 @@ def acquire_runtime_state_owner(runtime):
     runtime.state_owner_id = uuid.uuid4().hex
     try:
         held = runtime.state_owner_claim(runtime.state_owner_id)
-    except ExecutionIntegrityError:
-        raise
     except Exception:
         raise StatePersistenceError("state_owner_claim_uncertain") from None
     runtime.state_owner_held = held is True
@@ -566,25 +564,35 @@ def release_runtime_state_owner(runtime):
     return True
 
 
-def get_spot_balance(client, asset, *, free_only=False):
-    """Read validated Spot quantities; Earn is outside strategy ownership."""
+def read_managed_balance(client, asset):
+    """Value approved Spot + Flexible holdings; this is not available Spot cash."""
     try:
-        row = client.get_asset_balance(asset=asset)
-        if not isinstance(row, Mapping) or row.get("asset", asset) != asset:
-            raise ValueError("spot_asset_mismatch")
-        free, locked = (Decimal(str(row[key])) for key in ("free", "locked"))
-        if not all(value.is_finite() and value >= 0 for value in (free, locked)):
-            raise ValueError("spot_quantity_invalid")
-        result = float(free if free_only else free + locked)
-        if not math.isfinite(result):
-            raise ValueError("spot_quantity_invalid")
-        return result
+        spot = client.get_asset_balance(asset=asset)
+        if not isinstance(spot, Mapping) or spot.get("asset", asset) != asset:
+            raise ValueError("spot_balance_invalid")
+        amounts = [_funding_amount(spot[key]) for key in ("free", "locked")]
+        earn = client.get_simple_earn_flexible_product_position(asset=asset, current=1, size=100)
+        rows = earn.get("rows") if isinstance(earn, Mapping) else None
+        count = earn.get("total") if isinstance(earn, Mapping) else None
+        if not isinstance(rows, list) or type(count) is not int or len(rows) != count or count >= 100:
+            raise ValueError("earn_balance_incomplete")
+        seen = set()
+        for row in rows:
+            if (not isinstance(row, Mapping) or row.get("asset") != asset
+                    or not isinstance(row.get("productId"), str) or not row["productId"] or row["productId"] in seen):
+                raise ValueError("earn_balance_invalid")
+            seen.add(row["productId"])
+            amounts.append(_funding_amount(row["totalAmount"]))
+        total = float(sum(amounts))
+        if not math.isfinite(total):
+            raise ValueError("balance_invalid")
+        return total
     except Exception:
-        raise ExecutionIntegrityError("spot_balance_lookup_failed") from None
+        raise ExecutionIntegrityError("managed_balance_unavailable") from None
 
 
 def reconcile_runtime_cash_effects(runtime, state):
-    """Refresh confirmed fuel balances using the strategy's Spot-only scope."""
+    """Refresh confirmed Earn/fuel balances; no receipt or status word substitutes for this read."""
     pending = getattr(runtime, "pending_funds", [])
     assets = {item["asset"] for item in pending if item.get("confirmed") and item.get("asset")}
     if not assets:
@@ -593,7 +601,7 @@ def reconcile_runtime_cash_effects(runtime, state):
     observations = {}
     try:
         for asset in assets | {"USDT"}:
-            observations[asset] = get_spot_balance(runtime.client, asset)
+            observations[asset] = read_managed_balance(runtime.client, asset)
     except Exception:
         raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None
     submission = state.get(_ORDER_SUBMISSION_STATE_KEY, {})
@@ -762,8 +770,9 @@ def _load_order_submission_state(runtime):
         if set(record) == {"state", "identity_sha256", "symbol"}:
             if not re.fullmatch(r"[A-Z0-9]{3,30}", str(record.get("symbol") or "")):
                 raise StatePersistenceError("submission_state_invalid") from None
-        elif set(record) == {"state", "identity_sha256", "method_name"}:
-            if str(record.get("method_name") or "") not in _EARN_SUCCESS_ID_BY_METHOD:
+        elif set(record) in ({"state", "identity_sha256", "method_name"}, {"state", "identity_sha256", "method_name", "funding_receipt"}):
+            if (str(record.get("method_name") or "") not in _EARN_SUCCESS_ID_BY_METHOD
+                    or ("funding_receipt" in record and not _valid_funding_receipt(record["funding_receipt"]))):
                 raise StatePersistenceError("submission_state_invalid") from None
         else:
             raise StatePersistenceError("submission_state_invalid") from None
@@ -935,6 +944,98 @@ def _is_order_transport_uncertainty(exc):
     )
 
 
+def _funding_amount(value):
+    amount = Decimal(str(value))
+    if not amount.is_finite() or amount < 0:
+        raise ValueError("funding_amount_invalid")
+    return amount
+
+
+def _valid_funding_receipt(receipt):
+    try:
+        return (isinstance(receipt, Mapping)
+                and set(receipt) == {"id", "asset", "product_id", "amount", "spot_before"}
+                and type(receipt["id"]) is int and receipt["id"] > 0
+                and isinstance(receipt["asset"], str) and bool(re.fullmatch(r"[A-Z0-9]{1,20}", receipt["asset"]))
+                and isinstance(receipt["product_id"], str) and bool(receipt["product_id"])
+                and _funding_amount(receipt["amount"]) > 0
+                and _funding_amount(receipt["spot_before"]) >= 0)
+    except (KeyError, TypeError, ValueError, InvalidOperation):
+        return False
+
+
+def _confirm_funding_settlement(client, method, receipt):
+    """One ID-bound history GET plus actual Spot cash; never another POST."""
+    try:
+        if not _valid_funding_receipt(receipt):
+            raise ValueError("funding_receipt_invalid")
+        redeem = method == "redeem_simple_earn_flexible_product"
+        id_key = "redeemId" if redeem else "purchaseId"
+        path = "redemptionRecord" if redeem else "subscriptionRecord"
+        response = client._request_margin_api("get", "simple-earn/flexible/history/" + path, signed=True,
+            data={id_key: receipt["id"], "productId": receipt["product_id"], "asset": receipt["asset"], "current": 1, "size": 100})
+        if (not isinstance(response, Mapping) or type(response.get("total")) is not int
+                or response["total"] != 1 or not isinstance(response.get("rows"), list) or len(response["rows"]) != 1):
+            raise ValueError("funding_history_incomplete")
+        row = response["rows"][0]
+        amount = _funding_amount(receipt["amount"])
+        if (not isinstance(row, Mapping) or type(row.get(id_key)) is not int or row[id_key] != receipt["id"]
+                or row.get("asset") != receipt["asset"]
+                or row.get("projectId" if redeem else "productId") != receipt["product_id"]
+                or row.get("status") != ("PAID" if redeem else "SUCCESS")
+                or row.get("destAccount" if redeem else "sourceAccount") != "SPOT"
+                or _funding_amount(row.get("amount")) != amount):
+            raise ValueError("funding_history_mismatch")
+        spot = client.get_asset_balance(asset=receipt["asset"])
+        free = _funding_amount(spot["free"])
+        expected = _funding_amount(receipt["spot_before"]) + (amount if redeem else -amount)
+        if free != expected:
+            raise ValueError("funding_cash_mismatch")
+    except Exception:
+        raise OrderReconciliationError("funding_settlement_unverified") from None
+
+
+def reconcile_pending_funding_submission(runtime):
+    """Finish one durable Earn receipt using reads only, then account for it."""
+    if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
+        return False
+    require_runtime_state_owner(runtime)
+    state, record = _load_order_submission_state(runtime)
+    if record.get("state") != _ORDER_SUBMISSION_UNKNOWN or "funding_receipt" not in record:
+        return False
+
+    receipt = record["funding_receipt"]
+    opening_snapshot = state.get("last_balance_snapshot")
+    if not isinstance(opening_snapshot, Mapping):
+        raise OrderReconciliationError("funding_balance_conservation_unverified") from None
+    opening_snapshot = dict(opening_snapshot)
+    _confirm_funding_settlement(runtime.client, record["method_name"], receipt)
+
+    pending = {
+        "confirmed": True,
+        "action": "funding",
+        "symbol": None,
+        "asset": receipt["asset"],
+    }
+    runtime.pending_funds.append(pending)
+    reconcile_runtime_cash_effects(runtime, state)
+    try:
+        if any(
+            asset not in opening_snapshot
+            or _funding_amount(opening_snapshot[asset]) != _funding_amount(observed)
+            for asset, observed in runtime.cash_balance_observation.items()
+        ):
+            raise ValueError("managed_balance_changed")
+    except (InvalidOperation, TypeError, ValueError):
+        state["last_balance_snapshot"] = opening_snapshot
+        runtime.cash_balance_observation = {}
+        raise OrderReconciliationError("funding_balance_conservation_unverified") from None
+    state["last_balance_snapshot"] = opening_snapshot
+    _persist_order_submission_state(runtime, state, {"state": _ORDER_SUBMISSION_TERMINAL})
+    runtime.pending_funds.remove(pending)
+    return True
+
+
 def _is_confirmed_earn_success(method_name, response):
     response_id_field = _EARN_SUCCESS_ID_BY_METHOD.get(str(method_name))
     if not response_id_field or not isinstance(response, Mapping) or response.get("success") is not True:
@@ -973,8 +1074,6 @@ def _require_filled_order_response(response):
 
 def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                         max_retries: int = 3, retry_base_sec: float = 1.0, accounting_asset=None):
-    if str(effect_type or "").startswith("earn_") or str(method_name) in _EARN_SUCCESS_ID_BY_METHOD:
-        raise ExecutionIntegrityError("earn_outside_strategy_scope")
     if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
         record_side_effect(
             runtime, report, effect_type=effect_type,
@@ -989,7 +1088,7 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
     fill_accounting_required = is_order_call
     earn_method = _EARN_METHOD_BY_EFFECT_TYPE.get(str(effect_type or ""))
     is_earn_call = earn_method == str(method_name)
-    if str(effect_type or "").startswith("earn_") and not is_earn_call:
+    if (str(effect_type or "").startswith("earn_") or str(method_name) in _EARN_SUCCESS_ID_BY_METHOD) and not is_earn_call:
         raise StatePersistenceError("submission_state_invalid") from None
     is_funding_mutation = is_order_call or is_earn_call
     client_payload = dict(payload)
@@ -1029,6 +1128,22 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 trade_state,
                 {"state": _ORDER_SUBMISSION_RESERVED},
             )
+        if is_earn_call:
+            try:
+                if not isinstance(accounting_asset, str) or not re.fullmatch(r"[A-Z0-9]{1,20}", accounting_asset):
+                    raise ValueError("funding_asset_missing")
+                amount = _funding_amount(client_payload.get("amount"))
+                if amount <= 0 or not isinstance(client_payload.get("productId"), str) or not client_payload["productId"]:
+                    raise ValueError("funding_request_invalid")
+                account_key = "destAccount" if effect_type == "earn_redeem" else "sourceAccount"
+                if client_payload.get(account_key, "SPOT") != "SPOT":
+                    raise ValueError("funding_account_invalid")
+                client_payload[account_key] = "SPOT"
+                spot_before = _funding_amount(runtime.client.get_asset_balance(asset=accounting_asset)["free"])
+                if effect_type == "earn_subscribe" and amount > spot_before:
+                    raise ValueError("funding_spot_insufficient")
+            except Exception:
+                raise ExecutionIntegrityError("funding_preflight_failed") from None
         if is_order_call:
             client_payload, identity_sha256 = _ensure_order_logical_identity(runtime, method_name, payload)
             association = _build_order_request_association(method_name, client_payload)
@@ -1093,6 +1208,10 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
             payload=dict(client_payload),
             executed=True,
         )
+        receipt = {"id": response[_EARN_SUCCESS_ID_BY_METHOD[method_name]], "asset": accounting_asset,
+                   "product_id": client_payload["productId"], "amount": str(amount), "spot_before": str(spot_before)}
+        _persist_order_submission_state(runtime, trade_state, {**unknown_record, "funding_receipt": receipt})
+        _confirm_funding_settlement(runtime.client, method_name, receipt)
         _persist_order_submission_state(runtime, trade_state, {"state": _ORDER_SUBMISSION_TERMINAL})
         runtime.pending_funds[-1]["confirmed"] = True
         return response

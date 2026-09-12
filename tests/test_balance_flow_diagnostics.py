@@ -271,3 +271,30 @@ def test_invalid_reward_rows_stop_before_transfer_reads():
     assert result['history_complete_for_requested_surfaces'] is False
     assert result['history_counts']['transfer_main_funding'] is None
     assert result['spot_bonus_reconciliation']['validation_failure_code'] == 'reward_project_invalid'
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_reward_delta_diagnostic_is_bounded_private_and_not_causal_authority(duplicate):
+    from decimal import Decimal
+    row = {"asset": "BNB", "rewards": "0.01234567", "type": "BONUS",
+           "projectId": "synthetic", "time": int(NOW.timestamp() * 1000)}
+    def read(method, path, **kwargs):
+        assert method == "get"
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/rewardsRecord"):
+            rows = [row, row] if duplicate else [row]
+            return {"rows": rows, "total": len(rows)}
+        return {"rows": [], "total": 0}
+    result = diagnose_balance_flows(
+        SimpleNamespace(_request_margin_api=read), start=NOW-timedelta(hours=2), end=NOW, now=NOW,
+        reward_quantity_changes={"BNB": Decimal("0.01234567")},
+    )
+    assert "0.01234567" not in str(result)
+    assert result["execution_authority_granted"] is False
+    if duplicate:
+        assert result["reason_code"] == "balance_history_reward_validation_failed"
+    else:
+        check = result["reward_quantity_checks"]["BNB"]
+        assert check["delta_matches_bonus"] is True
+        assert check["causal_reconciliation"] is False

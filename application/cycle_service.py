@@ -11,8 +11,9 @@ from application.execution_receipt_adapter import attach_execution_receipt_from_
 from runtime_logging import RuntimeLogContext, emit_runtime_log
 from runtime_support import (
     append_report_error, finalize_notification_delivery, acquire_runtime_state_owner,
-    release_runtime_state_owner, reconcile_runtime_cash_effects, ExecutionIntegrityError,
-    StatePersistenceError, OrderReconciliationError, ClientCallError,
+    release_runtime_state_owner, reconcile_pending_funding_submission,
+    reconcile_runtime_cash_effects, ExecutionIntegrityError, StatePersistenceError,
+    OrderReconciliationError, ClientCallError,
 )
 
 
@@ -35,6 +36,7 @@ def execute_strategy_cycle(
     run_daily_circuit_breaker,
     execute_trend_rotation,
     execute_btc_dca_cycle,
+    manage_usdt_earn_buffer_runtime,
     maybe_send_periodic_btc_status_report,
     runtime_set_trade_state,
     append_report_error,
@@ -78,6 +80,8 @@ def execute_strategy_cycle(
 
         state, trend_pool_resolution, runtime_trend_universe, allow_new_trend_entries = cycle_state
         runtime.trade_state = state
+        failure_stage = "funding_reconciliation"
+        reconcile_pending_funding_submission(runtime)
         submission_state = state.get("order_submission", {}).get("state", "RESERVED")
         if submission_state == "SUBMISSION_UNKNOWN":
             raise ExecutionIntegrityError("order_reconciliation_uncertain")
@@ -99,6 +103,7 @@ def execute_strategy_cycle(
         )
         u_total = market_snapshot["u_total"]
         fuel_val = market_snapshot["fuel_val"]
+        dynamic_usdt_buffer = market_snapshot["dynamic_usdt_buffer"]
         prices = market_snapshot["prices"]
         balances = market_snapshot["balances"]
         btc_snapshot = market_snapshot["btc_snapshot"]
@@ -263,6 +268,15 @@ def execute_strategy_cycle(
         )
         report["total_equity_usdt"] = total_equity
         report["trend_equity_usdt"] = trend_val_equity
+
+        failure_stage = "earn_execution"
+        manage_usdt_earn_buffer_runtime(
+            runtime,
+            report,
+            dynamic_usdt_buffer,
+            log_buffer,
+            spot_free_override=u_total if runtime.dry_run else None,
+        )
 
         failure_stage = "status_notification"
         maybe_send_periodic_btc_status_report(
