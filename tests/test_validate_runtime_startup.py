@@ -73,7 +73,7 @@ def test_startup_validation_rejects_broker_credentials(monkeypatch):
 def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tmp_path):
     import main
     import run_cycle_replay
-    from live_risk_authority import config_sha256, resolve_strategy_revision
+    from live_risk_authority import config_sha256
     from quant_platform_kit.common.runtime_target import build_runtime_target
     from strategy_runtime import load_research_only_strategy_runtime
     import strategy_registry
@@ -101,7 +101,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
             "account_selector": ["fixture-account"],
             "deployment_selector": "fixture",
         },
-        "strategy_revision": resolve_strategy_revision(),
+        "strategy_revision": "d" * 40,
         "runner_revision": runner_revision,
         "config_sha256": config_sha256({**loaded.merged_runtime_config, **loaded.runtime_overrides}),
         "continuous_inputs_allowed": True,
@@ -156,9 +156,9 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         runtime.trend_indicator_snapshots = replay_runtime.trend_indicator_snapshots
         return runtime
 
-    with patch("live_risk_authority.resolve_runner_revision", return_value=runner_revision), patch(
-        "quant_platform_kit.risk.gate._utc_now", return_value=now
-    ):
+    with patch("live_risk_authority.resolve_strategy_revision", return_value="d" * 40), patch(
+        "live_risk_authority.resolve_runner_revision", return_value=runner_revision
+    ), patch("quant_platform_kit.risk.gate._utc_now", return_value=now):
         result = validate_full_cycle(runtime_builder=build, client_connector=lambda *_args, **_kwargs: replay_client)
 
     assert result["status"] == "passed"
