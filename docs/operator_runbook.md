@@ -300,6 +300,12 @@ patch must equal the archived ledger. The runtime state normalizer preserves an
 existing `accounting_rebase` marker during ordinary saves and does not add one
 to an older state.
 
+At runtime, the prospective Earn checkpoint fixes the managed asset keys and
+the balance snapshot must keep the same keys. Fresh pool symbols outside that
+scope are excluded from strategy candidates when they have no position, while
+all approved assets remain in valuation and balance snapshots. Any active
+out-of-scope position or malformed pair stops state loading.
+
 The opening must be no more than seven days old. The controller requires zero
 open orders, zero fills for every configured strategy symbol, complete bounded
 history pages, and zero non-reward deposits, withdrawals, Earn subscriptions or

@@ -212,6 +212,7 @@ class LoadedStrategyRuntime:
         state,
         translator: Callable[..., str],
         balances: Mapping[str, Any] | None = None,
+        portfolio_trend_universe_symbols: tuple[str, ...] | None = None,
         now_utc=None,
         allow_new_trend_entries: bool = True,
         allow_rotation_refresh: bool = True,
@@ -232,11 +233,16 @@ class LoadedStrategyRuntime:
         if set_symbol_trade_state_fn is not None:
             runtime_config["set_symbol_trade_state_fn"] = set_symbol_trade_state_fn
         runtime_now = now_utc or datetime.now(timezone.utc)
+        portfolio_symbols = (
+            tuple(trend_universe_symbols)
+            if portfolio_trend_universe_symbols is None
+            else tuple(portfolio_trend_universe_symbols)
+        )
         portfolio_snapshot = self.build_portfolio_snapshot(
             account_metrics=account_metrics,
             balances=balances,
             prices=prices,
-            trend_universe_symbols=tuple(trend_universe_symbols),
+            trend_universe_symbols=portfolio_symbols,
             as_of=runtime_now,
         )
         from quant_platform_kit.strategy_lifecycle.live_equity import stamp_consecutive_losses_on_snapshot
