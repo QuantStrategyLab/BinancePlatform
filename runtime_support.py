@@ -529,6 +529,8 @@ def acquire_runtime_state_owner(runtime):
     runtime.state_owner_id = uuid.uuid4().hex
     try:
         held = runtime.state_owner_claim(runtime.state_owner_id)
+    except ExecutionIntegrityError:
+        raise
     except Exception:
         raise StatePersistenceError("state_owner_claim_uncertain") from None
     runtime.state_owner_held = held is True
@@ -564,8 +566,25 @@ def release_runtime_state_owner(runtime):
     return True
 
 
+def get_spot_balance(client, asset, *, free_only=False):
+    """Read validated Spot quantities; Earn is outside strategy ownership."""
+    try:
+        row = client.get_asset_balance(asset=asset)
+        if not isinstance(row, Mapping) or row.get("asset", asset) != asset:
+            raise ValueError("spot_asset_mismatch")
+        free, locked = (Decimal(str(row[key])) for key in ("free", "locked"))
+        if not all(value.is_finite() and value >= 0 for value in (free, locked)):
+            raise ValueError("spot_quantity_invalid")
+        result = float(free if free_only else free + locked)
+        if not math.isfinite(result):
+            raise ValueError("spot_quantity_invalid")
+        return result
+    except Exception:
+        raise ExecutionIntegrityError("spot_balance_lookup_failed") from None
+
+
 def reconcile_runtime_cash_effects(runtime, state):
-    """Refresh confirmed Earn/fuel balances; no receipt or status word substitutes for this read."""
+    """Refresh confirmed fuel balances using the strategy's Spot-only scope."""
     pending = getattr(runtime, "pending_funds", [])
     assets = {item["asset"] for item in pending if item.get("confirmed") and item.get("asset")}
     if not assets:
@@ -574,17 +593,7 @@ def reconcile_runtime_cash_effects(runtime, state):
     observations = {}
     try:
         for asset in assets | {"USDT"}:
-            spot = runtime.client.get_asset_balance(asset=asset)
-            earn = runtime.client.get_simple_earn_flexible_product_position(asset=asset)
-            if not isinstance(earn, Mapping) or not isinstance(earn.get("rows"), list):
-                raise ValueError("incomplete_balance")
-            values = [Decimal(str(spot[key])) for key in ("free", "locked")]
-            values.extend(Decimal(str(row["totalAmount"])) for row in earn["rows"])
-            if not all(value.is_finite() and value >= 0 for value in values):
-                raise ValueError("invalid_balance")
-            observations[asset] = float(sum(values))
-            if not math.isfinite(observations[asset]):
-                raise ValueError("invalid_balance")
+            observations[asset] = get_spot_balance(runtime.client, asset)
     except Exception:
         raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None
     submission = state.get(_ORDER_SUBMISSION_STATE_KEY, {})
@@ -964,6 +973,8 @@ def _require_filled_order_response(response):
 
 def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                         max_retries: int = 3, retry_base_sec: float = 1.0, accounting_asset=None):
+    if str(effect_type or "").startswith("earn_") or str(method_name) in _EARN_SUCCESS_ID_BY_METHOD:
+        raise ExecutionIntegrityError("earn_outside_strategy_scope")
     if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
         record_side_effect(
             runtime, report, effect_type=effect_type,

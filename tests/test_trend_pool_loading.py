@@ -352,7 +352,7 @@ class TrendPoolLoadingTests(unittest.TestCase):
         total_balance = main.get_total_balance(EarnFailureClient(), "USDT", log_buffer=log_buffer)
 
         self.assertAlmostEqual(total_balance, 2.0)
-        self.assertTrue(any("earn balance lookup failed" in message for message in log_buffer))
+        self.assertEqual(log_buffer, [])
 
     def test_format_trend_pool_source_logs_highlights_degraded_buy_pause(self):
         log_lines = format_trend_pool_source_logs(

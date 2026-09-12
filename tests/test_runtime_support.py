@@ -390,117 +390,11 @@ class TestBuildExecutionReport(unittest.TestCase):
         self.assertEqual(len(reads), 1)
         self.assertEqual(len(blocked), 1)
 
-    def test_earn_timeout_submits_once_and_keeps_unknown(self):
-        cases = (
-            ("redeem_simple_earn_flexible_product", "earn_redeem", "redeemId"),
-            ("subscribe_simple_earn_flexible_product", "earn_subscribe", "purchaseId"),
-        )
-        for method_name, effect_type, _response_id in cases:
-            with self.subTest(method_name=method_name):
-                store = DurableSubmissionStateStore()
-                calls = []
 
-                class Client:
-                    def redeem_simple_earn_flexible_product(self, **kwargs):
-                        calls.append(("redeem", kwargs))
-                        raise TimeoutError("provider-submit-secret")
 
-                    def subscribe_simple_earn_flexible_product(self, **kwargs):
-                        calls.append(("subscribe", kwargs))
-                        raise TimeoutError("provider-submit-secret")
-
-                runtime = owned_runtime(
-                    dry_run=False,
-                    run_id=f"earn-timeout-{effect_type}",
-                    client=Client(),
-                    state_loader=store.load,
-                    state_writer=store.write,
-                )
-
-                with patch("runtime_support._rate_limit_pause"), patch("runtime_support.time.sleep"):
-                    with self.assertRaises(RuntimeError) as raised:
-                        runtime_call_client(
-                            runtime,
-                            build_execution_report(runtime),
-                            method_name=method_name,
-                            payload={"productId": "earn-1", "amount": 1.0},
-                            effect_type=effect_type,
-                        )
-
-                self.assertEqual(len(calls), 1)
-                self.assertIsInstance(raised.exception, OrderReconciliationError)
-                self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
-                self.assertEqual(store.data["order_submission"]["method_name"], method_name)
-
-    def test_confirmed_earn_success_terminalizes_existing_submission_state(self):
-        cases = (
-            ("redeem_simple_earn_flexible_product", "earn_redeem", "redeemId"),
-            ("subscribe_simple_earn_flexible_product", "earn_subscribe", "purchaseId"),
-        )
-        for method_name, effect_type, response_id in cases:
-            with self.subTest(method_name=method_name):
-                store = DurableSubmissionStateStore()
-                calls = []
-
-                class Client:
-                    def redeem_simple_earn_flexible_product(self, **kwargs):
-                        calls.append(("redeem", kwargs))
-                        return {"success": True, "redeemId": 1}
-
-                    def subscribe_simple_earn_flexible_product(self, **kwargs):
-                        calls.append(("subscribe", kwargs))
-                        return {"success": True, "purchaseId": 1}
-
-                runtime = owned_runtime(
-                    dry_run=False,
-                    run_id=f"earn-success-{effect_type}",
-                    client=Client(),
-                    state_loader=store.load,
-                    state_writer=store.write,
-                )
-
-                response = runtime_call_client(
-                    runtime,
-                    build_execution_report(runtime),
-                    method_name=method_name,
-                    payload={"productId": "earn-1", "amount": 1.0},
-                    effect_type=effect_type,
-                    max_retries=0,
-                )
-
-                self.assertTrue(response["success"])
-                self.assertIn(response_id, response)
-                self.assertEqual(len(calls), 1)
-                self.assertEqual(store.data["order_submission"], {"state": "TERMINAL"})
-
-    def test_unconfirmed_earn_response_keeps_unknown(self):
-        store = DurableSubmissionStateStore()
-
-        class Client:
-            def subscribe_simple_earn_flexible_product(self, **_kwargs):
-                return {"success": False}
-
-        runtime = owned_runtime(
-            dry_run=False,
-            run_id="earn-unconfirmed",
-            client=Client(),
-            state_loader=store.load,
-            state_writer=store.write,
-        )
-
-        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
-            runtime_call_client(
-                runtime,
-                build_execution_report(runtime),
-                method_name="subscribe_simple_earn_flexible_product",
-                payload={"productId": "earn-1", "amount": 1.0},
-                effect_type="earn_subscribe",
-                max_retries=0,
-            )
-
-        self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
 
     def test_unknown_earn_blocks_later_funding_without_order_query(self):
+        from runtime_support import ExecutionIntegrityError
         store = DurableSubmissionStateStore(
             {
                 "state": "SUBMISSION_UNKNOWN",
@@ -539,7 +433,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                     state_loader=store.load,
                     state_writer=store.write,
                 )
-                with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+                with self.assertRaisesRegex(ExecutionIntegrityError, "order_reconciliation_uncertain|earn_outside_strategy_scope"):
                     runtime_call_client(
                         runtime,
                         build_execution_report(runtime),
@@ -562,7 +456,7 @@ class TestBuildExecutionReport(unittest.TestCase):
             state_loader=market_store.load,
             state_writer=market_store.write,
         )
-        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_uncertain"):
+        with self.assertRaisesRegex(ExecutionIntegrityError, "order_reconciliation_uncertain|earn_outside_strategy_scope"):
             runtime_call_client(
                 runtime,
                 build_execution_report(runtime),
@@ -1469,7 +1363,7 @@ def test_partial_or_unknown_fill_retains_owner_but_zero_fill_rejection_releases(
         assert release.call_count == int(filled == '0')
 
 
-def test_confirmed_earn_and_fuel_require_fresh_balances_and_successful_state_write():
+def test_confirmed_fuel_requires_fresh_balances_and_successful_state_write():
     import pytest
     from unittest.mock import Mock
     from runtime_support import ExecutionIntegrityError, StatePersistenceError
@@ -1478,7 +1372,6 @@ def test_confirmed_earn_and_fuel_require_fresh_balances_and_successful_state_wri
          {'status': 'FILLED', 'symbol': 'BNBUSDT', 'side': 'BUY', 'executedQty': '1',
           'cummulativeQuoteQty': '1',
           'fills': [{'price': '1', 'qty': '1', 'commission': '0', 'commissionAsset': 'BNB'}]}),
-        ('subscribe_simple_earn_flexible_product', {'productId': 'synthetic', 'amount': 1}, 'earn_subscribe', 'USDT', {'success': True, 'purchaseId': 1}),
     ]:
         client = Mock()
         getattr(client, method).return_value = response

@@ -64,10 +64,22 @@ def bind_trade_state_access(*, normalize_fn, default_state_factory,
 
     def claim(owner_id):
         from google.api_core.exceptions import AlreadyExists
+        from google.cloud import firestore
+        from runtime_support import ExecutionIntegrityError
         if not isinstance(owner_id, str) or not owner_id.strip():
             raise ValueError("state_owner_required")
+        ledger_ref = store.client.collection(collection).document(document)
+
+        @firestore.transactional
+        def claim_spot_ledger(transaction):
+            snapshot = ledger_ref.get(transaction=transaction, retry=None)
+            ledger = snapshot.to_dict() if snapshot.exists else None
+            if not isinstance(ledger, dict) or ledger.get("balance_scope") != "spot":
+                raise ExecutionIntegrityError("spot_scope_migration_required")
+            transaction.create(owner_document(), {"owner_id": owner_id})
+
         try:
-            owner_document().create({"owner_id": owner_id}, retry=None)
+            claim_spot_ledger(store.client.transaction(max_attempts=1))
         except AlreadyExists:
             return False
         return True

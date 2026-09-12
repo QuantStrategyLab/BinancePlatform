@@ -79,6 +79,7 @@ def build_default_state(
         "trend_pool_source_project": "",
         "trend_pool_loaded_at": "",
         "trend_pool_messages": [],
+        "balance_scope": "",
         "last_balance_snapshot": {},
         "external_cash_flow_cursor": None,
         "order_submission": {"state": "RESERVED"},
