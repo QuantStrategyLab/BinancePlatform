@@ -119,7 +119,8 @@ class StrategyRuntimeTests(unittest.TestCase):
                 },
                 btc_snapshot={"regime_on": True, "btc_roc20": 0.08, "btc_roc60": 0.16, "btc_roc120": 0.30},
                 account_metrics=account_metrics,
-                trend_universe_symbols=("ETHUSDT", "SOLUSDT"),
+                trend_universe_symbols=("ETHUSDT",),
+                portfolio_trend_universe_symbols=("ETHUSDT", "SOLUSDT"),
                 state={"ETHUSDT": {"is_holding": True, "entry_price": 2800.0, "highest_price": 3000.0}},
                 translator=lambda key, **_kwargs: key,
                 balances={"BTCUSDT": 0.02, "ETHUSDT": 0.3, "SOLUSDT": 1.2},
@@ -142,6 +143,9 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertIn("sell_reasons", diagnostics)
         self.assertIn("btc_base_order_usdt", diagnostics)
         self.assertGreaterEqual(diagnostics["btc_base_order_usdt"], 15.0)
+        self.assertNotIn("SOLUSDT", diagnostics["trend_pool"])
+        self.assertNotIn("SOLUSDT", diagnostics["rotation_candidates"])
+        self.assertNotIn("SOLUSDT", diagnostics["eligible_buy_symbols"])
 
     def test_load_strategy_runtime_uses_entrypoint_only(self):
         try:
@@ -240,12 +244,13 @@ class StrategyRuntimeTests(unittest.TestCase):
             return_value=SimpleNamespace(display_name="Crypto Live Pool Rotation"),
         ):
             evaluation = runtime.evaluate(
-                prices={"BTCUSDT": 60000.0, "ETHUSDT": 3000.0},
-                trend_indicators={"ETHUSDT": {"close": 3000.0}},
+                prices={"BTCUSDT": 60000.0, "ETHUSDT": 3000.0, "SOLUSDT": 100.0},
+                trend_indicators={"ETHUSDT": {"close": 3000.0}, "SOLUSDT": {"close": 100.0}},
                 btc_snapshot={"regime_on": True},
                 account_metrics={"total_equity": 10000.0, "cash_usdt": 2000.0, "trend_value": 3000.0, "dca_value": 5000.0},
                 trend_universe_symbols=("ETHUSDT",),
-                balances={"BTCUSDT": 0.0833333333, "ETHUSDT": 1.0},
+                portfolio_trend_universe_symbols=("ETHUSDT", "SOLUSDT"),
+                balances={"BTCUSDT": 0.0833333333, "ETHUSDT": 1.0, "SOLUSDT": 2.0},
                 state={},
                 translator=lambda key, **_kwargs: key,
                 now_utc=datetime(2026, 4, 7, tzinfo=timezone.utc),
@@ -256,8 +261,58 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertIsInstance(ctx.portfolio, PortfolioSnapshot)
         self.assertEqual(ctx.market_data["market_prices"]["ETHUSDT"], 3000.0)
         self.assertEqual(ctx.market_data["universe_snapshot"], ("ETHUSDT",))
+        self.assertEqual(
+            {position.symbol for position in ctx.portfolio.positions},
+            {"BTCUSDT", "ETHUSDT", "SOLUSDT"},
+        )
         self.assertEqual(ctx.portfolio.metadata["account_metrics"]["cash_usdt"], 2000.0)
         self.assertEqual(evaluation.metadata["strategy_display_name"], "Crypto Live Pool Rotation")
+
+    def test_main_excludes_valuation_only_assets_from_strategy_universe(self):
+        import main
+
+        captured = {}
+
+        class FakeStrategyRuntime:
+            @staticmethod
+            def compute_account_metrics(universe, *_args):
+                captured["metrics_universe"] = tuple(universe)
+                return {
+                    "total_equity": 300.0,
+                    "cash_usdt": 100.0,
+                    "trend_value": 200.0,
+                    "dca_value": 0.0,
+                }
+
+            @staticmethod
+            def evaluate(**kwargs):
+                captured["evaluate"] = kwargs
+                return "evaluation"
+
+        universe = {
+            "ETHUSDT": {"base_asset": "ETH"},
+            "SOLUSDT": {"base_asset": "SOL", "valuation_only": True},
+        }
+        with patch.object(main, "STRATEGY_RUNTIME", FakeStrategyRuntime()):
+            result = main._resolve_strategy_evaluation(
+                SimpleNamespace(now_utc=datetime(2026, 9, 12, tzinfo=timezone.utc)),
+                {},
+                universe,
+                {"ETHUSDT": {"close": 1}, "SOLUSDT": {"close": 1}},
+                {"regime_on": True},
+                {"BTCUSDT": 1.0, "ETHUSDT": 1.0, "SOLUSDT": 1.0},
+                {"BTCUSDT": 0.0, "ETHUSDT": 0.0, "SOLUSDT": 2.0},
+                100.0,
+                0.0,
+            )
+
+        self.assertEqual(result, "evaluation")
+        self.assertEqual(captured["metrics_universe"], ("ETHUSDT", "SOLUSDT"))
+        self.assertEqual(captured["evaluate"]["trend_universe_symbols"], ("ETHUSDT",))
+        self.assertEqual(
+            captured["evaluate"]["portfolio_trend_universe_symbols"],
+            ("ETHUSDT", "SOLUSDT"),
+        )
 
     def test_evaluate_stamps_consecutive_losses(self):
         import strategy_runtime as strategy_runtime_module

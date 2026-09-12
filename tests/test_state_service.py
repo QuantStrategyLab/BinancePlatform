@@ -1,6 +1,8 @@
 import unittest
 from types import SimpleNamespace
 
+import pytest
+
 from application.state_service import append_trend_pool_source_logs, load_cycle_state
 from infra.state_store import load_runtime_trade_state, save_runtime_trade_state
 from trade_state_support import build_default_state, normalize_trade_state
@@ -256,57 +258,173 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def test_rebased_scope_blocks_pool_expansion_before_any_state_write():
-    import pytest
+APPROVED_TREND_ASSETS = (
+    "ADA", "ATOM", "AVAX", "BCH", "DOGE", "ETH", "LINK", "LTC", "SOL", "TRX", "XRP",
+)
+
+
+def _rebased_state(*, checkpoint=True):
+    assets = (*APPROVED_TREND_ASSETS, "BNB", "BTC", "USDT")
+    state = {
+        "accounting_rebase": {"approved_proposal_run_id": "test"},
+        "last_balance_snapshot": {asset: 0.0 for asset in assets},
+        "rotation_pool_symbols": ["ZECUSDT", "ADAUSDT"],
+        "ZECUSDT": {
+            "is_holding": False,
+            "entry_price": 0.0,
+            "highest_price": 0.0,
+            "holding_qty": 0.0,
+        },
+        "retired_trend_positions": {},
+    }
+    if checkpoint:
+        state["earn_accrual_checkpoint"] = {
+            "assets": {asset: {"quantity": "0"} for asset in assets}
+        }
+    return state
+
+
+def _load_rebased_state(raw, resolved):
+    import copy
+
+    observed = {"effective": None, "writes": []}
+    resolution = {
+        "degraded": False,
+        "symbols": list(resolved),
+        "symbol_map": copy.deepcopy(resolved),
+        "payload": {"symbols": list(resolved), "symbol_map": copy.deepcopy(resolved)},
+    }
+    result = load_cycle_state(
+        SimpleNamespace(),
+        {"status": "ok"},
+        False,
+        state_loader=lambda **_: raw,
+        resolve_runtime_trend_pool=lambda *_: (resolved, resolution),
+        normalize_trade_state=lambda state: copy.deepcopy(state),
+        update_trend_pool_state=lambda *_: None,
+        runtime_set_trade_state=lambda *args, **kwargs: observed["writes"].append(args[2]),
+        get_runtime_trend_universe=lambda _: observed["effective"],
+        append_report_error=lambda *args, **kwargs: None,
+        trend_universe_setter=lambda value: observed.__setitem__("effective", value),
+    )
+    return result, observed, resolution
+
+
+def test_rebased_scope_filters_inactive_unapproved_pool_and_keeps_full_approved_valuation():
+    import copy
+
+    raw = _rebased_state()
+    original = copy.deepcopy(raw)
+    resolved = {
+        symbol: {"base_asset": symbol.removesuffix("USDT")}
+        for symbol in ("ADAUSDT", "ETHUSDT", "SOLUSDT", "TRXUSDT", "ZECUSDT")
+    }
+
+    result, observed, resolution = _load_rebased_state(raw, resolved)
+
+    effective = result[2]
+    assert set(effective) == {f"{asset}USDT" for asset in APPROVED_TREND_ASSETS}
+    assert {
+        symbol for symbol, meta in effective.items() if not meta.get("valuation_only")
+    } == {"ADAUSDT", "ETHUSDT", "SOLUSDT", "TRXUSDT"}
+    assert all(
+        effective[f"{asset}USDT"].get("valuation_only") is True
+        for asset in set(APPROVED_TREND_ASSETS) - {"ADA", "ETH", "SOL", "TRX"}
+    )
+    assert result[0]["rotation_pool_symbols"] == ["ADAUSDT"]
+    assert resolution["symbols"][-1] == "ZECUSDT"
+    assert "ZECUSDT" in resolution["payload"]["symbol_map"]
+    assert len(observed["writes"]) == 1
+    assert raw == original
+
+
+@pytest.mark.parametrize("location", ["direct", "retired"])
+def test_rebased_scope_rejects_active_unapproved_asset_before_any_state_write(location):
     from runtime_support import ExecutionIntegrityError
 
-    allowed = {"ETHUSDT": {"base_asset": "ETH"}}
-    invalid = [
-        {"PASSIVEUSDT": {"base_asset": "PASSIVE"}},
+    raw = _rebased_state()
+    active = {"is_holding": True, "entry_price": 1.0, "highest_price": 1.0}
+    if location == "direct":
+        raw["ZECUSDT"] = active
+    else:
+        raw["retired_trend_positions"] = {"ZECUSDT": {**active, "base_asset": "ZEC"}}
+
+    with pytest.raises(ExecutionIntegrityError, match="managed_asset_scope_mismatch"):
+        _load_rebased_state(raw, {"ZECUSDT": {"base_asset": "ZEC"}})
+
+
+def test_rebased_scope_rejects_active_unapproved_asset_even_when_absent_from_source_pool():
+    from runtime_support import ExecutionIntegrityError
+
+    raw = _rebased_state()
+    raw["ZECUSDT"]["holding_qty"] = 1.0
+
+    with pytest.raises(ExecutionIntegrityError, match="managed_asset_scope_mismatch"):
+        _load_rebased_state(raw, {"ETHUSDT": {"base_asset": "ETH"}})
+
+
+def test_rebased_scope_allows_active_top_level_dedicated_asset_state():
+    raw = _rebased_state()
+    raw["BTCUSDT"] = {"holding_qty": 0.25}
+    raw["BNBUSDT"] = {"holding_qty": 0.5}
+
+    result, _observed, _resolution = _load_rebased_state(
+        raw, {"ETHUSDT": {"base_asset": "ETH"}}
+    )
+
+    assert "ETHUSDT" in result[2]
+
+
+@pytest.mark.parametrize("symbol", ["BTCUSDT", "BNBUSDT"])
+def test_rebased_scope_rejects_active_dedicated_asset_in_retired_trend_positions(symbol):
+    from runtime_support import ExecutionIntegrityError
+
+    raw = _rebased_state()
+    raw["retired_trend_positions"] = {
+        symbol: {"is_holding": True, "base_asset": symbol.removesuffix("USDT")}
+    }
+
+    with pytest.raises(ExecutionIntegrityError, match="managed_asset_scope_mismatch"):
+        _load_rebased_state(raw, {"ETHUSDT": {"base_asset": "ETH"}})
+
+
+def test_rebased_scope_requires_checkpoint_and_balance_snapshot_asset_keys_to_match():
+    from runtime_support import ExecutionIntegrityError
+
+    raw = _rebased_state()
+    raw["last_balance_snapshot"].pop("XRP")
+
+    with pytest.raises(ExecutionIntegrityError, match="managed_asset_scope_mismatch"):
+        _load_rebased_state(raw, {"ETHUSDT": {"base_asset": "ETH"}})
+
+
+@pytest.mark.parametrize(
+    "resolved",
+    [
         {"PASSIVEUSDT": {"base_asset": "ETH"}},
         {"BTCUSDT": {"base_asset": "BTC"}},
         {"BNBUSDT": {"base_asset": "BNB"}},
-    ]
-    for universe in invalid:
-        for bad_stage in ("resolved", "effective"):
-            writes = []
-            raw = {"accounting_rebase": {"approved_proposal_run_id": "test"},
-                   "last_balance_snapshot": {"ETH": 1, "BTC": 0, "BNB": 0, "USDT": 100}}
-            with pytest.raises(ExecutionIntegrityError, match="managed_asset_scope_mismatch"):
-                load_cycle_state(
-                    SimpleNamespace(), {"status": "ok"}, False,
-                    state_loader=lambda **_: raw,
-                    resolve_runtime_trend_pool=lambda *_: (
-                        universe if bad_stage == "resolved" else allowed, {"degraded": False}),
-                    normalize_trade_state=lambda state: state.copy(),
-                    update_trend_pool_state=lambda *_: None,
-                    runtime_set_trade_state=lambda *args, **kwargs: writes.append(kwargs),
-                    get_runtime_trend_universe=lambda _: universe if bad_stage == "effective" else allowed,
-                    append_report_error=lambda *args, **kwargs: None,
-                    trend_universe_setter=lambda _: None,
-                )
-            assert writes == []
+    ],
+)
+def test_rebased_scope_still_rejects_malformed_or_dedicated_pairs(resolved):
+    from runtime_support import ExecutionIntegrityError
+
+    with pytest.raises(ExecutionIntegrityError, match="managed_asset_scope_mismatch"):
+        _load_rebased_state(_rebased_state(), resolved)
 
 
-def test_rebased_scope_keeps_original_universe_and_does_not_mutate_opening():
-    import copy
+def test_legacy_rebase_snapshot_scope_is_preserved_by_effective_universe():
+    from application.portfolio_service import build_balance_snapshot
 
-    raw = {"accounting_rebase": {"approved_proposal_run_id": "test"},
-           "last_balance_snapshot": {"ETH": 1, "BTC": 0, "BNB": 0, "USDT": 100}}
-    original = copy.deepcopy(raw)
-    allowed = {"ETHUSDT": {"base_asset": "ETH"}}
-    writes = []
-    result = load_cycle_state(
-        SimpleNamespace(), {"status": "ok"}, False,
-        state_loader=lambda **_: raw,
-        resolve_runtime_trend_pool=lambda *_: (allowed, {"degraded": False}),
-        normalize_trade_state=lambda state: copy.deepcopy(state),
-        update_trend_pool_state=lambda *_: None,
-        runtime_set_trade_state=lambda *args, **kwargs: writes.append(kwargs),
-        get_runtime_trend_universe=lambda _: allowed,
-        append_report_error=lambda *args, **kwargs: None,
-        trend_universe_setter=lambda _: None,
+    raw = _rebased_state(checkpoint=False)
+    result, _observed, _resolution = _load_rebased_state(
+        raw, {"ETHUSDT": {"base_asset": "ETH"}}
     )
-    assert result[2] == allowed
-    assert len(writes) == 1
-    assert raw == original
+
+    assert set(result[2]) == {f"{asset}USDT" for asset in APPROVED_TREND_ASSETS}
+    assert result[2]["ETHUSDT"].get("valuation_only") is not True
+    assert result[2]["XRPUSDT"]["valuation_only"] is True
+    balances = {symbol: 0.0 for symbol in result[2]}
+    balances.update({"BTCUSDT": 0.0, "BNBUSDT": 0.0})
+    snapshot = build_balance_snapshot(result[2], balances, 100.0)
+    assert set(snapshot) == set(raw["last_balance_snapshot"])

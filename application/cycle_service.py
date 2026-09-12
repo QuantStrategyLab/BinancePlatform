@@ -90,7 +90,9 @@ def execute_strategy_cycle(
         failure_stage = "pool_diagnostics"
         append_trend_pool_source_logs(log_buffer, trend_pool_resolution, allow_new_trend_entries)
 
-        report["upstream_pool_symbols"] = list(runtime_trend_universe.keys())
+        report["upstream_pool_symbols"] = list(
+            trend_pool_resolution.get("symbols") or runtime_trend_universe
+        )
         if trend_pool_resolution["degraded"]:
             report["degraded_mode_level"] = trend_pool_resolution.get("source_kind", "unknown")
 

@@ -26,8 +26,25 @@ def validate_startup():
     runtime = main.build_live_runtime()
     if runtime.standard_execution_permitted:
         raise ValueError("startup_validation_execution_permitted")
+    memory_writes = []
+    runtime.state_writer = lambda state: memory_writes.append(dict(state)) or True
+    report = main.build_execution_report(runtime)
+    cycle_state = main._load_cycle_state(runtime, report, False)
+    if cycle_state is None:
+        raise ValueError("startup_validation_state_load_failed")
+    _state, resolution, runtime_trend_universe, _allow_new = cycle_state
+    candidate_count = sum(
+        not meta.get("valuation_only")
+        for meta in runtime_trend_universe.values()
+    )
+    valuation_only_count = len(runtime_trend_universe) - candidate_count
     return {"status": "passed", "strategy_profile": runtime.strategy_profile,
-            "execution_permitted": False, "validation_only": True}
+            "execution_permitted": False, "validation_only": True,
+            "state_load_checked": True,
+            "source_pool_symbol_count": len(resolution.get("symbols") or ()),
+            "managed_asset_count": len(runtime_trend_universe) + 3,
+            "strategy_candidate_count": candidate_count,
+            "valuation_only_count": valuation_only_count}
 
 
 if __name__ == "__main__":

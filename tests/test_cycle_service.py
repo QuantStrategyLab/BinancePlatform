@@ -41,6 +41,7 @@ class CycleServiceTests(unittest.TestCase):
         balance_snapshot=None,
         rebase_fn=None,
         reset_fn=None,
+        trend_pool_resolution=None,
     ):
         events = []
         state = {} if state is None else state
@@ -87,7 +88,15 @@ class CycleServiceTests(unittest.TestCase):
                 btc_status_report_interval_hours=24,
                 allow_new_trend_entries_on_degraded=False,
             ),
-            load_cycle_state=lambda *_args: note("state", (state, {"degraded": False}, {"ETHUSDT": {}}, True)),
+            load_cycle_state=lambda *_args: note(
+                "state",
+                (
+                    state,
+                    trend_pool_resolution or {"degraded": False},
+                    {"ETHUSDT": {}},
+                    True,
+                ),
+            ),
             append_trend_pool_source_logs=lambda *_args: None,
             capture_market_snapshot=(
                 lambda *_args: (_ for _ in ()).throw(RuntimeError("snapshot_read_failed"))
@@ -131,6 +140,17 @@ class CycleServiceTests(unittest.TestCase):
             traceback_module=SimpleNamespace(),
         )
         return report, events
+
+    def test_cycle_report_preserves_original_upstream_pool_symbols(self):
+        report, _events = self._run_funds_cycle(
+            False,
+            trend_pool_resolution={
+                "degraded": False,
+                "symbols": ["ETHUSDT", "ZECUSDT"],
+            },
+        )
+
+        self.assertEqual(report["upstream_pool_symbols"], ["ETHUSDT", "ZECUSDT"])
 
     def test_owner_busy_prevents_client_state_and_market_reads(self):
         observed = []

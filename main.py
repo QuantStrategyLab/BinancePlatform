@@ -859,6 +859,12 @@ def _resolve_strategy_evaluation(
     allow_new_trend_entries=True,
     allow_pool_refresh=True,
 ):
+    portfolio_trend_universe_symbols = tuple(runtime_trend_universe)
+    strategy_trend_universe_symbols = tuple(
+        symbol
+        for symbol, meta in runtime_trend_universe.items()
+        if not meta.get("valuation_only")
+    )
     account_metrics = STRATEGY_RUNTIME.compute_account_metrics(
         runtime_trend_universe,
         balances,
@@ -871,7 +877,8 @@ def _resolve_strategy_evaluation(
         trend_indicators=trend_indicators,
         btc_snapshot=btc_snapshot,
         account_metrics=account_metrics,
-        trend_universe_symbols=tuple(runtime_trend_universe.keys()),
+        trend_universe_symbols=strategy_trend_universe_symbols,
+        portfolio_trend_universe_symbols=portfolio_trend_universe_symbols,
         state=state,
         translator=t,
         balances=balances,

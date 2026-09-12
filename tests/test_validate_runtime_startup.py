@@ -24,11 +24,34 @@ def test_startup_validation_loads_without_broker_credentials_or_execution(monkey
         calls.append("build")
         assert not os.getenv("BINANCE_API_KEY") and not os.getenv("BINANCE_API_SECRET")
         return SimpleNamespace(standard_execution_permitted=False, strategy_profile="fixture")
-    monkeypatch.setitem(sys.modules, "main", SimpleNamespace(build_live_runtime=build))
+    def load_cycle_state(runtime, report, allow_new):
+        calls.append("state_load")
+        assert runtime.state_writer({"normalized": True}) is True
+        assert report == {"state_write_intents": []}
+        assert allow_new is False
+        return (
+            {},
+            {"symbols": ["ETHUSDT", "ZECUSDT"]},
+            {
+                "ETHUSDT": {"base_asset": "ETH"},
+                "SOLUSDT": {"base_asset": "SOL", "valuation_only": True},
+            },
+            True,
+        )
+    monkeypatch.setitem(sys.modules, "main", SimpleNamespace(
+        build_live_runtime=build,
+        build_execution_report=lambda _runtime: {"state_write_intents": []},
+        _load_cycle_state=load_cycle_state,
+    ))
     result = validate_startup()
-    assert calls == ["build"]
+    assert calls == ["build", "state_load"]
     assert result["status"] == "passed"
     assert result["execution_permitted"] is False
+    assert result["state_load_checked"] is True
+    assert result["source_pool_symbol_count"] == 2
+    assert result["managed_asset_count"] == 5
+    assert result["strategy_candidate_count"] == 1
+    assert result["valuation_only_count"] == 1
 
 
 def test_startup_validation_rejects_broker_credentials(monkeypatch):
