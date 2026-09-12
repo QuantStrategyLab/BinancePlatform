@@ -298,3 +298,28 @@ def test_reward_delta_diagnostic_is_bounded_private_and_not_causal_authority(dup
         check = result["reward_quantity_checks"]["BNB"]
         assert check["delta_matches_bonus"] is True
         assert check["causal_reconciliation"] is False
+
+
+def test_bnb_activity_diagnosis_reads_only_bounded_get_and_never_exports_rows():
+    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    calls = []
+    def read(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        if path.endswith('assetDividend'):
+            return {'rows': [], 'total': 0}
+        return {'userAssetDribblets': [], 'total': 0}
+    result = diagnose_bnb_wallet_activity(SimpleNamespace(_request_margin_api=read), start=NOW-timedelta(hours=2), end=NOW)
+    assert len(calls) == 2 and all(c[0] == 'get' for c in calls)
+    assert calls[0][2]['data']['asset'] == 'BNB'
+    assert result['counts'] == {'bnb_dividends': 0, 'spot_dust_conversions': 0}
+    assert result['requested_surfaces_complete'] is True
+    assert result['complete_balance_reconciliation'] is False
+
+
+@pytest.mark.parametrize('payload', [{'total': 2, 'rows': []}, {'total': 500, 'rows': [{}]*500}, {'total': 1, 'rows': [{'asset': 'BNB', 'amount': 'PRIVATE', 'divTime': 0}]}])
+def test_bnb_activity_diagnosis_rejects_incomplete_or_out_of_window_data(payload):
+    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    c = SimpleNamespace(_request_margin_api=lambda *a, **kw: payload)
+    result = diagnose_bnb_wallet_activity(c, start=NOW-timedelta(hours=2), end=NOW)
+    assert result['requested_surfaces_complete'] is False
+    assert 'PRIVATE' not in str(result)

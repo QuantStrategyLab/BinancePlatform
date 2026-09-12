@@ -1037,6 +1037,10 @@ def audit_ledger(refs, *, client, expected, now):
     )
     if history.get("history_complete_for_requested_surfaces") is not True:
         raise MigrationBlocked("audit_history_incomplete")
+    bnb_wallet_activity = None
+    if comparison.get("BNB") == "MISMATCH":
+        from application.broker_reconciliation import diagnose_bnb_wallet_activity
+        bnb_wallet_activity = diagnose_bnb_wallet_activity(client, start=start, end=now)
     after_account = client.get_account()
     after_balances = _strict_balance_snapshot(client, after_account["balances"], assets)
     after_snapshot, after_ledger, after_control = _read_source(refs)
@@ -1066,6 +1070,11 @@ def audit_ledger(refs, *, client, expected, now):
         "btc_has_flexible_earn_balance": balances["BTC"] > btc_spot + 1e-8,
         "bnb_has_flexible_earn_balance": balances.get("BNB", 0) > next(
             (float(Decimal(row["free"]) + Decimal(row["locked"])) for row in account["balances"] if row["asset"] == "BNB"), 0.0) + 1e-8,
+        "bnb_quantity_change": ("UNKNOWN" if "BNB" not in old else
+                                "INCREASE" if balances["BNB"] > old["BNB"] else
+                                "DECREASE" if balances["BNB"] < old["BNB"] else "UNCHANGED"),
+        "bnb_wallet_activity": bnb_wallet_activity,
+        "realtime_reward_interval_alignment": "UNVERIFIED_DAILY_HISTORY_VS_INTRADAY_BALANCES",
         "history_window_basis": "approved_opening" if post_rebase_source else "legacy_recovery",
         "recent_execution_window_start": start.isoformat(),
         "recent_execution_count": len(observations.recent_executions),
