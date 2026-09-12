@@ -62,6 +62,24 @@ def maybe_rebase_daily_state_for_balance_change(
     append_log_fn,
     translate_fn,
 ):
+    if "earn_accrual_checkpoint" in state:
+        from application.earn_accrual import prepare_forward_earn_state, _time
+        try:
+            current = runtime.earn_accrual_observation
+            if {a: round(float(r['quantity']), 8) for a, r in current['assets'].items()} != current_balance_snapshot:
+                raise ValueError('earn_valuation_snapshot_mismatch')
+            cash = collect_external_cash_flows_fn(runtime.client, now=_time(current['observed_at']),
+                                                  cursor=state.get('external_cash_flow_cursor'))
+            updated = prepare_forward_earn_state(state, current, cash)
+        except Exception:
+            raise ExecutionIntegrityError("earn_forward_accounting_unverified") from None
+        runtime_set_trade_state_fn(runtime, report, updated, reason="earn_forward_accounting")
+        state.clear()
+        state.update(updated)
+        runtime.trade_state = state
+        report.setdefault("diagnostics", {})["earn_accrual"] = {"status": "reconciled"}
+        return True
+
     previous_snapshot = state.get("last_balance_snapshot")
     initializing = not isinstance(previous_snapshot, dict) or not previous_snapshot
     if initializing:

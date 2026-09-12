@@ -21,6 +21,26 @@ def capture_market_snapshot(
     bnb_fuel_symbol: str = "BNBUSDT",
     bnb_fuel_asset: str = "BNB",
 ) -> dict[str, Any]:
+    state = getattr(runtime, "trade_state", None) or {}
+    if "earn_accrual_checkpoint" in state:
+        from datetime import datetime, timezone
+        from application.earn_accrual import collect_earn_checkpoint
+        previous = state["earn_accrual_checkpoint"]
+        scope = {"USDT", "BTC", bnb_fuel_asset} | {c["base_asset"] for c in runtime_trend_universe.values()}
+        try:
+            if scope != set(previous["assets"]):
+                raise ValueError
+            checkpoint = collect_earn_checkpoint(runtime.client, assets=scope,
+                observed_at=datetime.now(timezone.utc),
+                expected_account_scope_sha256=previous["account_scope_sha256"])
+        except Exception:
+            raise ExecutionIntegrityError("earn_observation_unavailable") from None
+        runtime.earn_accrual_observation = checkpoint
+        runtime.now_utc = datetime.fromisoformat(checkpoint["observed_at"])
+        def observed_balance(_client, asset, **_kwargs):
+            return float(checkpoint["assets"][asset]["quantity"])
+        get_total_balance_fn = observed_balance
+
     u_total = get_total_balance_fn(runtime.client, "USDT", log_buffer=log_buffer)
     bnb_total = get_total_balance_fn(runtime.client, bnb_fuel_asset, log_buffer=log_buffer)
     bnb_price = float(runtime.client.get_avg_price(symbol=bnb_fuel_symbol)["price"])
