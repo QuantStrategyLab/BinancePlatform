@@ -296,6 +296,56 @@ def _migration_run():
             "path": ".github/workflows/main.yml"}
 
 
+@pytest.mark.parametrize(
+    "status,conclusion,accepted,allowed",
+    [
+        ("completed", "success", ("success",), True),
+        ("completed", "failure", ("failure",), True),
+        ("in_progress", None, ("success", "failure"), False),
+        ("completed", "cancelled", ("success", "failure"), False),
+    ],
+)
+def test_verified_run_requires_declared_completed_outcome(
+    monkeypatch, status, conclusion, accepted, allowed
+):
+    from scripts import binance_recovery_controller as controller
+
+    value = {
+        **_source_run(),
+        "status": status,
+        "conclusion": conclusion,
+        "repository": {"full_name": controller.REPOSITORY},
+    }
+    monkeypatch.setattr(controller, "request_json", lambda *_args, **_kwargs: value)
+
+    if allowed:
+        assert controller.verified_run(
+            400, expected_sha="b" * 40, accepted_conclusions=accepted
+        ) == _source_run()
+    else:
+        with pytest.raises(ValueError, match="recovery_source_workflow_unverified"):
+            controller.verified_run(
+                400, expected_sha="b" * 40, accepted_conclusions=accepted
+            )
+
+
+def test_verified_run_rejects_wrong_repository_even_for_terminal_failure(monkeypatch):
+    from scripts import binance_recovery_controller as controller
+
+    value = {
+        **_source_run(),
+        "status": "completed",
+        "conclusion": "failure",
+        "repository": {"full_name": "other/repository"},
+    }
+    monkeypatch.setattr(controller, "request_json", lambda *_args, **_kwargs: value)
+
+    with pytest.raises(ValueError, match="recovery_source_workflow_unverified"):
+        controller.verified_run(
+            400, expected_sha="b" * 40, accepted_conclusions=("failure",)
+        )
+
+
 def _package(monkeypatch, *, client=None, now=NOW, later=LATER):
     from application.rebased_recovery import collect_prospective_rebase_source
 
@@ -364,7 +414,8 @@ def test_prospective_source_retains_existing_thirty_minute_freshness(monkeypatch
 
 
 def _controller_setup(monkeypatch, *, prepared=False, client_change=None, confirmation=True,
-                      owner=False, action_delay=timedelta(minutes=2)):
+                      owner=False, action_delay=timedelta(minutes=2),
+                      stored_status="completed", stored_conclusion="success"):
     from scripts import binance_recovery_controller as controller
     from tests.test_post_rebase_recovery import _confirmation_response
 
@@ -381,6 +432,11 @@ def _controller_setup(monkeypatch, *, prepared=False, client_change=None, confir
     current_run = _source_run(401, "c" * 40)
     runs = {400: _source_run(), 401: current_run,
             controller.PROSPECTIVE_MIGRATION_RUN_ID: _migration_run()}
+    outcomes = {
+        400: (stored_status, stored_conclusion),
+        401: ("in_progress", None),
+        controller.PROSPECTIVE_MIGRATION_RUN_ID: ("completed", "success"),
+    }
     for name, value in {
         "GITHUB_REPOSITORY": controller.REPOSITORY,
         "GITHUB_REF": "refs/heads/main",
@@ -408,7 +464,14 @@ def _controller_setup(monkeypatch, *, prepared=False, client_change=None, confir
         "evaluate_reconciliation_recovery_activation",
         lambda **kwargs: real_activation_evaluation(**kwargs, now=action_later),
     )
-    monkeypatch.setattr(controller, "verified_run", lambda run_id, **_kwargs: runs[int(run_id)])
+    def verified(run_id, *, completed=True, accepted_conclusions=("success",), **_kwargs):
+        run_id = int(run_id)
+        status, conclusion = outcomes[run_id]
+        if completed and (status != "completed" or conclusion not in accepted_conclusions):
+            raise ValueError("recovery_source_workflow_unverified")
+        return runs[run_id]
+
+    monkeypatch.setattr(controller, "verified_run", verified)
     monkeypatch.setattr(controller, "connect_client", lambda *_args, **_kwargs: Client(client_change))
     docs = {
         controller.CONTROL_DOCUMENT: Ref(control),
@@ -474,12 +537,45 @@ def test_controller_prepare_does_not_overwrite_existing_candidate(monkeypatch):
 
 
 def test_controller_prepare_replaces_only_expired_strict_candidate(monkeypatch):
+    from tests.test_post_rebase_recovery import _confirmation_response
+
     controller, _target_value, _expected, old_recovery_id, docs, writes, requests = (
         _controller_setup(
             monkeypatch,
             prepared=True,
             action_delay=timedelta(minutes=32),
         )
+    )
+    old_candidate = copy.deepcopy(
+        docs[controller.CONTROL_DOCUMENT].snapshot.value["candidate"]
+    )
+
+    result = controller.run("prepare")
+
+    assert result["status"] == "awaiting_human_confirmation"
+    assert result["recovery_id"] != old_recovery_id
+    assert result["candidate_sha256"] != old_candidate["candidate_sha256"]
+    assert len(writes) == 1 and len(requests) == 1
+    new_candidate = controller.validate_prospective_rebase_source(
+        docs[controller.CONTROL_DOCUMENT].snapshot.value,
+        runtime_target=_target(),
+        legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+        require_fresh=False,
+    )
+    with pytest.raises(ValueError, match="recovery_confirmation_binding_invalid"):
+        controller.verify_confirmation(
+            _confirmation_response(
+                old_candidate, old_recovery_id, NOW + timedelta(minutes=1)
+            ),
+            recovery_id=result["recovery_id"],
+            candidate=new_candidate,
+        )
+    assert len(writes) == 1
+
+
+def test_controller_prepare_replaces_terminal_failed_strict_candidate(monkeypatch):
+    controller, _target_value, _expected, old_recovery_id, docs, writes, requests = (
+        _controller_setup(monkeypatch, prepared=True, stored_conclusion="failure")
     )
     old_candidate_sha256 = docs[controller.CONTROL_DOCUMENT].snapshot.value["candidate"][
         "candidate_sha256"
@@ -491,14 +587,52 @@ def test_controller_prepare_replaces_only_expired_strict_candidate(monkeypatch):
     assert result["recovery_id"] != old_recovery_id
     assert result["candidate_sha256"] != old_candidate_sha256
     assert len(writes) == 1 and len(requests) == 1
-    monkeypatch.setattr(
-        controller,
-        "datetime",
-        SimpleNamespace(now=lambda _tz: NOW + timedelta(minutes=33)),
+
+
+@pytest.mark.parametrize(
+    "stored_status,stored_conclusion",
+    [("in_progress", None), ("completed", "cancelled")],
+)
+def test_controller_prepare_rejects_non_terminal_failure_source(
+    monkeypatch, stored_status, stored_conclusion
+):
+    controller, _target_value, _expected, _recovery_id, _docs, writes, requests = (
+        _controller_setup(
+            monkeypatch,
+            prepared=True,
+            stored_status=stored_status,
+            stored_conclusion=stored_conclusion,
+        )
     )
-    with pytest.raises(ValueError, match="recovery_confirmation_binding_invalid"):
-        controller.run("verify", result["recovery_id"])
-    assert len(writes) == 1
+
+    with pytest.raises(ValueError, match="prospective_rebase_prepare_control_changed"):
+        controller.run("prepare")
+    assert not writes and not requests
+
+
+@pytest.mark.parametrize("field", ["confirmation", "transition_plan"])
+def test_controller_prepare_rejects_candidate_with_review_or_transition(
+    monkeypatch, field
+):
+    controller, _target_value, _expected, _recovery_id, docs, writes, requests = (
+        _controller_setup(monkeypatch, prepared=True, stored_conclusion="failure")
+    )
+    docs[controller.CONTROL_DOCUMENT].snapshot.value[field] = {"present": True}
+
+    with pytest.raises(ValueError, match="prospective_rebase_prepare_control_changed"):
+        controller.run("prepare")
+    assert not writes and not requests
+
+
+@pytest.mark.parametrize("action", ["verify", "activate"])
+def test_controller_never_verifies_or_activates_failed_source(monkeypatch, action):
+    controller, _target_value, _expected, recovery_id, _docs, writes, requests = (
+        _controller_setup(monkeypatch, prepared=True, stored_conclusion="failure")
+    )
+
+    with pytest.raises(ValueError, match="recovery_source_workflow_unverified"):
+        controller.run(action, recovery_id)
+    assert not writes and not requests
 
 
 def test_controller_diagnose_accepts_only_original_or_strict_prospective_control(monkeypatch):

@@ -518,12 +518,15 @@ def test_post_rebase_control_write_is_single_attempt_and_read_back(monkeypatch, 
     assert attempts == [1]
 
 
-@pytest.mark.parametrize("outcome", ["success", "response_lost_after_commit"])
+@pytest.mark.parametrize(
+    "outcome", ["success", "response_lost_after_commit", "control_readback_mismatch"]
+)
 def test_post_rebase_control_uses_one_real_sdk_commit_rpc_and_keeps_transaction_id(
     monkeypatch, outcome
 ):
     from google.api_core import exceptions, gapic_v1
     from google.auth.credentials import AnonymousCredentials
+    from google.cloud.firestore_v1 import _helpers
     from google.cloud.firestore_v1.client import Client as FirestoreClient
     from google.cloud.firestore_v1.transaction import transactional as sdk_transactional
     from google.cloud.firestore_v1.types import firestore as firestore_types
@@ -544,7 +547,11 @@ def test_post_rebase_control_uses_one_real_sdk_commit_rpc_and_keeps_transaction_
         "control_ref": SDKRef(control, "control"),
         "archive_ref": SDKRef(archive, "archive"),
     }
-    next_value = {"state": "ACTIVE_LKG"}
+    next_value = {
+        "state": "RECONCILE_ONLY",
+        "recovery_id": "binance-200-1",
+        **_collect(monkeypatch),
+    }
     client = FirestoreClient(
         project="offline-review", credentials=AnonymousCredentials()
     )
@@ -556,7 +563,11 @@ def test_post_rebase_control_uses_one_real_sdk_commit_rpc_and_keeps_transaction_
 
     def fake_commit(request, **_kwargs):
         attempts.append(bytes(request.transaction))
-        refs["control_ref"].snapshot = Snapshot(next_value)
+        refs["control_ref"].snapshot = Snapshot(
+            _helpers.decode_dict(request.writes[0].update.fields, client)
+        )
+        if outcome == "control_readback_mismatch":
+            refs["control_ref"].snapshot.value["recovery_id"] = "binance-tampered-1"
         if outcome == "response_lost_after_commit" and len(attempts) == 1:
             raise exceptions.ServiceUnavailable("simulated response lost after durable commit")
         return firestore_types.CommitResponse()
@@ -574,7 +585,7 @@ def test_post_rebase_control_uses_one_real_sdk_commit_rpc_and_keeps_transaction_
         controller.firestore, "transactional", sdk_transactional, raising=False
     )
 
-    if outcome == "response_lost_after_commit":
+    if outcome in {"response_lost_after_commit", "control_readback_mismatch"}:
         with pytest.raises(controller.RecoveryWriteUncertain):
             controller.save_post_rebase_control(
                 client,
