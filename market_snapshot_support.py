@@ -24,7 +24,6 @@ def capture_market_snapshot(
     u_total = get_total_balance_fn(runtime.client, "USDT", log_buffer=log_buffer)
     bnb_total = get_total_balance_fn(runtime.client, bnb_fuel_asset, log_buffer=log_buffer)
     bnb_price = float(runtime.client.get_avg_price(symbol=bnb_fuel_symbol)["price"])
-    dynamic_usdt_buffer = max(50.0, min(u_total * 0.05, 300.0))
 
     prices = {bnb_fuel_symbol: bnb_price}
     balances = {bnb_fuel_symbol: bnb_total}
@@ -43,7 +42,6 @@ def capture_market_snapshot(
     return {
         "u_total": u_total,
         "fuel_val": bnb_total * bnb_price,
-        "dynamic_usdt_buffer": dynamic_usdt_buffer,
         "prices": prices,
         "balances": balances,
         "btc_snapshot": btc_snapshot,

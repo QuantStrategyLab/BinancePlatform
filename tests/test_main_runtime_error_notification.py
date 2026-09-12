@@ -198,14 +198,12 @@ class MainRuntimeErrorNotificationTests(unittest.TestCase):
         sentinel = "SENSITIVE_PROVIDER_SENTINEL"
         log_buffer = []
 
-        def fail_balance_lookup(_client, _asset, **kwargs):
-            kwargs["on_spot_error"](RuntimeError(sentinel))
-            kwargs["on_earn_error"](RuntimeError(sentinel))
-            raise kwargs["balance_error_cls"]("balance_lookup_failed")
+        class Client:
+            def get_asset_balance(self, **kwargs):
+                raise RuntimeError(sentinel)
 
-        with patch.object(main, "qpk_get_total_balance", fail_balance_lookup):
-            with self.assertRaises(Exception):
-                main.get_total_balance(object(), "BTC", log_buffer=log_buffer)
+        with self.assertRaises(Exception):
+            main.get_total_balance(Client(), "BTC", log_buffer=log_buffer)
 
         with patch.dict(os.environ, {"BTC_CYCLE_INDICATORS_PATH": "/tmp/sentinel.json"}):
             with patch.object(main.Path, "read_text", side_effect=RuntimeError(sentinel)):
@@ -213,29 +211,6 @@ class MainRuntimeErrorNotificationTests(unittest.TestCase):
 
         self.assertNotIn(sentinel, str(log_buffer))
 
-    def test_earn_redeem_maintenance_errors_use_fixed_safe_reasons(self):
-        sentinel = "SENSITIVE_PROVIDER_SENTINEL"
-        messages = []
-        log_buffer = []
-
-        def fail_redeem(_client, _asset, _required_amount, **kwargs):
-            kwargs["on_error"](RuntimeError(sentinel))
-            return False
-
-        def fail_maintenance(_client, _target_buffer, **kwargs):
-            kwargs["on_error"](RuntimeError(sentinel))
-
-        with patch.object(main, "qpk_ensure_asset_available", fail_redeem):
-            with patch.object(main, "send_tg_msg", lambda _token, _chat_id, text: messages.append(text)):
-                self.assertFalse(main.ensure_asset_available(object(), "USDT", 10.0, "token", "chat"))
-
-        with patch.object(main, "qpk_manage_usdt_earn_buffer", fail_maintenance):
-            main.manage_usdt_earn_buffer(object(), 100.0, "token", "chat", log_buffer)
-
-        rendered = str(messages) + str(log_buffer)
-        self.assertIn("earn_redeem_failed", str(messages))
-        self.assertIn("earn_maintenance_failed", str(log_buffer))
-        self.assertNotIn(sentinel, rendered)
 
     def test_btc_daily_fetch_failure_log_is_sanitized(self):
         sentinel = "SENSITIVE_PROVIDER_SENTINEL"

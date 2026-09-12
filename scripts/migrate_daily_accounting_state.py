@@ -228,11 +228,13 @@ def build_rebase_proposal(*, ledger, evidence, observed_at):
         "last_balance_snapshot": {row["asset"]: row["quantity"] for row in assets},
         "last_reset_date": observed_at.astimezone(timezone.utc).date().isoformat(),
     }
+    if evidence.get("balance_scope") == "spot":
+        proposed["balance_scope"] = "spot"
     return {
         "status": "awaiting_operator_decision", "executable_candidate": False,
         "historical_difference_unresolved": True, "complete_balance_reconciliation": False,
         "observed_at": observed_at.isoformat(), "assets": assets,
-        "valuation_scope": "managed_assets_spot_plus_flexible_earn",
+        "valuation_scope": "managed_assets_spot" if evidence.get("balance_scope") == "spot" else "managed_assets_spot_plus_flexible_earn",
         "valuation_price_source": "binance_get_avg_price_estimate",
         "old_fields": {key: copy.deepcopy(ledger[key]) for key in proposed if key in ledger},
         "old_missing_fields": sorted(set(proposed) - set(ledger)),
@@ -592,14 +594,19 @@ def compare_and_apply(
     transaction.update(ledger_ref, patch)
 
 
-def _strict_balance_snapshot(client, positions, assets):
+def _strict_balance_snapshot(client, positions, assets, *, spot_only=False):
     try:
         spot = {}
         for row in positions:
             asset = str(row.get("asset") or "")
             if not asset or asset in spot:
                 raise MigrationBlocked("spot_balance_rows_invalid")
-            amount = Decimal(str(row["free"])) + Decimal(str(row["locked"]))
+            free, locked = Decimal(str(row["free"])), Decimal(str(row["locked"]))
+            if not all(value.is_finite() and value >= 0 for value in (free, locked)):
+                raise MigrationBlocked("balance_amount_invalid")
+            if spot_only and locked != 0:
+                raise MigrationBlocked("spot_locked_balance_present")
+            amount = free + locked
             if not amount.is_finite() or amount < 0:
                 raise MigrationBlocked("balance_amount_invalid")
             spot[asset] = amount
@@ -607,6 +614,9 @@ def _strict_balance_snapshot(client, positions, assets):
         for asset in sorted(assets):
             if asset not in spot:
                 raise MigrationBlocked("spot_balance_missing")
+            if spot_only:
+                result[asset] = round(_finite(spot[asset]), 8)
+                continue
             earn = client.get_simple_earn_flexible_product_position(
                 asset=asset, current=1, size=_EARN_PAGE_SIZE
             )
@@ -660,7 +670,7 @@ def _ledger_scope(ledger):
     return assets, symbols
 
 
-def _collect_evidence(client, *, ledger, now, expected, require_prices=False):
+def _collect_evidence(client, *, ledger, now, expected, require_prices=False, spot_only=False):
     assets, symbols = _ledger_scope(ledger)
     midnight = now.astimezone(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -680,7 +690,7 @@ def _collect_evidence(client, *, ledger, now, expected, require_prices=False):
     raw_positions = account.get("balances") if isinstance(account, Mapping) else None
     if not isinstance(raw_positions, list):
         raise MigrationBlocked("spot_balance_rows_invalid")
-    snapshot = _strict_balance_snapshot(client, raw_positions, assets)
+    snapshot = _strict_balance_snapshot(client, raw_positions, assets, spot_only=spot_only)
     prices = {}
     if require_prices or str(ledger.get("last_reset_date") or "") != now.date().isoformat():
         for asset, quantity in snapshot.items():
@@ -701,6 +711,7 @@ def _collect_evidence(client, *, ledger, now, expected, require_prices=False):
     }
     return {
         "account_scope_sha256": digest(observations.account_scope),
+        "balance_scope": "spot" if spot_only else "spot_plus_flexible_earn",
         "balance_snapshot": snapshot,
         "prices": prices,
         "open_order_count": len(observations.open_orders),
@@ -1266,13 +1277,31 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
         return audit_ledger(refs, client=client, expected=expected, now=now)
     if action == "rebase-apply":
         return _apply_approved_rebase(refs, client=client, expected=expected, now=now, fixed_now=fixed_now)
+    spot_only = action == "spot-proposal"
+    if spot_only:
+        source = _validated_private_scope_source(refs, initial_source=(ledger_snapshot, ledger, control))
+        assets, _ = _ledger_scope(ledger)
+        if (assets != set(source["material"]["opening_quantities"])
+                or source["approved_account_scope_sha256"] != expected["account_scope_sha256"]):
+            raise MigrationBlocked("spot_proposal_scope_changed")
     evidence = _collect_evidence(client, ledger=ledger, now=now, expected=expected,
-                                 require_prices=action == "rebase-proposal")
+                                 require_prices=action in {"rebase-proposal", "spot-proposal"}, spot_only=spot_only)
     decision_now = now if fixed_now else datetime.now(timezone.utc)
-    if evidence["utc_date"] != decision_now.date().isoformat():
-        raise MigrationBlocked("utc_day_changed_during_evidence")
-    if action == "rebase-proposal":
+    if evidence["utc_date"] != decision_now.date().isoformat() or decision_now - now > TTL:
+        raise MigrationBlocked("proposal_evidence_stale")
+    if action in {"rebase-proposal", "spot-proposal"}:
         proposal = build_rebase_proposal(ledger=ledger, evidence=evidence, observed_at=decision_now)
+        if spot_only:
+            fresh = _collect_evidence(client, ledger=ledger, now=decision_now, expected=expected, spot_only=True)
+            if any(fresh[key] != evidence[key] for key in (
+                "account_scope_sha256", "balance_snapshot", "broker_snapshot_sha256", "activity_sha256", "utc_date"
+            )):
+                raise MigrationBlocked("spot_proposal_snapshot_changed")
+            after_source = _validated_private_scope_source(refs)
+            if after_source["binding"] != source["binding"]:
+                raise MigrationBlocked("spot_proposal_source_changed")
+            proposal["prior_archive_document"] = REBASE_ARCHIVE_DOCUMENT
+            proposal["prior_archive_sha256"] = source["binding"]["archive_sha256"]
         after_snapshot, after_ledger, after_control = _read_source(refs)
         if (digest(ledger) != digest(after_ledger) or digest(control) != digest(after_control)
                 or _timestamp(ledger_snapshot.update_time) != _timestamp(after_snapshot.update_time)):
@@ -1356,6 +1385,7 @@ def main(argv=None) -> int:
             "scope-preview",
             "cash-flow-preview",
             "rebase-proposal",
+            "spot-proposal",
             "rebase-apply",
             "apply",
         ),

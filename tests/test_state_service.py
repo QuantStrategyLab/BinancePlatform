@@ -111,7 +111,7 @@ class StateServiceTests(unittest.TestCase):
         runtime = SimpleNamespace(name="runtime")
         report = {"status": "ok", "gating_summary": {}, "gating_events": []}
         observed = {"trend_universe": None, "persist_reasons": []}
-        raw_state = {"foo": "bar"}
+        raw_state = {"foo": "bar", "balance_scope": "spot"}
         normalized_state = {"normalized": True}
         trend_pool_resolution = {"degraded": True, "source_kind": "last_known_good"}
         runtime_trend_universe = {"ETHUSDT": {"base_asset": "ETH"}}
@@ -147,7 +147,7 @@ class StateServiceTests(unittest.TestCase):
             SimpleNamespace(),
             report,
             allow_new_trend_entries_on_degraded=False,
-            state_loader=lambda *, normalize: {"ok": True},
+            state_loader=lambda *, normalize: {"ok": True, "balance_scope": "spot"},
             resolve_runtime_trend_pool=lambda *_args, **_kwargs: (
                 {"ETHUSDT": {"base_asset": "ETH"}},
                 {"degraded": True, "source_kind": "last_known_good", "source": "last_known_good"},
@@ -271,7 +271,7 @@ def test_rebased_scope_blocks_pool_expansion_before_any_state_write():
         for bad_stage in ("resolved", "effective"):
             writes = []
             raw = {"accounting_rebase": {"approved_proposal_run_id": "test"},
-                   "last_balance_snapshot": {"ETH": 1, "BTC": 0, "BNB": 0, "USDT": 100}}
+                   "balance_scope": "spot", "last_balance_snapshot": {"ETH": 1, "BTC": 0, "BNB": 0, "USDT": 100}}
             with pytest.raises(ExecutionIntegrityError, match="managed_asset_scope_mismatch"):
                 load_cycle_state(
                     SimpleNamespace(), {"status": "ok"}, False,
@@ -292,7 +292,7 @@ def test_rebased_scope_keeps_original_universe_and_does_not_mutate_opening():
     import copy
 
     raw = {"accounting_rebase": {"approved_proposal_run_id": "test"},
-           "last_balance_snapshot": {"ETH": 1, "BTC": 0, "BNB": 0, "USDT": 100}}
+           "balance_scope": "spot", "last_balance_snapshot": {"ETH": 1, "BTC": 0, "BNB": 0, "USDT": 100}}
     original = copy.deepcopy(raw)
     allowed = {"ETHUSDT": {"base_asset": "ETH"}}
     writes = []

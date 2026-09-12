@@ -35,7 +35,6 @@ def execute_strategy_cycle(
     run_daily_circuit_breaker,
     execute_trend_rotation,
     execute_btc_dca_cycle,
-    manage_usdt_earn_buffer_runtime,
     maybe_send_periodic_btc_status_report,
     runtime_set_trade_state,
     append_report_error,
@@ -100,7 +99,6 @@ def execute_strategy_cycle(
         )
         u_total = market_snapshot["u_total"]
         fuel_val = market_snapshot["fuel_val"]
-        dynamic_usdt_buffer = market_snapshot["dynamic_usdt_buffer"]
         prices = market_snapshot["prices"]
         balances = market_snapshot["balances"]
         btc_snapshot = market_snapshot["btc_snapshot"]
@@ -265,15 +263,6 @@ def execute_strategy_cycle(
         )
         report["total_equity_usdt"] = total_equity
         report["trend_equity_usdt"] = trend_val_equity
-
-        failure_stage = "earn_execution"
-        manage_usdt_earn_buffer_runtime(
-            runtime,
-            report,
-            dynamic_usdt_buffer,
-            log_buffer,
-            spot_free_override=u_total if runtime.dry_run else None,
-        )
 
         failure_stage = "status_notification"
         maybe_send_periodic_btc_status_report(

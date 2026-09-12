@@ -276,7 +276,7 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
     inputs = workflow[workflow.index("    inputs:") : workflow.index("permissions:")]
 
     assert "accounting_migration_action:" in inputs
-    assert "options: [none, inspect, quiesce, audit, preview, scope-preview, cash-flow-preview, rebase-proposal, rebase-apply, apply]" in inputs
+    assert "options: [none, inspect, quiesce, audit, preview, scope-preview, cash-flow-preview, rebase-proposal, spot-proposal, rebase-apply, apply]" in inputs
     assert "accounting_migration_preview_run_id:" in inputs
     assert "accounting_migration_expected_digest:" in inputs
 
@@ -405,6 +405,8 @@ def test_private_scope_preview_does_not_publish_an_artifact():
         ("scope-preview", True, False),
         ("scope-preview", False, True),
         ("rebase-proposal", True, True),
+        ("spot-proposal", True, True),
+        ("spot-proposal", False, False),
         ("rebase-proposal", False, False),
         ("preview", True, False),
         ("none", True, False),
