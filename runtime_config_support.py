@@ -128,6 +128,35 @@ def _resolve_runtime_target():
     return runtime_target, strategy_definition
 
 
+def _load_live_risk_authority(runtime_target, strategy_profile: str, now_utc: datetime):
+    authority_env_names = (
+        "BINANCE_RISK_AUTHORITY_FILE",
+        "BINANCE_RISK_AUTHORITY_SHA256",
+        "BINANCE_RISK_AUTHORITY_SOURCE_REVISION",
+    )
+    if not any(str(os.getenv(name) or "").strip() for name in authority_env_names):
+        return None
+    from live_risk_authority import config_sha256, load_live_risk_authority
+    from strategy_runtime import load_research_only_strategy_runtime, load_strategy_runtime
+
+    try:
+        strategy_runtime = load_strategy_runtime(strategy_profile, runtime_target=runtime_target)
+    except ValueError:
+        # The config digest is still derived from the pinned installed
+        # manifest for a disabled target; execution activation remains gated
+        # by the normal strategy policy in main.py.
+        strategy_runtime = load_research_only_strategy_runtime(strategy_profile)
+    effective_config = dict(strategy_runtime.merged_runtime_config)
+    effective_config.update(strategy_runtime.runtime_overrides)
+    return load_live_risk_authority(
+        runtime_target=runtime_target,
+        strategy_revision=None,
+        runner_revision=None,
+        config_sha256=config_sha256(effective_config),
+        now_utc=now_utc,
+    )
+
+
 def build_live_runtime(
     *,
     now_utc: datetime | None = None,
@@ -137,6 +166,11 @@ def build_live_runtime(
 ) -> ExecutionRuntime:
     runtime_now = now_utc or datetime.now(timezone.utc)
     cycle_settings = load_cycle_execution_settings()
+    risk_authority = _load_live_risk_authority(
+        cycle_settings.runtime_target,
+        cycle_settings.strategy_profile,
+        runtime_now,
+    )
     return ExecutionRuntime(
         dry_run=cycle_settings.runtime_target.dry_run_only,
         now_utc=runtime_now,
@@ -153,4 +187,5 @@ def build_live_runtime(
         notifier=notifier,
         runtime_target=cycle_settings.runtime_target,
         standard_execution_permitted=cycle_settings.runtime_target_enabled,
+        risk_authority=risk_authority,
     )

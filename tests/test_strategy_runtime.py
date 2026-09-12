@@ -3,7 +3,7 @@ import types
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -21,10 +21,285 @@ if "requests" not in sys.modules:
 
 from quant_platform_kit import PortfolioSnapshot
 from quant_platform_kit.common.strategy_contracts import StrategyManifest, StrategyRuntimeAdapter
+from quant_platform_kit.risk.contracts import CandidateRiskIdentity
+from decision_mapper import map_strategy_decision_to_rotation_plan
 from strategy_registry import BINANCE_ENABLED_PROFILES
 
 
+def _synthetic_candidate_identity() -> CandidateRiskIdentity:
+    return CandidateRiskIdentity(
+        strategy_profile="crypto_live_pool_rotation",
+        account_mode="single_strategy_account_v1",
+        strategy_revision="1" * 40,
+        runner_revision="2" * 40,
+        config_sha256="3" * 64,
+        input_manifest_sha256="4" * 64,
+        authority_receipt_sha256="5" * 64,
+    )
+
+
+def _synthetic_mandate(now: datetime, candidate: CandidateRiskIdentity) -> dict[str, object]:
+    symbols = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+    return {
+        "mandate_id": "synthetic_algorithm_equivalence_only",
+        "mandate_version": "test-v1",
+        "authority_receipt_sha256": candidate.authority_receipt_sha256,
+        "authority_scope": "RESEARCH_ONLY",
+        "strategy_profile": candidate.strategy_profile,
+        "account_mode": candidate.account_mode,
+        "strategy_revision": candidate.strategy_revision,
+        "runner_revision": candidate.runner_revision,
+        "config_sha256": candidate.config_sha256,
+        "input_manifest_sha256": candidate.input_manifest_sha256,
+        "candidate_identity_sha256": candidate.candidate_sha256,
+        "effective_at": (now - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+        "expires_at": (now + timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+        "max_snapshot_age_seconds": 300,
+        "effective_exposure_cap": 1.0,
+        "loss_budget": 5_000.0,
+        "product_caps": {symbol: 1.0 for symbol in symbols},
+        "nominal_caps": {symbol: 1.0 for symbol in symbols},
+        "product_leverage_factors": {symbol: 1 for symbol in symbols},
+        "allowed_nonzero_assets": list(symbols),
+        "source_revision": "6" * 40,
+    }
+
+
+def _evaluate_minimal_runtime(
+    runtime,
+    *,
+    now: datetime,
+    mandate: dict[str, object],
+    candidate: CandidateRiskIdentity,
+    execution_mode: str = "dry_run",
+):
+    return runtime.evaluate(
+        prices={"BTCUSDT": 60000.0},
+        trend_indicators={},
+        btc_snapshot={"regime_on": True},
+        account_metrics={"total_equity": 2200.0, "cash_usdt": 1000.0, "trend_value": 0.0, "dca_value": 1200.0},
+        trend_universe_symbols=(),
+        balances={"BTCUSDT": 0.02},
+        state={},
+        translator=lambda key, **_kwargs: key,
+        now_utc=now,
+        mandate_provenance=mandate,
+        candidate_risk_identity=candidate,
+        execution_mode=execution_mode,
+    )
+
+
 class StrategyRuntimeTests(unittest.TestCase):
+    def test_build_portfolio_snapshot_values_all_non_usdt_risk_assets(self):
+        import strategy_runtime as strategy_runtime_module
+
+        runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        snapshot = runtime.build_portfolio_snapshot(
+            account_metrics={
+                "total_equity": 10000.0,
+                "cash_usdt": 4800.0,
+                "trend_value": 2000.0,
+                "dca_value": 3000.0,
+            },
+            balances={"USDT": 3000.0, "BTCUSDT": 0.05, "ETHUSDT": 1.0, "BNBUSDT": 2.0},
+            prices={"BTCUSDT": 60000.0, "ETHUSDT": 2000.0, "BNBUSDT": 100.0},
+            trend_universe_symbols=("ETHUSDT",),
+            portfolio_risk_symbols=("BTCUSDT", "BNBUSDT", "ETHUSDT"),
+            as_of=datetime(2026, 9, 12, tzinfo=timezone.utc),
+        )
+
+        self.assertEqual({position.symbol for position in snapshot.positions}, {"BTCUSDT", "ETHUSDT", "BNBUSDT"})
+        self.assertNotIn("USDT", snapshot.metadata["risk_asset_symbols"])
+        self.assertEqual(snapshot.metadata["observed_risk_asset_value"], 5200.0)
+        self.assertAlmostEqual(snapshot.metadata["observed_effective_exposure"], 0.52)
+
+    def test_build_portfolio_snapshot_rejects_incomplete_or_invalid_risk_assets(self):
+        import strategy_runtime as strategy_runtime_module
+
+        runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        base = {
+            "account_metrics": {
+                "total_equity": 10000.0,
+                "cash_usdt": 4800.0,
+                "trend_value": 2000.0,
+                "dca_value": 3000.0,
+            },
+            "balances": {"BTCUSDT": 0.05, "ETHUSDT": 1.0},
+            "prices": {"BTCUSDT": 60000.0, "ETHUSDT": 2000.0},
+            "trend_universe_symbols": ("ETHUSDT",),
+            "portfolio_risk_symbols": ("BTCUSDT", "ETHUSDT"),
+            "as_of": datetime(2026, 9, 12, tzinfo=timezone.utc),
+        }
+        for mutation, expected in (
+            ({"balances": {"BTCUSDT": 0.05}}, "balances missing ETHUSDT"),
+            ({"balances": {"BTCUSDT": float("nan"), "ETHUSDT": 1.0}}, "balance.BTCUSDT is invalid"),
+            ({"balances": {"BTCUSDT": -0.01, "ETHUSDT": 1.0}}, "balance.BTCUSDT is invalid"),
+            ({"prices": {"BTCUSDT": 60000.0}}, "prices missing ETHUSDT"),
+        ):
+            with self.subTest(expected=expected):
+                kwargs = dict(base)
+                kwargs.update(mutation)
+                with self.assertRaisesRegex(ValueError, expected):
+                    runtime.build_portfolio_snapshot(**kwargs)
+
+    def test_build_portfolio_snapshot_rejects_missing_bnb_quote_when_bnb_is_required(self):
+        import strategy_runtime as strategy_runtime_module
+
+        runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        with self.assertRaisesRegex(ValueError, "prices missing BNBUSDT"):
+            runtime.build_portfolio_snapshot(
+                account_metrics={
+                    "total_equity": 10000.0,
+                    "cash_usdt": 4800.0,
+                    "trend_value": 2000.0,
+                    "dca_value": 3000.0,
+                },
+                balances={"BTCUSDT": 0.05, "ETHUSDT": 1.0, "BNBUSDT": 2.0},
+                prices={"BTCUSDT": 60000.0, "ETHUSDT": 2000.0},
+                trend_universe_symbols=("ETHUSDT",),
+                portfolio_risk_symbols=("BTCUSDT", "BNBUSDT", "ETHUSDT"),
+                as_of=datetime(2026, 9, 12, tzinfo=timezone.utc),
+            )
+
+    def test_pinned_crypto_qpk_gate_approves_bound_synthetic_fixture_and_mapper(self):
+        import strategy_runtime as strategy_runtime_module
+
+        runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        now = datetime.now(timezone.utc)
+        candidate = _synthetic_candidate_identity()
+        mandate = _synthetic_mandate(now, candidate)
+        evaluation = runtime.evaluate(
+            prices={"ETHUSDT": 3000.0, "SOLUSDT": 180.0, "BTCUSDT": 60000.0},
+            trend_indicators={
+                "ETHUSDT": {
+                    "close": 3000.0, "sma20": 2800.0, "sma60": 2600.0, "sma200": 2200.0,
+                    "roc20": 0.20, "roc60": 0.35, "roc120": 0.60, "vol20": 0.25,
+                    "avg_quote_vol_30": 60000000.0, "avg_quote_vol_90": 50000000.0,
+                    "avg_quote_vol_180": 45000000.0, "trend_persist_90": 0.80,
+                    "age_days": 500, "atr14": 120.0,
+                },
+                "SOLUSDT": {
+                    "close": 180.0, "sma20": 170.0, "sma60": 160.0, "sma200": 120.0,
+                    "roc20": 0.28, "roc60": 0.45, "roc120": 0.75, "vol20": 0.30,
+                    "avg_quote_vol_30": 42000000.0, "avg_quote_vol_90": 39000000.0,
+                    "avg_quote_vol_180": 36000000.0, "trend_persist_90": 0.76,
+                    "age_days": 450, "atr14": 8.0,
+                },
+            },
+            btc_snapshot={"regime_on": True, "btc_roc20": 0.08, "btc_roc60": 0.16, "btc_roc120": 0.30},
+            account_metrics={"total_equity": 3700.0, "cash_usdt": 2500.0, "trend_value": 0.0, "dca_value": 1200.0},
+            trend_universe_symbols=("ETHUSDT",),
+            portfolio_trend_universe_symbols=("ETHUSDT", "SOLUSDT"),
+            balances={"BTCUSDT": 0.02, "ETHUSDT": 0.0, "SOLUSDT": 0.0},
+            state={},
+            translator=lambda key, **_kwargs: key,
+            now_utc=now,
+            mandate_provenance=mandate,
+            candidate_risk_identity=candidate,
+            execution_mode="dry_run",
+            get_symbol_trade_state_fn=lambda state, symbol: state.get(
+                symbol, {"is_holding": False, "entry_price": 0.0, "highest_price": 0.0}
+            ),
+            set_symbol_trade_state_fn=lambda state, symbol, symbol_state: state.__setitem__(symbol, dict(symbol_state)),
+        )
+
+        assessment = evaluation.decision.diagnostics["member_risk_assessment"]
+        self.assertEqual(assessment["outcome"], "APPROVE")
+        self.assertTrue(map_strategy_decision_to_rotation_plan(evaluation.decision)["execution_permitted"], evaluation.decision.risk_flags)
+
+    def test_candidate_profile_mismatch_keeps_qpk_decision_rejected(self):
+        import strategy_runtime as strategy_runtime_module
+
+        runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        now = datetime.now(timezone.utc)
+        candidate = _synthetic_candidate_identity()
+        candidate = CandidateRiskIdentity(
+            strategy_profile="other_profile",
+            account_mode=candidate.account_mode,
+            strategy_revision=candidate.strategy_revision,
+            runner_revision=candidate.runner_revision,
+            config_sha256=candidate.config_sha256,
+            input_manifest_sha256=candidate.input_manifest_sha256,
+            authority_receipt_sha256=candidate.authority_receipt_sha256,
+        )
+        mandate = _synthetic_mandate(now, candidate)
+        evaluation = runtime.evaluate(
+            prices={"BTCUSDT": 60000.0, "ETHUSDT": 3000.0},
+            trend_indicators={"ETHUSDT": {"close": 3000.0}},
+            btc_snapshot={"regime_on": True},
+            account_metrics={"total_equity": 3700.0, "cash_usdt": 2500.0, "trend_value": 0.0, "dca_value": 1200.0},
+            trend_universe_symbols=("ETHUSDT",),
+            balances={"BTCUSDT": 0.02, "ETHUSDT": 0.0},
+            state={},
+            translator=lambda key, **_kwargs: key,
+            now_utc=now,
+            mandate_provenance=mandate,
+            candidate_risk_identity=candidate,
+            execution_mode="dry_run",
+        )
+        assessment = evaluation.decision.diagnostics["member_risk_assessment"]
+        self.assertEqual(assessment["outcome"], "REJECT")
+        self.assertIn("missing_candidate_identity", assessment["reason_codes"])
+
+    def test_incomplete_portfolio_snapshot_reaches_qpk_as_redacted_reject(self):
+        import strategy_runtime as strategy_runtime_module
+
+        runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        now = datetime.now(timezone.utc)
+        evaluation = runtime.evaluate(
+            prices={"BTCUSDT": 60000.0, "ETHUSDT": 3000.0},
+            trend_indicators={"ETHUSDT": {"close": 3000.0}},
+            btc_snapshot={"regime_on": True},
+            account_metrics={"total_equity": 3700.0, "cash_usdt": 2500.0, "trend_value": 0.0, "dca_value": 1200.0},
+            trend_universe_symbols=("ETHUSDT",),
+            balances={"BTCUSDT": 0.02},
+            portfolio_risk_symbols=("BTCUSDT", "ETHUSDT"),
+            state={},
+            translator=lambda key, **_kwargs: key,
+            now_utc=now,
+        )
+
+        assessment = evaluation.decision.diagnostics["member_risk_assessment"]
+        self.assertEqual(assessment["outcome"], "REJECT")
+        self.assertIn("invalid_portfolio_snapshot", assessment["reason_codes"])
+
+    def test_expired_mandate_keeps_pinned_qpk_decision_rejected(self):
+        import strategy_runtime as strategy_runtime_module
+
+        runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        now = datetime.now(timezone.utc)
+        candidate = _synthetic_candidate_identity()
+        mandate = _synthetic_mandate(now, candidate)
+        mandate["effective_at"] = (now - timedelta(days=2)).isoformat().replace("+00:00", "Z")
+        mandate["expires_at"] = (now - timedelta(days=1)).isoformat().replace("+00:00", "Z")
+
+        evaluation = _evaluate_minimal_runtime(runtime, now=now, mandate=mandate, candidate=candidate)
+
+        assessment = evaluation.decision.diagnostics["member_risk_assessment"]
+        self.assertEqual(assessment["outcome"], "REJECT")
+        self.assertIn("expired_mandate", assessment["reason_codes"])
+
+    def test_live_mode_does_not_accept_research_only_mandate(self):
+        import strategy_runtime as strategy_runtime_module
+
+        runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        now = datetime.now(timezone.utc)
+        candidate = _synthetic_candidate_identity()
+        mandate = _synthetic_mandate(now, candidate)
+
+        evaluation = _evaluate_minimal_runtime(
+            runtime,
+            now=now,
+            mandate=mandate,
+            candidate=candidate,
+            execution_mode="live",
+        )
+
+        assessment = evaluation.decision.diagnostics["member_risk_assessment"]
+        self.assertEqual(assessment["outcome"], "REJECT")
+        self.assertIn("invalid_mandate", assessment["reason_codes"])
+        self.assertIn("missing_candidate_identity", assessment["reason_codes"])
+
     def test_research_only_runtime_exposes_explicit_artifact_contract_without_execution_grant(self):
         try:
             from strategy_runtime import load_research_only_strategy_runtime
@@ -75,7 +350,7 @@ class StrategyRuntimeTests(unittest.TestCase):
 
         runtime = load_research_only_strategy_runtime("crypto_live_pool_rotation")
         account_metrics = {
-            "total_equity": 10000.0,
+            "total_equity": 4816.0,
             "cash_usdt": 2500.0,
             "trend_value": 1500.0,
             "dca_value": 1200.0,
@@ -247,7 +522,7 @@ class StrategyRuntimeTests(unittest.TestCase):
                 prices={"BTCUSDT": 60000.0, "ETHUSDT": 3000.0, "SOLUSDT": 100.0},
                 trend_indicators={"ETHUSDT": {"close": 3000.0}, "SOLUSDT": {"close": 100.0}},
                 btc_snapshot={"regime_on": True},
-                account_metrics={"total_equity": 10000.0, "cash_usdt": 2000.0, "trend_value": 3000.0, "dca_value": 5000.0},
+                account_metrics={"total_equity": 10200.0, "cash_usdt": 2000.0, "trend_value": 3000.0, "dca_value": 5000.0},
                 trend_universe_symbols=("ETHUSDT",),
                 portfolio_trend_universe_symbols=("ETHUSDT", "SOLUSDT"),
                 balances={"BTCUSDT": 0.0833333333, "ETHUSDT": 1.0, "SOLUSDT": 2.0},

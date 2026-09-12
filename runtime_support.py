@@ -302,6 +302,10 @@ class ExecutionRuntime:
     trend_pool_payload: Optional[dict[str, Any]] = None
     btc_market_snapshot: Optional[dict[str, Any]] = None
     trend_indicator_snapshots: Optional[dict[str, Any]] = None
+    mandate_provenance: Optional[dict[str, Any]] = None
+    candidate_risk_identity: Any = None
+    risk_authority: Any = None
+    trend_pool_contract: Optional[dict[str, Any]] = None
     research_cycle_settings: Any = None
     print_traceback: bool = True
     order_sequence: int = 0

@@ -97,6 +97,15 @@ class ReplayClient:
             f"Historical klines were requested for {symbol}, but the replay runtime should supply fixed indicator snapshots."
         )
 
+    def _request_margin_api(self, method: str, path: str, *, signed: bool, data: dict[str, object]):
+        """Return an explicit empty external-flow history for the offline fixture."""
+        if method != "get" or not signed or path not in {
+            "capital/deposit/hisrec",
+            "capital/withdraw/history",
+        }:
+            raise RuntimeError("unsupported replay margin read")
+        return []
+
     def _record(self, method: str, payload: dict[str, Any]):
         self.side_effect_calls.append({"method": method, "payload": copy.deepcopy(payload)})
         return {"status": "captured", "method": method, "payload": copy.deepcopy(payload)}

@@ -153,6 +153,7 @@ def load_cycle_state(
         return None
 
     resolved_trend_universe, trend_pool_resolution = resolve_runtime_trend_pool(runtime, raw_state)
+    runtime.trend_pool_contract = dict(trend_pool_resolution)
     candidate_trend_universe, effective_trend_universe = _prepare_rebased_universes(
         raw_state, resolved_trend_universe
     )

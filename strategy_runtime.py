@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+import math
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -15,8 +16,14 @@ from quant_platform_kit.common.strategy_contracts import (
     build_strategy_context_from_available_inputs,
     resolve_strategy_artifact_contract,
 )
+from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 
 from crypto_strategies import get_platform_runtime_adapter
+from live_risk_authority import (
+    LiveRiskAuthorityError,
+    bind_live_risk_authority,
+    config_sha256,
+)
 from strategy_loader import (
     load_research_strategy_entrypoint_for_profile,
     load_strategy_entrypoint_for_profile,
@@ -139,6 +146,12 @@ class LoadedStrategyRuntime:
         }
 
     @property
+    def effective_runtime_config(self) -> dict[str, Any]:
+        config = dict(self.merged_runtime_config)
+        config.update(self.runtime_overrides)
+        return config
+
+    @property
     def default_local_artifact_path(self) -> Path:
         if self.local_artifact_candidates:
             return self.local_artifact_candidates[0]
@@ -170,34 +183,80 @@ class LoadedStrategyRuntime:
         prices: Mapping[str, Any],
         trend_universe_symbols: tuple[str, ...],
         as_of: datetime,
+        portfolio_risk_symbols: tuple[str, ...] | None = None,
     ) -> PortfolioSnapshot:
+        if not isinstance(account_metrics, Mapping):
+            raise ValueError("portfolio_snapshot.account_metrics must be a mapping")
+        if not isinstance(balances, Mapping) or not balances:
+            raise ValueError("portfolio_snapshot.balances must be a complete non-empty mapping")
+        if not isinstance(prices, Mapping):
+            raise ValueError("portfolio_snapshot.prices must be a mapping")
+
+        def finite_number(value: Any, *, label: str, minimum: float | None = None) -> float:
+            if isinstance(value, bool):
+                raise ValueError(f"portfolio_snapshot.{label} must be a finite number")
+            try:
+                normalized = float(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"portfolio_snapshot.{label} must be a finite number") from None
+            if not math.isfinite(normalized) or (minimum is not None and normalized < minimum):
+                raise ValueError(f"portfolio_snapshot.{label} is invalid")
+            return normalized
+
+        total_equity = finite_number(account_metrics.get("total_equity"), label="total_equity", minimum=0.0)
+        if total_equity <= 0.0:
+            raise ValueError("portfolio_snapshot.total_equity must be positive")
+        cash_balance = finite_number(account_metrics.get("cash_usdt"), label="cash_usdt", minimum=0.0)
+        trend_value = finite_number(account_metrics.get("trend_value"), label="trend_value", minimum=0.0)
+        dca_value = finite_number(account_metrics.get("dca_value"), label="dca_value", minimum=0.0)
+
+        raw_symbols = tuple(
+            portfolio_risk_symbols
+            or ("BTCUSDT",) + tuple(str(symbol) for symbol in trend_universe_symbols)
+        )
+        risk_symbols = tuple(dict.fromkeys(symbol for symbol in raw_symbols if symbol != "USDT"))
+        if not risk_symbols:
+            raise ValueError("portfolio_snapshot.risk_assets must be non-empty")
         positions: list[Position] = []
-        normalized_symbols = ("BTCUSDT",) + tuple(str(symbol) for symbol in trend_universe_symbols)
         balances_map = dict(balances or {})
-        for symbol in normalized_symbols:
-            quantity = float(balances_map.get(symbol, 0.0) or 0.0)
-            last_price = float(prices.get(symbol, 0.0) or 0.0)
+        observed_risk_value = 0.0
+        for symbol in risk_symbols:
+            if symbol not in balances_map:
+                raise ValueError(f"portfolio_snapshot.balances missing {symbol}")
+            if symbol not in prices:
+                raise ValueError(f"portfolio_snapshot.prices missing {symbol}")
+            quantity = finite_number(balances_map[symbol], label=f"balance.{symbol}", minimum=0.0)
+            last_price = finite_number(prices[symbol], label=f"price.{symbol}")
+            if last_price <= 0.0:
+                raise ValueError(f"portfolio_snapshot.price.{symbol} must be positive")
             market_value = quantity * last_price
-            if quantity <= 0.0 and market_value <= 0.0:
-                continue
-            positions.append(
-                Position(
-                    symbol=symbol,
-                    quantity=quantity,
-                    market_value=market_value,
-                )
-            )
+            if not math.isfinite(market_value) or market_value < 0.0:
+                raise ValueError(f"portfolio_snapshot.market_value.{symbol} is invalid")
+            observed_risk_value += market_value
+            if quantity > 0.0:
+                positions.append(Position(symbol=symbol, quantity=quantity, market_value=market_value))
+        if not math.isclose(
+            cash_balance + observed_risk_value,
+            total_equity,
+            rel_tol=1e-9,
+            abs_tol=1e-6,
+        ):
+            raise ValueError("portfolio_snapshot.equity_reconciliation is invalid")
+        observed_effective_exposure = observed_risk_value / total_equity
         return PortfolioSnapshot(
             as_of=as_of,
-            total_equity=float(account_metrics["total_equity"]),
-            buying_power=float(account_metrics["cash_usdt"]),
-            cash_balance=float(account_metrics["cash_usdt"]),
+            total_equity=total_equity,
+            buying_power=cash_balance,
+            cash_balance=cash_balance,
             positions=tuple(positions),
             metadata={
                 "account_metrics": dict(account_metrics),
-                "cash_available_for_trading": float(account_metrics["cash_usdt"]),
-                "trend_value": float(account_metrics["trend_value"]),
-                "dca_value": float(account_metrics["dca_value"]),
+                "cash_available_for_trading": cash_balance,
+                "trend_value": trend_value,
+                "dca_value": dca_value,
+                "risk_asset_symbols": risk_symbols,
+                "observed_risk_asset_value": observed_risk_value,
+                "observed_effective_exposure": observed_effective_exposure,
             },
         )
 
@@ -218,6 +277,13 @@ class LoadedStrategyRuntime:
         allow_rotation_refresh: bool = True,
         get_symbol_trade_state_fn: Callable[..., Any] | None = None,
         set_symbol_trade_state_fn: Callable[..., Any] | None = None,
+        mandate_provenance: Mapping[str, Any] | None = None,
+        candidate_risk_identity: CandidateRiskIdentity | None = None,
+        risk_authority: Any | None = None,
+        runtime_target: Any | None = None,
+        trend_pool_contract: Mapping[str, Any] | None = None,
+        execution_mode: str | None = None,
+        portfolio_risk_symbols: tuple[str, ...] | None = None,
     ) -> StrategyEvaluationResult:
         runtime_config = dict(self.runtime_overrides)
         runtime_config.update(
@@ -238,12 +304,94 @@ class LoadedStrategyRuntime:
             if portfolio_trend_universe_symbols is None
             else tuple(portfolio_trend_universe_symbols)
         )
-        portfolio_snapshot = self.build_portfolio_snapshot(
-            account_metrics=account_metrics,
-            balances=balances,
-            prices=prices,
-            trend_universe_symbols=portfolio_symbols,
-            as_of=runtime_now,
+        try:
+            portfolio_snapshot = self.build_portfolio_snapshot(
+                account_metrics=account_metrics,
+                balances=balances,
+                prices=prices,
+                trend_universe_symbols=portfolio_symbols,
+                as_of=runtime_now,
+                portfolio_risk_symbols=portfolio_risk_symbols,
+            )
+        except ValueError as exc:
+            # Preserve the existing CryptoStrategies → QPK gate so malformed
+            # account inputs produce a redacted REJECT assessment and zero
+            # execution, without inventing a zero-valued exposure snapshot.
+            def invalid_snapshot_number(value: Any) -> float | None:
+                try:
+                    parsed = float(value)
+                except (TypeError, ValueError):
+                    return None
+                return parsed if math.isfinite(parsed) else None
+
+            portfolio_snapshot = PortfolioSnapshot(
+                as_of=runtime_now,
+                total_equity=invalid_snapshot_number(account_metrics.get("total_equity")),
+                buying_power=invalid_snapshot_number(account_metrics.get("cash_usdt")),
+                cash_balance=invalid_snapshot_number(account_metrics.get("cash_usdt")),
+                positions=(),
+                metadata={
+                    "snapshot_validation_errors": (str(exc),),
+                    "observed_effective_exposure": None,
+                },
+            )
+        risk_material_errors: list[str] = []
+        if execution_mode == "live" and risk_authority is None:
+            # Live callers cannot inject a mandate/candidate pair directly.
+            mandate_provenance = None
+            candidate_risk_identity = None
+            risk_material_errors.append("live_authority_material_missing")
+        if risk_authority is not None:
+            # The live entrypoint owns these values.  Caller-supplied mandate
+            # and candidate objects cannot override a loaded authority file.
+            mandate_provenance = None
+            candidate_risk_identity = None
+            try:
+                if runtime_target is None:
+                    raise LiveRiskAuthorityError("live risk authority configuration invalid: runtime target is missing")
+                if not isinstance(trend_pool_contract, Mapping):
+                    raise LiveRiskAuthorityError("live risk authority configuration invalid: trend pool contract is missing")
+                mandate_provenance, candidate_risk_identity = bind_live_risk_authority(
+                    risk_authority,
+                    runtime_target=runtime_target,
+                    input_material={
+                        "prices": prices,
+                        "balances": balances,
+                        "account_metrics": account_metrics,
+                        "trend_indicators": trend_indicators,
+                        "btc_snapshot": btc_snapshot,
+                        "state": state,
+                        "universe": {
+                            "strategy_trend": tuple(trend_universe_symbols),
+                            "portfolio_trend": tuple(portfolio_symbols),
+                        },
+                        "execution_controls": {
+                            "allow_new_trend_entries": bool(allow_new_trend_entries),
+                            "allow_rotation_refresh": bool(allow_rotation_refresh),
+                        },
+                        "trend_pool_contract": trend_pool_contract,
+                    },
+                    config_sha256=config_sha256(self.effective_runtime_config),
+                    now_utc=runtime_now,
+                )
+            except (LiveRiskAuthorityError, ValueError):
+                risk_material_errors.append("invalid_live_risk_authority")
+        if candidate_risk_identity is not None and not isinstance(candidate_risk_identity, CandidateRiskIdentity):
+            risk_material_errors.append("invalid_candidate_identity")
+        if (
+            isinstance(candidate_risk_identity, CandidateRiskIdentity)
+            and candidate_risk_identity.strategy_profile != self.profile
+        ):
+            risk_material_errors.append("candidate_identity_strategy_profile_mismatch")
+        if execution_mode == "live" and (
+            not isinstance(mandate_provenance, Mapping)
+            or mandate_provenance.get("authority_scope") != "LIVE"
+        ):
+            risk_material_errors.append("live_requires_live_mandate")
+        candidate_for_context = (
+            candidate_risk_identity
+            if isinstance(candidate_risk_identity, CandidateRiskIdentity) and not risk_material_errors
+            else None
         )
         from quant_platform_kit.strategy_lifecycle.live_equity import stamp_consecutive_losses_on_snapshot
 
@@ -253,6 +401,23 @@ class LoadedStrategyRuntime:
             domain="crypto",
             logger=getattr(self, "logger", None),
         )
+        # Keep fuel and other account risk assets in the complete snapshot and
+        # exposure metadata, while presenting only strategy-managed positions
+        # to the pinned strategy stop resolver.  CryptoStrategies treats every
+        # non-BTC snapshot position as a trend holding; BNB is an account fuel
+        # asset and has no trend stop inputs.
+        managed_symbols = {"BTCUSDT", *portfolio_symbols}
+        managed_positions = tuple(
+            position
+            for position in portfolio_snapshot.positions
+            if position.symbol in managed_symbols
+        )
+        if managed_positions != portfolio_snapshot.positions:
+            portfolio_snapshot = replace(
+                portfolio_snapshot,
+                positions=managed_positions,
+                metadata=dict(portfolio_snapshot.metadata),
+            )
         evaluation_inputs = build_strategy_evaluation_inputs(
             available_inputs=self.runtime_adapter.available_inputs,
             market_inputs={
@@ -272,6 +437,11 @@ class LoadedStrategyRuntime:
             runtime_config=runtime_config,
             capabilities={"platform": BINANCE_PLATFORM},
         )
+        artifacts = {"trend_pool_contract": self.artifact_contract}
+        if isinstance(mandate_provenance, Mapping):
+            artifacts["mandate_provenance"] = dict(mandate_provenance)
+        if candidate_for_context is not None:
+            artifacts["candidate_risk_identity"] = candidate_for_context
         ctx = StrategyContext(
             as_of=ctx.as_of,
             market_data=ctx.market_data,
@@ -279,7 +449,7 @@ class LoadedStrategyRuntime:
             state=ctx.state,
             runtime_config=ctx.runtime_config,
             capabilities=ctx.capabilities,
-            artifacts={"trend_pool_contract": self.artifact_contract},
+            artifacts=artifacts,
         )
         decision = self.entrypoint.evaluate(ctx)
         return StrategyEvaluationResult(
