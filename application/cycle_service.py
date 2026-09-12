@@ -353,22 +353,23 @@ def execute_strategy_cycle(
         report["log_lines"] = list(log_buffer)
         finalize_notification_delivery(report)
         attach_execution_receipt_from_report(report)
-        try_record_platform_execution(
-            str(getattr(runtime, "strategy_profile", "") or ""),
-            {
-                "platform": "binance",
-                "status": report.get("status"),
-                "total_equity_usdt": report.get("total_equity_usdt"),
-                "trend_equity_usdt": report.get("trend_equity_usdt"),
-                # The local daily-loss state excludes supported deposits, but
-                # this per-cycle record has no exactly-once external-flow
-                # delivery. Keep cross-cycle performance explicitly incomparable.
-                "external_cash_flow": None,
-                "degraded_mode_level": report.get("degraded_mode_level"),
-                "error": report.get("error"),
-            },
-            domain="crypto",
-        )
+        if not getattr(runtime, "dry_run", False):
+            try_record_platform_execution(
+                str(getattr(runtime, "strategy_profile", "") or ""),
+                {
+                    "platform": "binance",
+                    "status": report.get("status"),
+                    "total_equity_usdt": report.get("total_equity_usdt"),
+                    "trend_equity_usdt": report.get("trend_equity_usdt"),
+                    # The local daily-loss state excludes supported deposits, but
+                    # this per-cycle record has no exactly-once external-flow
+                    # delivery. Keep cross-cycle performance explicitly incomparable.
+                    "external_cash_flow": None,
+                    "degraded_mode_level": report.get("degraded_mode_level"),
+                    "error": report.get("error"),
+                },
+                domain="crypto",
+            )
 
         # Early returns (including risk rejection) also complete a cycle.
         try:

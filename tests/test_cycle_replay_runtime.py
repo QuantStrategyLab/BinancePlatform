@@ -226,6 +226,10 @@ class CycleReplayRuntimeTests(unittest.TestCase):
             stack.enter_context(
                 patch("quant_platform_kit.risk.gate._utc_now", return_value=FIXTURE_TIME)
             )
+            cycle_service = sys.modules["application.cycle_service"]
+            record_platform_execution = stack.enter_context(
+                patch.object(cycle_service, "try_record_platform_execution")
+            )
             stack.enter_context(patch.object(main, "map_decision_to_allocation", side_effect=capture_mapper))
             stack.enter_context(
                 patch.object(
@@ -271,7 +275,6 @@ class CycleReplayRuntimeTests(unittest.TestCase):
                     side_effect=record_stage("earn", main.manage_usdt_earn_buffer_runtime),
                 )
             )
-            cycle_service = sys.modules["application.cycle_service"]
             stack.enter_context(
                 patch.object(
                     cycle_service,
@@ -295,6 +298,8 @@ class CycleReplayRuntimeTests(unittest.TestCase):
         self.assertEqual(state_store.write_calls, [])
         self.assertTrue(report["dry_run"])
         self.assertGreater(report["side_effect_summary"]["suppressed_call_count"], 0)
+        self.assertEqual(record_platform_execution.call_count, 0)
+        self.assertIn({"reason": "cycle_complete"}, report["state_write_intents"])
 
     def test_bnb_fuel_position_does_not_hide_held_non_candidate_trend_stop(self):
         runtime, _client, state_store, _ = run_cycle_replay.build_replay_runtime(
