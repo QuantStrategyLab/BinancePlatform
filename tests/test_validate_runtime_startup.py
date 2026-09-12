@@ -1,4 +1,6 @@
 import os
+from pathlib import Path
+import runpy
 import sys
 from types import SimpleNamespace
 
@@ -35,3 +37,35 @@ def test_startup_validation_rejects_broker_credentials(monkeypatch):
     monkeypatch.setenv("BINANCE_API_KEY", "synthetic")
     with pytest.raises(ValueError, match="broker_credentials_forbidden"):
         validate_startup()
+
+
+@pytest.mark.parametrize('message, expected', [
+    ('runtime_recovery_not_active', 'runtime_recovery_not_active'),
+    ('recovery_control_state_invalid', 'recovery_control_state_invalid'),
+    ('recovery_active_binding_invalid', 'recovery_active_binding_invalid'),
+    ('STRATEGY_PROFILE does not match RUNTIME_TARGET_JSON.strategy_profile', 'startup_strategy_profile_conflict'),
+    ('BINANCE_DRY_RUN does not match RUNTIME_TARGET_JSON.dry_run_only', 'startup_dry_run_conflict'),
+    ('runtime_recovery_not_active: DO_NOT_LOG_THIS_SYNTHETIC_TOKEN', 'runtime_startup_validation_failed'),
+    ('DO_NOT_LOG_THIS_SYNTHETIC_TOKEN', 'runtime_startup_validation_failed'),
+])
+def test_startup_cli_reports_only_exact_safe_reasons_and_still_fails(monkeypatch, capsys, message, expected):
+    import json
+
+    monkeypatch.setenv('RUNTIME_TARGET_ENABLED', 'false')
+    monkeypatch.delenv('BINANCE_API_KEY', raising=False)
+    monkeypatch.delenv('BINANCE_API_SECRET', raising=False)
+
+    def build():
+        raise ValueError(message)
+
+    monkeypatch.setitem(sys.modules, 'main', SimpleNamespace(build_live_runtime=build))
+    script = Path(__file__).resolve().parents[1] / 'scripts/validate_runtime_startup.py'
+    with pytest.raises(SystemExit) as error:
+        runpy.run_path(str(script), run_name='__main__')
+    assert error.value.code == 1
+    captured = capsys.readouterr()
+    assert 'DO_NOT_LOG_THIS_SYNTHETIC_TOKEN' not in captured.out + captured.err
+    assert json.loads(captured.out) == {
+        'status': 'failed', 'stage': 'runtime_startup_validation',
+        'error_type': 'ValueError', 'reason_code': expected,
+    }

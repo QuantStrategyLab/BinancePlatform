@@ -1,5 +1,6 @@
 import unittest
 import copy
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from application.execution_service import execute_trend_buys, execute_trend_sells
@@ -317,6 +318,7 @@ class AccountingRegressionTests(unittest.TestCase):
             dry_run=False,
             client=Client(),
             trade_state=state,
+            now_utc=datetime(2026, 9, 11, tzinfo=timezone.utc),
             state_loader=lambda *, normalize=False: copy.deepcopy(state),
             state_writer=write,
         )

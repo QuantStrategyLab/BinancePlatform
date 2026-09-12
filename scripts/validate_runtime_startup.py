@@ -7,6 +7,15 @@ from pathlib import Path
 import sys
 
 
+_SAFE_STARTUP_REASONS = {
+    "runtime_recovery_not_active": "runtime_recovery_not_active",
+    "recovery_control_state_invalid": "recovery_control_state_invalid",
+    "recovery_active_binding_invalid": "recovery_active_binding_invalid",
+    "STRATEGY_PROFILE does not match RUNTIME_TARGET_JSON.strategy_profile": "startup_strategy_profile_conflict",
+    "BINANCE_DRY_RUN does not match RUNTIME_TARGET_JSON.dry_run_only": "startup_dry_run_conflict",
+}
+
+
 def validate_startup():
     if os.getenv("RUNTIME_TARGET_ENABLED") != "false":
         raise ValueError("startup_validation_requires_disabled_runtime")
@@ -27,5 +36,9 @@ if __name__ == "__main__":
         print(json.dumps(validate_startup(), sort_keys=True))
     except Exception as exc:
         kind = type(exc).__name__ if type(exc) in {ValueError, KeyError, TypeError, OSError, RuntimeError} else "RuntimeError"
-        print(json.dumps({"status": "failed", "stage": "runtime_startup_validation", "error_type": kind}))
+        # Exact application reasons only; never expose provider messages or values.
+        reason = "runtime_startup_validation_failed"
+        if type(exc) is ValueError:
+            reason = _SAFE_STARTUP_REASONS.get(str(exc), reason)
+        print(json.dumps({"status": "failed", "stage": "runtime_startup_validation", "error_type": kind, "reason_code": reason}))
         raise SystemExit(1) from None
