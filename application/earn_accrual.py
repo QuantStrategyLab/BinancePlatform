@@ -65,7 +65,10 @@ def collect_earn_checkpoint(client, *, assets, observed_at, expected_account_sco
         spot = {}
         for row in rows:
             asset = row['asset']
-            if not re.fullmatch(r'[A-Z0-9]{1,20}', asset) or asset in spot:
+            # Broker asset names may contain Unicode; only the approved scope
+            # is constrained to strategy symbols. Never normalize provider keys.
+            if (not isinstance(asset, str) or not 0 < len(asset) <= 128
+                    or not asset.isprintable() or any(c.isspace() for c in asset) or asset in spot):
                 raise ValueError('spot')
             free, locked = _amount(row['free']), _amount(row['locked'])
             if locked:

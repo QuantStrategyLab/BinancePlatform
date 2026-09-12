@@ -162,3 +162,18 @@ def test_checkpoint_read_diagnostic_never_exposes_provider_error(endpoint, expec
         collect_earn_checkpoint(c, assets=['BNB'], observed_at=NOW)
     assert str(error.value) == expected
     assert error.value.__suppress_context__
+
+
+@pytest.mark.parametrize('locked', ['0', '0.1'])
+def test_provider_unicode_asset_does_not_expand_scope_or_bypass_locks(locked):
+    c = client()
+    account = c.get_account()
+    account['balances'].append({'asset': '币安人生', 'free': '0', 'locked': locked})
+    c.get_account = lambda: account
+    if locked != '0':
+        with pytest.raises(ValueError, match='spot_locked'):
+            collect_earn_checkpoint(c, assets=['BNB'], observed_at=NOW)
+    else:
+        result = collect_earn_checkpoint(c, assets=['BNB'], observed_at=NOW)
+        assert set(result['assets']) == {'BNB'}
+        assert result['assets']['BNB']['quantity'] == '3'
