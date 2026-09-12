@@ -616,3 +616,22 @@ emitting a daily cumulative value would double count it, while emitting it once
 could lose it if the performance write failed after the private cursor advanced.
 Binance therefore records `external_cash_flow=null` and remains incomparable in
 cross-cycle performance monitoring until that separate durable contract exists.
+
+While the account remains disabled, dispatch the existing Runtime workflow with
+`reconcile_only=true` and `accounting_migration_action=cash-flow-preview` to
+preflight this path without loading or activating the strategy. The command
+uses the original account identity, safe-order/owner checks, private ledger,
+managed Spot-plus-Flexible-Earn balances and the same two bounded history reads.
+It repeats balance and ledger reads for stability, then runs the production
+cash-flow consumer on an in-memory ledger copy. No candidate file, cursor,
+ledger, recovery control or execution state is written; output contains only
+safe status, counts and prerequisite codes.
+
+`reconciled_preview` means a new supported deposit reconciled on the copy;
+`baseline_preview` means only an initial cursor could be established and does
+not apply it; `no_new_deposit` contains no new deposit acceptance evidence.
+A missing baseline with changed balances, late/unsupported flows or a mismatch
+returns `blocked` and exit 2. All outcomes keep full account reconciliation and
+execution authority false, including when out-of-scope Spot assets are present.
+Stop on the first real failure; do not initialize a cursor or activate trading
+to make this diagnostic pass. A successful preview is not durable accounting.
