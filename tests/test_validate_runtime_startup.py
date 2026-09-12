@@ -171,14 +171,16 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
 
 
 def test_full_cycle_without_live_authority_fails_closed(monkeypatch):
-    from scripts.validate_runtime_startup import validate_full_cycle
+    from scripts.validate_runtime_startup import FullCycleValidationError, validate_full_cycle
 
     monkeypatch.delenv("BINANCE_RISK_AUTHORITY_FILE", raising=False)
     monkeypatch.delenv("BINANCE_RISK_AUTHORITY_SHA256", raising=False)
     monkeypatch.delenv("BINANCE_RISK_AUTHORITY_SOURCE_REVISION", raising=False)
     runtime = SimpleNamespace(standard_execution_permitted=False, risk_authority=None)
-    with pytest.raises(ValueError, match="risk_authority_missing"):
+    with pytest.raises(FullCycleValidationError) as error:
         validate_full_cycle(runtime_builder=lambda: runtime)
+    assert error.value.reason_code == "full_cycle_risk_authority_missing"
+    assert error.value.failure_stage == "build"
 
 
 def test_full_cycle_failure_projection_keeps_reject_and_abort_distinct():
@@ -246,3 +248,43 @@ def test_startup_cli_reports_only_exact_safe_reasons_and_still_fails(monkeypatch
         'status': 'failed', 'stage': 'runtime_startup_validation',
         'error_type': 'ValueError', 'reason_code': expected,
     }
+
+@pytest.mark.parametrize(
+    "authority_message, expected_reason",
+    [
+        ("live risk authority configuration invalid: runner revision mismatch", "runner_revision_mismatch"),
+        ("live risk authority configuration invalid: runner checkout has tracked modifications", "runner_checkout_dirty"),
+        ("live risk authority configuration invalid: config digest mismatch", "config_digest_mismatch"),
+    ],
+)
+def test_full_cycle_cli_preserves_safe_builder_authority_reason(
+    monkeypatch, capsys, authority_message, expected_reason,
+):
+    from live_risk_authority import LiveRiskAuthorityError
+
+    monkeypatch.setenv("RUNTIME_TARGET_ENABLED", "false")
+    monkeypatch.setitem(
+        sys.modules,
+        "main",
+        SimpleNamespace(
+            build_live_runtime=lambda: (_ for _ in ()).throw(
+                LiveRiskAuthorityError(authority_message)
+            )
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["validate_runtime_startup.py", "--full-cycle"])
+    script = Path(__file__).resolve().parents[1] / "scripts/validate_runtime_startup.py"
+    with pytest.raises(SystemExit) as error:
+        runpy.run_path(str(script), run_name="__main__")
+
+    assert error.value.code == 1
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result == {
+        "status": "failed",
+        "stage": "full_cycle_validation",
+        "failure_stage": "build",
+        "error_type": "ValueError",
+        "reason_code": expected_reason,
+    }
+    assert authority_message not in captured.out + captured.err
