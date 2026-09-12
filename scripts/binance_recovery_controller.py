@@ -275,6 +275,7 @@ def run(action, recovery_id=""):
                 source_run=current_run,
                 migration_run=migration_run,
                 now=collected_at,
+                observe_only_non_managed_spot=True,
             )
             candidate = validate_post_rebase_source(
                 package,
@@ -288,6 +289,8 @@ def run(action, recovery_id=""):
             candidate = validate_source(package, runtime_target=target, expected=expected)
         if action == "diagnose":
             return {"status": "diagnosed", "source_kind": "post_rebase",
+                    "non_managed_spot_policy": package["source"]["proof"]["non_managed_spot_policy"],
+                    "observed_non_managed_asset_count": package["source"]["proof"]["observed_non_managed_asset_count"],
                     "historical_difference_unresolved": True, "no_order": True,
                     "write_performed": False, "execution_authority_granted": False}
         recovery_id = f"binance-{current_run['id']}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
@@ -386,6 +389,7 @@ def run(action, recovery_id=""):
             source_run=current_run,
             migration_run=migration_run,
             now=observed_at,
+            observe_only_non_managed_spot=True,
         )
         fresh_candidate = validate_post_rebase_source(
             fresh, runtime_target=target, legacy_expected=expected, now=observed_at

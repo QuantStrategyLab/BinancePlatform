@@ -165,7 +165,8 @@ def _strict_managed_quantities(
     client: object,
     account: Mapping[str, object],
     managed_assets: Sequence[str],
-) -> tuple[dict[str, float], str]:
+    *, observe_only_non_managed_spot: bool = False,
+) -> tuple[dict[str, float], str, int]:
     raw_rows = account.get("balances") if isinstance(account, Mapping) else None
     if not isinstance(raw_rows, list) or any(not isinstance(row, Mapping) for row in raw_rows):
         raise ValueError("post_rebase_balance_amount_invalid")
@@ -181,7 +182,8 @@ def _strict_managed_quantities(
         spot[asset] = (free, locked)
         canonical_spot.append({"asset": asset, "free": str(free), "locked": str(locked)})
     managed = tuple(dict.fromkeys(str(asset).upper() for asset in managed_assets))
-    if any(asset not in managed and (free != 0 or locked != 0) for asset, (free, locked) in spot.items()):
+    observed_count = sum(asset not in managed and free != 0 for asset, (free, _locked) in spot.items())
+    if observed_count and not observe_only_non_managed_spot:
         raise ValueError("post_rebase_unknown_spot_balance")
     if any(asset not in spot for asset in managed):
         raise ValueError("post_rebase_quantity_mismatch")
@@ -208,7 +210,7 @@ def _strict_managed_quantities(
                 raise ValueError("post_rebase_earn_page_incomplete")
             earn += _amount(row.get("totalAmount"))
         totals[asset] = _quantity(spot[asset][0] + earn)
-    return totals, digest(sorted(canonical_spot, key=lambda row: row["asset"]))
+    return totals, digest(sorted(canonical_spot, key=lambda row: row["asset"])), observed_count
 
 
 def _evidence(
@@ -242,6 +244,7 @@ def collect_post_rebase_source(
     *, client: object, runtime_target: object, legacy_expected: Mapping[str, str],
     ledger: Mapping[str, object], archive: Mapping[str, object], symbols: Sequence[str],
     source_run: Mapping[str, object], migration_run: Mapping[str, object], now: datetime | None = None,
+    observe_only_non_managed_spot: bool = False,
 ) -> dict[str, object]:
     """Collect a fresh, zero-activity candidate for the approved new opening."""
     from application.broker_reconciliation import collect_read_only_reconciliation_observations
@@ -285,11 +288,15 @@ def collect_post_rebase_source(
         raise ValueError("post_rebase_non_reward_activity_present")
 
     managed_assets = tuple(material["opening_quantities"])
-    first_quantities, first_spot_sha256 = _strict_managed_quantities(client, account, managed_assets)
+    first_quantities, first_spot_sha256, observed_count = _strict_managed_quantities(
+        client, account, managed_assets, observe_only_non_managed_spot=observe_only_non_managed_spot,
+    )
     second = client.get_account()
     if digest({"account_uid": str(second.get("uid") or "")}) != legacy_expected.get("account_scope_sha256"):
         raise ValueError("post_rebase_account_identity_mismatch")
-    second_quantities, second_spot_sha256 = _strict_managed_quantities(client, second, managed_assets)
+    second_quantities, second_spot_sha256, _ = _strict_managed_quantities(
+        client, second, managed_assets, observe_only_non_managed_spot=observe_only_non_managed_spot,
+    )
     if first_quantities != second_quantities or first_spot_sha256 != second_spot_sha256:
         raise ValueError("post_rebase_quantity_changed_during_read")
     if first_quantities != material["opening_quantities"]:
@@ -306,6 +313,8 @@ def collect_post_rebase_source(
         "history_counts": dict(counts),
         "quantity_double_read_match": True,
         "managed_asset_count": len(managed_assets),
+        "non_managed_spot_policy": "observe_only" if observe_only_non_managed_spot else "reject",
+        "observed_non_managed_asset_count": observed_count,
         "earn_rewards_observed": counts.get("earn_rewards", 0),
     }
     source = {
@@ -361,6 +370,13 @@ def validate_post_rebase_source(
         or candidate.local_execution_ledger_sha256 != source.get("new_ledger_sha256")
         or source.get("proof", {}).get("history_complete_for_requested_surfaces") is not True
         or source.get("proof", {}).get("quantity_double_read_match") is not True
+        or source.get("proof", {}).get("non_managed_spot_policy", "reject") not in {"reject", "observe_only"}
+        or type(source.get("proof", {}).get("observed_non_managed_asset_count", 0)) is not int
+        or source.get("proof", {}).get("observed_non_managed_asset_count", 0) < 0
+        or (
+            source.get("proof", {}).get("non_managed_spot_policy", "reject") == "reject"
+            and source.get("proof", {}).get("observed_non_managed_asset_count", 0) != 0
+        )
         or not isinstance(source.get("proof", {}).get("history_counts"), Mapping)
         or any(
             type(value) is not int or value < 0

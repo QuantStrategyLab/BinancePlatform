@@ -2,7 +2,24 @@
 
 from __future__ import annotations
 
-from runtime_support import record_gating_event
+from collections.abc import Mapping
+
+from runtime_support import ExecutionIntegrityError, record_gating_event
+
+
+def _check_rebased_asset_scope(raw_state, universe):
+    if "accounting_rebase" not in raw_state:
+        return
+    opening = raw_state.get("last_balance_snapshot")
+    if not isinstance(opening, Mapping) or not opening or not isinstance(universe, Mapping):
+        raise ExecutionIntegrityError("managed_asset_scope_mismatch")
+    # The approved opening and subsequent scoped snapshots form a non-expanding
+    # boundary. BTC/BNB/USDT have dedicated roles outside the trend sleeve.
+    allowed = set(opening) - {"BTC", "BNB", "USDT"}
+    for symbol, meta in universe.items():
+        asset = meta.get("base_asset") if isinstance(meta, Mapping) else None
+        if asset not in allowed or symbol != f"{asset}USDT":
+            raise ExecutionIntegrityError("managed_asset_scope_mismatch")
 
 
 def load_cycle_state(
@@ -30,14 +47,15 @@ def load_cycle_state(
         return None
 
     resolved_trend_universe, trend_pool_resolution = resolve_runtime_trend_pool(runtime, raw_state)
+    _check_rebased_asset_scope(raw_state, resolved_trend_universe)
     trend_universe_setter(resolved_trend_universe)
 
     state = normalize_trade_state(raw_state)
     runtime.trade_state = state
     update_trend_pool_state(state, trend_pool_resolution)
-    runtime_set_trade_state(runtime, report, state, reason="trend_pool_metadata_refresh")
-
     runtime_trend_universe = get_runtime_trend_universe(state)
+    _check_rebased_asset_scope(raw_state, runtime_trend_universe)
+    runtime_set_trade_state(runtime, report, state, reason="trend_pool_metadata_refresh")
     allow_new_trend_entries = (not trend_pool_resolution["degraded"]) or allow_new_trend_entries_on_degraded
     if trend_pool_resolution["degraded"] and not allow_new_trend_entries:
         record_gating_event(
