@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import traceback
+from collections.abc import Mapping
 from pathlib import Path
 from entrypoints.cli import run_cli_entrypoint
 from notify_i18n_support import build_strategy_display_name, translate as t
@@ -887,6 +888,13 @@ def _resolve_strategy_evaluation(
         allow_rotation_refresh=allow_pool_refresh,
         get_symbol_trade_state_fn=get_symbol_trade_state,
         set_symbol_trade_state_fn=set_symbol_trade_state,
+        mandate_provenance=getattr(runtime, "mandate_provenance", None),
+        candidate_risk_identity=getattr(runtime, "candidate_risk_identity", None),
+        risk_authority=getattr(runtime, "risk_authority", None),
+        runtime_target=getattr(runtime, "runtime_target", None),
+        trend_pool_contract=getattr(runtime, "trend_pool_contract", None),
+        execution_mode="dry_run" if getattr(runtime, "dry_run", False) else "live",
+        portfolio_risk_symbols=("BTCUSDT", "BNBUSDT", *portfolio_trend_universe_symbols),
     )
 
 
@@ -938,10 +946,15 @@ def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, pri
         u_total,
         fuel_val,
     )
-    return map_decision_to_allocation(
+    allocation = map_decision_to_allocation(
         evaluation.decision,
         account_metrics=evaluation.account_metrics,
     )
+    assessment = evaluation.decision.diagnostics.get("member_risk_assessment")
+    if isinstance(assessment, Mapping):
+        allocation["risk_assessment"] = dict(assessment)
+    allocation["risk_flags"] = tuple(str(flag) for flag in evaluation.decision.risk_flags)
+    return allocation
 
 
 def _build_balance_snapshot(runtime_trend_universe, balances, u_total):

@@ -17,6 +17,60 @@ Supporting modules with operational impact:
 - `trend_pool_support.py` for upstream payload validation
 - `live_services.py` for Firestore and Telegram adapters
 
+## Binance LIVE risk authority (PENDING)
+
+The runtime accepts a LIVE authority only from the three protected repository
+variables `BINANCE_RISK_AUTHORITY_FILE`, `BINANCE_RISK_AUTHORITY_SHA256`, and
+`BINANCE_RISK_AUTHORITY_SOURCE_REVISION`. Until an approved source is supplied,
+keep these values absent and leave execution closed. The reviewable template
+below uses the loader's exact field names; `decision=PENDING` and the null or
+empty values make it unusable and it must not be loaded as a source file.
+
+```json
+{
+  "decision": "PENDING",
+  "authority_scope": null,
+  "runtime_target": {
+    "platform_id": "binance",
+    "strategy_profile": "crypto_live_pool_rotation",
+    "account_scope": "crypto_combo",
+    "account_selector": ["crypto_combo"],
+    "deployment_selector": "crypto_combo"
+  },
+  "strategy_revision": null,
+  "runner_revision": null,
+  "config_sha256": null,
+  "continuous_inputs_allowed": null,
+  "mandate": {
+    "mandate_id": null,
+    "mandate_version": null,
+    "effective_at": null,
+    "expires_at": null,
+    "max_snapshot_age_seconds": null,
+    "effective_exposure_cap": null,
+    "loss_budget": null,
+    "product_caps": {},
+    "nominal_caps": {},
+    "product_leverage_factors": {},
+    "allowed_nonzero_assets": [],
+    "product_effective_caps": {},
+    "max_nonzero_assets": null
+  }
+}
+```
+
+The account and deployment values above are the currently reviewed target
+shape and still require final source verification. A real source becomes
+usable only after external approval provides `decision=APPROVE` and
+`authority_scope=LIVE` with every required field.
+
+The approval decision must specify the account, tradable assets, risk limits,
+USDT cycle allocation budget, expiry, and whether continuous inputs within that
+scope are allowed. Engineering fills and verifies Git revisions and digests
+from the installed strategy and clean runner checkout; operators do not need
+to calculate or hand-enter hashes. `loss_budget` is the current QPK consumer's
+USDT allocation ceiling for the cycle, not a claimed maximum loss.
+
 ## Execution Boundary
 
 `BinancePlatform` is the downstream execution engine.

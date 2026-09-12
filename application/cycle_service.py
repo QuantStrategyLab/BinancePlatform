@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 
 from quant_platform_kit.common.runtime_reports import persist_runtime_report
 from quant_platform_kit.strategy_lifecycle.performance_monitor import try_record_platform_execution
@@ -15,6 +16,16 @@ from runtime_support import (
     reconcile_runtime_cash_effects, ExecutionIntegrityError, StatePersistenceError,
     OrderReconciliationError, ClientCallError,
 )
+
+
+def _record_risk_diagnostics(report, allocation):
+    assessment = allocation.get("risk_assessment")
+    if not isinstance(assessment, Mapping):
+        return
+    report["risk_assessment"] = dict(assessment)
+    report["risk_outcome"] = assessment.get("outcome")
+    report["risk_reason_codes"] = list(assessment.get("reason_codes") or ())
+    report["risk_flags"] = list(allocation.get("risk_flags") or ())
 
 
 def execute_strategy_cycle(
@@ -129,6 +140,7 @@ def execute_strategy_cycle(
 
         report["total_equity_usdt"] = total_equity
         report["trend_equity_usdt"] = trend_val_equity
+        _record_risk_diagnostics(report, allocation)
 
         if not allocation.get("execution_permitted", False):
             report["execution_blocked_reason"] = "risk_execution_not_permitted"
@@ -229,6 +241,7 @@ def execute_strategy_cycle(
 
         report["total_equity_usdt"] = total_equity
         report["trend_equity_usdt"] = trend_val_equity
+        _record_risk_diagnostics(report, post_trade_allocation)
 
         if not post_trade_allocation.get("execution_permitted", False):
             report["execution_blocked_reason"] = "risk_execution_not_permitted"

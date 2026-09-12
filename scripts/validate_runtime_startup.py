@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 import sys
 
@@ -38,8 +39,16 @@ def validate_startup():
         for meta in runtime_trend_universe.values()
     )
     valuation_only_count = len(runtime_trend_universe) - candidate_count
+    mandate = getattr(runtime, "mandate_provenance", None)
+    candidate_identity = getattr(runtime, "candidate_risk_identity", None)
+    risk_materials_present = bool(
+        isinstance(mandate, Mapping) and candidate_identity is not None
+    )
     return {"status": "passed", "strategy_profile": runtime.strategy_profile,
             "execution_permitted": False, "validation_only": True,
+            "risk_materials_present": risk_materials_present,
+            "validation_scope": "startup_only",
+            "recovery_ready": False,
             "state_load_checked": True,
             "source_pool_symbol_count": len(resolution.get("symbols") or ()),
             "managed_asset_count": len(runtime_trend_universe) + 3,

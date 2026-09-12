@@ -47,6 +47,9 @@ def test_startup_validation_loads_without_broker_credentials_or_execution(monkey
     assert calls == ["build", "state_load"]
     assert result["status"] == "passed"
     assert result["execution_permitted"] is False
+    assert result["risk_materials_present"] is False
+    assert result["validation_scope"] == "startup_only"
+    assert result["recovery_ready"] is False
     assert result["state_load_checked"] is True
     assert result["source_pool_symbol_count"] == 2
     assert result["managed_asset_count"] == 5
