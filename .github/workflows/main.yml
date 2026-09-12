@@ -1,11 +1,16 @@
 name: Runtime
-run-name: Runtime · ${{ inputs.validate_only && 'validation' || inputs.reconcile_only && 'reconciliation' || vars.RUNTIME_TARGET_ENABLED == 'true' && 'strategy' || 'disabled' }}
+run-name: Runtime · ${{ inputs.full_cycle && 'full-cycle-validation' || inputs.validate_only && 'validation' || inputs.reconcile_only && 'reconciliation' || vars.RUNTIME_TARGET_ENABLED == 'true' && 'strategy' || 'disabled' }}
 
 on:
   workflow_dispatch:
     inputs:
       validate_only:
         description: "Validate actual configuration, recovery control and strategy startup without broker credentials or execution"
+        required: false
+        default: false
+        type: boolean
+      full_cycle:
+        description: "With validate_only: run one read-only full cycle; runtime remains disabled and all writes are suppressed"
         required: false
         default: false
         type: boolean
@@ -97,6 +102,7 @@ jobs:
           RECONCILE_ONLY_INPUT: ${{ inputs.reconcile_only || 'false' }}
           RECONCILE_PERSIST_INPUT: ${{ inputs.reconcile_persist_candidate || 'false' }}
           VALIDATE_ONLY_INPUT: ${{ inputs.validate_only || 'false' }}
+          FULL_CYCLE_INPUT: ${{ inputs.full_cycle || 'false' }}
           BALANCE_HISTORY_START: ${{ inputs.balance_history_start }}
           BALANCE_HISTORY_END: ${{ inputs.balance_history_end }}
           ACCOUNTING_MIGRATION_ACTION_INPUT: ${{ inputs.accounting_migration_action || 'none' }}
@@ -105,6 +111,10 @@ jobs:
           ACCOUNTING_MIGRATION_EXPECTED_DIGEST: ${{ inputs.accounting_migration_expected_digest }}
         run: |
           set -euo pipefail
+          if [ "${FULL_CYCLE_INPUT:-false}" = "true" ] && { [ "$VALIDATE_ONLY_INPUT" != "true" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; }; then
+            echo "::error::Full-cycle validation requires validate_only, disabled runtime, and no reconciliation mode."
+            exit 1
+          fi
           case "${RECOVERY_ACTION_INPUT:-none}" in
             none) ;;
             diagnose|prepare|verify|activate)
@@ -375,8 +385,12 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${VALIDATE_ONLY:-false}" = "true" ]; then
-            env -u BINANCE_API_KEY -u BINANCE_API_SECRET RUNTIME_TARGET_ENABLED=false \
-              "$VENV_PATH/bin/python" scripts/validate_runtime_startup.py
+            if [ "${FULL_CYCLE:-false}" = "true" ]; then
+              RUNTIME_TARGET_ENABLED=false "$VENV_PATH/bin/python" scripts/validate_runtime_startup.py --full-cycle
+            else
+              env -u BINANCE_API_KEY -u BINANCE_API_SECRET RUNTIME_TARGET_ENABLED=false \
+                "$VENV_PATH/bin/python" scripts/validate_runtime_startup.py
+            fi
             exit 0
           fi
           if [ "${RECONCILE_ONLY:-false}" = "true" ]; then
@@ -456,6 +470,7 @@ jobs:
           ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW: ${{ vars.ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW }}
           BINANCE_RECONCILIATION_SYMBOLS: ${{ vars.BINANCE_RECONCILIATION_SYMBOLS }}
           VALIDATE_ONLY: ${{ github.event.inputs.validate_only || 'false' }}
+          FULL_CYCLE: ${{ github.event.inputs.full_cycle || 'false' }}
           RECONCILE_ONLY: ${{ github.event.inputs.reconcile_only || 'false' }}
           DIAGNOSE_BALANCES: ${{ github.event.inputs.diagnose_balances || 'false' }}
           BALANCE_HISTORY_START: ${{ inputs.balance_history_start }}
@@ -476,8 +491,12 @@ jobs:
           fi
 
       - name: Confirm target is intentionally disabled
-        if: ${{ env.RUNTIME_TARGET_ENABLED == 'false' }}
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'false' && github.event.inputs.full_cycle != 'true' }}
         run: echo "Runtime target is disabled; broker strategy was intentionally not invoked."
+
+      - name: Confirm full-cycle validation remains no-submit
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'false' && github.event.inputs.full_cycle == 'true' }}
+        run: echo "Runtime target is disabled; full-cycle validation used read-only broker calls and suppressed all writes."
 
       - name: 5. Stage execution report for isolated log publisher
         continue-on-error: true

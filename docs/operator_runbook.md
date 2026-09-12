@@ -95,6 +95,21 @@ do not need to calculate or hand-enter hashes. `BINANCE_RISK_AUTHORITY_SOURCE_RE
 must be the 40-character Git revision of that approved source record; a secret
 timestamp or storage-object generation is not a source revision.
 
+The reviewed 2026-09-13 policy scope is the existing `crypto_combo` account and
+`crypto_live_pool_rotation`: all already managed Spot plus Flexible-Earn funds
+may be allocated dynamically under the existing Spot-only, no-borrowing,
+stop-loss and BNB fuel-only rules. This statement does not itself create an
+approval source; the protected source must carry its actual Git provenance.
+
+For a bounded no-submit check, dispatch `validate_only=true` together with
+`full_cycle=true` while `RUNTIME_TARGET_ENABLED=false`. The validator loads the
+LIVE source and real runtime identity, reads the broker through its explicit
+read allowlist, runs `main.execute_cycle` with local `dry_run=True`, and closes
+state, owner, notification, performance and platform-record writes. It only
+passes after the existing cycle reaches `cycle_complete` with a real risk
+`APPROVE`; a startup pass or a synthetic replay is not a recovery or activation
+result. Missing or invalid source material fails closed before broker reads.
+
 ## Execution Boundary
 
 `BinancePlatform` is the downstream execution engine.
