@@ -189,3 +189,15 @@ verify/activate 先读取网站管理员对具体候选的确认，再重新采�
 
 此流程不打开 RUNTIME_TARGET_ENABLED、不解除熔断、不改变策略或风险预算，也不下单。
 实际激活和运行仍需明确授权；本地闭环测试不代替真实人工确认或日常业务周期验收。
+
+### 已落库候选的读回与失败后替换
+
+Firestore 将 tuple 编码为数组并读回 list。候选保存后的读回使用既有 canonical digest
+比较完整内容，避免把此等价表示误报为提交不明；任何实际字段变化仍拒绝。回归测试使用
+真实 Firestore SDK 编码/解码完整候选，不只比较简化 control。
+
+已完成但结论为 failure 的来源不具备激活资格。仅显式 prepare 可替换其严格验证后的
+未激活候选，要求 RECONCILE_ONLY、无 owner、无 confirmation/transition，原 run 的仓库、
+main、workflow、SHA 和编号完整匹配。进行中或已取消的来源拒绝；成功来源仍仅过期后替换。
+每次重新完整采样并生成新编号，CAS 比较旧控制记录；verify/activate 仍只接受成功来源和
+新的人工确认。本能力不是自动重试；真实失败后的恢复遵守原停止与重新授权条件。

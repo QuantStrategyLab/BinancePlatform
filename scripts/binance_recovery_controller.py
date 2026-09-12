@@ -145,7 +145,9 @@ def request_json(url, token, *, payload=None):
     return result
 
 
-def verified_run(run_id, *, expected_sha=None, completed=True):
+def verified_run(
+    run_id, *, expected_sha=None, completed=True, accepted_conclusions=("success",)
+):
     if not re.fullmatch(r"[1-9][0-9]{0,19}", str(run_id)):
         raise ValueError("recovery_run_invalid")
     value = request_json(f"https://api.github.com/repos/{REPOSITORY}/actions/runs/{run_id}", os.environ.get("GITHUB_TOKEN", ""))
@@ -154,7 +156,13 @@ def verified_run(run_id, *, expected_sha=None, completed=True):
             or value.get("repository", {}).get("full_name") != REPOSITORY
             or not re.fullmatch(r"[0-9a-f]{40}", value.get("head_sha", ""))
             or (expected_sha is not None and value.get("head_sha") != expected_sha)
-            or (completed and (value.get("status") != "completed" or value.get("conclusion") != "success"))):
+            or (
+                completed
+                and (
+                    value.get("status") != "completed"
+                    or value.get("conclusion") not in accepted_conclusions
+                )
+            )):
         raise ValueError("recovery_source_workflow_unverified")
     return {key: value[key] for key in ("id", "head_sha", "head_branch", "event", "path")}
 
@@ -226,7 +234,7 @@ def save_post_rebase_control(
         owner = refs["owner_ref"].get(retry=None)
         if (
             not control.exists
-            or control.to_dict() != next_value
+            or digest(control.to_dict()) != digest(next_value)
             or not ledger.exists
             or digest(ledger.to_dict()) != ledger_sha256
             or not archive.exists
@@ -305,18 +313,36 @@ def run(action, recovery_id=""):
                 )
                 if action == "prepare":
                     stored_run = previous["source"]["run"]
+                    candidate_is_future = stored_candidate.last_observed_at > collected_at
+                    candidate_is_expired = (
+                        collected_at - stored_candidate.last_observed_at
+                        > DEFAULT_BROKER_RECONCILIATION_ENROLLMENT_MAX_AGE
+                    )
                     if (
-                        not re.fullmatch(
+                        "confirmation" in previous
+                        or "transition_plan" in previous
+                        or candidate_is_future
+                        or stored_run["id"] == current_run["id"]
+                        or not re.fullmatch(
                             rf"binance-{stored_run['id']}-[1-9][0-9]*",
                             str(previous.get("recovery_id") or ""),
                         )
-                        or verified_run(
-                            stored_run["id"], expected_sha=stored_run["head_sha"]
-                        )
-                        != stored_run
-                        or collected_at - stored_candidate.last_observed_at
-                        <= DEFAULT_BROKER_RECONCILIATION_ENROLLMENT_MAX_AGE
                     ):
+                        raise ValueError("prospective_rebase_prepare_control_changed")
+                    accepted_conclusions = (
+                        ("success", "failure") if candidate_is_expired else ("failure",)
+                    )
+                    try:
+                        verified_stored_run = verified_run(
+                            stored_run["id"],
+                            expected_sha=stored_run["head_sha"],
+                            accepted_conclusions=accepted_conclusions,
+                        )
+                    except ValueError:
+                        raise ValueError(
+                            "prospective_rebase_prepare_control_changed"
+                        ) from None
+                    if verified_stored_run != stored_run:
                         raise ValueError("prospective_rebase_prepare_control_changed")
             migration_run = verified_run(
                 PROSPECTIVE_MIGRATION_RUN_ID,
