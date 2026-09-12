@@ -21,8 +21,12 @@ Supporting modules with operational impact:
 
 The runtime accepts a LIVE authority only from the three protected repository
 variables `BINANCE_RISK_AUTHORITY_FILE`, `BINANCE_RISK_AUTHORITY_SHA256`, and
-`BINANCE_RISK_AUTHORITY_SOURCE_REVISION`. Until an approved source is supplied,
-keep these values absent and leave execution closed. The reviewable template
+`BINANCE_RISK_AUTHORITY_SOURCE_REVISION`. On the Oracle runtime job, an approved
+JSON may be stored in the protected `binance-runtime` environment secret
+`BINANCE_RISK_AUTHORITY_JSON`; the workflow writes it only to a `0600` temporary
+file and removes that file after the strategy step. The secret and a configured
+runner file are mutually exclusive. Until an approved source is supplied, keep
+all source values absent and leave execution closed. The reviewable template
 below uses the loader's exact field names; `decision=PENDING` and the null or
 empty values make it unusable and it must not be loaded as a source file.
 
@@ -65,11 +69,15 @@ usable only after external approval provides `decision=APPROVE` and
 `authority_scope=LIVE` with every required field.
 
 The approval decision must specify the account, tradable assets, risk limits,
-USDT cycle allocation budget, expiry, and whether continuous inputs within that
-scope are allowed. Engineering fills and verifies Git revisions and digests
-from the installed strategy and clean runner checkout; operators do not need
-to calculate or hand-enter hashes. `loss_budget` is the current QPK consumer's
-USDT allocation ceiling for the cycle, not a claimed maximum loss.
+including whether BNB is fuel-only, the USDT cycle allocation budget, expiry,
+and whether continuous inputs within that scope are allowed. Engineering fills
+and verifies Git revisions and digests from the approved source record, the
+installed strategy, and the clean runner checkout; operators do not need to
+calculate or hand-enter hashes. `BINANCE_RISK_AUTHORITY_SOURCE_REVISION` must
+be the 40-character Git revision of that approved source record; a secret
+timestamp or storage-object generation is not a source revision. `loss_budget`
+is the current QPK consumer's USDT allocation ceiling for the cycle, not a
+claimed maximum loss.
 
 ## Execution Boundary
 
@@ -127,8 +135,8 @@ The monthly execution pool is locked to the accepted upstream `version` / `as_of
 
 `RUNTIME_TARGET_ENABLED` is the single operator control for this target.  It
 must be the literal `true` or `false`; a missing value fails closed.  The
-reviewed production repository variable is explicitly set to `true` so this
-control does not silently change the established paper-runtime behaviour.
+current repository value is read back as `false`; keep it disabled until the
+separate LIVE authority source and recovery prerequisites are verified.
 
 - When it is `false`, `main.yml` finishes without checkout, cloud
   authentication, dependency installation, strategy startup, broker-secret

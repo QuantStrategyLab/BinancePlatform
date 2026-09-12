@@ -136,6 +136,63 @@ def test_reconciliation_defaults_to_zero_persistence_and_no_notification() -> No
     assert "github.event.inputs.reconcile_only != 'true'" in broker_job
 
 
+def test_live_authority_secret_is_materialized_and_removed_in_broker_job() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    materialize = broker_job.split("      - name: Materialize protected LIVE risk authority source", 1)[1].split(
+        "      - name:", 1
+    )[0]
+    cleanup = broker_job.split("      - name: Remove protected LIVE risk authority source", 1)[1].split(
+        "      - name:", 1
+    )[0]
+    assert "BINANCE_RISK_AUTHORITY_JSON: ${{ secrets.BINANCE_RISK_AUTHORITY_JSON }}" in materialize
+    assert "umask 077" in materialize
+    assert 'mktemp "$RUNNER_TEMP/binance-live-risk-authority.XXXXXX"' in materialize
+    assert "chmod 600" in materialize
+    assert '>> "$GITHUB_ENV"' in materialize
+    assert "BINANCE_RISK_AUTHORITY_FILE: ${{ vars.BINANCE_RISK_AUTHORITY_FILE }}" not in broker_job
+    assert "if: ${{ always() }}" in cleanup
+    assert ': > "$BINANCE_RISK_AUTHORITY_TEMP_FILE"' in cleanup
+    assert 'rm -- "$BINANCE_RISK_AUTHORITY_TEMP_FILE"' in cleanup
+    assert "BINANCE_RISK_AUTHORITY_JSON" not in _job_block(workflow, "publish-execution-log")
+
+
+def test_live_authority_materialization_roundtrip_uses_synthetic_secret(tmp_path) -> None:
+    import os
+    import subprocess
+    import textwrap
+
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    materialize = textwrap.dedent(
+        broker_job.split("      - name: Materialize protected LIVE risk authority source", 1)[1]
+        .split("      - name:", 1)[0]
+        .split("        run: |\n", 1)[1]
+    )
+    cleanup = textwrap.dedent(
+        broker_job.split("      - name: Remove protected LIVE risk authority source", 1)[1]
+        .split("      - name:", 1)[0]
+        .split("        run: |\n", 1)[1]
+    )
+    env = os.environ.copy()
+    github_env = tmp_path / "github-env"
+    env.update(
+        RUNNER_TEMP=str(tmp_path),
+        GITHUB_ENV=str(github_env),
+        BINANCE_RISK_AUTHORITY_JSON='{"decision":"PENDING"}',
+        BINANCE_RISK_AUTHORITY_FILE_CONFIG="",
+    )
+    subprocess.run(["bash", "-c", materialize], env=env, check=True, capture_output=True, text=True)
+    values = dict(line.split("=", 1) for line in github_env.read_text().splitlines())
+    authority_file = Path(values["BINANCE_RISK_AUTHORITY_FILE"])
+    assert authority_file.read_text() == '{"decision":"PENDING"}'
+    assert authority_file.stat().st_mode & 0o777 == 0o600
+
+    env["BINANCE_RISK_AUTHORITY_TEMP_FILE"] = str(authority_file)
+    subprocess.run(["bash", "-c", cleanup], env=env, check=True, capture_output=True, text=True)
+    assert not authority_file.exists()
+
+
 def test_disabled_host_observation_uses_actual_control_read_and_existing_source() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     broker_job = _job_block(workflow, "deploy", "publish-execution-log")
