@@ -119,3 +119,6 @@ Spot + Flexible Earn 持有资产口径，闲置理财不等于资金退出策�
 `application/earn_accrual.py` 提供纯 Decimal 增量守恒核对，要求调用方逐资产给出已独立核实的非利息净变动；
 不可将余额差额反推为已核实流水。该核对尚未接入日常自动记账和恢复消费者，不能将此工程预览称为
 生产自动记账已完成。实际迁移仍需具体快照确认，并完成向前记账消费者和恢复校验后再验收。
+
+余额响应中的范围外资产名称可为 Unicode，按原名去重，不添加到受管范围；所有返回行仍检查金额与锁定。
+依据：[Binance REST API Unicode 示例](https://developers.binance.com/en/docs/products/spot/rest-api)。
