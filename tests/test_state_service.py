@@ -254,3 +254,59 @@ class StateStoreTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_rebased_scope_blocks_pool_expansion_before_any_state_write():
+    import pytest
+    from runtime_support import ExecutionIntegrityError
+
+    allowed = {"ETHUSDT": {"base_asset": "ETH"}}
+    invalid = [
+        {"PASSIVEUSDT": {"base_asset": "PASSIVE"}},
+        {"PASSIVEUSDT": {"base_asset": "ETH"}},
+        {"BTCUSDT": {"base_asset": "BTC"}},
+        {"BNBUSDT": {"base_asset": "BNB"}},
+    ]
+    for universe in invalid:
+        for bad_stage in ("resolved", "effective"):
+            writes = []
+            raw = {"accounting_rebase": {"approved_proposal_run_id": "test"},
+                   "last_balance_snapshot": {"ETH": 1, "BTC": 0, "BNB": 0, "USDT": 100}}
+            with pytest.raises(ExecutionIntegrityError, match="managed_asset_scope_mismatch"):
+                load_cycle_state(
+                    SimpleNamespace(), {"status": "ok"}, False,
+                    state_loader=lambda **_: raw,
+                    resolve_runtime_trend_pool=lambda *_: (
+                        universe if bad_stage == "resolved" else allowed, {"degraded": False}),
+                    normalize_trade_state=lambda state: state.copy(),
+                    update_trend_pool_state=lambda *_: None,
+                    runtime_set_trade_state=lambda *args, **kwargs: writes.append(kwargs),
+                    get_runtime_trend_universe=lambda _: universe if bad_stage == "effective" else allowed,
+                    append_report_error=lambda *args, **kwargs: None,
+                    trend_universe_setter=lambda _: None,
+                )
+            assert writes == []
+
+
+def test_rebased_scope_keeps_original_universe_and_does_not_mutate_opening():
+    import copy
+
+    raw = {"accounting_rebase": {"approved_proposal_run_id": "test"},
+           "last_balance_snapshot": {"ETH": 1, "BTC": 0, "BNB": 0, "USDT": 100}}
+    original = copy.deepcopy(raw)
+    allowed = {"ETHUSDT": {"base_asset": "ETH"}}
+    writes = []
+    result = load_cycle_state(
+        SimpleNamespace(), {"status": "ok"}, False,
+        state_loader=lambda **_: raw,
+        resolve_runtime_trend_pool=lambda *_: (allowed, {"degraded": False}),
+        normalize_trade_state=lambda state: copy.deepcopy(state),
+        update_trend_pool_state=lambda *_: None,
+        runtime_set_trade_state=lambda *args, **kwargs: writes.append(kwargs),
+        get_runtime_trend_universe=lambda _: allowed,
+        append_report_error=lambda *args, **kwargs: None,
+        trend_universe_setter=lambda _: None,
+    )
+    assert result[2] == allowed
+    assert len(writes) == 1
+    assert raw == original

@@ -158,7 +158,7 @@ def _configure_anchors(monkeypatch, current, archive, control, opening):
     assert archive["new_ledger_sha256"] == digest(current)
 
 
-def _collect(monkeypatch, *, client=None, current=None, archive=None, now=NOW):
+def _collect(monkeypatch, *, client=None, current=None, archive=None, now=NOW, observe_only_non_managed_spot=False):
     from application.rebased_recovery import collect_post_rebase_source
 
     base_current, base_archive, control, opening = _material()
@@ -175,6 +175,7 @@ def _collect(monkeypatch, *, client=None, current=None, archive=None, now=NOW):
         source_run={"id": 200, "head_sha": "b" * 40, "head_branch": "main", "event": "workflow_dispatch", "path": ".github/workflows/main.yml"},
         migration_run={"id": 34606795875, "head_sha": "ed7ee6e96cea0addb292f3f45338652095d0da58", "head_branch": "main", "event": "workflow_dispatch", "path": ".github/workflows/main.yml"},
         now=now,
+        observe_only_non_managed_spot=observe_only_non_managed_spot,
     )
 
 
@@ -730,7 +731,9 @@ def test_controller_prepare_routes_real_post_rebase_archive_and_returns_unresolv
     monkeypatch.setattr(controller, "_expected_digests", lambda: expected)
     monkeypatch.setattr(controller, "_symbols_from_env", lambda: ["BTCUSDT"])
     monkeypatch.setattr(controller, "MANAGED_SYMBOLS_SHA256", digest(["BTCUSDT"]))
-    monkeypatch.setattr(controller, "connect_client", lambda *_args, **_kwargs: Client())
+    passive_client = Client()
+    passive_client.balances.append({"asset": "PASSIVE", "free": "2", "locked": "0"})
+    monkeypatch.setattr(controller, "connect_client", lambda *_args, **_kwargs: passive_client)
     monkeypatch.setattr(
         controller,
         "verified_run",
@@ -781,6 +784,7 @@ def test_controller_prepare_routes_real_post_rebase_archive_and_returns_unresolv
         monkeypatch.setattr(controller, "_save_control", lambda *_args, **_kwargs: pytest.fail("diagnosis wrote legacy control"))
         result = controller.run(action)
         assert result == {"status": "diagnosed", "source_kind": "post_rebase", "historical_difference_unresolved": True,
+                          "non_managed_spot_policy": "observe_only", "observed_non_managed_asset_count": 1,
                           "no_order": True, "write_performed": False, "execution_authority_granted": False}
         assert not requests
         assert docs[controller.CONTROL_DOCUMENT].snapshot.value == control
@@ -911,14 +915,20 @@ def _confirmation_response(candidate, recovery_id, confirmed_at):
     }
 
 
-def _setup_post_rebase_controller_confirmation(monkeypatch, *, response_change=None):
+def _setup_post_rebase_controller_confirmation(monkeypatch, *, response_change=None, passive=False, passive_changed=False):
     from scripts import binance_recovery_controller as controller
 
     prepared_at = NOW
     fresh_at = NOW + timedelta(minutes=2)
     ledger, archive, control, opening = _material()
     _configure_anchors(monkeypatch, ledger, archive, control, opening)
-    package = _collect(monkeypatch, current=ledger, archive=archive, now=prepared_at)
+    prepared_client = Client()
+    if passive:
+        prepared_client.balances.append({"asset": "PASSIVE", "free": "2", "locked": "0"})
+    package = _collect(
+        monkeypatch, client=prepared_client, current=ledger, archive=archive, now=prepared_at,
+        observe_only_non_managed_spot=passive,
+    )
     recovery_id = "binance-200-1"
     previous = {"state": "RECONCILE_ONLY", "recovery_id": recovery_id, **package}
     expected = _legacy_expected()
@@ -974,7 +984,10 @@ def _setup_post_rebase_controller_confirmation(monkeypatch, *, response_change=N
 
     def connect(*_args, **_kwargs):
         broker_reads.append(True)
-        return Client()
+        client = Client()
+        if passive:
+            client.balances.append({"asset": "PASSIVE", "free": "3" if passive_changed else "2", "locked": "0"})
+        return client
 
     monkeypatch.setattr(controller, "connect_client", connect)
     monkeypatch.setattr(controller, "request_json", lambda *_args, **_kwargs: response)
@@ -1010,12 +1023,13 @@ def _setup_post_rebase_controller_confirmation(monkeypatch, *, response_change=N
     return controller, recovery_id, docs, writes, attempts, broker_reads
 
 
+@pytest.mark.parametrize("passive", [False, True])
 @pytest.mark.parametrize("action", ["verify", "activate"])
 def test_controller_post_rebase_confirmation_rechecks_fresh_evidence_and_only_activate_writes(
-    monkeypatch, action
+    monkeypatch, action, passive
 ):
     controller, recovery_id, docs, writes, attempts, broker_reads = (
-        _setup_post_rebase_controller_confirmation(monkeypatch)
+        _setup_post_rebase_controller_confirmation(monkeypatch, passive=passive)
     )
 
     result = controller.run(action, recovery_id)
@@ -1048,5 +1062,61 @@ def test_controller_post_rebase_bad_confirmation_stops_before_broker_and_write(
         controller.run("activate", recovery_id)
 
     assert broker_reads == []
+    assert writes == [] and attempts == []
+    assert docs[controller.CONTROL_DOCUMENT].snapshot.value["state"] == "RECONCILE_ONLY"
+
+
+@pytest.mark.parametrize("change", [None, "second_read", "locked", "managed_quantity"])
+def test_observed_assets_remain_in_full_account_evidence(monkeypatch, change):
+    from application.rebased_recovery import validate_post_rebase_source
+
+    client = Client()
+    client.balances.append({"asset": "PASSIVE", "free": "2", "locked": "0"})
+    if change == "second_read":
+        client.mutate_after_first_read = lambda obj: obj.balances[-1].update(free="3")
+    elif change == "locked":
+        client.balances[-1]["locked"] = "1"
+    elif change == "managed_quantity":
+        client.balances[0]["free"] = "0.2"
+    errors = {
+        "second_read": "post_rebase_quantity_changed_during_read",
+        "locked": "post_rebase_locked_balance_present",
+        "managed_quantity": "post_rebase_quantity_mismatch",
+    }
+    if change:
+        with pytest.raises(ValueError, match=errors[change]):
+            _collect(monkeypatch, client=client, observe_only_non_managed_spot=True)
+        return
+    package = _collect(monkeypatch, client=client, observe_only_non_managed_spot=True)
+    validate_post_rebase_source(package, runtime_target=_target(), legacy_expected=_legacy_expected(), now=NOW)
+    assert package["source"]["proof"]["non_managed_spot_policy"] == "observe_only"
+    assert package["source"]["proof"]["observed_non_managed_asset_count"] == 1
+    without_passive = _collect(monkeypatch, observe_only_non_managed_spot=True)
+    for key in ("positions_sha256", "cash_sha256"):
+        assert package["candidate"][key] != without_passive["candidate"][key]
+    assert "PASSIVE" not in json.dumps(package)
+
+
+@pytest.mark.parametrize("policy,count", [("ignore", 1), ("reject", 1), ("observe_only", -1), ("observe_only", True)])
+def test_source_rejects_invalid_passive_scope_proof(monkeypatch, policy, count):
+    from application.rebased_recovery import validate_post_rebase_source
+
+    package = _collect(monkeypatch)
+    package["source"]["proof"].update(
+        non_managed_spot_policy=policy, observed_non_managed_asset_count=count,
+    )
+    package["candidate"]["source_receipts_sha256"] = digest(package["source"])
+    with pytest.raises(ValueError, match="post_rebase_source_binding_mismatch"):
+        validate_post_rebase_source(package, runtime_target=_target(), legacy_expected=_legacy_expected(), now=NOW)
+
+
+
+def test_passive_change_after_confirmation_blocks_activation_without_write(monkeypatch):
+    controller, recovery_id, docs, writes, attempts, broker_reads = (
+        _setup_post_rebase_controller_confirmation(monkeypatch, passive=True, passive_changed=True)
+    )
+    with pytest.raises(ValueError, match="post_rebase_fresh_candidate_changed"):
+        controller.run("activate", recovery_id)
+    assert broker_reads == [True]
     assert writes == [] and attempts == []
     assert docs[controller.CONTROL_DOCUMENT].snapshot.value["state"] == "RECONCILE_ONLY"
