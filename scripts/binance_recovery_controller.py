@@ -30,6 +30,10 @@ from application.rebased_recovery import (
     ARCHIVE_DOCUMENT,
     MIGRATION_RUN_ID,
     MIGRATION_RUN_SHA,
+    PROSPECTIVE_ARCHIVE_DOCUMENT,
+    PROSPECTIVE_MIGRATION_RUN_ID,
+    PROSPECTIVE_MIGRATION_RUN_SHA,
+    collect_prospective_rebase_diagnosis,
     collect_post_rebase_source,
     validate_post_rebase_material,
     validate_post_rebase_source,
@@ -64,7 +68,19 @@ DIAGNOSTIC_REASON_CODES = frozenset({
     "post_rebase_quantity_changed_during_read", "post_rebase_quantity_mismatch",
     "post_rebase_recent_executions_present", "post_rebase_source_binding_mismatch",
     "post_rebase_source_run_invalid", "post_rebase_unknown_spot_balance",
+    "prospective_rebase_account_identity_mismatch", "prospective_rebase_archive_invalid",
+    "prospective_rebase_archive_missing", "prospective_rebase_broker_activity_unverified",
+    "prospective_rebase_cash_flow_changed_during_read", "prospective_rebase_cash_flow_unverified",
+    "prospective_rebase_checkpoint_unavailable", "prospective_rebase_conservation_unverified",
+    "prospective_rebase_history_window_invalid", "prospective_rebase_ledger_invalid",
+    "prospective_rebase_migration_run_invalid", "prospective_rebase_observation_window_invalid",
+    "prospective_rebase_open_orders_present", "prospective_rebase_recent_executions_present",
+    "prospective_rebase_source_run_invalid", "prospective_rebase_state_changed_during_read",
 })
+
+
+def prospective_clock():
+    return datetime.now(timezone.utc)
 
 
 class RecoveryWriteUncertain(RuntimeError):
@@ -249,6 +265,70 @@ def run(action, recovery_id=""):
     if not ledger_snapshot.exists or refs["owner_ref"].get(retry=None).exists:
         raise ValueError("recovery_ledger_unavailable_or_owned")
     ledger = ledger_snapshot.to_dict()
+    marker = ledger.get("accounting_rebase")
+    if (
+        action == "diagnose"
+        and isinstance(marker, dict)
+        and marker.get("archive_document") == PROSPECTIVE_ARCHIVE_DOCUMENT
+    ):
+        if previous is not None and previous.get("state") != "RECONCILE_ONLY":
+            raise ValueError("recovery_already_active")
+        prospective_ref = collection.document(PROSPECTIVE_ARCHIVE_DOCUMENT)
+        prospective_snapshot = prospective_ref.get(retry=None)
+        if not prospective_snapshot.exists:
+            raise ValueError("prospective_rebase_archive_missing")
+        prospective_archive = prospective_snapshot.to_dict()
+        initial = {
+            "ledger_sha256": digest(ledger),
+            "control_sha256": digest(previous),
+            "archive_sha256": digest(prospective_archive),
+        }
+        symbols = _symbols_from_env()
+        if digest(list(symbols)) != MANAGED_SYMBOLS_SHA256:
+            raise ValueError("recovery_managed_symbols_changed")
+        STAGE = "broker_collection"
+        client = connect_client(
+            os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30
+        )
+        migration_run = verified_run(
+            PROSPECTIVE_MIGRATION_RUN_ID,
+            expected_sha=PROSPECTIVE_MIGRATION_RUN_SHA,
+        )
+        result = collect_prospective_rebase_diagnosis(
+            client=client,
+            runtime_target=target,
+            legacy_expected=expected,
+            ledger=ledger,
+            archive=prospective_archive,
+            recovery_control=previous,
+            symbols=symbols,
+            source_run=current_run,
+            migration_run=migration_run,
+            now=datetime.now(timezone.utc),
+            clock=prospective_clock,
+        )
+        STAGE = "readback"
+        after_control = refs["control_ref"].get(retry=None)
+        after_ledger = refs["ledger_ref"].get(retry=None)
+        after_owner = refs["owner_ref"].get(retry=None)
+        after_archive = prospective_ref.get(retry=None)
+        if (
+            not after_control.exists
+            or digest(after_control.to_dict()) != initial["control_sha256"]
+            or not after_ledger.exists
+            or digest(after_ledger.to_dict()) != initial["ledger_sha256"]
+            or after_owner.exists
+            or not after_archive.exists
+            or digest(after_archive.to_dict()) != initial["archive_sha256"]
+        ):
+            raise ValueError("prospective_rebase_state_changed_during_read")
+        return {
+            **result,
+            "ledger_unchanged": True,
+            "control_unchanged": True,
+            "owner_absent": True,
+            "archive_unchanged": True,
+        }
     archive_snapshot = refs["archive_ref"].get(retry=None)
     archive = archive_snapshot.to_dict() if archive_snapshot.exists else None
     is_post_rebase = archive is not None
