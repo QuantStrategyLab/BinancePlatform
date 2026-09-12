@@ -171,3 +171,21 @@ create完整旧账本、旧控制、原审批材料及新账本摘要；update�
 
 此检查不写账、不生成候选、不发布控制台授权；原 prepare/verify/activate 根保持不变。
 检查通过只证明当次新期初向前核算一致，不表示交易恢复或完整日常业务周期验收。
+
+## 新期初正式恢复接线（2026-09-12）
+
+`prepare/verify/activate` 与运行消费者现在识别 `prospective_rebase`。共享 QPK 与控制台协议不变：
+候选仍绑定真实 Spot 余额、挂单、成交及完整账本；Flexible Earn 的收益增长由已批准 checkpoint
+向前守恒单独证明，不把收益差额复制成期望余额，也不修改历史未知差额。最后 Spot 采样须与
+通过守恒的 checkpoint 相符，并在读取订单后保持稳定。
+
+准备时只允许原归档 control，或已严格验证来源、成功生产 run 且超过原30分钟时效的同类候选。
+使用既有 owner/ledger/archive/previous 原子条件保存，向管理网站发布脱敏候选。未过期候选
+不覆盖；显式重建会更换 recovery_id 和 candidate，旧确认不能复用。
+
+verify/activate 先读取网站管理员对具体候选的确认，再重新采集并核对向前守恒，Spot/订单/账本
+五项摘要必须与被确认候选一致。只有 activate 才可执行既有原子控制状态切换；运行端验证
+候选、来源、确认与 transition plan 的绑定后消费 ACTIVE_LKG。
+
+此流程不打开 RUNTIME_TARGET_ENABLED、不解除熔断、不改变策略或风险预算，也不下单。
+实际激活和运行仍需明确授权；本地闭环测试不代替真实人工确认或日常业务周期验收。

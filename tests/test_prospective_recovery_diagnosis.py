@@ -82,14 +82,17 @@ class Client:
         self.change = change
         self.earn_reads = 0
         self.flow_reads = 0
+        self.account_reads = 0
 
     def get_account(self):
+        self.account_reads += 1
         uid = "changed" if self.change == "account" else "synthetic"
+        bnb_spot = "1.1" if self.change == "final_spot" and self.account_reads >= 3 else "1"
         return {
             "uid": uid,
             "balances": [
                 {"asset": "USDT", "free": "100", "locked": "0"},
-                {"asset": "BNB", "free": "1", "locked": "0"},
+                {"asset": "BNB", "free": bnb_spot, "locked": "0"},
             ],
         }
 
@@ -153,7 +156,6 @@ def _run(monkeypatch, *, change=None, ledger_change=None, archive_change=None):
         legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
         ledger=ledger,
         archive=archive,
-        recovery_control=control,
         symbols=("BNBUSDT",),
         source_run={"id": 400, "head_sha": "b" * 40, "head_branch": "main",
                     "event": "workflow_dispatch", "path": ".github/workflows/main.yml"},
@@ -193,6 +195,7 @@ def test_prospective_diagnosis_accepts_income_growth_without_mutating_ledger(mon
         ({"change": "flow"}, "prospective_rebase_conservation_unverified"),
         ({"change": "order"}, "prospective_rebase_open_orders_present"),
         ({"change": "trade"}, "prospective_rebase_recent_executions_present"),
+        ({"change": "final_spot"}, "prospective_rebase_spot_changed_during_read"),
     ],
 )
 def test_prospective_diagnosis_fails_closed_on_material_or_activity_change(monkeypatch, kwargs, reason):
@@ -277,3 +280,279 @@ def test_controller_prospective_diagnosis_readback_is_stable_and_never_writes(
     assert result["owner_absent"] is True
     assert result["archive_unchanged"] is True
     assert result["write_performed"] is False
+
+
+def _source_run(run_id=400, sha="b" * 40):
+    return {"id": run_id, "head_sha": sha, "head_branch": "main",
+            "event": "workflow_dispatch", "path": ".github/workflows/main.yml"}
+
+
+def _migration_run():
+    from application import rebased_recovery as recovery
+
+    return {"id": recovery.PROSPECTIVE_MIGRATION_RUN_ID,
+            "head_sha": recovery.PROSPECTIVE_MIGRATION_RUN_SHA,
+            "head_branch": "main", "event": "workflow_dispatch",
+            "path": ".github/workflows/main.yml"}
+
+
+def _package(monkeypatch, *, client=None, now=NOW, later=LATER):
+    from application.rebased_recovery import collect_prospective_rebase_source
+
+    ledger, archive, _control = _material(monkeypatch)
+    expected = {"account_scope_sha256": digest({"account_uid": "synthetic"})}
+    return collect_prospective_rebase_source(
+        client=client or Client(), runtime_target=_target(), legacy_expected=expected,
+        ledger=ledger, archive=archive, symbols=("BNBUSDT",),
+        source_run=_source_run(), migration_run=_migration_run(), now=now,
+        clock=lambda: later,
+    )
+
+
+def test_prospective_source_enrolls_real_spot_with_forward_proof(monkeypatch):
+    from application.rebased_recovery import validate_prospective_rebase_source
+
+    package = _package(monkeypatch)
+    candidate = validate_prospective_rebase_source(
+        package, runtime_target=_target(),
+        legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+        now=LATER,
+    )
+
+    assert candidate.expected_digests["positions_sha256"] == package["source"]["proof"]["spot_sha256"]
+    assert candidate.local_execution_ledger_sha256 == package["source"]["new_ledger_sha256"]
+    assert package["source"]["proof"]["forward_accounting_conserved"] is True
+    assert package["source"]["proof"]["whole_spot_double_read_match"] is True
+    serialized = str(package)
+    for private_name in ("spot_free", "spot_locked", "totalAmount", "account_uid"):
+        assert private_name not in serialized
+
+
+def test_prospective_source_rejects_forged_proof_and_final_spot_drift(monkeypatch):
+    from application.rebased_recovery import validate_prospective_rebase_source
+
+    with pytest.raises(ValueError, match="prospective_rebase_spot_changed_during_read"):
+        _package(monkeypatch, client=Client("final_spot"))
+    package = _package(monkeypatch)
+    package["source"]["proof"]["forward_accounting_conserved"] = False
+    with pytest.raises(ValueError, match="prospective_rebase_source_binding_mismatch"):
+        validate_prospective_rebase_source(
+            package, runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            now=LATER,
+        )
+    package = _package(monkeypatch)
+    package["source"]["proof"] = "forged"
+    with pytest.raises(ValueError, match="prospective_rebase_source_binding_mismatch"):
+        validate_prospective_rebase_source(
+            package, runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            now=LATER,
+        )
+
+
+def test_prospective_source_retains_existing_thirty_minute_freshness(monkeypatch):
+    from application.rebased_recovery import validate_prospective_rebase_source
+
+    package = _package(monkeypatch)
+    with pytest.raises(ValueError, match="prospective_rebase_candidate_source_mismatch"):
+        validate_prospective_rebase_source(
+            package, runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            now=LATER + timedelta(minutes=31),
+        )
+
+
+def _controller_setup(monkeypatch, *, prepared=False, client_change=None, confirmation=True,
+                      owner=False, action_delay=timedelta(minutes=2)):
+    from scripts import binance_recovery_controller as controller
+    from tests.test_post_rebase_recovery import _confirmation_response
+
+    ledger, archive, original_control = _material(monkeypatch)
+    expected = {"account_scope_sha256": digest({"account_uid": "synthetic"})}
+    target = _target()
+    recovery_id = "binance-400-1"
+    control = original_control
+    if prepared:
+        package = _package(monkeypatch)
+        control = {"state": "RECONCILE_ONLY", "recovery_id": recovery_id, **package}
+    action_now = NOW + action_delay
+    action_later = action_now + timedelta(seconds=1)
+    current_run = _source_run(401, "c" * 40)
+    runs = {400: _source_run(), 401: current_run,
+            controller.PROSPECTIVE_MIGRATION_RUN_ID: _migration_run()}
+    for name, value in {
+        "GITHUB_REPOSITORY": controller.REPOSITORY,
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_WORKFLOW_REF": controller.REPOSITORY + "/.github/workflows/main.yml@refs/heads/main",
+        "RUNTIME_TARGET_ENABLED": "false", "RECONCILE_ONLY": "true",
+        "GITHUB_RUN_ID": "401", "GITHUB_SHA": "c" * 40,
+        "GITHUB_RUN_ATTEMPT": "1", "BINANCE_API_KEY": "synthetic",
+        "BINANCE_API_SECRET": "synthetic", "RECONCILIATION_RECOVERY_SYNC_TOKEN": "synthetic",
+        "RECONCILIATION_RECOVERY_CONTROLLER_TOKEN": "synthetic",
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(controller, "FROZEN_EXPECTED_SHA256", digest(expected))
+    monkeypatch.setattr(controller, "BASELINE_ID", target.live_continuity.baseline_id)
+    monkeypatch.setattr(controller, "BASELINE_TARGET_SHA256",
+                        target.live_continuity.baseline_target_sha256)
+    monkeypatch.setattr(controller, "resolve_runtime_target_from_env", lambda **_: target)
+    monkeypatch.setattr(controller, "_expected_digests", lambda: expected)
+    monkeypatch.setattr(controller, "_symbols_from_env", lambda: ["BNBUSDT"])
+    monkeypatch.setattr(controller, "MANAGED_SYMBOLS_SHA256", digest(["BNBUSDT"]))
+    monkeypatch.setattr(controller, "datetime", SimpleNamespace(now=lambda _tz: action_now))
+    monkeypatch.setattr(controller, "prospective_clock", lambda: action_later)
+    real_activation_evaluation = controller.evaluate_reconciliation_recovery_activation
+    monkeypatch.setattr(
+        controller,
+        "evaluate_reconciliation_recovery_activation",
+        lambda **kwargs: real_activation_evaluation(**kwargs, now=action_later),
+    )
+    monkeypatch.setattr(controller, "verified_run", lambda run_id, **_kwargs: runs[int(run_id)])
+    monkeypatch.setattr(controller, "connect_client", lambda *_args, **_kwargs: Client(client_change))
+    docs = {
+        controller.CONTROL_DOCUMENT: Ref(control),
+        "MULTI_ASSET_STATE": Ref(ledger),
+        "MULTI_ASSET_STATE__owner": Ref({"owner": "busy"} if owner else None),
+        controller.ARCHIVE_DOCUMENT: Ref(None),
+        controller.PROSPECTIVE_ARCHIVE_DOCUMENT: Ref(archive),
+    }
+    writes = []
+
+    class Transaction:
+        def set(self, ref, value):
+            writes.append(copy.deepcopy(value))
+            ref.snapshot = type(ref.snapshot)(value)
+
+    db = SimpleNamespace(collection=lambda _name: SimpleNamespace(document=lambda name: docs[name]))
+    monkeypatch.setattr(controller, "get_firestore_client", lambda: db)
+    monkeypatch.setattr(controller.firestore, "transactional", lambda fn: fn, raising=False)
+    monkeypatch.setattr(controller, "_post_rebase_transaction", lambda _db: Transaction())
+    requests = []
+
+    def request(_url, _token, *, payload=None):
+        requests.append(payload)
+        if payload is not None:
+            return {"ok": True, "source_id": payload["source_id"], "recovery_count": 1,
+                    "generated_at": payload["generated_at"]}
+        if not confirmation:
+            return {}
+        return _confirmation_response(
+            control["candidate"], recovery_id, NOW + timedelta(minutes=1)
+        )
+
+    monkeypatch.setattr(controller, "request_json", request)
+    return controller, target, expected, recovery_id, docs, writes, requests
+
+
+def test_controller_prepare_replaces_old_root_with_prospective_source(monkeypatch):
+    controller, _target_value, _expected, _recovery_id, docs, writes, requests = (
+        _controller_setup(monkeypatch)
+    )
+
+    result = controller.run("prepare")
+
+    assert result["status"] == "awaiting_human_confirmation"
+    assert result["source_kind"] == "prospective_rebase"
+    assert docs[controller.CONTROL_DOCUMENT].snapshot.value["source"]["kind"] == "prospective_rebase"
+    assert len(writes) == 1 and len(requests) == 1
+    evidence_at = datetime.fromisoformat(
+        docs[controller.CONTROL_DOCUMENT].snapshot.value["source"]["reconciled_evidence"]["observed_at"]
+    )
+    published_at = datetime.fromisoformat(requests[0]["generated_at"].replace("Z", "+00:00"))
+    assert published_at >= evidence_at
+
+
+def test_controller_prepare_does_not_overwrite_existing_candidate(monkeypatch):
+    controller, _target_value, _expected, _recovery_id, _docs, writes, requests = (
+        _controller_setup(monkeypatch, prepared=True)
+    )
+
+    with pytest.raises(ValueError, match="prospective_rebase_prepare_control_changed"):
+        controller.run("prepare")
+    assert not writes and not requests
+
+
+def test_controller_prepare_replaces_only_expired_strict_candidate(monkeypatch):
+    controller, _target_value, _expected, old_recovery_id, docs, writes, requests = (
+        _controller_setup(
+            monkeypatch,
+            prepared=True,
+            action_delay=timedelta(minutes=32),
+        )
+    )
+    old_candidate_sha256 = docs[controller.CONTROL_DOCUMENT].snapshot.value["candidate"][
+        "candidate_sha256"
+    ]
+
+    result = controller.run("prepare")
+
+    assert result["status"] == "awaiting_human_confirmation"
+    assert result["recovery_id"] != old_recovery_id
+    assert result["candidate_sha256"] != old_candidate_sha256
+    assert len(writes) == 1 and len(requests) == 1
+    monkeypatch.setattr(
+        controller,
+        "datetime",
+        SimpleNamespace(now=lambda _tz: NOW + timedelta(minutes=33)),
+    )
+    with pytest.raises(ValueError, match="recovery_confirmation_binding_invalid"):
+        controller.run("verify", result["recovery_id"])
+    assert len(writes) == 1
+
+
+def test_controller_diagnose_accepts_only_original_or_strict_prospective_control(monkeypatch):
+    controller, _target_value, _expected, _recovery_id, docs, writes, requests = (
+        _controller_setup(monkeypatch, prepared=True)
+    )
+    assert controller.run("diagnose")["status"] == "diagnosed"
+    docs[controller.CONTROL_DOCUMENT].snapshot.value["source"]["proof"] = "forged"
+    with pytest.raises(ValueError, match="prospective_rebase_source_binding_mismatch"):
+        controller.run("diagnose")
+    assert not writes and not requests
+
+
+@pytest.mark.parametrize("action", ["verify", "activate"])
+def test_controller_prospective_confirmation_rechecks_and_runtime_consumes_active(
+    monkeypatch, action
+):
+    from application.reconciliation_recovery import activated_target
+
+    controller, target, expected, recovery_id, docs, writes, requests = _controller_setup(
+        monkeypatch, prepared=True
+    )
+
+    result = controller.run(action, recovery_id)
+
+    assert result["status"] == ("verified" if action == "verify" else "active_lkg")
+    assert result["source_kind"] == "prospective_rebase"
+    assert result["runtime_target_enabled"] is False
+    assert len(requests) == 1
+    if action == "verify":
+        assert not writes
+    else:
+        assert len(writes) == 1
+        active = docs[controller.CONTROL_DOCUMENT].snapshot.value
+        assert active["state"] == "ACTIVE_LKG"
+        assert activated_target(target, active, expected=expected).live_continuity.state == "ACTIVE_LKG"
+        active["source"]["proof"] = "forged"
+        with pytest.raises(ValueError, match="prospective_rebase_source_binding_mismatch"):
+            activated_target(target, active, expected=expected)
+
+
+@pytest.mark.parametrize(
+    "setup_kwargs,reason",
+    [
+        ({"confirmation": False}, "recovery_confirmation_policy_invalid"),
+        ({"client_change": "final_spot"}, "prospective_rebase_spot_changed_during_read"),
+        ({"owner": True}, "recovery_ledger_unavailable_or_owned"),
+    ],
+)
+def test_controller_prospective_confirmation_fails_closed(monkeypatch, setup_kwargs, reason):
+    controller, _target_value, _expected, recovery_id, _docs, writes, _requests = (
+        _controller_setup(monkeypatch, prepared=True, **setup_kwargs)
+    )
+
+    with pytest.raises(ValueError, match=reason):
+        controller.run("activate", recovery_id)
+    assert not writes
