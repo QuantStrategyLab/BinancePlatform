@@ -36,21 +36,29 @@ def _time(value):
         raise ValueError('earn_checkpoint_time_invalid') from None
 
 
+class EarnCheckpointUnavailable(ValueError):
+    """Fixed local diagnostic code; never carries a provider response."""
+
+
 def collect_earn_checkpoint(client, *, assets, observed_at, expected_account_scope_sha256=None):
     """One Spot read and one complete Flexible position page; no historical reset."""
+    stage = 'scope'
     try:
         assets = tuple(sorted(set(assets)))
         if not assets or len(assets) > 32 or any(not re.fullmatch(r'[A-Z0-9]{1,20}', a) for a in assets):
             raise ValueError('scope')
         if observed_at.tzinfo is None:
             raise ValueError('time')
+        stage = 'account_read'
         account = client.get_account()
+        stage = 'identity'
         uid = account.get('uid')
         if not isinstance(uid, (str, int)) or isinstance(uid, bool) or not str(uid):
             raise ValueError('identity')
         scope = digest({'account_uid': str(uid)})
         if expected_account_scope_sha256 is not None and scope != expected_account_scope_sha256:
             raise ValueError('identity')
+        stage = 'spot_shape'
         rows = account['balances']
         if not isinstance(rows, list) or len(rows) > 5000:
             raise ValueError('spot')
@@ -61,9 +69,12 @@ def collect_earn_checkpoint(client, *, assets, observed_at, expected_account_sco
                 raise ValueError('spot')
             free, locked = _amount(row['free']), _amount(row['locked'])
             if locked:
+                stage = 'spot_locked'
                 raise ValueError('locked')
             spot[asset] = (free, locked)
+        stage = 'earn_read'
         response = client.get_simple_earn_flexible_product_position(current=1, size=100)
+        stage = 'earn_page'
         earn_rows, total = response.get('rows'), response.get('total')
         if isinstance(total, str) and total.isascii() and total.isdecimal() and len(total) < 4:
             total = int(total)
@@ -72,19 +83,23 @@ def collect_earn_checkpoint(client, *, assets, observed_at, expected_account_sco
         products = {a: {} for a in assets}
         seen = set()
         for row in earn_rows:
+            stage = 'earn_product'
             asset, product = row['asset'], row['productId']
             if not isinstance(product, str) or not product or product in seen:
                 raise ValueError('product')
             seen.add(product)
             if asset not in products:
                 continue  # Existing approved scope is not expanded by this observation.
+            stage = 'earn_amount_counter'
             amount, counter = _amount(row['totalAmount']), _amount(row['cumulativeRealTimeRewards'])
+            stage = 'earn_availability'
             if _amount(row['collateralAmount']) or type(row['autoSubscribe']) is not bool or row['canRedeem'] is not True:
                 raise ValueError('availability')
             products[asset][product] = {
                 'total': str(amount), 'realtime_rewards': str(counter),
                 'auto_subscribe': row['autoSubscribe'], 'can_redeem': True,
             }
+        stage = 'managed_spot_balance'
         observations = {}
         with localcontext() as context:
             context.prec = 100
@@ -96,7 +111,7 @@ def collect_earn_checkpoint(client, *, assets, observed_at, expected_account_sco
         return {'account_scope_sha256': scope, 'observed_at': observed_at.astimezone(timezone.utc).isoformat(),
                 'assets': observations, 'execution_authority_granted': False}
     except Exception:
-        raise ValueError('earn_checkpoint_unavailable') from None
+        raise EarnCheckpointUnavailable(f'earn_checkpoint_{stage}_unavailable') from None
 
 
 def _validate(checkpoint):
