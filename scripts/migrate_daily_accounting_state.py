@@ -192,14 +192,90 @@ def _same_balance(left, right, *, asset: str) -> bool:
     return abs(_finite(left) - _finite(right)) <= tolerance
 
 
+
+def collect_prospective_opening(client, *, ledger, expected, now, clock=None,
+                                collect_cash_flows=collect_spot_usdt_external_cash_flows):
+    """Capture a current opening proposal; historical mismatches remain archived.
+
+    No historical reward sum becomes a starting principal or new-period profit.
+    The external cursor fingerprints prior events solely to prevent replay.
+    """
+    from application.earn_accrual import collect_earn_checkpoint, compare_earn_checkpoints
+    clock = clock or (lambda: datetime.now(timezone.utc))
+    assets = tuple(sorted(ledger.get('last_balance_snapshot', {})))
+    if not assets or now.tzinfo is None:
+        raise MigrationBlocked('prospective_opening_scope_missing')
+    def read_orders():
+        orders = client.get_open_orders()
+        if not isinstance(orders, list) or orders:
+            raise MigrationBlocked('prospective_opening_orders_unsettled')
+    try:
+        read_orders()
+        first = collect_earn_checkpoint(client, assets=assets, observed_at=now,
+                                        expected_account_scope_sha256=expected['account_scope_sha256'])
+        cash = collect_cash_flows(client, now=now, cursor=None)
+        if not isinstance(cash.get('cursor'), dict):
+            raise MigrationBlocked('prospective_opening_cursor_unavailable')
+        prices = {}
+        for asset, row in first['assets'].items():
+            if asset != 'USDT' and Decimal(row['quantity']) > 0:
+                price = _finite(client.get_avg_price(symbol=f'{asset}USDT')['price'])
+                if price <= 0:
+                    raise MigrationBlocked('price_snapshot_incomplete')
+                prices[f'{asset}USDT'] = price
+        read_orders()
+        second = collect_earn_checkpoint(client, assets=assets, observed_at=now,
+                                         expected_account_scope_sha256=expected['account_scope_sha256'])
+        ended_at = clock()
+        if not now < ended_at <= now + timedelta(minutes=2):
+            raise MigrationBlocked('prospective_opening_observation_expired')
+        second['observed_at'] = ended_at.isoformat()
+        try:
+            compare_earn_checkpoints(first, second, verified_net_changes={asset: '0' for asset in assets})
+        except ValueError:
+            raise MigrationBlocked('prospective_opening_changed_during_read') from None
+        closing_cash = collect_cash_flows(client, now=ended_at, cursor=None)
+        if (not isinstance(closing_cash.get('cursor'), dict)
+                or cash['cursor'].get('records') != closing_cash['cursor'].get('records')):
+            raise MigrationBlocked('prospective_opening_flows_changed_during_read')
+        # Only the sampling interval is checked for trades; pre-start history is archived.
+        observations = collect_read_only_reconciliation_observations(
+            client, strategy_symbols=tuple(f'{a}USDT' for a in assets if a != 'USDT'),
+            local_execution_ledger=ledger, now=ended_at, lookback=ended_at-now)
+        if (digest(observations.account_scope) != expected['account_scope_sha256']
+                or observations.open_orders or observations.recent_executions):
+            raise MigrationBlocked('prospective_opening_activity_during_read')
+        second['observed_at'] = ended_at.isoformat()
+        return {
+            'opening_mode': 'prospective', 'current_observation_complete': True,
+            'account_scope_sha256': second['account_scope_sha256'],
+            'balance_snapshot': {asset: float(Decimal(row['quantity'])) for asset, row in second['assets'].items()},
+            'prices': prices, 'open_order_count': 0, 'history_complete': False,
+            'history_counts': None, 'recent_execution_count': None,
+            'observation_started_at': now.isoformat(), 'observation_completed_at': ended_at.isoformat(),
+            'earn_accrual_checkpoint': second, 'external_cash_flow_cursor': closing_cash['cursor'],
+            'utc_date': ended_at.astimezone(timezone.utc).date().isoformat(),
+        }
+    except MigrationBlocked:
+        raise
+    except Exception:
+        raise MigrationBlocked('prospective_opening_evidence_unavailable') from None
+
+
 def build_rebase_proposal(*, ledger, evidence, observed_at):
     """Informational new-start preview, deliberately not an apply candidate."""
     _validate_safe_order_state(ledger)
-    if (evidence.get("history_complete") is not True
-            or type(evidence.get("open_order_count")) is not int
-            or evidence["open_order_count"] != 0
-            or type(evidence.get("recent_execution_count")) is not int
-            or evidence["recent_execution_count"] != 0):
+    prospective = evidence.get("opening_mode") == "prospective"
+    if prospective:
+        checkpoint = evidence.get("earn_accrual_checkpoint", {})
+        if (evidence.get("current_observation_complete") is not True
+                or checkpoint.get("account_scope_sha256") != evidence.get("account_scope_sha256")
+                or not isinstance(evidence.get("external_cash_flow_cursor"), Mapping)):
+            raise MigrationBlocked("rebase_proposal_current_state_unsettled")
+    if (type(evidence.get("open_order_count")) is not int or evidence["open_order_count"] != 0
+            or (not prospective and (evidence.get("history_complete") is not True
+                or type(evidence.get("recent_execution_count")) is not int
+                or evidence["recent_execution_count"] != 0))):
         raise MigrationBlocked("rebase_proposal_current_state_unsettled")
     balances = evidence.get("balance_snapshot")
     prices = evidence.get("prices")
@@ -228,7 +304,15 @@ def build_rebase_proposal(*, ledger, evidence, observed_at):
         "last_balance_snapshot": {row["asset"]: row["quantity"] for row in assets},
         "last_reset_date": observed_at.astimezone(timezone.utc).date().isoformat(),
     }
+    if prospective:
+        proposed["earn_accrual_checkpoint"] = copy.deepcopy(evidence["earn_accrual_checkpoint"])
+        proposed["external_cash_flow_cursor"] = copy.deepcopy(evidence["external_cash_flow_cursor"])
     return {
+        "opening_mode": "prospective" if prospective else "legacy_preview",
+        "automatic_accounting_ready": False,
+        "recovery_ready": False,
+        "observation_started_at": evidence.get("observation_started_at"),
+        "observation_completed_at": evidence.get("observation_completed_at"),
         "status": "awaiting_operator_decision", "executable_candidate": False,
         "historical_difference_unresolved": True, "complete_balance_reconciliation": False,
         "observed_at": observed_at.isoformat(), "assets": assets,
@@ -1288,8 +1372,9 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
         return audit_ledger(refs, client=client, expected=expected, now=now)
     if action == "rebase-apply":
         return _apply_approved_rebase(refs, client=client, expected=expected, now=now, fixed_now=fixed_now)
-    evidence = _collect_evidence(client, ledger=ledger, now=now, expected=expected,
-                                 require_prices=action == "rebase-proposal")
+    evidence = (collect_prospective_opening(client, ledger=ledger, now=now, expected=expected)
+                if action == "rebase-proposal" else
+                _collect_evidence(client, ledger=ledger, now=now, expected=expected))
     decision_now = now if fixed_now else datetime.now(timezone.utc)
     if evidence["utc_date"] != decision_now.date().isoformat():
         raise MigrationBlocked("utc_day_changed_during_evidence")

@@ -632,7 +632,7 @@ def test_rebase_proposal_runtime_writes_only_encrypted_local_artifact(monkeypatc
     monkeypatch.setattr(migration, "_expected_digests", lambda: {"account_scope_sha256": "a" * 64})
     monkeypatch.setattr(migration, "_refs", lambda: refs)
     monkeypatch.setattr(migration, "connect_client", lambda *a, **kw: object())
-    monkeypatch.setattr(migration, "_collect_evidence", lambda *a, **kw: _evidence(
+    monkeypatch.setattr(migration, "collect_prospective_opening", lambda *a, **kw: _evidence(
         utc_date=now.date().isoformat(), history_counts={"earn_rewards": 1}))
     encrypted_payloads = []
     def encrypt(proposal, **kwargs):
