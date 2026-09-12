@@ -75,6 +75,16 @@ def _payload(now: datetime):
     }
 
 
+def _dynamic_payload(now: datetime):
+    payload = _payload(now)
+    mandate = payload["mandate"]
+    mandate.pop("loss_budget")
+    mandate["budget_policy"] = {"mode": "managed_usdt_dynamic"}
+    mandate["validity_mode"] = "until_revoked"
+    mandate["expires_at"] = None
+    return payload
+
+
 def _write_authority(tmp_path: Path, payload: dict[str, object]):
     path = tmp_path / "binance-live-authority.json"
     raw = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n").encode()
@@ -146,10 +156,107 @@ def test_authority_is_bound_to_actual_runtime_and_dynamic_input_digest_changes(t
 
     assert mandate_a["authority_scope"] == "LIVE"
     assert mandate_a["loss_budget"] == 5000.0
+    assert mandate_a["expires_at"] == (now + timedelta(hours=1)).isoformat().replace("+00:00", "Z")
     assert mandate_a["candidate_identity_sha256"] == candidate_a.candidate_sha256
     assert candidate_a.input_manifest_sha256 != candidate_b.input_manifest_sha256
     assert candidate_b.input_manifest_sha256 != candidate_c.input_manifest_sha256
     assert mandate_b["loss_budget"] == mandate_a["loss_budget"]
+
+
+def test_dynamic_managed_usdt_policy_derives_qpk_budget_and_snapshot_expiry(tmp_path):
+    now = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+    path, digest = _write_authority(tmp_path, _dynamic_payload(now))
+    with patch("live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION), patch(
+        "live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION
+    ):
+        authority = load_live_risk_authority(
+            env=_env(path, digest),
+            runtime_target=_target(),
+            strategy_revision=STRATEGY_REVISION,
+            runner_revision=RUNNER_REVISION,
+            config_sha256=CONFIG_SHA256,
+            now_utc=now,
+        )
+        mandate, _candidate = bind_live_risk_authority(
+            authority,
+            runtime_target=_target(),
+            input_material={
+                "budget_observation": {
+                    "managed_usdt": 120.0,
+                    "total_equity": 1000.0,
+                    "observed_effective_exposure": 0.40,
+                },
+                "prices": {"BTCUSDT": 60000.0},
+            },
+            config_sha256=CONFIG_SHA256,
+            now_utc=now,
+        )
+
+    assert mandate["loss_budget"] == 120.0
+    assert mandate["expires_at"] == "2026-09-13T12:05:00Z"
+
+
+def test_dynamic_managed_usdt_policy_rejects_invalid_budget_observation(tmp_path):
+    now = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+    path, digest = _write_authority(tmp_path, _dynamic_payload(now))
+    with patch("live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION), patch(
+        "live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION
+    ):
+        authority = load_live_risk_authority(
+            env=_env(path, digest),
+            runtime_target=_target(),
+            strategy_revision=STRATEGY_REVISION,
+            runner_revision=RUNNER_REVISION,
+            config_sha256=CONFIG_SHA256,
+            now_utc=now,
+        )
+        with pytest.raises(LiveRiskAuthorityError, match="budget observation"):
+            bind_live_risk_authority(
+                authority,
+                runtime_target=_target(),
+                input_material={
+                    "budget_observation": {
+                        "managed_usdt": -1.0,
+                        "total_equity": 1000.0,
+                        "observed_effective_exposure": 0.40,
+                    }
+                },
+                config_sha256=CONFIG_SHA256,
+                now_utc=now,
+            )
+
+
+def test_dynamic_managed_usdt_policy_clamps_normal_overexposure_headroom(tmp_path):
+    now = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
+    payload = _dynamic_payload(now)
+    payload["mandate"]["effective_exposure_cap"] = 0.5
+    path, digest = _write_authority(tmp_path, payload)
+    with patch("live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION), patch(
+        "live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION
+    ):
+        authority = load_live_risk_authority(
+            env=_env(path, digest),
+            runtime_target=_target(),
+            strategy_revision=STRATEGY_REVISION,
+            runner_revision=RUNNER_REVISION,
+            config_sha256=CONFIG_SHA256,
+            now_utc=now,
+        )
+        mandate, _candidate = bind_live_risk_authority(
+            authority,
+            runtime_target=_target(),
+            input_material={
+                "budget_observation": {
+                    "managed_usdt": 120.0,
+                    "total_equity": 1000.0,
+                    "observed_effective_exposure": 0.60,
+                }
+            },
+            config_sha256=CONFIG_SHA256,
+            now_utc=now,
+        )
+
+    assert mandate["loss_budget"] == 0.0
 
 
 def test_authority_rejects_runtime_target_mismatch(tmp_path):
@@ -254,13 +361,14 @@ def test_authority_rejects_research_scope_and_expiry(tmp_path):
         )
 
 
-def test_loaded_authority_reaches_pinned_crypto_qpk_and_mapper(tmp_path):
+@pytest.mark.parametrize("payload_builder", [_payload, _dynamic_payload], ids=["fixed", "managed_usdt_dynamic"])
+def test_loaded_authority_reaches_pinned_crypto_qpk_and_mapper(tmp_path, payload_builder):
     from decision_mapper import map_strategy_decision_to_rotation_plan
     from strategy_runtime import load_research_only_strategy_runtime
 
     now = datetime.now(timezone.utc).replace(microsecond=0)
     runtime = load_research_only_strategy_runtime(PROFILE)
-    payload = _payload(now)
+    payload = payload_builder(now)
     effective_config_digest = config_sha256(runtime.effective_runtime_config)
     payload["config_sha256"] = effective_config_digest
     path, digest = _write_authority(tmp_path, payload)

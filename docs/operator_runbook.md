@@ -50,9 +50,11 @@ empty values make it unusable and it must not be loaded as a source file.
     "mandate_version": null,
     "effective_at": null,
     "expires_at": null,
+    "validity_mode": null,
     "max_snapshot_age_seconds": null,
     "effective_exposure_cap": null,
     "loss_budget": null,
+    "budget_policy": null,
     "product_caps": {},
     "nominal_caps": {},
     "product_leverage_factors": {},
@@ -69,15 +71,29 @@ usable only after external approval provides `decision=APPROVE` and
 `authority_scope=LIVE` with every required field.
 
 The approval decision must specify the account, tradable assets, risk limits,
-including whether BNB is fuel-only, the USDT cycle allocation budget, expiry,
-and whether continuous inputs within that scope are allowed. Engineering fills
-and verifies Git revisions and digests from the approved source record, the
-installed strategy, and the clean runner checkout; operators do not need to
-calculate or hand-enter hashes. `BINANCE_RISK_AUTHORITY_SOURCE_REVISION` must
-be the 40-character Git revision of that approved source record; a secret
-timestamp or storage-object generation is not a source revision. `loss_budget`
-is the current QPK consumer's USDT allocation ceiling for the cycle, not a
-claimed maximum loss.
+including whether BNB is fuel-only, and whether the strategy may dynamically
+allocate all approved managed funds. For that policy, set
+`budget_policy={"mode":"managed_usdt_dynamic"}` and leave `loss_budget` absent
+or null. The loader derives the current QPK USDT allocation ceiling from the
+validated Spot-plus-Flexible-Earn managed balance and the approved exposure
+headroom; the strategy request cannot raise it. A numeric `loss_budget` remains
+available for a separately approved fixed ceiling. In both modes, the amount
+is a QPK USDT allocation ceiling for the cycle, not a claimed maximum loss.
+
+`validity_mode="until_revoked"` expresses a continuing source policy without
+an arbitrary far-future expiry. Each evaluation still receives a short QPK
+validity interval bounded by `max_snapshot_age_seconds`, and the source file,
+digest, revisions, runtime identity and current snapshot are revalidated. A
+fixed `expires_at` remains supported and is never rolled forward. Planned
+managed funds are not the same as immediately spendable Spot funds: each real
+order still requires the existing Spot balance, any necessary Earn redemption,
+and confirmed funding reconciliation.
+
+Engineering fills and verifies Git revisions and digests from the approved
+source record, the installed strategy, and the clean runner checkout; operators
+do not need to calculate or hand-enter hashes. `BINANCE_RISK_AUTHORITY_SOURCE_REVISION`
+must be the 40-character Git revision of that approved source record; a secret
+timestamp or storage-object generation is not a source revision.
 
 ## Execution Boundary
 
