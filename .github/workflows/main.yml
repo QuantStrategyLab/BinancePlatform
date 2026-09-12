@@ -343,6 +343,29 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           repository: ${{ github.repository }}
 
+      - name: Materialize protected LIVE risk authority source
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.validate_only == 'true' }}
+        shell: bash
+        env:
+          BINANCE_RISK_AUTHORITY_JSON: ${{ secrets.BINANCE_RISK_AUTHORITY_JSON }}
+          BINANCE_RISK_AUTHORITY_FILE_CONFIG: ${{ vars.BINANCE_RISK_AUTHORITY_FILE }}
+        run: |
+          set -euo pipefail
+          if [ -n "${BINANCE_RISK_AUTHORITY_JSON:-}" ] && [ -n "${BINANCE_RISK_AUTHORITY_FILE_CONFIG:-}" ]; then
+            echo "::error::LIVE risk authority source is configured twice."
+            exit 1
+          fi
+          if [ -n "${BINANCE_RISK_AUTHORITY_JSON:-}" ]; then
+            umask 077
+            authority_file="$(mktemp "$RUNNER_TEMP/binance-live-risk-authority.XXXXXX")"
+            printf '%s' "$BINANCE_RISK_AUTHORITY_JSON" > "$authority_file"
+            chmod 600 "$authority_file"
+            echo "BINANCE_RISK_AUTHORITY_FILE=$authority_file" >> "$GITHUB_ENV"
+            echo "BINANCE_RISK_AUTHORITY_TEMP_FILE=$authority_file" >> "$GITHUB_ENV"
+          elif [ -n "${BINANCE_RISK_AUTHORITY_FILE_CONFIG:-}" ]; then
+            echo "BINANCE_RISK_AUTHORITY_FILE=$BINANCE_RISK_AUTHORITY_FILE_CONFIG" >> "$GITHUB_ENV"
+          fi
+
       # Keep this stable step name: the isolation contract verifies that broker
       # credentials are scoped only here.  `reconcile_only` exits before
       # `main.py` and has no order path.
@@ -397,7 +420,6 @@ jobs:
           BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
           STRATEGY_PROFILE: ${{ vars.STRATEGY_PROFILE || 'crypto_live_pool_rotation' }}
           RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}
-          BINANCE_RISK_AUTHORITY_FILE: ${{ vars.BINANCE_RISK_AUTHORITY_FILE }}
           BINANCE_RISK_AUTHORITY_SHA256: ${{ vars.BINANCE_RISK_AUTHORITY_SHA256 }}
           BINANCE_RISK_AUTHORITY_SOURCE_REVISION: ${{ vars.BINANCE_RISK_AUTHORITY_SOURCE_REVISION }}
           BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON: ${{ vars.BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON }}
@@ -442,6 +464,16 @@ jobs:
           ACCOUNTING_MIGRATION_ACTION: ${{ inputs.accounting_migration_action || 'none' }}
           PROPOSAL_RECIPIENT_CERTIFICATE: ${{ inputs.proposal_recipient_certificate }}
           ACCOUNTING_MIGRATION_EXPECTED_DIGEST: ${{ inputs.accounting_migration_expected_digest }}
+
+      - name: Remove protected LIVE risk authority source
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${BINANCE_RISK_AUTHORITY_TEMP_FILE:-}" ] && [ -f "$BINANCE_RISK_AUTHORITY_TEMP_FILE" ]; then
+            : > "$BINANCE_RISK_AUTHORITY_TEMP_FILE"
+            rm -- "$BINANCE_RISK_AUTHORITY_TEMP_FILE"
+          fi
 
       - name: Confirm target is intentionally disabled
         if: ${{ env.RUNTIME_TARGET_ENABLED == 'false' }}
