@@ -850,12 +850,16 @@ def diagnose_bnb_wallet_activity(client, *, start: datetime, end: datetime):
             return failure
         rows = response.get(rows_key) if isinstance(response, Mapping) else None
         total = response.get("total") if isinstance(response, Mapping) else None
+        # Match the existing history reader: Binance may encode counts as strings.
+        total_is_decimal_string = isinstance(total, str) and total.isascii() and total.isdecimal() and len(total) <= 10
+        count = int(total) if type(total) is int or total_is_decimal_string else None
         shape = {
             "rows_present": isinstance(response, Mapping) and rows_key in response,
             "rows_is_list": isinstance(rows, list),
             "total_is_integer": type(total) is int,
-            "total_is_zero": type(total) is int and total == 0,
-            "total_matches_rows": isinstance(rows, list) and type(total) is int and total == len(rows),
+            "total_is_decimal_string": total_is_decimal_string,
+            "total_is_zero": count == 0,
+            "total_matches_rows": isinstance(rows, list) and count == len(rows),
             "page_full": isinstance(rows, list) and len(rows) >= limit,
         }
         valid_rows = isinstance(rows, list) and all(
@@ -864,8 +868,8 @@ def diagnose_bnb_wallet_activity(client, *, start: datetime, end: datetime):
             and (name != "bnb_dividends" or row.get("asset") == "BNB") for row in rows
         )
         shape["row_time_and_asset_valid"] = valid_rows
-        if (type(total) is not int or total < 0 or not shape["total_matches_rows"]
-                or total >= limit or not valid_rows):
+        if (count is None or count < 0 or not shape["total_matches_rows"]
+                or count >= limit or not valid_rows):
             return {**result, "reason_code": "bnb_wallet_history_unverified", "failed_surface": name,
                     "failure_stage": "response_validation", "response_shape": shape}
         result["counts"][name] = len(rows)

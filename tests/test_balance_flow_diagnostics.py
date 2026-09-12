@@ -336,3 +336,14 @@ def test_bnb_wallet_diagnostic_distinguishes_read_failure_from_response_shape():
     assert bad['failure_stage'] == 'response_validation'
     assert bad['response_shape']['total_is_zero'] is True
     assert bad['response_shape']['rows_present'] is False
+
+
+def test_bnb_wallet_history_accepts_decimal_string_count_without_accepting_unknown_total():
+    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    def read(*a, **kw):
+        return {'total': '0', 'rows': [], 'userAssetDribblets': []}
+    result = diagnose_bnb_wallet_activity(SimpleNamespace(_request_margin_api=read), start=NOW-timedelta(hours=2), end=NOW)
+    assert result['requested_surfaces_complete'] is True
+    for value in (None, True, '-1', 'unknown', '0.0'):
+        c = SimpleNamespace(_request_margin_api=lambda *a, **kw: {'total': value, 'rows': [], 'userAssetDribblets': []})
+        assert diagnose_bnb_wallet_activity(c, start=NOW-timedelta(hours=2), end=NOW)['requested_surfaces_complete'] is False
