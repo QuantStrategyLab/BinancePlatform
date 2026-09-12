@@ -200,7 +200,7 @@ def collect_prospective_opening(client, *, ledger, expected, now, clock=None,
     No historical reward sum becomes a starting principal or new-period profit.
     The external cursor fingerprints prior events solely to prevent replay.
     """
-    from application.earn_accrual import collect_earn_checkpoint, compare_earn_checkpoints
+    from application.earn_accrual import EarnCheckpointUnavailable, collect_earn_checkpoint, compare_earn_checkpoints
     clock = clock or (lambda: datetime.now(timezone.utc))
     assets = tuple(sorted(ledger.get('last_balance_snapshot', {})))
     if not assets or now.tzinfo is None:
@@ -209,13 +209,16 @@ def collect_prospective_opening(client, *, ledger, expected, now, clock=None,
         orders = client.get_open_orders()
         if not isinstance(orders, list) or orders:
             raise MigrationBlocked('prospective_opening_orders_unsettled')
+    stage = 'initial_orders'
     try:
         read_orders()
         first = collect_earn_checkpoint(client, assets=assets, observed_at=now,
                                         expected_account_scope_sha256=expected['account_scope_sha256'])
+        stage = 'opening_cash_cursor'
         cash = collect_cash_flows(client, now=now, cursor=None)
         if not isinstance(cash.get('cursor'), dict):
             raise MigrationBlocked('prospective_opening_cursor_unavailable')
+        stage = 'prices'
         prices = {}
         for asset, row in first['assets'].items():
             if asset != 'USDT' and Decimal(row['quantity']) > 0:
@@ -234,11 +237,13 @@ def collect_prospective_opening(client, *, ledger, expected, now, clock=None,
             compare_earn_checkpoints(first, second, verified_net_changes={asset: '0' for asset in assets})
         except ValueError:
             raise MigrationBlocked('prospective_opening_changed_during_read') from None
+        stage = 'closing_cash_cursor'
         closing_cash = collect_cash_flows(client, now=ended_at, cursor=None)
         if (not isinstance(closing_cash.get('cursor'), dict)
                 or cash['cursor'].get('records') != closing_cash['cursor'].get('records')):
             raise MigrationBlocked('prospective_opening_flows_changed_during_read')
         # Only the sampling interval is checked for trades; pre-start history is archived.
+        stage = 'sampling_executions'
         observations = collect_read_only_reconciliation_observations(
             client, strategy_symbols=tuple(f'{a}USDT' for a in assets if a != 'USDT'),
             local_execution_ledger=ledger, now=ended_at, lookback=ended_at-now)
@@ -258,8 +263,10 @@ def collect_prospective_opening(client, *, ledger, expected, now, clock=None,
         }
     except MigrationBlocked:
         raise
+    except EarnCheckpointUnavailable as error:
+        raise MigrationBlocked(str(error)) from None
     except Exception:
-        raise MigrationBlocked('prospective_opening_evidence_unavailable') from None
+        raise MigrationBlocked(f'prospective_opening_{stage}_unavailable') from None
 
 
 def build_rebase_proposal(*, ledger, evidence, observed_at):

@@ -147,3 +147,18 @@ def test_opening_rejects_activity_and_unexplained_sampling_changes(change):
         collect_prospective_opening(c, ledger={'last_balance_snapshot': {'BNB': 2.9}},
             expected={'account_scope_sha256': scope}, now=NOW,
             clock=lambda: NOW.replace(second=10), collect_cash_flows=cash)
+
+
+@pytest.mark.parametrize('endpoint,expected', [
+    ('get_account', 'earn_checkpoint_account_read_unavailable'),
+    ('get_simple_earn_flexible_product_position', 'earn_checkpoint_earn_read_unavailable'),
+])
+def test_checkpoint_read_diagnostic_never_exposes_provider_error(endpoint, expected):
+    c = client()
+    def fail(**kw):
+        raise RuntimeError('PRIVATE_TOKEN_AND_ACCOUNT')
+    setattr(c, endpoint, fail)
+    with pytest.raises(ValueError) as error:
+        collect_earn_checkpoint(c, assets=['BNB'], observed_at=NOW)
+    assert str(error.value) == expected
+    assert error.value.__suppress_context__
