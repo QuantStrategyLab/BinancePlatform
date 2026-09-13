@@ -333,7 +333,7 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
     inputs = workflow[workflow.index("    inputs:") : workflow.index("permissions:")]
 
     assert "accounting_migration_action:" in inputs
-    assert "options: [none, inspect, quiesce, earn-forward-diagnose, audit, preview, scope-preview, cash-flow-preview, rebase-proposal, rebase-apply, prospective-rebase-apply, apply]" in inputs
+    assert "options: [none, inspect, quiesce, earn-forward-diagnose, audit, preview, scope-preview, cash-flow-preview, rebase-proposal, rebase-apply, prospective-rebase-apply, release-stale-owner, apply]" in inputs
     assert "accounting_migration_preview_run_id:" in inputs
     assert "accounting_migration_expected_digest:" in inputs
 
@@ -363,6 +363,8 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
         ("rebase-apply", "", "", "false", "false", "refs/heads/main", False),
         ("rebase-apply", "12345", "", "true", "false", "refs/heads/main", False),
         ("quiesce", "", "", "true", "false", "refs/heads/main", True),
+        ("release-stale-owner", "", "", "true", "false", "refs/heads/main", True),
+        ("release-stale-owner", "", "", "false", "false", "refs/heads/main", False),
         ("quiesce", "12345", "", "true", "false", "refs/heads/main", False),
         ("quiesce", "", "", "false", "false", "refs/heads/main", False),
         ("quiesce", "", "", "true", "true", "refs/heads/main", False),

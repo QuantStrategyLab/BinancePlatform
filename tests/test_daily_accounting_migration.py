@@ -193,6 +193,11 @@ class Transaction:
     def update(self, ref, patch):
         self.writes.append((ref, copy.deepcopy(patch)))
 
+    def delete(self, ref):
+        self.writes.append(("delete", ref))
+        ref.snapshot.value = None
+        ref.snapshot.exists = False
+
 
 def test_atomic_apply_updates_only_allowlisted_fields():
     from scripts.migrate_daily_accounting_state import compare_and_apply
@@ -224,6 +229,233 @@ def test_atomic_apply_updates_only_allowlisted_fields():
     ]
     assert "is_circuit_broken" not in tx.writes[0][1]
     assert "order_submission" not in tx.writes[0][1]
+
+
+def _stale_owner_refs(*, owner=None, ledger=None, control=None):
+    return {
+        "owner_ref": Ref(Snapshot(owner if owner is not None else {"owner_id": "a" * 32})),
+        "ledger_ref": Ref(Snapshot(ledger or _ledger())),
+        "control_ref": Ref(Snapshot(control or {"state": "ACTIVE_LKG"})),
+    }
+
+
+def test_release_stale_owner_transaction_deletes_only_owner():
+    from scripts.migrate_daily_accounting_state import (
+        _release_stale_owner_transaction,
+        _snapshot_marker,
+    )
+
+    refs = _stale_owner_refs()
+    markers = {name: _snapshot_marker(refs[f"{name}_ref"].snapshot)
+               for name in ("owner", "ledger", "control")}
+    tx = Transaction()
+
+    result = _release_stale_owner_transaction(tx, refs=refs, markers=markers)
+
+    assert result is None
+    assert tx.writes == [("delete", refs["owner_ref"])]
+
+
+@pytest.mark.parametrize("changed", ["owner", "ledger", "control"])
+def test_release_stale_owner_transaction_rejects_concurrent_document_change(changed):
+    from scripts.migrate_daily_accounting_state import (
+        MigrationAtomicPrecondition,
+        _release_stale_owner_transaction,
+        _snapshot_marker,
+    )
+
+    refs = _stale_owner_refs()
+    markers = {name: _snapshot_marker(refs[f"{name}_ref"].snapshot)
+               for name in ("owner", "ledger", "control")}
+    ref = refs[f"{changed}_ref"]
+    ref.snapshot.value = {**(ref.snapshot.value or {}), "changed": True}
+    tx = Transaction()
+
+    with pytest.raises(MigrationAtomicPrecondition, match="stale_owner_release_precondition_changed"):
+        _release_stale_owner_transaction(tx, refs=refs, markers=markers)
+    assert tx.writes == []
+
+
+def test_release_stale_owner_returns_already_absent_without_broker_or_delete(monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+
+    refs = _stale_owner_refs(owner=None)
+    refs["owner_ref"] = Ref(Snapshot(None))
+    client = SimpleNamespace(
+        get_account=lambda: (_ for _ in ()).throw(AssertionError("broker must not be read")),
+        get_open_orders=lambda: (_ for _ in ()).throw(AssertionError("broker must not be read")),
+    )
+
+    result = migration.release_stale_owner(
+        refs, client=client, target=SimpleNamespace(), expected={"account_scope_sha256": "a" * 64}
+    )
+
+    assert result == {
+        "status": "already_absent",
+        "stage": "stale_owner_release",
+        "owner_exists": False,
+        "no_order": True,
+        "write_performed": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "ledger,reason",
+    [
+        (_ledger(order_submission={"state": "SUBMISSION_UNKNOWN"}), "unsafe_order_state"),
+        (_ledger(order_submission={"state": "TERMINAL", "funding_receipt": {}}), "unsafe_order_state"),
+    ],
+)
+def test_release_stale_owner_rejects_unknown_or_funding_receipt(ledger, reason, monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+
+    refs = _stale_owner_refs(ledger=ledger)
+    monkeypatch.setattr(migration, "_validate_stale_owner_control", lambda *args, **kwargs: None)
+    client = SimpleNamespace(
+        get_account=lambda: {"uid": "synthetic", "balances": []},
+        get_open_orders=lambda: [],
+    )
+
+    with pytest.raises(migration.MigrationBlocked, match=reason):
+        migration.release_stale_owner(
+            refs, client=client, target=SimpleNamespace(), expected={"account_scope_sha256": "a" * 64}
+        )
+
+
+@pytest.mark.parametrize("orders", [[{"symbol": "BTCUSDT"}], None])
+def test_release_stale_owner_rejects_nonempty_or_invalid_open_orders(orders, monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+
+    refs = _stale_owner_refs()
+    monkeypatch.setattr(migration, "_validate_stale_owner_control", lambda *args, **kwargs: None)
+    monkeypatch.setattr(migration, "_private_spot_account", lambda *args, **kwargs: ("uid", ()))
+    client = SimpleNamespace(
+        get_account=lambda: {"uid": "synthetic", "balances": []},
+        get_open_orders=lambda: orders,
+    )
+
+    with pytest.raises(migration.MigrationBlocked, match="open_orders_"):
+        migration.release_stale_owner(
+            refs, client=client, target=SimpleNamespace(), expected={"account_scope_sha256": "a" * 64}
+        )
+
+
+def test_release_stale_owner_rejects_account_scope_mismatch(monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+
+    refs = _stale_owner_refs()
+    monkeypatch.setattr(migration, "_validate_stale_owner_control", lambda *args, **kwargs: None)
+    def mismatch(*args, **kwargs):
+        raise migration.MigrationBlocked("account_scope_unverified")
+    monkeypatch.setattr(migration, "_private_spot_account", mismatch)
+    client = SimpleNamespace(
+        get_account=lambda: {"uid": "synthetic", "balances": []},
+        get_open_orders=lambda: [],
+    )
+
+    with pytest.raises(migration.MigrationBlocked, match="account_scope_unverified"):
+        migration.release_stale_owner(
+            refs, client=client, target=SimpleNamespace(), expected={"account_scope_sha256": "a" * 64}
+        )
+
+
+def _configure_stale_owner_release(monkeypatch, migration):
+    import google.cloud.firestore
+
+    monkeypatch.setattr(migration, "_validate_stale_owner_control", lambda *args, **kwargs: None)
+    monkeypatch.setattr(migration, "_private_spot_account", lambda *args, **kwargs: ("uid", ()))
+    monkeypatch.setattr(google.cloud.firestore, "transactional", lambda fn: fn, raising=False)
+
+
+def test_release_stale_owner_success_deletes_only_owner_and_reads_back(monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+
+    refs = _stale_owner_refs()
+    _configure_stale_owner_release(monkeypatch, migration)
+    tx = Transaction()
+    firestore_client = SimpleNamespace(transaction=lambda *, max_attempts: tx)
+    monkeypatch.setattr(migration, "get_firestore_client", lambda: firestore_client)
+    client = SimpleNamespace(
+        get_account=lambda: {"uid": "synthetic", "balances": []},
+        get_open_orders=lambda: [],
+    )
+
+    result = migration.release_stale_owner(
+        refs, client=client, target=SimpleNamespace(), expected={"account_scope_sha256": "a" * 64}
+    )
+
+    assert result["status"] == "released"
+    assert result["ledger_unchanged"] is True
+    assert result["control_unchanged"] is True
+    assert result["execution_authority_granted"] is False
+    assert tx.writes == [("delete", refs["owner_ref"])]
+
+
+def test_release_stale_owner_transaction_outcome_is_uncertain_without_retry(monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+
+    refs = _stale_owner_refs()
+    _configure_stale_owner_release(monkeypatch, migration)
+    calls = []
+    def transaction(*, max_attempts):
+        calls.append(max_attempts)
+        raise TimeoutError("synthetic transaction timeout")
+    monkeypatch.setattr(migration, "get_firestore_client", lambda: SimpleNamespace(transaction=transaction))
+    client = SimpleNamespace(
+        get_account=lambda: {"uid": "synthetic", "balances": []},
+        get_open_orders=lambda: [],
+    )
+
+    with pytest.raises(migration.MigrationApplyUncertain, match="stale_owner_release_outcome_uncertain"):
+        migration.release_stale_owner(
+            refs, client=client, target=SimpleNamespace(), expected={"account_scope_sha256": "a" * 64}
+        )
+    assert calls == [1]
+
+
+def test_release_stale_owner_readback_uncertain_does_not_retry(monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+
+    class NoReadbackDeleteTransaction(Transaction):
+        def delete(self, ref):
+            self.writes.append(("delete", ref))
+
+    refs = _stale_owner_refs()
+    _configure_stale_owner_release(monkeypatch, migration)
+    tx = NoReadbackDeleteTransaction()
+    monkeypatch.setattr(migration, "get_firestore_client", lambda: SimpleNamespace(
+        transaction=lambda *, max_attempts: tx
+    ))
+    client = SimpleNamespace(
+        get_account=lambda: {"uid": "synthetic", "balances": []},
+        get_open_orders=lambda: [],
+    )
+
+    with pytest.raises(migration.MigrationApplyUncertain, match="stale_owner_release_readback_uncertain"):
+        migration.release_stale_owner(
+            refs, client=client, target=SimpleNamespace(), expected={"account_scope_sha256": "a" * 64}
+        )
+    assert tx.writes == [("delete", refs["owner_ref"])]
+
+
+def test_release_stale_owner_action_is_wired_without_generic_source_read(monkeypatch, capsys):
+    from scripts import migrate_daily_accounting_state as migration
+
+    refs = _stale_owner_refs(owner=None)
+    refs["owner_ref"] = Ref(Snapshot(None))
+    monkeypatch.setattr(migration, "require_runtime_context", lambda: None)
+    monkeypatch.setattr(
+        migration,
+        "resolve_runtime_target_from_env",
+        lambda **kwargs: SimpleNamespace(live_continuity=SimpleNamespace(state="RECONCILE_ONLY")),
+    )
+    monkeypatch.setattr(migration, "_expected_digests", lambda: {"account_scope_sha256": "a" * 64})
+    monkeypatch.setattr(migration, "_refs", lambda: refs)
+    monkeypatch.setattr(migration, "connect_client", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("broker must not be connected")))
+    monkeypatch.setattr(migration.os, "environ", {"GITHUB_SHA": "f" * 40})
+
+    assert migration.main(["release-stale-owner"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "already_absent"
 
 
 def test_apply_readback_confirms_patch_and_preserved_fields():
