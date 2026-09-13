@@ -286,6 +286,24 @@ def test_full_cycle_failure_projection_keeps_allowlisted_report_metadata():
     }) == ("result", "RuntimeError")
 
 
+def test_full_cycle_failure_projection_preserves_safe_daily_state_reason_code():
+    from scripts.validate_runtime_startup import _full_cycle_failure_reason
+
+    report = {
+        "status": "error",
+        "diagnostics": {
+            "cycle_failure": {
+                "stage": "daily_state",
+                "error_type": "execution_integrity_error",
+                "reason_code": "earn_counter_reset",
+            }
+        },
+    }
+    assert _full_cycle_failure_reason(report) == "earn_counter_reset"
+    report["diagnostics"]["cycle_failure"]["reason_code"] = "provider account=secret-token"
+    assert _full_cycle_failure_reason(report) == "full_cycle_cycle_error"
+
+
 @pytest.mark.parametrize('message, expected', [
     ('runtime_recovery_not_active', 'runtime_recovery_not_active'),
     ('recovery_control_state_invalid', 'recovery_control_state_invalid'),

@@ -357,6 +357,27 @@ class CycleServiceTests(unittest.TestCase):
         self.assertEqual(state["daily_equity_base"], 100.0)
         self.assertEqual(state["last_reset_date"], "2026-09-11")
 
+    def test_daily_state_reason_code_is_preserved_in_cycle_failure_metadata(self):
+        def reconcile(*args):
+            args[2]["diagnostics"] = {
+                "earn_accrual": {
+                    "status": "blocked",
+                    "reason_code": "earn_counter_reset",
+                }
+            }
+            raise ExecutionIntegrityError("earn_forward_accounting_unverified")
+
+        report, _events = self._run_funds_cycle(True, rebase_fn=reconcile)
+
+        self.assertEqual(
+            report["diagnostics"]["cycle_failure"],
+            {
+                "stage": "daily_state",
+                "error_type": "execution_integrity_error",
+                "reason_code": "earn_counter_reset",
+            },
+        )
+
     def test_reconciled_new_day_state_resumes_after_reset_write_failure_without_double_count(self):
         state = {
             "last_reset_date": "2026-09-11",

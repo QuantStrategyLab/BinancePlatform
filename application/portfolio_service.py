@@ -11,6 +11,28 @@ from application.broker_reconciliation import collect_spot_usdt_external_cash_fl
 
 
 _TREND_PNL_BASIS = "trend_mark_plus_cash_flow_v1"
+EARN_FORWARD_REASON_CODES = frozenset({
+    "earn_checkpoint_invalid",
+    "earn_checkpoint_time_invalid",
+    "earn_checkpoint_scope_changed",
+    "earn_product_lifecycle_unverified",
+    "earn_counter_reset",
+    "earn_quantity_change_unexplained",
+    "earn_order_unsettled",
+    "earn_accounted_changes_missing",
+    "earn_cash_cursor_mismatch",
+    "earn_cash_flow_invalid",
+    "earn_cash_flow_unsupported",
+    "earn_cash_flow_time_unverified",
+    "earn_valuation_snapshot_mismatch",
+    "external_cash_flow_window_invalid",
+    "external_cash_flow_cursor_invalid",
+    "external_cash_flow_history_read_failed",
+    "external_cash_flow_history_incomplete",
+    "external_cash_flow_record_invalid",
+    "external_cash_flow_record_changed",
+    "external_cash_flow_cursor_capacity_exceeded",
+})
 
 
 def compute_portfolio_allocation(
@@ -71,7 +93,16 @@ def maybe_rebase_daily_state_for_balance_change(
             cash = collect_external_cash_flows_fn(runtime.client, now=_time(current['observed_at']),
                                                   cursor=state.get('external_cash_flow_cursor'))
             updated = prepare_forward_earn_state(state, current, cash)
-        except Exception:
+        except Exception as exc:
+            reason_code = (
+                str(exc)
+                if type(exc) is ValueError and str(exc) in EARN_FORWARD_REASON_CODES
+                else "earn_forward_accounting_unverified"
+            )
+            report.setdefault("diagnostics", {})["earn_accrual"] = {
+                "status": "blocked",
+                "reason_code": reason_code,
+            }
             raise ExecutionIntegrityError("earn_forward_accounting_unverified") from None
         runtime_set_trade_state_fn(runtime, report, updated, reason="earn_forward_accounting")
         state.clear()
