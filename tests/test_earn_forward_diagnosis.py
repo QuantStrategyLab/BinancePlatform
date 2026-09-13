@@ -1,6 +1,6 @@
 import copy
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -238,6 +238,113 @@ def test_realtime_only_change_is_zero_after_counter_and_not_bonus(monkeypatch):
     assert btc["residual_direction"] == "UNCHANGED"
     assert btc["residual_matches_bonus_records"] is False
     assert btc["classification"] == "residual_zero_after_realtime_counter"
+
+
+def test_bnb_wallet_summary_matches_dividend_plus_transfer_without_claiming_fee_semantics():
+    from decimal import Decimal
+    from scripts import migrate_daily_accounting_state as migration
+
+    stamp = int((NOW - timedelta(hours=1)).timestamp() * 1000)
+    report = {
+        "requested_surfaces_complete": True,
+        "_private_rows": {
+            "bnb_dividends": [{
+                "id": 1, "tranId": 2, "asset": "BNB", "amount": "0.1", "divTime": stamp,
+            }],
+            "spot_dust_conversions": [{
+                "operateTime": stamp, "transId": 3,
+                "totalTransferedAmount": "0.2", "totalServiceChargeAmount": "0.01",
+                "userAssetDribbletDetails": [{
+                    "transId": 3, "operateTime": stamp, "fromAsset": "USDT",
+                    "targetAsset": "BNB", "amount": "0.21", "transferedAmount": "0.2",
+                    "serviceChargeAmount": "0.01",
+                }],
+            }],
+        },
+    }
+    result = migration._summarize_bnb_wallet_activity(
+        report, residual=Decimal("0.3"), start=NOW-timedelta(hours=2), end=NOW,
+    )
+
+    assert result["status"] == "COMPLETE"
+    assert result["combined_transfer_residual_matches"] is True
+    assert result["combined_after_fee_residual_matches"] is False
+    assert result["dust_net_semantics_verified"] is False
+    assert "0.2" not in json.dumps(result)
+    assert "0.01" not in json.dumps(result)
+
+
+def test_bnb_wallet_summary_does_not_assume_non_bnb_dust_target():
+    from decimal import Decimal
+    from scripts import migrate_daily_accounting_state as migration
+
+    stamp = int((NOW - timedelta(hours=1)).timestamp() * 1000)
+    report = {
+        "requested_surfaces_complete": True,
+        "_private_rows": {
+            "bnb_dividends": [],
+            "spot_dust_conversions": [{
+                "operateTime": stamp, "transId": 4,
+                "totalTransferedAmount": "0.2", "totalServiceChargeAmount": "0.01",
+                "userAssetDribbletDetails": [{
+                    "transId": 4, "operateTime": stamp, "fromAsset": "USDT",
+                    "targetAsset": "BTC", "amount": "0.21", "transferedAmount": "0.2",
+                    "serviceChargeAmount": "0.01",
+                }],
+            }],
+        },
+    }
+    result = migration._summarize_bnb_wallet_activity(
+        report, residual=Decimal("0.2"), start=NOW-timedelta(hours=2), end=NOW,
+    )
+
+    assert result["status"] == "COMPLETE"
+    assert result["dust_bnb_detail_count"] == 0
+    assert result["dust_non_bnb_target_count"] == 1
+    assert result["dust_transfer_residual_matches"] is False
+
+
+def test_bnb_wallet_summary_reports_bnb_residual_precision_without_source_match():
+    from decimal import Decimal
+    from scripts import migrate_daily_accounting_state as migration
+
+    result = migration._summarize_bnb_wallet_activity(
+        {
+            "requested_surfaces_complete": True,
+            "_private_rows": {"bnb_dividends": [], "spot_dust_conversions": []},
+        },
+        residual=Decimal("0.000000001"),
+        start=NOW-timedelta(hours=2), end=NOW,
+    )
+
+    assert result["status"] == "COMPLETE"
+    assert result["residual_within_one_eight_decimal_unit"] is True
+    assert result["combined_transfer_residual_matches"] is False
+
+
+def test_bnb_wallet_summary_preserves_sanitized_source_failure_metadata():
+    from scripts import migrate_daily_accounting_state as migration
+
+    result = migration._summarize_bnb_wallet_activity({
+        "requested_surfaces_complete": False,
+        "reason_code": "bnb_wallet_history_unverified",
+        "failed_surface": "spot_dust_conversions",
+        "failure_stage": "response_validation",
+        "response_shape": {
+            "rows_present": True, "rows_is_list": True, "total_is_integer": True,
+            "total_matches_rows": False, "private": "drop",
+        },
+    }, residual=0, start=NOW-timedelta(hours=2), end=NOW)
+
+    assert result["status"] == "CHECK_FAILED"
+    assert result["source_reason_code"] == "bnb_wallet_history_unverified"
+    assert result["source_failed_surface"] == "spot_dust_conversions"
+    assert result["source_failure_stage"] == "response_validation"
+    assert result["source_response_shape"] == {
+        "rows_present": True, "rows_is_list": True, "total_is_integer": True,
+        "total_matches_rows": False,
+    }
+    assert "private" not in json.dumps(result)
 
 
 def test_unknown_order_state_returns_restricted_diagnostic(monkeypatch):

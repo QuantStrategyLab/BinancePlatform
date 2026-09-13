@@ -37,6 +37,7 @@ from application.broker_reconciliation import (
     collect_read_only_reconciliation_observations,
     collect_spot_usdt_external_cash_flows,
     diagnose_balance_flows,
+    diagnose_bnb_wallet_activity,
 )
 from application.portfolio_service import maybe_rebase_daily_state_for_balance_change
 from runtime_support import ExecutionIntegrityError
@@ -1041,6 +1042,161 @@ def _direction(value):
     return "INCREASE" if value > 0 else "DECREASE" if value < 0 else "UNCHANGED"
 
 
+_BNB_DIAGNOSTIC_QUANTUM = Decimal("0.00000001")
+
+
+def _summarize_bnb_wallet_activity(report, *, residual, start, end):
+    """Compare private wallet rows to BNB residual without exposing source data."""
+    private_rows = report.get("_private_rows") if isinstance(report, Mapping) else None
+    summary = {
+        "status": "CHECK_FAILED",
+        "complete": False,
+        "source_reason_code": None,
+        "source_failed_surface": None,
+        "source_failure_stage": None,
+        "source_response_shape": None,
+        "dividend_count": 0,
+        "dust_record_count": 0,
+        "dust_bnb_detail_count": 0,
+        "dust_non_bnb_target_count": 0,
+        "dividend_residual_matches": False,
+        "dust_transfer_residual_matches": False,
+        "dust_after_fee_residual_matches": False,
+        "combined_transfer_residual_matches": False,
+        "combined_after_fee_residual_matches": False,
+        "residual_within_one_eight_decimal_unit": abs(residual) <= _BNB_DIAGNOSTIC_QUANTUM,
+        "dividend_net_semantics_verified": False,
+        "dust_net_semantics_verified": False,
+        "causal_reconciliation": False,
+    }
+    if not isinstance(report, Mapping) or report.get("requested_surfaces_complete") is not True:
+        if isinstance(report, Mapping):
+            summary["source_reason_code"] = report.get("reason_code") if report.get("reason_code") in {
+                "bnb_wallet_history_unverified",
+            } else None
+            summary["source_failed_surface"] = report.get("failed_surface") if report.get("failed_surface") in {
+                "bnb_dividends", "spot_dust_conversions",
+            } else None
+            summary["source_failure_stage"] = report.get("failure_stage") if report.get("failure_stage") in {
+                "request", "response_validation",
+            } else None
+            shape = report.get("response_shape")
+            if isinstance(shape, Mapping):
+                summary["source_response_shape"] = {
+                    key: shape[key]
+                    for key in (
+                        "rows_present", "rows_is_list", "total_is_integer",
+                        "total_is_decimal_string", "total_is_zero", "total_matches_rows",
+                        "page_full", "row_time_and_asset_valid",
+                    )
+                    if type(shape.get(key)) is bool
+                }
+        return summary
+    summary["status"] = "UNVERIFIED"
+    if (
+        not isinstance(private_rows, Mapping)
+        or not isinstance(private_rows.get("bnb_dividends"), list)
+        or not isinstance(private_rows.get("spot_dust_conversions"), list)
+    ):
+        return summary
+
+    start_ms = int(start.timestamp() * 1000)
+    end_ms = int(end.timestamp() * 1000)
+    dividend_total = Decimal(0)
+    dust_transfer_total = Decimal(0)
+    dust_after_fee_total = Decimal(0)
+    dividend_keys = set()
+    dust_keys = set()
+    try:
+        for row in private_rows["bnb_dividends"]:
+            if not isinstance(row, Mapping) or row.get("asset") != "BNB":
+                return summary
+            div_time = row.get("divTime")
+            if type(div_time) is not int or not start_ms <= div_time <= end_ms:
+                return summary
+            row_id = row.get("id")
+            tran_id = row.get("tranId")
+            if type(row_id) is not int or row_id < 0 or type(tran_id) is not int or tran_id < 0:
+                return summary
+            key = (row_id, tran_id, div_time)
+            if key in dividend_keys:
+                return summary
+            dividend_keys.add(key)
+            dividend_total += _diagnosis_decimal(row.get("amount"), signed=False)
+
+        for record in private_rows["spot_dust_conversions"]:
+            if not isinstance(record, Mapping):
+                return summary
+            operate_time = record.get("operateTime")
+            trans_id = record.get("transId")
+            if (
+                type(operate_time) is not int
+                or not start_ms <= operate_time <= end_ms
+                or type(trans_id) is not int
+                or trans_id < 0
+                or trans_id in dust_keys
+            ):
+                return summary
+            dust_keys.add(trans_id)
+            details = record.get("userAssetDribbletDetails")
+            if not isinstance(details, list):
+                return summary
+            total_transfer = _diagnosis_decimal(record.get("totalTransferedAmount"), signed=False)
+            total_fee = _diagnosis_decimal(record.get("totalServiceChargeAmount"), signed=False)
+            detail_transfer_total = Decimal(0)
+            detail_fee_total = Decimal(0)
+            detail_keys = set()
+            for detail in details:
+                if not isinstance(detail, Mapping):
+                    return summary
+                detail_time = detail.get("operateTime")
+                detail_trans_id = detail.get("transId")
+                from_asset = detail.get("fromAsset")
+                target_asset = detail.get("targetAsset")
+                if (
+                    type(detail_time) is not int
+                    or not start_ms <= detail_time <= end_ms
+                    or type(detail_trans_id) is not int
+                    or detail_trans_id < 0
+                    or not isinstance(from_asset, str)
+                    or not isinstance(target_asset, str)
+                ):
+                    return summary
+                detail_key = (detail_trans_id, detail_time, from_asset, target_asset)
+                if detail_key in detail_keys:
+                    return summary
+                detail_keys.add(detail_key)
+                transfer = _diagnosis_decimal(detail.get("transferedAmount"), signed=False)
+                fee = _diagnosis_decimal(detail.get("serviceChargeAmount"), signed=False)
+                if fee > transfer:
+                    return summary
+                detail_transfer_total += transfer
+                detail_fee_total += fee
+                if target_asset == "BNB":
+                    summary["dust_bnb_detail_count"] += 1
+                    dust_transfer_total += transfer
+                    dust_after_fee_total += transfer - fee
+                else:
+                    summary["dust_non_bnb_target_count"] += 1
+            if detail_transfer_total != total_transfer or detail_fee_total != total_fee:
+                return summary
+
+        summary["dividend_count"] = len(private_rows["bnb_dividends"])
+        summary["dust_record_count"] = len(private_rows["spot_dust_conversions"])
+        summary["dividend_residual_matches"] = dividend_total == residual
+        summary["dust_transfer_residual_matches"] = dust_transfer_total == residual
+        summary["dust_after_fee_residual_matches"] = dust_after_fee_total == residual
+        combined_transfer = dividend_total + dust_transfer_total
+        combined_after_fee = dividend_total + dust_after_fee_total
+        summary["combined_transfer_residual_matches"] = combined_transfer == residual
+        summary["combined_after_fee_residual_matches"] = combined_after_fee == residual
+    except (MigrationBlocked, TypeError, ValueError, InvalidOperation):
+        return summary
+    summary["status"] = "COMPLETE"
+    summary["complete"] = True
+    return summary
+
+
 def _trade_net_diagnosis(observations, *, assets):
     """Reconstruct signed Spot deltas from normalized, bounded myTrades rows."""
     net = {asset: Decimal(0) for asset in assets}
@@ -1219,6 +1375,67 @@ def diagnose_earn_forward(refs, *, client, expected, now):
     if not isinstance(reward_checks, Mapping) or set(reward_checks) != set(assets):
         raise MigrationBlocked("earn_diagnosis_reward_history_invalid")
 
+    bnb_wallet_activity = {
+        "status": "NOT_CHECKED",
+        "complete": False,
+        "source_reason_code": None,
+        "source_failed_surface": None,
+        "source_failure_stage": None,
+        "source_response_shape": None,
+        "dividend_count": 0,
+        "dust_record_count": 0,
+        "dust_bnb_detail_count": 0,
+        "dust_non_bnb_target_count": 0,
+        "dividend_residual_matches": False,
+        "dust_transfer_residual_matches": False,
+        "dust_after_fee_residual_matches": False,
+        "combined_transfer_residual_matches": False,
+        "combined_after_fee_residual_matches": False,
+        "residual_within_one_eight_decimal_unit": False,
+        "dividend_net_semantics_verified": False,
+        "dust_net_semantics_verified": False,
+        "causal_reconciliation": False,
+    }
+    if "BNB" in assets:
+        bnb_wallet_activity["residual_within_one_eight_decimal_unit"] = (
+            abs(residual_after_realtime["BNB"]) <= _BNB_DIAGNOSTIC_QUANTUM
+        )
+        other_assets_normal = all(
+            product_status[asset] == "STABLE"
+            and residual_after_realtime[asset] == 0
+            and trade_net[asset] == stored_net[asset]
+            for asset in assets
+            if asset != "BNB"
+        )
+        bnb_preconditions = (
+            product_status["BNB"] == "STABLE"
+            and residual_after_realtime["BNB"] > 0
+            and trade_net["BNB"] == stored_net["BNB"]
+            and external_status != "UNSUPPORTED_ACTIVITY"
+            and not observations.open_orders
+            and other_assets_normal
+        )
+        if bnb_preconditions:
+            try:
+                bnb_wallet_report = diagnose_bnb_wallet_activity(
+                    client,
+                    start=checkpoint_at,
+                    end=now,
+                    include_rows=True,
+                )
+            except Exception:
+                bnb_wallet_report = {
+                    "requested_surfaces_complete": False,
+                    "reason_code": "bnb_wallet_history_unverified",
+                    "failure_stage": "request",
+                }
+            bnb_wallet_activity = _summarize_bnb_wallet_activity(
+                bnb_wallet_report,
+                residual=residual_after_realtime["BNB"],
+                start=checkpoint_at,
+                end=now,
+            )
+
     asset_results = {}
     for asset in assets:
         check = reward_checks.get(asset)
@@ -1281,6 +1498,28 @@ def diagnose_earn_forward(refs, *, client, expected, now):
             "classification": classification,
             "causal_reconciliation": False,
         }
+    if "BNB" in asset_results:
+        asset_results["BNB"].update({
+            "wallet_activity_status": bnb_wallet_activity["status"],
+            "wallet_activity_complete": bnb_wallet_activity["complete"],
+            "wallet_dividend_record_count": bnb_wallet_activity["dividend_count"],
+            "wallet_dust_record_count": bnb_wallet_activity["dust_record_count"],
+            "wallet_dust_bnb_detail_count": bnb_wallet_activity["dust_bnb_detail_count"],
+            "wallet_dust_non_bnb_target_count": bnb_wallet_activity["dust_non_bnb_target_count"],
+            "wallet_dividend_residual_matches": bnb_wallet_activity["dividend_residual_matches"],
+            "wallet_dust_transfer_residual_matches": bnb_wallet_activity["dust_transfer_residual_matches"],
+            "wallet_dust_after_fee_residual_matches": bnb_wallet_activity["dust_after_fee_residual_matches"],
+            "wallet_combined_transfer_residual_matches": bnb_wallet_activity["combined_transfer_residual_matches"],
+            "wallet_combined_after_fee_residual_matches": bnb_wallet_activity["combined_after_fee_residual_matches"],
+            "residual_within_one_eight_decimal_unit": bnb_wallet_activity["residual_within_one_eight_decimal_unit"],
+            "wallet_dividend_net_semantics_verified": bnb_wallet_activity["dividend_net_semantics_verified"],
+            "wallet_dust_net_semantics_verified": bnb_wallet_activity["dust_net_semantics_verified"],
+            "wallet_causal_reconciliation": bnb_wallet_activity["causal_reconciliation"],
+            "wallet_source_reason_code": bnb_wallet_activity["source_reason_code"],
+            "wallet_source_failed_surface": bnb_wallet_activity["source_failed_surface"],
+            "wallet_source_failure_stage": bnb_wallet_activity["source_failure_stage"],
+            "wallet_source_response_shape": bnb_wallet_activity["source_response_shape"],
+        })
 
     after = _read_earn_diagnosis_source(refs)
     if any(
@@ -1306,6 +1545,9 @@ def diagnose_earn_forward(refs, *, client, expected, now):
         "unsupported_external_flow_count": flows.get("new_unsupported_deposit_count", 0),
         "changed_withdrawal_count": flows.get("new_or_changed_withdrawal_count", 0),
         "external_flow_status": external_status,
+        "bnb_wallet_activity_checked": bnb_wallet_activity["status"] != "NOT_CHECKED",
+        "bnb_wallet_activity_status": bnb_wallet_activity["status"],
+        "bnb_wallet_activity_complete": bnb_wallet_activity["complete"],
         "causal_reconciliation": False,
         "activation_allowed": False,
         "no_order": True,

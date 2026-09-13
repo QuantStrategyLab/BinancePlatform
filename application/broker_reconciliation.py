@@ -825,7 +825,9 @@ def diagnose_balance_flows(
     return result
 
 
-def diagnose_bnb_wallet_activity(client, *, start: datetime, end: datetime):
+def diagnose_bnb_wallet_activity(
+    client, *, start: datetime, end: datetime, include_rows: bool = False
+):
     """Two audit-only wallet GETs; not a complete funding proof or recovery gate."""
     if start.tzinfo is None or end.tzinfo is None or not start < end or end-start > timedelta(days=7):
         raise ValueError("balance_history_window_invalid")
@@ -873,4 +875,6 @@ def diagnose_bnb_wallet_activity(client, *, start: datetime, end: datetime):
             return {**result, "reason_code": "bnb_wallet_history_unverified", "failed_surface": name,
                     "failure_stage": "response_validation", "response_shape": shape}
         result["counts"][name] = len(rows)
+        if include_rows:
+            result.setdefault("_private_rows", {})[name] = rows
     return {**result, "requested_surfaces_complete": True}

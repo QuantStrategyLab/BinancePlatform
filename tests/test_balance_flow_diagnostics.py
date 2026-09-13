@@ -314,6 +314,22 @@ def test_bnb_activity_diagnosis_reads_only_bounded_get_and_never_exports_rows():
     assert result['counts'] == {'bnb_dividends': 0, 'spot_dust_conversions': 0}
     assert result['requested_surfaces_complete'] is True
     assert result['complete_balance_reconciliation'] is False
+    assert '_private_rows' not in result
+
+
+def test_bnb_activity_diagnosis_can_keep_rows_private_for_bounded_consumer():
+    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    def read(method, path, **kwargs):
+        if path.endswith('assetDividend'):
+            return {'rows': [{'id': 1, 'tranId': 2, 'asset': 'BNB', 'amount': '0.1',
+                              'divTime': int((NOW - timedelta(hours=1)).timestamp() * 1000)}], 'total': 1}
+        return {'userAssetDribblets': [], 'total': 0}
+    result = diagnose_bnb_wallet_activity(
+        SimpleNamespace(_request_margin_api=read),
+        start=NOW-timedelta(hours=2), end=NOW, include_rows=True,
+    )
+    assert result['requested_surfaces_complete'] is True
+    assert result['_private_rows']['bnb_dividends'][0]['amount'] == '0.1'
 
 
 @pytest.mark.parametrize('payload', [{'total': 2, 'rows': []}, {'total': 500, 'rows': [{}]*500}, {'total': 1, 'rows': [{'asset': 'BNB', 'amount': 'PRIVATE', 'divTime': 0}]}])
