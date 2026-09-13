@@ -14,14 +14,17 @@ def _entry(updated: str, uri: str = "gs://reports/binance/crypto/2026-08/report.
     return {"url": uri, "metadata": {"updated": updated}}
 
 
-def _report(status: str = "ok"):
-    return {
+def _report(status: str = "ok", *, execution_blocked_reason: str | None = None):
+    report = {
         "platform": "binance",
         "status": status,
         "strategy_profile": "crypto_live_pool_rotation",
         "service_name": "binance-platform",
         "errors": [],
     }
+    if execution_blocked_reason is not None:
+        report["execution_blocked_reason"] = execution_blocked_reason
+    return report
 
 
 def _observed_report():
@@ -70,6 +73,55 @@ class ExecutionReportHeartbeatTests(unittest.TestCase):
         self.assertEqual(result["status"], "healthy")
         self.assertEqual(result["reason"], "status=ok")
         self.assertNotIn("deployment", result)
+
+    def test_state_owner_busy_is_an_execution_alert(self) -> None:
+        now = dt.datetime(2026, 8, 30, 3, tzinfo=dt.timezone.utc)
+        with (
+            patch.object(
+                heartbeat,
+                "_list_reports",
+                return_value=(
+                    [
+                        _entry("2026-08-30T02:59:00Z", "gs://reports/new.json"),
+                        _entry("2026-08-30T02:00:00Z", "gs://reports/old.json"),
+                    ],
+                    "gs://reports",
+                ),
+            ),
+            patch.object(
+                heartbeat,
+                "_read_report",
+                side_effect=[
+                    _report(execution_blocked_reason="state_owner_busy"),
+                    _report(),
+                ],
+            ),
+        ):
+            result = heartbeat.assess_execution_report_heartbeat(now)
+
+        self.assertEqual(result["status"], "alert")
+        self.assertEqual(result["reason"], "execution_blocked:state_owner_busy")
+
+    def test_non_operational_execution_blockers_remain_accepted(self) -> None:
+        for status, blocked_reason in (
+            ("ok", "risk_execution_not_permitted"),
+            ("no_action", None),
+        ):
+            with self.subTest(status=status, blocked_reason=blocked_reason):
+                payload = _report(status=status, execution_blocked_reason=blocked_reason)
+                accepted, reason = heartbeat._accepted_payload(payload)
+
+                self.assertTrue(accepted)
+                self.assertEqual(reason, f"status={status}")
+
+    def test_owner_busy_from_other_strategy_is_ignored(self) -> None:
+        payload = _report(execution_blocked_reason="state_owner_busy")
+        payload["strategy_profile"] = "other_strategy"
+
+        accepted, reason = heartbeat._accepted_payload(payload)
+
+        self.assertFalse(accepted)
+        self.assertEqual(reason, "strategy profile does not match")
 
     def test_disabled_target_does_not_read_storage(self) -> None:
         os.environ["RUNTIME_TARGET_ENABLED"] = "false"

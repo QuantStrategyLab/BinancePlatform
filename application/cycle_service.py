@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from quant_platform_kit.common.runtime_reports import persist_runtime_report
 from quant_platform_kit.strategy_lifecycle.performance_monitor import try_record_platform_execution
 from application.execution_receipt_adapter import attach_execution_receipt_from_report
+from application.portfolio_service import EARN_FORWARD_REASON_CODES
 from runtime_logging import RuntimeLogContext, emit_runtime_log
 from runtime_support import (
     append_report_error, finalize_notification_delivery, acquire_runtime_state_owner,
@@ -334,9 +335,13 @@ def execute_strategy_cycle(
             KeyError: "key_error",
             RuntimeError: "runtime_error",
         }.get(type(exc), "unclassified_error")
-        report.setdefault("diagnostics", {})["cycle_failure"] = {
-            "stage": failure_stage, "error_type": error_type,
-        }
+        failure_metadata = {"stage": failure_stage, "error_type": error_type}
+        if failure_stage == "daily_state":
+            earn_diagnostics = report.get("diagnostics", {}).get("earn_accrual", {})
+            reason_code = earn_diagnostics.get("reason_code") if isinstance(earn_diagnostics, Mapping) else None
+            if reason_code in EARN_FORWARD_REASON_CODES:
+                failure_metadata["reason_code"] = reason_code
+        report.setdefault("diagnostics", {})["cycle_failure"] = failure_metadata
         log_buffer.append(f"cycle_execution_failed stage={failure_stage} error_type={error_type}")
         append_report_error(report, "cycle_execution_failed", stage="execute_cycle")
         try:

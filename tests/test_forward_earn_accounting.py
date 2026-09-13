@@ -76,6 +76,49 @@ def test_unverified_forward_activity_does_not_mutate_state(kind):
     assert state == before
 
 
+def test_forward_validation_reason_is_safe_and_reported():
+    state, new, cash = materials()
+    new['assets']['BNB']['products']['BNB001']['realtime_rewards'] = '0'
+    report = {}
+    runtime = SimpleNamespace(client=object(), now_utc=NOW, earn_accrual_observation=new)
+    snapshot = {a: round(float(r['quantity']), 8) for a, r in new['assets'].items()}
+
+    with pytest.raises(ExecutionIntegrityError):
+        maybe_rebase_daily_state_for_balance_change(
+            state, runtime, report, 1600.0, 0.0, snapshot, [],
+            collect_external_cash_flows_fn=lambda *a, **kw: cash,
+            runtime_set_trade_state_fn=lambda *a, **kw: None,
+            append_log_fn=lambda *a: None, translate_fn=lambda *a, **kw: '',
+        )
+
+    assert report['diagnostics']['earn_accrual'] == {
+        'status': 'blocked', 'reason_code': 'earn_counter_reset',
+    }
+
+
+def test_forward_unknown_exception_is_generic_and_does_not_leak_message():
+    state, new, _cash = materials()
+    report = {}
+    runtime = SimpleNamespace(client=object(), now_utc=NOW, earn_accrual_observation=new)
+    snapshot = {a: round(float(r['quantity']), 8) for a, r in new['assets'].items()}
+
+    def fail(*_args, **_kwargs):
+        raise ValueError('provider account=secret-token')
+
+    with pytest.raises(ExecutionIntegrityError):
+        maybe_rebase_daily_state_for_balance_change(
+            state, runtime, report, 1600.0, 0.0, snapshot, [],
+            collect_external_cash_flows_fn=fail,
+            runtime_set_trade_state_fn=lambda *a, **kw: None,
+            append_log_fn=lambda *a: None, translate_fn=lambda *a, **kw: '',
+        )
+
+    assert report['diagnostics']['earn_accrual'] == {
+        'status': 'blocked', 'reason_code': 'earn_forward_accounting_unverified',
+    }
+    assert 'secret-token' not in repr(report)
+
+
 def test_deposit_and_interest_are_separate_in_same_window():
     state, new, cash = materials()
     new['assets']['USDT'].update(spot_free='110', quantity='110')

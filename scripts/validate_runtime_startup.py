@@ -9,7 +9,6 @@ from collections.abc import Mapping
 from pathlib import Path
 import sys
 
-
 _SAFE_STARTUP_REASONS = {
     "runtime_recovery_not_active": "runtime_recovery_not_active",
     "recovery_control_state_invalid": "recovery_control_state_invalid",
@@ -20,6 +19,29 @@ _SAFE_STARTUP_REASONS = {
     "full_cycle_risk_authority_missing": "full_cycle_risk_authority_missing",
     "full_cycle_state_loader_missing": "full_cycle_state_loader_missing",
 }
+
+_EARN_FORWARD_REASON_CODES = frozenset({
+    "earn_checkpoint_invalid",
+    "earn_checkpoint_time_invalid",
+    "earn_checkpoint_scope_changed",
+    "earn_product_lifecycle_unverified",
+    "earn_counter_reset",
+    "earn_quantity_change_unexplained",
+    "earn_order_unsettled",
+    "earn_accounted_changes_missing",
+    "earn_cash_cursor_mismatch",
+    "earn_cash_flow_invalid",
+    "earn_cash_flow_unsupported",
+    "earn_cash_flow_time_unverified",
+    "earn_valuation_snapshot_mismatch",
+    "external_cash_flow_window_invalid",
+    "external_cash_flow_cursor_invalid",
+    "external_cash_flow_history_read_failed",
+    "external_cash_flow_history_incomplete",
+    "external_cash_flow_record_invalid",
+    "external_cash_flow_record_changed",
+    "external_cash_flow_cursor_capacity_exceeded",
+})
 
 _SAFE_CYCLE_FAILURE_STAGES = frozenset({
     "client_connect",
@@ -142,6 +164,9 @@ def _full_cycle_failure_reason(report):
         return "full_cycle_aborted"
     failure = report.get("diagnostics", {}).get("cycle_failure", {})
     stage = failure.get("stage")
+    reason_code = failure.get("reason_code")
+    if stage == "daily_state" and reason_code in _EARN_FORWARD_REASON_CODES:
+        return reason_code
     if stage in {"client_connect", "market_snapshot"}:
         return "full_cycle_broker_read_failed"
     if stage in {"fuel_execution", "trend_execution", "btc_execution", "earn_execution"}:

@@ -14,6 +14,8 @@ from typing import Any
 
 _SCHEMA = "qsl.execution_report_heartbeat_assessment.v1"
 _ACCEPTED_STATUSES = frozenset({"ok", "skipped", "success", "completed", "no_action", "aborted"})
+_OPERATIONAL_BLOCKERS = frozenset({"state_owner_busy"})
+_OPERATIONAL_BLOCKER_REASON = "execution is blocked by an operational guard"
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -136,6 +138,11 @@ def _payload_strategy(payload: dict[str, Any]) -> str:
     return str(payload.get("strategy_profile") or target_strategy or "").strip()
 
 
+def _operational_blocker(payload: dict[str, Any]) -> str | None:
+    value = payload.get("execution_blocked_reason")
+    return value if isinstance(value, str) and value in _OPERATIONAL_BLOCKERS else None
+
+
 def _accepted_payload(payload: dict[str, Any]) -> tuple[bool, str]:
     expected_platform = (os.environ.get("RUNTIME_HEARTBEAT_REPORT_PLATFORM") or "binance").strip().lower()
     expected_strategy = (os.environ.get("RUNTIME_HEARTBEAT_STRATEGY_PROFILE") or "").strip()
@@ -146,6 +153,8 @@ def _accepted_payload(payload: dict[str, Any]) -> tuple[bool, str]:
         return False, "strategy profile does not match"
     if expected_service and _payload_service_name(payload) != expected_service:
         return False, "service name does not match"
+    if _operational_blocker(payload) is not None:
+        return False, _OPERATIONAL_BLOCKER_REASON
     errors = payload.get("errors")
     if isinstance(errors, list) and errors:
         return False, "report contains errors"
@@ -242,6 +251,17 @@ def assess_execution_report_heartbeat(now: dt.datetime | None = None) -> dict[st
         if payload is None:
             continue
         accepted, reason = _accepted_payload(payload)
+        if not accepted and reason == _OPERATIONAL_BLOCKER_REASON:
+            blocker = _operational_blocker(payload)
+            return {
+                "schema": _SCHEMA,
+                "observed_at": current.isoformat().replace("+00:00", "Z"),
+                "status": "alert",
+                "reason": f"execution_blocked:{blocker}",
+                "name": name,
+                "report_updated_at": (_entry_updated_at(entry) or current).isoformat().replace("+00:00", "Z"),
+                "reports_returned": len(entries),
+            }
         if accepted:
             assessment = {
                 "schema": _SCHEMA,
