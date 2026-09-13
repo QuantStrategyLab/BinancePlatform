@@ -284,6 +284,13 @@ result. A matching BONUS or REALTIME record is diagnostic evidence only and
 never a causal reconciliation or execution permission. The bounded trade net is
 reconstructed from normalized `myTrades` quantity and price fields for
 diagnosis only; it is not a complete fill or accounting proof.
+When BNB has a positive residual while the other sampled checks are stable, the
+same diagnostic may read the bounded `assetDividend` and Spot `dribblet` wallet
+surfaces. It reports record counts and exact Decimal comparisons for dividend,
+transfer, fee-adjusted, and combined values without exposing amounts or source
+rows. Binance's transfer and fee semantics remain unverified, and the separate
+one-eight-decimal-unit flag is diagnostic only; neither flag changes accounting,
+owner, control, or execution state.
 
 The migration is a separate, one-time `Runtime` workflow mode for an old
 `trend_val` ledger. It does not activate recovery control, grant execution
