@@ -195,6 +195,7 @@ class _ReadOnlyBroker:
     _MARGIN_READS = frozenset({
         "capital/deposit/hisrec",
         "capital/withdraw/history",
+        "asset/assetDividend",
     })
 
     def __init__(self, client, *, symbols):
@@ -265,6 +266,17 @@ class _ReadOnlyBroker:
     def _request_margin_api(self, method, path, *, signed, data):
         if method != "get" or signed is not True or path not in self._MARGIN_READS:
             raise RuntimeError("full_cycle_broker_request_forbidden")
+        if path == "asset/assetDividend":
+            if (
+                set(data) != {"asset", "startTime", "endTime", "limit"}
+                or data.get("asset") != "BNB"
+                or type(data.get("startTime")) is not int
+                or type(data.get("endTime")) is not int
+                or not data["startTime"] < data["endTime"]
+                or data["endTime"] - data["startTime"] > 7 * 24 * 60 * 60 * 1000
+                or data.get("limit") != 500
+            ):
+                raise RuntimeError("full_cycle_broker_dividend_window_forbidden")
         return self._read("_request_margin_api", method, path, signed=signed, data=dict(data))
 
     def __getattr__(self, _name):

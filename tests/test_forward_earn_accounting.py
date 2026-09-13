@@ -34,9 +34,9 @@ def materials():
     return state, new, cash
 
 
-def consume(state, new, cash, writer=None):
+def consume(state, new, cash, writer=None, client=None):
     writes = []
-    runtime = SimpleNamespace(client=object(), now_utc=NOW, earn_accrual_observation=new)
+    runtime = SimpleNamespace(client=client or object(), now_utc=NOW, earn_accrual_observation=new)
     snapshot = {a: round(float(r['quantity']), 8) for a, r in new['assets'].items()}
     result = maybe_rebase_daily_state_for_balance_change(state, runtime, {}, 1600.000005, 0, snapshot, [],
         collect_external_cash_flows_fn=lambda *a, **kw: cash,
@@ -128,6 +128,27 @@ def test_deposit_and_interest_are_separate_in_same_window():
     assert state['daily_equity_base'] == 1600
 
 
+def test_portfolio_prepare_consumes_verified_bnb_dividend_without_principal_or_extra_pnl():
+    state, new, cash = materials()
+    new['assets']['BNB']['products']['BNB001']['realtime_rewards'] = '0.1'
+
+    class Client:
+        def _request_margin_api(self, method, path, **kwargs):
+            assert method == 'get' and path == 'asset/assetDividend'
+            return {'total': 1, 'rows': [{
+                'id': 7, 'tranId': 8, 'asset': 'BNB',
+                'divTime': int(NOW.timestamp() * 1000),
+                'amount': '0.00000001', 'direction': 1,
+            }]}
+
+    _, writes = consume(state, new, cash, client=Client())
+
+    assert len(writes) == 1
+    assert state['earn_accrual_checkpoint'] == new
+    assert state.get('daily_external_principal_usdt', 0) == 0
+    assert compute_daily_pnls(state, 1600.000005, 0)[0] == pytest.approx(0.000005 / 1600)
+
+
 def test_known_buy_and_bnb_fee_use_durable_fill_deltas():
     state, new, cash = materials()
     state['earn_accounted_net_changes'] = {'USDT': '-10', 'BNB': '0.01999'}
@@ -189,6 +210,37 @@ def test_cash_refresh_checks_income_and_fill_without_advancing_unread_flow_curso
     assert state['external_cash_flow_cursor'] == before_cursor
     assert state['earn_accounted_net_changes'] == {'USDT': '-10', 'BNB': '0.01999'}
     consume(state, new, cash)
+    assert state['earn_accrual_checkpoint'] == new
+    assert state['earn_accounted_net_changes'] == {'USDT': '0', 'BNB': '0'}
+
+
+def test_cash_refresh_bridges_verified_bnb_dividend_without_advancing_checkpoint(monkeypatch):
+    from runtime_support import reconcile_runtime_cash_effects
+
+    state, new, _cash = materials()
+    new['assets']['BNB']['products']['BNB001']['realtime_rewards'] = '0.1'
+    before_checkpoint = copy.deepcopy(state['earn_accrual_checkpoint'])
+
+    class Client:
+        def _request_margin_api(self, method, path, **kwargs):
+            assert method == 'get' and path == 'asset/assetDividend'
+            return {'total': 1, 'rows': [{
+                'id': 7, 'tranId': 8, 'asset': 'BNB',
+                'divTime': int(NOW.timestamp() * 1000),
+                'amount': '0.00000001', 'direction': 1,
+            }]}
+
+    monkeypatch.setattr('application.earn_accrual.collect_earn_checkpoint', lambda *a, **kw: new)
+    runtime = SimpleNamespace(
+        client=Client(), state_owner_held=True, state_owner_id='synthetic',
+        fuel_symbol='BNBUSDT', pending_funds=[{'asset': 'BNB', 'confirmed': True}],
+    )
+
+    reconcile_runtime_cash_effects(runtime, state)
+
+    assert state['earn_accrual_checkpoint'] == before_checkpoint
+    assert runtime.cash_balance_observation['BNB'] == 3.00000001
+    consume(state, new, _cash, client=runtime.client)
     assert state['earn_accrual_checkpoint'] == new
     assert state['earn_accounted_net_changes'] == {'USDT': '0', 'BNB': '0'}
 

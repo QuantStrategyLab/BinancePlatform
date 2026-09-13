@@ -82,6 +82,7 @@ class Client:
         self.change = change
         self.earn_reads = 0
         self.flow_reads = 0
+        self.dividend_reads = 0
         self.account_reads = 0
 
     def get_account(self):
@@ -103,7 +104,7 @@ class Client:
             3 - self.earn_reads if self.change == "counter_between_reads" else self.earn_reads
         )
         reward = "0" if self.change == "counter" else f"0.1000000{increment}"
-        total = f"2.0000000{increment}"
+        total = f"2.0000000{increment + 1}"
         return {
             "total": 1,
             "rows": [{
@@ -138,6 +139,14 @@ class Client:
             if self.change == "flow":
                 return [{"id": "new-withdrawal", "status": 6}]
             return []
+        if path == "asset/assetDividend":
+            self.dividend_reads += 1
+            stamp = int((NOW - timedelta(minutes=1)).timestamp() * 1000)
+            dividend_id = 7 if self.change != "dividend_between_reads" or self.dividend_reads == 1 else 8
+            return {"total": 1, "rows": [{
+                "id": dividend_id, "tranId": 9, "asset": "BNB",
+                "divTime": stamp, "amount": "0.00000001", "direction": 1,
+            }]}
         raise AssertionError(f"unexpected path {path}")
 
 
@@ -193,6 +202,7 @@ def test_prospective_diagnosis_accepts_income_growth_without_mutating_ledger(mon
         ({"change": "counter"}, "prospective_rebase_conservation_unverified"),
         ({"change": "counter_between_reads"}, "prospective_rebase_conservation_unverified"),
         ({"change": "flow"}, "prospective_rebase_conservation_unverified"),
+        ({"change": "dividend_between_reads"}, "prospective_rebase_dividend_changed_during_read"),
         ({"change": "order"}, "prospective_rebase_open_orders_present"),
         ({"change": "trade"}, "prospective_rebase_recent_executions_present"),
         ({"change": "final_spot"}, "prospective_rebase_spot_changed_during_read"),

@@ -21,6 +21,7 @@ from quant_platform_kit.common.broker_reconciliation_enrollment import (
 )
 
 from application.broker_reconciliation import (
+    collect_bnb_dividend_quantity,
     collect_read_only_reconciliation_observations,
     collect_spot_usdt_external_cash_flows,
     diagnose_balance_flows,
@@ -282,6 +283,12 @@ def _collect_prospective_rebase_private(
         )
     except ValueError:
         raise ValueError("prospective_rebase_cash_flow_unverified") from None
+    try:
+        first_dividends = collect_bnb_dividend_quantity(
+            client, start=opening_at, end=observed_at
+        ) if "BNB" in assets else {"quantity": Decimal(0), "identities": ()}
+    except ValueError:
+        raise ValueError("prospective_rebase_dividend_unverified") from None
 
     final_at = (clock or (lambda: datetime.now(timezone.utc)))().astimezone(timezone.utc)
     if not observed_at < final_at <= observed_at + timedelta(minutes=2):
@@ -302,8 +309,21 @@ def _collect_prospective_rebase_private(
         raise ValueError("prospective_rebase_checkpoint_unavailable") from None
     except ValueError:
         raise ValueError("prospective_rebase_cash_flow_unverified") from None
+    try:
+        second_dividends = collect_bnb_dividend_quantity(
+            client, start=opening_at, end=final_at
+        ) if "BNB" in assets else {"quantity": Decimal(0), "identities": ()}
+    except ValueError:
+        raise ValueError("prospective_rebase_dividend_unverified") from None
     if not _same_cash_flow_slice(first_flows, second_flows):
         raise ValueError("prospective_rebase_cash_flow_changed_during_read")
+    if (
+        first_dividends.get("identities") != second_dividends.get("identities")
+        or first_dividends.get("quantity") != second_dividends.get("quantity")
+    ):
+        raise ValueError("prospective_rebase_dividend_changed_during_read")
+    first_flows = {**first_flows, "bnb_dividend_quantity": format(first_dividends["quantity"], "f")}
+    second_flows = {**second_flows, "bnb_dividend_quantity": format(second_dividends["quantity"], "f")}
 
     try:
         first_state = prepare_forward_earn_state(ledger, first, first_flows)

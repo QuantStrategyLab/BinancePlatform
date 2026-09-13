@@ -39,6 +39,7 @@ _EXTERNAL_CASH_FLOW_LOOKBACK = timedelta(days=7)
 _EXTERNAL_CASH_FLOW_PAGE_SIZE = 1000
 _EXTERNAL_CASH_FLOW_MAX_RECORDS = 256
 _EXTERNAL_CASH_FLOW_CURSOR_VERSION = 1
+_BNB_DIVIDEND_PAGE_SIZE = 500
 
 
 class BinanceReconciliationReadError(RuntimeError):
@@ -285,6 +286,98 @@ def collect_spot_usdt_external_cash_flows(
             "observed_at": observed_at.isoformat(),
             "records": records,
         },
+    }
+
+
+def collect_bnb_dividend_quantity(
+    client: Any, *, start: datetime, end: datetime
+) -> dict[str, object]:
+    """Read one complete BNB dividend window for Earn quantity conservation.
+
+    This is a narrow platform contract: only positive BNB rows with integer
+    ``direction == 1`` are accepted.  The rows stay in memory and the returned
+    identities are only for same-window stability and duplicate detection.
+    """
+    if (
+        not isinstance(start, datetime)
+        or not isinstance(end, datetime)
+        or start.tzinfo is None
+        or end.tzinfo is None
+        or not start < end
+    ):
+        raise ValueError("bnb_dividend_window_invalid")
+    start_ms = int(start.astimezone(timezone.utc).timestamp() * 1000)
+    end_ms = int(end.astimezone(timezone.utc).timestamp() * 1000)
+    try:
+        response = client._request_margin_api(
+            "get",
+            "asset/assetDividend",
+            signed=True,
+            data={"asset": "BNB", "startTime": start_ms, "endTime": end_ms,
+                  "limit": _BNB_DIVIDEND_PAGE_SIZE},
+        )
+    except Exception:
+        raise ValueError("bnb_dividend_read_failed") from None
+    if not isinstance(response, Mapping):
+        raise ValueError("bnb_dividend_response_invalid")
+    rows = response.get("rows")
+    total = response.get("total")
+    total_is_decimal_string = (
+        isinstance(total, str) and total.isascii() and total.isdecimal() and len(total) <= 10
+    )
+    count = int(total) if type(total) is int or total_is_decimal_string else None
+    if (
+        not isinstance(rows, list)
+        or count is None
+        or count < 0
+        or count != len(rows)
+        or count >= _BNB_DIVIDEND_PAGE_SIZE
+    ):
+        raise ValueError("bnb_dividend_history_incomplete")
+    quantity = Decimal(0)
+    identities = []
+    direction_values = set()
+    with localcontext() as context:
+        context.prec = 100
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise ValueError("bnb_dividend_row_invalid")
+            identity = (row.get("id"), row.get("tranId"), row.get("divTime"))
+            if (
+                type(identity[0]) is not int
+                or identity[0] < 0
+                or type(identity[1]) is not int
+                or identity[1] < 0
+                or type(identity[2]) is not int
+                or not start_ms < identity[2] <= end_ms
+                or row.get("asset") != "BNB"
+                or type(row.get("direction")) is not int
+                or row.get("direction") != 1
+                or identity in identities
+            ):
+                raise ValueError("bnb_dividend_row_invalid")
+            amount = row.get("amount")
+            if not isinstance(amount, str) or not amount or len(amount) > 80:
+                raise ValueError("bnb_dividend_row_invalid")
+            try:
+                decimal_amount = Decimal(amount)
+            except DecimalException:
+                raise ValueError("bnb_dividend_row_invalid") from None
+            if (
+                not decimal_amount.is_finite()
+                or decimal_amount <= 0
+                or abs(decimal_amount) > Decimal("1e30")
+                or decimal_amount.as_tuple().exponent < -30
+            ):
+                raise ValueError("bnb_dividend_row_invalid")
+            quantity += decimal_amount
+            identities.append(identity)
+            direction_values.add(1)
+    return {
+        "quantity": quantity,
+        "record_count": len(identities),
+        "identities": tuple(identities),
+        "direction_values": tuple(sorted(direction_values)),
     }
 
 
@@ -903,9 +996,23 @@ def diagnose_bnb_wallet_activity(
             "total_valid": count is not None and count >= 0,
             "rows_readable": rows_readable,
             "visible_row_count": visible_row_count,
+            "empty_missing_total_exempt": (
+                name == "spot_dust_conversions"
+                and isinstance(response, Mapping)
+                and "total" not in response
+                and rows == []
+            ),
             "window_complete": (
-                count is not None and count >= 0 and shape["total_matches_rows"]
-                and count < limit and valid_rows
+                (
+                    name == "spot_dust_conversions"
+                    and isinstance(response, Mapping)
+                    and "total" not in response
+                    and rows == []
+                )
+                or (
+                    count is not None and count >= 0 and shape["total_matches_rows"]
+                    and count < limit and valid_rows
+                )
             ),
         })
         shape["row_time_and_asset_valid"] = valid_rows

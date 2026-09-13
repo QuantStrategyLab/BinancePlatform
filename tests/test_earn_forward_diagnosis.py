@@ -562,7 +562,7 @@ def test_diagnose_earn_forward_exposes_partial_dividend_surface_result(monkeypat
     )
     bnb = result["assets"]["BNB"]
 
-    assert bnb["wallet_activity_complete"] is False
+    assert bnb["wallet_activity_complete"] is True
     assert bnb["wallet_dividend_surface_complete"] is True
     assert bnb["wallet_dividend_residual_matches"] is True
     assert bnb["wallet_dividend_direction_summary"] == {

@@ -1172,6 +1172,9 @@ def _summarize_bnb_wallet_activity(report, *, residual, start, end):
         return summary
     summary["dust_bnb_detail_count"] = 0
     summary["dust_non_bnb_target_count"] = 0
+    dust_diagnostics = report.get("surface_diagnostics") if isinstance(report, Mapping) else None
+    dust_shape = dust_diagnostics.get("spot_dust_conversions") if isinstance(dust_diagnostics, Mapping) else None
+    dust_surface_exempt = isinstance(dust_shape, Mapping) and dust_shape.get("empty_missing_total_exempt") is True
 
     start_ms = int(start.timestamp() * 1000)
     end_ms = int(end.timestamp() * 1000)
@@ -1248,12 +1251,13 @@ def _summarize_bnb_wallet_activity(report, *, residual, start, end):
                 return summary
 
         summary["dust_record_count"] = len(private_rows["spot_dust_conversions"])
-        summary["dust_transfer_residual_matches"] = dust_transfer_total == residual
-        summary["dust_after_fee_residual_matches"] = dust_after_fee_total == residual
-        combined_transfer = dividend_total + dust_transfer_total
-        combined_after_fee = dividend_total + dust_after_fee_total
-        summary["combined_transfer_residual_matches"] = combined_transfer == residual
-        summary["combined_after_fee_residual_matches"] = combined_after_fee == residual
+        if not dust_surface_exempt:
+            summary["dust_transfer_residual_matches"] = dust_transfer_total == residual
+            summary["dust_after_fee_residual_matches"] = dust_after_fee_total == residual
+            combined_transfer = dividend_total + dust_transfer_total
+            combined_after_fee = dividend_total + dust_after_fee_total
+            summary["combined_transfer_residual_matches"] = combined_transfer == residual
+            summary["combined_after_fee_residual_matches"] = combined_after_fee == residual
     except (MigrationBlocked, TypeError, ValueError, InvalidOperation):
         return summary
     summary["status"] = "COMPLETE"

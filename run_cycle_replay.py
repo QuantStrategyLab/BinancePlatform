@@ -102,8 +102,11 @@ class ReplayClient:
         if method != "get" or not signed or path not in {
             "capital/deposit/hisrec",
             "capital/withdraw/history",
+            "asset/assetDividend",
         }:
             raise RuntimeError("unsupported replay margin read")
+        if path == "asset/assetDividend":
+            return {"total": 0, "rows": []}
         return []
 
     def _record(self, method: str, payload: dict[str, Any]):

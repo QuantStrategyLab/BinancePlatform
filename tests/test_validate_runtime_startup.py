@@ -232,6 +232,33 @@ def test_full_cycle_broker_proxy_rejects_unknown_methods_and_mutations():
         broker.get_asset_balance(asset="DOGE")
 
 
+def test_full_cycle_broker_proxy_allows_only_bounded_bnb_dividend_get():
+    from scripts.validate_runtime_startup import _ReadOnlyBroker
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def _request_margin_api(self, method, path, **kwargs):
+            self.calls.append((method, path, kwargs))
+            return {"total": 0, "rows": []}
+
+    client = Client()
+    broker = _ReadOnlyBroker(client, symbols={"BNBUSDT"})
+    result = broker._request_margin_api(
+        "get", "asset/assetDividend", signed=True,
+        data={"asset": "BNB", "startTime": 1000, "endTime": 2000, "limit": 500},
+    )
+
+    assert result == {"total": 0, "rows": []}
+    assert len(client.calls) == 1
+    with pytest.raises(RuntimeError, match="dividend_window_forbidden"):
+        broker._request_margin_api(
+            "get", "asset/assetDividend", signed=True,
+            data={"asset": "USDT", "startTime": 1000, "endTime": 2000, "limit": 500},
+        )
+
+
 def test_full_cycle_broker_proxy_allows_main_qpk_btc_snapshot_window():
     import main
     from scripts.validate_runtime_startup import _ReadOnlyBroker

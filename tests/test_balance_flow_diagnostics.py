@@ -365,6 +365,24 @@ def test_bnb_wallet_history_accepts_decimal_string_count_without_accepting_unkno
         assert diagnose_bnb_wallet_activity(c, start=NOW-timedelta(hours=2), end=NOW)['requested_surfaces_complete'] is False
 
 
+def test_bnb_wallet_diagnostic_accepts_only_empty_missing_total_dust_response():
+    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+
+    def read(_method, path, **_kwargs):
+        if path.endswith("assetDividend"):
+            return {"total": 0, "rows": []}
+        return {"userAssetDribblets": []}
+
+    result = diagnose_bnb_wallet_activity(
+        SimpleNamespace(_request_margin_api=read), start=NOW-timedelta(hours=2), end=NOW,
+    )
+
+    assert result["requested_surfaces_complete"] is True
+    shape = result["surface_diagnostics"]["spot_dust_conversions"]
+    assert shape["total_valid"] is False
+    assert shape["window_complete"] is True
+
+
 def test_bnb_wallet_dribblet_keeps_readable_rows_when_total_is_missing():
     from application.broker_reconciliation import diagnose_bnb_wallet_activity
 
