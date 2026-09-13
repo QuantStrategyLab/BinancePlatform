@@ -316,6 +316,7 @@ class CycleServiceTests(unittest.TestCase):
         record.assert_called_once()
         self.assertIn("external_cash_flow", record.call_args.args[1])
         self.assertIsNone(record.call_args.args[1]["external_cash_flow"])
+        self.assertIn("error", record.call_args.args[1])
 
     def test_platform_performance_record_forwards_interval_only_on_success(self):
         interval = {"account_scope_sha256": "a" * 64, "start_at": "start", "end_at": "end"}

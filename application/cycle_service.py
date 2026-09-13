@@ -62,6 +62,9 @@ def _build_platform_execution_result(report, *, state_healthy, state_owner_relea
             else None
         ),
         "degraded_mode_level": report.get("degraded_mode_level"),
+        # Preserve the existing recorder payload exactly; the separate export
+        # applies its own safe-field allowlist and omits this field.
+        "error": report.get("error"),
     }
 
 
