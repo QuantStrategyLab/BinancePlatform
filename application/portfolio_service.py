@@ -139,10 +139,28 @@ def maybe_rebase_daily_state_for_balance_change(
                 "reason_code": reason_code,
             }
             raise ExecutionIntegrityError("earn_forward_accounting_unverified") from None
+        previous = state["earn_accrual_checkpoint"]
+        try:
+            principal = Decimal(str(cash["new_deposit_principal_usdt"]))
+            frozen_equity = Decimal(str(total_equity))
+        except (KeyError, TypeError, InvalidOperation):
+            raise ExecutionIntegrityError("earn_forward_accounting_unverified") from None
+        if not principal.is_finite() or not frozen_equity.is_finite() or frozen_equity <= 0:
+            raise ExecutionIntegrityError("earn_forward_accounting_unverified")
+        interval = {
+            "account_scope_sha256": previous["account_scope_sha256"],
+            "start_at": previous["observed_at"],
+            "end_at": current["observed_at"],
+            "end_equity_usdt": format(frozen_equity, "f"),
+            "net_external_cash_flow": format(principal, "f"),
+            "currency": "USDT",
+            "valuation_basis": "checkpoint_quantities_sampled_prices",
+        }
         runtime_set_trade_state_fn(runtime, report, updated, reason="earn_forward_accounting")
         state.clear()
         state.update(updated)
         runtime.trade_state = state
+        report["external_cash_flow_interval"] = interval
         report.setdefault("diagnostics", {})["earn_accrual"] = {"status": "reconciled"}
         return True
 

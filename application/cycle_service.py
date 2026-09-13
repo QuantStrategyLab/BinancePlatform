@@ -5,9 +5,15 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping
+from datetime import datetime, timezone
+from pathlib import Path
+import tempfile
 
 from quant_platform_kit.common.runtime_reports import persist_runtime_report
-from quant_platform_kit.strategy_lifecycle.performance_monitor import try_record_platform_execution
+from quant_platform_kit.strategy_lifecycle.performance_monitor import (
+    resolve_lifecycle_stream_id,
+    try_record_platform_execution,
+)
 from application.execution_receipt_adapter import attach_execution_receipt_from_report
 from application.portfolio_service import EARN_FORWARD_REASON_CODES
 from runtime_logging import RuntimeLogContext, emit_runtime_log
@@ -37,6 +43,100 @@ def _settled_order_state(state):
         return None
     status = record.get("state")
     return status if status in {"RESERVED", "TERMINAL"} else None
+
+
+def _build_platform_execution_result(report, *, state_healthy, state_owner_release_uncertain):
+    return {
+        "platform": "binance",
+        "status": report.get("status"),
+        "total_equity_usdt": report.get("total_equity_usdt"),
+        "trend_equity_usdt": report.get("trend_equity_usdt"),
+        # The local daily-loss state excludes supported deposits, but this
+        # per-cycle record has no exactly-once external-flow delivery.
+        "external_cash_flow": None,
+        "external_cash_flow_interval": (
+            report.get("external_cash_flow_interval")
+            if report.get("status") == "ok"
+            and state_healthy
+            and not state_owner_release_uncertain
+            else None
+        ),
+        "degraded_mode_level": report.get("degraded_mode_level"),
+        # Preserve the existing recorder payload exactly; the separate export
+        # applies its own safe-field allowlist and omits this field.
+        "error": report.get("error"),
+    }
+
+
+def _write_lifecycle_export(profile_id, execution_result):
+    """Best-effort, redacted export of the current recorder payload.
+
+    The normal PerformanceStore path remains authoritative. This optional
+    file is a short-lived transport handoff for the monitor and must never
+    change the cycle result or expose report details and provider errors.
+    """
+    raw_path = str(os.environ.get("BINANCE_LIFECYCLE_EXPORT_PATH") or "").strip()
+    if not raw_path:
+        return
+    path = Path(raw_path)
+    try:
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            return
+        if path.parent.is_symlink():
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            return
+        profile = str(profile_id or "").strip()
+        if not profile:
+            return
+        stream_id = resolve_lifecycle_stream_id(execution_result=execution_result)
+        safe_result = {
+            key: execution_result.get(key)
+            for key in (
+                "platform",
+                "status",
+                "total_equity_usdt",
+                "trend_equity_usdt",
+                "external_cash_flow",
+                "external_cash_flow_interval",
+                "degraded_mode_level",
+            )
+        }
+        if safe_result.get("status") != "ok":
+            safe_result["error_code"] = "cycle_failed"
+        payload = {
+            "strategy_profile": profile,
+            "domain": "crypto",
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+            "record_kind": "execution",
+            "execution_result": safe_result,
+            "lifecycle_stream_id": stream_id,
+            "schema_version": "strategy_lifecycle.v1",
+        }
+        fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_name, path)
+            os.chmod(path, 0o600)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
+    except Exception:
+        # Monitoring transport is deliberately non-blocking for the trading
+        # cycle; the authoritative recorder call remains unchanged.
+        return
 
 
 def execute_strategy_cycle(
@@ -86,6 +186,7 @@ def execute_strategy_cycle(
         )
 
     state_healthy = False
+    state_owner_release_uncertain = False
     failure_stage = "state_owner_claim"
     owner_claimed_this_cycle = False
     initial_order_state = None
@@ -465,33 +566,33 @@ def execute_strategy_cycle(
             try:
                 release_runtime_state_owner(runtime)
             except ExecutionIntegrityError:
+                state_owner_release_uncertain = True
                 report["status"] = "error"
                 append_report_error(report, "state_owner_release_uncertain", stage="state_release")
         elif state_healthy and getattr(runtime, "state_owner_held", False):
             try:
                 release_runtime_state_owner(runtime)
             except ExecutionIntegrityError:
+                state_owner_release_uncertain = True
                 report["status"] = "error"
                 append_report_error(report, "state_owner_release_uncertain", stage="state_release")
         report["log_lines"] = list(log_buffer)
         finalize_notification_delivery(report)
         attach_execution_receipt_from_report(report)
         if not getattr(runtime, "dry_run", False):
+            execution_result = _build_platform_execution_result(
+                report,
+                state_healthy=state_healthy,
+                state_owner_release_uncertain=state_owner_release_uncertain,
+            )
             try_record_platform_execution(
                 str(getattr(runtime, "strategy_profile", "") or ""),
-                {
-                    "platform": "binance",
-                    "status": report.get("status"),
-                    "total_equity_usdt": report.get("total_equity_usdt"),
-                    "trend_equity_usdt": report.get("trend_equity_usdt"),
-                    # The local daily-loss state excludes supported deposits, but
-                    # this per-cycle record has no exactly-once external-flow
-                    # delivery. Keep cross-cycle performance explicitly incomparable.
-                    "external_cash_flow": None,
-                    "degraded_mode_level": report.get("degraded_mode_level"),
-                    "error": report.get("error"),
-                },
+                execution_result,
                 domain="crypto",
+            )
+            _write_lifecycle_export(
+                str(getattr(runtime, "strategy_profile", "") or ""),
+                execution_result,
             )
 
         # Early returns (including risk rejection) also complete a cycle.

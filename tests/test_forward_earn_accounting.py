@@ -128,6 +128,37 @@ def test_deposit_and_interest_are_separate_in_same_window():
     assert state['daily_equity_base'] == 1600
 
 
+def test_verified_earn_forward_emits_frozen_checkpoint_interval():
+    state, new, cash = materials()
+    report = {"total_equity_usdt": 9999}
+    runtime = SimpleNamespace(client=object(), now_utc=NOW, earn_accrual_observation=new)
+    snapshot = {a: round(float(r['quantity']), 8) for a, r in new['assets'].items()}
+
+    maybe_rebase_daily_state_for_balance_change(
+        state,
+        runtime,
+        report,
+        1600.000005,
+        0,
+        snapshot,
+        [],
+        collect_external_cash_flows_fn=lambda *a, **kw: cash,
+        runtime_set_trade_state_fn=lambda *a, **kw: None,
+        append_log_fn=lambda *a: None,
+        translate_fn=lambda *a, **kw: '',
+    )
+
+    assert report['external_cash_flow_interval'] == {
+        'account_scope_sha256': 'a' * 64,
+        'start_at': '2026-09-12T14:00:00+00:00',
+        'end_at': NOW.isoformat(),
+        'end_equity_usdt': '1600.000005',
+        'net_external_cash_flow': '0',
+        'currency': 'USDT',
+        'valuation_basis': 'checkpoint_quantities_sampled_prices',
+    }
+
+
 def test_portfolio_prepare_consumes_verified_bnb_dividend_without_principal_or_extra_pnl():
     state, new, cash = materials()
     new['assets']['BNB']['products']['BNB001']['realtime_rewards'] = '0.1'

@@ -744,12 +744,15 @@ difference, resets the breaker, or grants execution authority. A supported
 deposit whose completion arrives outside the current accounting day is held for
 operator review rather than posted to a later day.
 
-This adjustment protects the local daily-loss calculation only. The existing
-per-cycle performance record has no exactly-once delivery for a cash-flow amount:
-emitting a daily cumulative value would double count it, while emitting it once
-could lose it if the performance write failed after the private cursor advanced.
-Binance therefore records `external_cash_flow=null` and remains incomparable in
-cross-cycle performance monitoring until that separate durable contract exists.
+This adjustment protects the local daily-loss calculation and leaves the legacy
+per-cycle `external_cash_flow` field null. After a verified Earn forward state
+write, the cycle also records a seven-field checkpoint interval with the frozen
+opening equity and verified USDT deposit principal. The interval return uses an
+end-of-observation flow assumption; it is not exact TWR and does not represent
+a midnight natural-day return. The existing Binance recorder pin can pass this
+field through unchanged, while numeric monitoring requires a deployed QPK
+revision that consumes the interval contract. Negative-flow tests document the
+signed consumer contract and do not enable withdrawal handling.
 
 While the account remains disabled, dispatch the existing Runtime workflow with
 `reconcile_only=true` and `accounting_migration_action=cash-flow-preview` to

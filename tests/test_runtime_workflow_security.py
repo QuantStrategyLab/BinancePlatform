@@ -193,6 +193,27 @@ def test_live_authority_materialization_roundtrip_uses_synthetic_secret(tmp_path
     assert not authority_file.exists()
 
 
+def test_live_lifecycle_recorder_export_is_scoped_to_normal_strategy_runs() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+
+    assert (
+        "BINANCE_LIFECYCLE_EXPORT_PATH: ${{ runner.temp }}/binance-lifecycle-${{ github.run_id }}-"
+        "${{ github.run_attempt }}/lifecycle-run.json"
+    ) in broker_job
+    export_step = broker_job.split("      - name: 5a. Stage redacted lifecycle recorder output for monitor", 1)[1].split(
+        "      - name: 5b.", 1
+    )[0]
+    gate = "always() && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true'"
+    assert f"if: ${{{{ {gate} }}}}" in export_step
+    assert "name: binance-live-run-${{ github.run_id }}-${{ github.run_attempt }}" in export_step
+    assert "path: ${{ runner.temp }}/binance-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}/lifecycle-run.json" in export_step
+    assert "if-no-files-found: warn" in export_step
+    assert "retention-days: 7" in export_step
+    assert "continue-on-error: true" in export_step
+    assert "BINANCE_API_KEY" not in _job_block(workflow, "publish-execution-log")
+
+
 def test_disabled_host_observation_uses_actual_control_read_and_existing_source() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     broker_job = _job_block(workflow, "deploy", "publish-execution-log")

@@ -441,6 +441,7 @@ jobs:
           GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
           NOTIFY_LANG: ${{ vars.NOTIFY_LANG }}
           EXECUTION_REPORT_GCS_URI: ${{ vars.EXECUTION_REPORT_GCS_URI }}
+          BINANCE_LIFECYCLE_EXPORT_PATH: ${{ runner.temp }}/binance-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}/lifecycle-run.json
           BINANCE_DRY_RUN: ${{ vars.BINANCE_DRY_RUN || 'true' }}
           STRATEGY_ARTIFACT_FILE: ${{ vars.STRATEGY_ARTIFACT_FILE }}
           STRATEGY_ARTIFACT_MANIFEST_FILE: ${{ vars.STRATEGY_ARTIFACT_MANIFEST_FILE }}
@@ -507,6 +508,16 @@ jobs:
           path: reports/execution_report.json
           if-no-files-found: warn
           retention-days: 1
+
+      - name: 5a. Stage redacted lifecycle recorder output for monitor
+        continue-on-error: true
+        if: ${{ always() && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: binance-live-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/binance-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}/lifecycle-run.json
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: 5b. Retain redacted reconciliation candidate
         if: ${{ always() && github.event.inputs.reconcile_only == 'true' && github.event.inputs.reconcile_persist_candidate == 'true' }}

@@ -9,7 +9,12 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from application.cycle_service import execute_strategy_cycle, run_live_cycle, write_execution_report
+from application.cycle_service import (
+    _write_lifecycle_export,
+    execute_strategy_cycle,
+    run_live_cycle,
+    write_execution_report,
+)
 from application.execution_service import execute_trend_buys
 from application.portfolio_service import (
     maybe_rebase_daily_state_for_balance_change,
@@ -311,6 +316,64 @@ class CycleServiceTests(unittest.TestCase):
         record.assert_called_once()
         self.assertIn("external_cash_flow", record.call_args.args[1])
         self.assertIsNone(record.call_args.args[1]["external_cash_flow"])
+        self.assertIn("error", record.call_args.args[1])
+
+    def test_platform_performance_record_forwards_interval_only_on_success(self):
+        interval = {"account_scope_sha256": "a" * 64, "start_at": "start", "end_at": "end"}
+
+        def rebase(*args):
+            args[2]["external_cash_flow_interval"] = interval
+
+        with patch("application.cycle_service.try_record_platform_execution") as record:
+            self._run_funds_cycle(True, rebase_fn=rebase)
+        self.assertEqual(record.call_args.args[1]["external_cash_flow_interval"], interval)
+
+    def test_platform_performance_record_drops_interval_after_later_cycle_error(self):
+        interval = {"account_scope_sha256": "a" * 64, "start_at": "start", "end_at": "end"}
+
+        def rebase(*args):
+            args[2]["external_cash_flow_interval"] = interval
+
+        with patch("application.cycle_service.try_record_platform_execution") as record:
+            self._run_funds_cycle(True, rebase_fn=rebase, earn_failure=True)
+        self.assertIsNone(record.call_args.args[1]["external_cash_flow_interval"])
+
+    def test_lifecycle_export_is_optional_and_redacts_provider_details(self):
+        with tempfile.TemporaryDirectory() as directory:
+            export_path = os.path.join(directory, "lifecycle-run.json")
+            execution_result = {
+                "platform": "binance",
+                "status": "error",
+                "total_equity_usdt": 100.0,
+                "trend_equity_usdt": 40.0,
+                "external_cash_flow": None,
+                "external_cash_flow_interval": None,
+                "degraded_mode_level": None,
+                "error": "provider-secret-must-not-export",
+                "orders": [{"symbol": "BTCUSDT"}],
+            }
+            with patch.dict(os.environ, {"BINANCE_LIFECYCLE_EXPORT_PATH": export_path}):
+                _write_lifecycle_export("crypto_live_pool_rotation", execution_result)
+
+            payload = json.loads(open(export_path, encoding="utf-8").read())
+            self.assertEqual(payload["domain"], "crypto")
+            self.assertEqual(payload["record_kind"], "execution")
+            self.assertEqual(payload["lifecycle_stream_id"], "binance")
+            self.assertIsNone(payload["execution_result"]["external_cash_flow_interval"])
+            self.assertEqual(payload["execution_result"]["error_code"], "cycle_failed")
+            self.assertNotIn("provider-secret-must-not-export", json.dumps(payload))
+            self.assertNotIn("orders", json.dumps(payload))
+            self.assertEqual(os.stat(export_path).st_mode & 0o777, 0o600)
+
+    def test_lifecycle_export_without_authorized_path_does_not_write(self):
+        with tempfile.TemporaryDirectory() as directory:
+            export_path = os.path.join(directory, "lifecycle-run.json")
+            with patch.dict(os.environ, {"BINANCE_LIFECYCLE_EXPORT_PATH": ""}):
+                _write_lifecycle_export(
+                    "crypto_live_pool_rotation",
+                    {"platform": "binance", "status": "ok", "external_cash_flow_interval": None},
+                )
+            self.assertFalse(os.path.exists(export_path))
 
     def test_approved_execution_permission_preserves_fuel_trend_dca_and_earn_actions(self):
         _report, events = self._run_funds_cycle(True)
