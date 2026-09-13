@@ -271,6 +271,20 @@ or changing balances/ledger blocks the audit. A match
 does not reconcile the whole account, authorize migration, or restore trading;
 the existing zero-activity preview/apply checks remain unchanged.
 
+When the forward Earn consumer reports `earn_quantity_change_unexplained`, use
+the separate `accounting_migration_action=earn-forward-diagnose` once with the
+runtime disabled on `main` and `reconcile_only=true`. It starts at the ledger's
+current `earn_accrual_checkpoint`, reads current Spot/Flexible Earn, bounded
+trades, the existing cash-flow cursor, and bounded reward history, then reads
+the three Firestore documents again. It reports only asset names, directions,
+product and reward counts, matching flags, owner existence, and fixed no-write
+policy flags. An existing owner is observed and reported; it is never cleared
+or bypassed. Any ledger, control, or owner change during sampling discards the
+result. A matching BONUS or REALTIME record is diagnostic evidence only and
+never a causal reconciliation or execution permission. The bounded trade net is
+reconstructed from normalized `myTrades` quantity and price fields for
+diagnosis only; it is not a complete fill or accounting proof.
+
 The migration is a separate, one-time `Runtime` workflow mode for an old
 `trend_val` ledger. It does not activate recovery control, grant execution
 authority, clear the circuit-breaker latch, or reconstruct historical
