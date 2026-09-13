@@ -994,6 +994,141 @@ def _read_source(refs):
     return ledger, ledger_value, control_value
 
 
+def _snapshot_marker(snapshot):
+    return {
+        "exists": bool(snapshot.exists),
+        "update_time": _timestamp(snapshot.update_time) if snapshot.exists else None,
+        "value": snapshot.to_dict() if snapshot.exists else None,
+    }
+
+
+def _snapshot_matches(snapshot, marker):
+    return _snapshot_marker(snapshot) == marker
+
+
+def _validate_stale_owner_control(target, control, *, expected):
+    if not isinstance(control, Mapping) or control.get("state") != "ACTIVE_LKG":
+        raise MigrationBlocked("recovery_control_not_active_lkg")
+    try:
+        from application.reconciliation_recovery import activated_target
+
+        activated = activated_target(target, control, expected=expected)
+        if str(getattr(getattr(activated, "live_continuity", None), "state", "")).upper() != "ACTIVE_LKG":
+            raise MigrationBlocked("recovery_control_not_active_lkg")
+    except MigrationBlocked:
+        raise
+    except Exception:
+        raise MigrationBlocked("recovery_control_invalid") from None
+
+
+def _release_stale_owner_transaction(transaction, *, refs, markers):
+    owner = refs["owner_ref"].get(transaction=transaction, retry=None)
+    ledger = refs["ledger_ref"].get(transaction=transaction, retry=None)
+    control = refs["control_ref"].get(transaction=transaction, retry=None)
+    if (
+        not _snapshot_matches(owner, markers["owner"])
+        or not _snapshot_matches(ledger, markers["ledger"])
+        or not _snapshot_matches(control, markers["control"])
+    ):
+        raise MigrationAtomicPrecondition("stale_owner_release_precondition_changed")
+    owner_value = owner.to_dict()
+    if not isinstance(owner_value, Mapping):
+        raise MigrationAtomicPrecondition("stale_owner_release_precondition_changed")
+    owner_id = owner_value.get("owner_id")
+    if not isinstance(owner_id, str) or not owner_id.strip():
+        raise MigrationAtomicPrecondition("stale_owner_release_precondition_changed")
+    transaction.delete(refs["owner_ref"])
+    return None
+
+
+def release_stale_owner(refs, *, client, target, expected):
+    """Delete one confirmed stale owner document and nothing else."""
+    owner_snapshot = refs["owner_ref"].get(retry=None)
+    if not owner_snapshot.exists:
+        return {
+            "status": "already_absent",
+            "stage": "stale_owner_release",
+            "owner_exists": False,
+            "no_order": True,
+            "write_performed": False,
+        }
+    owner_value = owner_snapshot.to_dict()
+    if not isinstance(owner_value, Mapping):
+        raise MigrationBlocked("owner_document_invalid")
+    owner_id = owner_value.get("owner_id")
+    if not isinstance(owner_id, str) or not owner_id.strip():
+        raise MigrationBlocked("owner_id_invalid")
+    ledger_snapshot = refs["ledger_ref"].get(retry=None)
+    control_snapshot = refs["control_ref"].get(retry=None)
+    if not ledger_snapshot.exists or not control_snapshot.exists:
+        raise MigrationBlocked("stale_owner_release_source_missing")
+    ledger = ledger_snapshot.to_dict()
+    control = control_snapshot.to_dict()
+    if not isinstance(ledger, Mapping):
+        raise MigrationBlocked("ledger_unavailable")
+    _validate_safe_order_state(ledger)
+    _validate_stale_owner_control(target, control, expected=expected)
+    if client is None:
+        raise MigrationBlocked("account_scope_unverified")
+    try:
+        account = client.get_account()
+    except Exception:
+        raise MigrationBlocked("account_read_failed") from None
+    _private_spot_account(
+        account, expected_account_scope_sha256=expected["account_scope_sha256"]
+    )
+    try:
+        open_orders = client.get_open_orders()
+    except Exception:
+        raise MigrationBlocked("open_orders_read_failed") from None
+    if not isinstance(open_orders, list):
+        raise MigrationBlocked("open_orders_unverified")
+    if open_orders:
+        raise MigrationBlocked("open_orders_present")
+    markers = {
+        "owner": _snapshot_marker(owner_snapshot),
+        "ledger": _snapshot_marker(ledger_snapshot),
+        "control": _snapshot_marker(control_snapshot),
+    }
+    from google.cloud import firestore
+
+    @firestore.transactional
+    def apply(transaction):
+        return _release_stale_owner_transaction(transaction, refs=refs, markers=markers)
+
+    try:
+        apply(get_firestore_client().transaction(max_attempts=1))
+    except MigrationAtomicPrecondition:
+        raise
+    except Exception:
+        raise MigrationApplyUncertain("stale_owner_release_outcome_uncertain") from None
+    try:
+        owner_after = refs["owner_ref"].get(retry=None)
+        ledger_after = refs["ledger_ref"].get(retry=None)
+        control_after = refs["control_ref"].get(retry=None)
+        if (
+            owner_after.exists
+            or not _snapshot_matches(ledger_after, markers["ledger"])
+            or not _snapshot_matches(control_after, markers["control"])
+        ):
+            raise MigrationApplyUncertain("stale_owner_release_readback_uncertain")
+    except MigrationApplyUncertain:
+        raise
+    except Exception:
+        raise MigrationApplyUncertain("stale_owner_release_readback_uncertain") from None
+    return {
+        "status": "released",
+        "stage": "stale_owner_release",
+        "owner_exists": False,
+        "owner_released": True,
+        "ledger_unchanged": True,
+        "control_unchanged": True,
+        "no_order": True,
+        "write_performed": True,
+        "execution_authority_granted": False,
+    }
+
+
 def _read_earn_diagnosis_source(refs):
     """Read the three accounting documents without treating an owner as a blocker."""
     owner = refs["owner_ref"].get(retry=None)
@@ -2331,6 +2466,16 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
     if not expected:
         raise MigrationBlocked("expected_account_scope_missing")
     refs = _refs()
+    if action == "release-stale-owner":
+        owner_snapshot = refs["owner_ref"].get(retry=None)
+        client = None
+        if owner_snapshot.exists:
+            client = connect_client(
+                os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30
+            )
+        return release_stale_owner(
+            refs, client=client, target=target, expected=expected
+        )
     ledger_snapshot, ledger, control = _read_source(refs)
     client = connect_client(
         os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30
@@ -2463,6 +2608,7 @@ def main(argv=None) -> int:
             "rebase-proposal",
             "rebase-apply",
             "prospective-rebase-apply",
+            "release-stale-owner",
             "apply",
         ),
     )
@@ -2481,9 +2627,13 @@ def main(argv=None) -> int:
             json.dumps(
                 {
                     "status": "uncertain",
-                    "stage": "private_scope_publication"
-                    if args.action == "scope-preview"
-                    else "accounting_migration_apply",
+                    "stage": (
+                        "private_scope_publication"
+                        if args.action == "scope-preview"
+                        else "stale_owner_release"
+                        if args.action == "release-stale-owner"
+                        else "accounting_migration_apply"
+                    ),
                     "reason_code": str(exc),
                     "no_retry": True,
                     "no_order": True,
