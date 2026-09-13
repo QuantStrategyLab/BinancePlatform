@@ -92,7 +92,42 @@ def maybe_rebase_daily_state_for_balance_change(
                 raise ValueError('earn_valuation_snapshot_mismatch')
             cash = collect_external_cash_flows_fn(runtime.client, now=_time(current['observed_at']),
                                                   cursor=state.get('external_cash_flow_cursor'))
-            updated = prepare_forward_earn_state(state, current, cash)
+            try:
+                updated = prepare_forward_earn_state(state, current, cash)
+            except ValueError as exc:
+                if str(exc) != 'earn_quantity_change_unexplained':
+                    raise
+                previous = state['earn_accrual_checkpoint']
+                previous_bnb = previous.get('assets', {}).get('BNB')
+                current_bnb = current.get('assets', {}).get('BNB')
+                net_bnb = state.get('earn_accounted_net_changes', {}).get('BNB', '0')
+                if not isinstance(previous_bnb, dict) or not isinstance(current_bnb, dict):
+                    raise
+                try:
+                    reward_delta = sum(
+                        Decimal(str(current_bnb['products'][product]['realtime_rewards']))
+                        - Decimal(str(previous_bnb['products'][product]['realtime_rewards']))
+                        for product in previous_bnb['products']
+                    )
+                    unexplained_bnb = (
+                        Decimal(str(current_bnb['quantity']))
+                        - Decimal(str(previous_bnb['quantity']))
+                        - reward_delta
+                        - Decimal(str(net_bnb))
+                    )
+                except (KeyError, TypeError, InvalidOperation):
+                    raise
+                if unexplained_bnb <= 0:
+                    raise
+                from application.broker_reconciliation import collect_bnb_dividend_quantity
+                dividend = collect_bnb_dividend_quantity(
+                    runtime.client,
+                    start=_time(previous['observed_at']),
+                    end=_time(current['observed_at']),
+                )
+                cash = dict(cash)
+                cash['bnb_dividend_quantity'] = format(dividend['quantity'], 'f')
+                updated = prepare_forward_earn_state(state, current, cash)
         except Exception as exc:
             reason_code = (
                 str(exc)

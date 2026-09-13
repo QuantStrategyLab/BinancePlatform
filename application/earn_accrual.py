@@ -213,6 +213,7 @@ def prepare_forward_earn_state(state, current, cash_flows):
         if cash_flows['new_unsupported_deposit_count'] or cash_flows['new_or_changed_withdrawal_count']:
             raise ValueError('earn_cash_flow_unsupported')
         principal = _amount(cash_flows['new_deposit_principal_usdt'])
+        dividend_quantity = _amount(cash_flows.get('bnb_dividend_quantity', '0'))
         completed = cash_flows['new_deposit_completed_at']
         if (not isinstance(completed, list) or len(completed) != cash_flows['new_confirmed_deposit_count']
                 or (principal == 0) != (not completed)
@@ -220,6 +221,10 @@ def prepare_forward_earn_state(state, current, cash_flows):
                        for t in completed)):
             raise ValueError('earn_cash_flow_time_unverified')
         verified['USDT'] += principal
+        if dividend_quantity:
+            if 'BNB' not in verified:
+                raise ValueError('earn_cash_flow_invalid')
+            verified['BNB'] += dividend_quantity
         compare_earn_checkpoints(previous, current, verified_net_changes={a: str(v) for a, v in verified.items()})
         updated = copy.deepcopy(state)
         if principal and state.get('last_reset_date') == cutoff.date().isoformat():

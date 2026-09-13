@@ -639,7 +639,8 @@ def reconcile_runtime_cash_effects(runtime, state):
                     and submission.get("symbol") == getattr(runtime, "fuel_symbol", None))
     if prospective:
         import copy
-        from application.earn_accrual import collect_earn_checkpoint, compare_earn_checkpoints
+        from application.earn_accrual import collect_earn_checkpoint, compare_earn_checkpoints, _amount, _time
+        from application.broker_reconciliation import collect_bnb_dividend_quantity
         try:
             pending_state = copy.deepcopy(state)
             if fuel_pending:
@@ -648,8 +649,22 @@ def reconcile_runtime_cash_effects(runtime, state):
             current = collect_earn_checkpoint(runtime.client, assets=previous["assets"],
                 observed_at=datetime.now(timezone.utc),
                 expected_account_scope_sha256=previous["account_scope_sha256"])
-            compare_earn_checkpoints(previous, current,
-                verified_net_changes=pending_state["earn_accounted_net_changes"])
+            try:
+                compare_earn_checkpoints(previous, current,
+                    verified_net_changes=pending_state["earn_accounted_net_changes"])
+            except ValueError as exc:
+                if str(exc) != "earn_quantity_change_unexplained" or "BNB" not in previous["assets"]:
+                    raise
+                dividend = collect_bnb_dividend_quantity(
+                    runtime.client,
+                    start=_time(previous["observed_at"]),
+                    end=_time(current["observed_at"]),
+                )
+                verified = dict(pending_state["earn_accounted_net_changes"])
+                verified["BNB"] = str(
+                    _amount(verified["BNB"], signed=True) + dividend["quantity"]
+                )
+                compare_earn_checkpoints(previous, current, verified_net_changes=verified)
             observations = {a: float(current["assets"][a]["quantity"]) for a in assets | {"USDT"}}
         except Exception:
             raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None
@@ -711,11 +726,17 @@ def runtime_set_trade_state(runtime, report, state, *, reason):
     require_runtime_state_owner(runtime)
     if runtime.state_writer is None:
         raise StatePersistenceError("state_persistence_failed")
+    import copy
+    before_write = copy.deepcopy(state)
     try:
         persisted = runtime.state_writer(state)
     except Exception:
+        state.clear()
+        state.update(before_write)
         raise StatePersistenceError("state_persistence_failed") from None
     if persisted is not True:
+        state.clear()
+        state.update(before_write)
         raise StatePersistenceError("state_persistence_failed")
     runtime.trade_state = state
     runtime.pending_funds = [item for item in runtime.pending_funds if not _accounted_funds(runtime, state, reason, item)]
