@@ -20,6 +20,7 @@ import re
 import sys
 import subprocess
 import tempfile
+import time
 from argparse import ArgumentParser
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -1055,15 +1056,15 @@ def _summarize_bnb_wallet_activity(report, *, residual, start, end):
         "source_failed_surface": None,
         "source_failure_stage": None,
         "source_response_shape": None,
-        "dividend_count": 0,
-        "dust_record_count": 0,
-        "dust_bnb_detail_count": 0,
-        "dust_non_bnb_target_count": 0,
-        "dividend_residual_matches": False,
-        "dust_transfer_residual_matches": False,
-        "dust_after_fee_residual_matches": False,
-        "combined_transfer_residual_matches": False,
-        "combined_after_fee_residual_matches": False,
+        "dividend_count": None,
+        "dust_record_count": None,
+        "dust_bnb_detail_count": None,
+        "dust_non_bnb_target_count": None,
+        "dividend_residual_matches": None,
+        "dust_transfer_residual_matches": None,
+        "dust_after_fee_residual_matches": None,
+        "combined_transfer_residual_matches": None,
+        "combined_after_fee_residual_matches": None,
         "residual_within_one_eight_decimal_unit": abs(residual) <= _BNB_DIAGNOSTIC_QUANTUM,
         "dividend_net_semantics_verified": False,
         "dust_net_semantics_verified": False,
@@ -1071,6 +1072,12 @@ def _summarize_bnb_wallet_activity(report, *, residual, start, end):
     }
     if not isinstance(report, Mapping) or report.get("requested_surfaces_complete") is not True:
         if isinstance(report, Mapping):
+            counts = report.get("counts")
+            if isinstance(counts, Mapping):
+                if type(counts.get("bnb_dividends")) is int:
+                    summary["dividend_count"] = counts["bnb_dividends"]
+                if type(counts.get("spot_dust_conversions")) is int:
+                    summary["dust_record_count"] = counts["spot_dust_conversions"]
             summary["source_reason_code"] = report.get("reason_code") if report.get("reason_code") in {
                 "bnb_wallet_history_unverified",
             } else None
@@ -1087,9 +1094,10 @@ def _summarize_bnb_wallet_activity(report, *, residual, start, end):
                     for key in (
                         "rows_present", "rows_is_list", "total_is_integer",
                         "total_is_decimal_string", "total_is_zero", "total_matches_rows",
-                        "page_full", "row_time_and_asset_valid",
+                        "page_full", "row_time_and_asset_valid", "total_valid",
+                        "rows_readable", "visible_row_count", "window_complete",
                     )
-                    if type(shape.get(key)) is bool
+                    if type(shape.get(key)) is bool or type(shape.get(key)) is int
                 }
         return summary
     summary["status"] = "UNVERIFIED"
@@ -1099,6 +1107,8 @@ def _summarize_bnb_wallet_activity(report, *, residual, start, end):
         or not isinstance(private_rows.get("spot_dust_conversions"), list)
     ):
         return summary
+    summary["dust_bnb_detail_count"] = 0
+    summary["dust_non_bnb_target_count"] = 0
 
     start_ms = int(start.timestamp() * 1000)
     end_ms = int(end.timestamp() * 1000)
@@ -1277,15 +1287,140 @@ def diagnose_earn_forward(refs, *, client, expected, now):
     if any(symbol not in configured_symbols for symbol in required_symbols):
         raise MigrationBlocked("earn_diagnosis_symbols_missing")
 
+    sampling_requests = []
+
+    class _SamplingClient:
+        def __init__(self, wrapped, sample_label):
+            self._wrapped = wrapped
+            self._sample_label = sample_label
+
+        def _read(self, surface, method, **kwargs):
+            started = time.monotonic()
+            started_at = datetime.now(timezone.utc)
+            try:
+                return method(**kwargs)
+            finally:
+                sampling_requests.append({
+                    "label": f"{surface}_{self._sample_label}",
+                    "started": started,
+                    "finished": time.monotonic(),
+                    "started_at": started_at,
+                })
+
+        def get_account(self):
+            return self._read("spot", self._wrapped.get_account)
+
+        def get_simple_earn_flexible_product_position(self, **kwargs):
+            return self._read(
+                "earn",
+                self._wrapped.get_simple_earn_flexible_product_position,
+                **kwargs,
+            )
+
     try:
         current = collect_earn_checkpoint(
-            client,
+            _SamplingClient(client, "1"),
             assets=assets,
             observed_at=now,
             expected_account_scope_sha256=expected_scope,
         )
     except Exception:
         raise MigrationBlocked("earn_diagnosis_checkpoint_unavailable") from None
+
+    # Each checkpoint performs Spot first and Flexible Earn second. Keep both
+    # samples private and compare the complete normalized shape; Firestore
+    # markers below cannot prove that broker reads came from one stable window.
+    try:
+        second_sample = collect_earn_checkpoint(
+            _SamplingClient(client, "2"),
+            assets=assets,
+            observed_at=now,
+            expected_account_scope_sha256=expected_scope,
+        )
+    except Exception:
+        second_sample = None
+
+    def _sampling_shape(value):
+        if not isinstance(value, Mapping):
+            return None
+        assets_value = value.get("assets")
+        if not isinstance(assets_value, Mapping):
+            return None
+        shape = {}
+        for asset, row in assets_value.items():
+            if not isinstance(row, Mapping) or not isinstance(row.get("products"), Mapping):
+                return None
+            products = {}
+            for product, position in row["products"].items():
+                if not isinstance(position, Mapping):
+                    return None
+                products[product] = (
+                    position.get("auto_subscribe"),
+                    position.get("can_redeem"),
+                )
+            shape[asset] = (
+                products,
+            )
+        return shape
+
+    sampling_shape_stable = (
+        second_sample is not None
+        and _sampling_shape(current) is not None
+        and _sampling_shape(current) == _sampling_shape(second_sample)
+    )
+
+    def _sampling_components_stable(first, second):
+        if not isinstance(first, Mapping) or not isinstance(second, Mapping):
+            return False
+        first_assets, second_assets = first.get("assets"), second.get("assets")
+        if not isinstance(first_assets, Mapping) or not isinstance(second_assets, Mapping):
+            return False
+        if set(first_assets) != set(second_assets):
+            return False
+        try:
+            for asset in first_assets:
+                before, after = first_assets[asset], second_assets[asset]
+                if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+                    return False
+                if (
+                    _diagnosis_decimal(before.get("spot_free"), signed=True)
+                    != _diagnosis_decimal(after.get("spot_free"), signed=True)
+                    or _diagnosis_decimal(before.get("spot_locked"), signed=True)
+                    != _diagnosis_decimal(after.get("spot_locked"), signed=True)
+                ):
+                    return False
+                first_products, second_products = before.get("products"), after.get("products")
+                if not isinstance(first_products, Mapping) or not isinstance(second_products, Mapping):
+                    return False
+                if set(first_products) != set(second_products):
+                    return False
+                for product in first_products:
+                    old_row, new_row = first_products[product], second_products[product]
+                    if not isinstance(old_row, Mapping) or not isinstance(new_row, Mapping):
+                        return False
+                    quantity_delta = _diagnosis_decimal(new_row.get("total"), signed=True) - _diagnosis_decimal(
+                        old_row.get("total"), signed=True
+                    )
+                    reward_delta = _diagnosis_decimal(
+                        new_row.get("realtime_rewards"), signed=True
+                    ) - _diagnosis_decimal(old_row.get("realtime_rewards"), signed=True)
+                    if quantity_delta != reward_delta:
+                        return False
+        except (MigrationBlocked, TypeError, ValueError, InvalidOperation):
+            return False
+        return True
+
+    sampling_components_stable = _sampling_components_stable(current, second_sample)
+    expected_sampling_labels = ["spot_1", "earn_1", "spot_2", "earn_2"]
+    observed_sampling_labels = [row["label"] for row in sampling_requests]
+    sampling_timing_stable = (
+        observed_sampling_labels == expected_sampling_labels
+        and all(row["finished"] >= row["started"] for row in sampling_requests)
+        and all(
+            sampling_requests[index]["finished"] <= sampling_requests[index + 1]["started"]
+            for index in range(len(sampling_requests) - 1)
+        )
+    )
 
     try:
         flows = collect_spot_usdt_external_cash_flows(
@@ -1317,6 +1452,45 @@ def diagnose_earn_forward(refs, *, client, expected, now):
         external_status = "UNSUPPORTED_ACTIVITY"
     else:
         external_status = "OBSERVED"
+
+    def _sample_residual_after_realtime(sample):
+        if not isinstance(sample, Mapping) or not isinstance(sample.get("assets"), Mapping):
+            return None
+        residuals = {}
+        for asset in assets:
+            before = checkpoint["assets"].get(asset)
+            after = sample["assets"].get(asset)
+            if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+                return None
+            before_products, after_products = before.get("products"), after.get("products")
+            if not isinstance(before_products, Mapping) or not isinstance(after_products, Mapping):
+                return None
+            if set(before_products) != set(after_products):
+                return None
+            reward = Decimal(0)
+            for product in before_products:
+                old_row, new_row = before["products"][product], after["products"][product]
+                if (
+                    not isinstance(old_row, Mapping)
+                    or not isinstance(new_row, Mapping)
+                    or old_row.get("auto_subscribe") != new_row.get("auto_subscribe")
+                ):
+                    return None
+                delta = _diagnosis_decimal(new_row.get("realtime_rewards"), signed=True) - _diagnosis_decimal(
+                    old_row.get("realtime_rewards"), signed=True
+                )
+                if delta < 0:
+                    return None
+                reward += delta
+            observed = _diagnosis_decimal(after.get("quantity"), signed=True) - _diagnosis_decimal(
+                before.get("quantity"), signed=True
+            )
+            residuals[asset] = observed - stored_net[asset] - (
+                external_principal if asset == "USDT" else Decimal(0)
+            ) - reward
+        return residuals
+
+    second_residual_after_realtime = _sample_residual_after_realtime(second_sample)
 
     observed_delta = {}
     residual_before_realtime = {}
@@ -1382,15 +1556,15 @@ def diagnose_earn_forward(refs, *, client, expected, now):
         "source_failed_surface": None,
         "source_failure_stage": None,
         "source_response_shape": None,
-        "dividend_count": 0,
-        "dust_record_count": 0,
-        "dust_bnb_detail_count": 0,
-        "dust_non_bnb_target_count": 0,
-        "dividend_residual_matches": False,
-        "dust_transfer_residual_matches": False,
-        "dust_after_fee_residual_matches": False,
-        "combined_transfer_residual_matches": False,
-        "combined_after_fee_residual_matches": False,
+        "dividend_count": None,
+        "dust_record_count": None,
+        "dust_bnb_detail_count": None,
+        "dust_non_bnb_target_count": None,
+        "dividend_residual_matches": None,
+        "dust_transfer_residual_matches": None,
+        "dust_after_fee_residual_matches": None,
+        "combined_transfer_residual_matches": None,
+        "combined_after_fee_residual_matches": None,
         "residual_within_one_eight_decimal_unit": False,
         "dividend_net_semantics_verified": False,
         "dust_net_semantics_verified": False,
@@ -1474,7 +1648,25 @@ def diagnose_earn_forward(refs, *, client, expected, now):
             )
         asset_results[asset] = {
             "quantity_direction": _direction(observed_delta[asset]),
+            "residual_before_realtime_direction": _direction(residual_before_realtime[asset]),
             "residual_direction": _direction(residual_after_realtime[asset]),
+            "stored_net_change_direction": _direction(stored_net[asset]),
+            "trade_net_difference_direction": _direction(trade_net[asset] - stored_net[asset]),
+            "external_flow_direction": _direction(
+                external_principal if asset == "USDT" else Decimal(0)
+            ),
+            "realtime_reward_direction": _direction(
+                realtime_delta[asset] if realtime_delta[asset] is not None else Decimal(0)
+            ),
+            "second_sample_residual_direction": (
+                _direction(second_residual_after_realtime[asset])
+                if second_residual_after_realtime is not None
+                else None
+            ),
+            "second_sample_residual_matches_first": (
+                second_residual_after_realtime is not None
+                and second_residual_after_realtime[asset] == residual_after_realtime[asset]
+            ),
             "product_status": product_status[asset],
             "product_count_before": len(checkpoint["assets"][asset]["products"]),
             "product_count_current": len(current["assets"][asset]["products"]),
@@ -1521,6 +1713,20 @@ def diagnose_earn_forward(refs, *, client, expected, now):
             "wallet_source_response_shape": bnb_wallet_activity["source_response_shape"],
         })
 
+    sampling_residual_stable = (
+        second_residual_after_realtime is not None
+        and all(
+            second_residual_after_realtime[asset] == residual_after_realtime[asset]
+            for asset in assets
+        )
+    )
+    sampling_stable = (
+        sampling_shape_stable
+        and sampling_components_stable
+        and sampling_timing_stable
+        and sampling_residual_stable
+    )
+
     after = _read_earn_diagnosis_source(refs)
     if any(
         source[key] != after[key]
@@ -1534,7 +1740,13 @@ def diagnose_earn_forward(refs, *, client, expected, now):
         "owner_unchanged": True,
         "ledger_unchanged": True,
         "control_unchanged": True,
-        "sampling_stable": True,
+        "sampling_stable": sampling_stable,
+        "sampling_sequence": ["spot_1", "earn_1", "spot_2", "earn_2"],
+        "sampling_second_read_available": second_sample is not None,
+        "sampling_request_timing_stable": sampling_timing_stable,
+        "sampling_components_stable": sampling_components_stable,
+        "sampling_residual_stable": sampling_residual_stable,
+        "sampling_observed_at": current.get("observed_at"),
         "account_scope_verified": True,
         "checkpoint_window_within_seven_days": True,
         "order_state_known": order_state_known,

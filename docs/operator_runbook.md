@@ -274,23 +274,37 @@ the existing zero-activity preview/apply checks remain unchanged.
 When the forward Earn consumer reports `earn_quantity_change_unexplained`, use
 the separate `accounting_migration_action=earn-forward-diagnose` once with the
 runtime disabled on `main` and `reconcile_only=true`. It starts at the ledger's
-current `earn_accrual_checkpoint`, reads current Spot/Flexible Earn, bounded
+current `earn_accrual_checkpoint`, reads Spot then Flexible Earn twice in the
+bounded order `Spot1 → Earn1 → Spot2 → Earn2`, bounded
 trades, the existing cash-flow cursor, and bounded reward history, then reads
 the three Firestore documents again. It reports only asset names, directions,
-product and reward counts, matching flags, owner existence, and fixed no-write
-policy flags. An existing owner is observed and reported; it is never cleared
-or bypassed. Any ledger, control, or owner change during sampling discards the
-result. A matching BONUS or REALTIME record is diagnostic evidence only and
-never a causal reconciliation or execution permission. The bounded trade net is
-reconstructed from normalized `myTrades` quantity and price fields for
-diagnosis only; it is not a complete fill or accounting proof.
+product and reward counts, matching flags, residual breakdown directions, owner
+existence, and fixed no-write policy flags. `sampling_stable` is true only when
+the two in-memory Spot/Earn shapes and Spot/Earn component movements match,
+with quantity changes explained by realtime counters; stable Firestore markers
+alone are insufficient. An existing owner is observed and reported; it is never
+cleared or bypassed. Any ledger, control, or owner change during sampling
+discards the result. A matching BONUS or REALTIME record is diagnostic evidence
+only and never a causal reconciliation or execution permission. The bounded
+trade net is reconstructed from normalized `myTrades` quantity and price fields
+for diagnosis only; it is not a complete fill or accounting proof.
 When BNB has a positive residual while the other sampled checks are stable, the
 same diagnostic may read the bounded `assetDividend` and Spot `dribblet` wallet
 surfaces. It reports record counts and exact Decimal comparisons for dividend,
 transfer, fee-adjusted, and combined values without exposing amounts or source
-rows. Binance's transfer and fee semantics remain unverified, and the separate
-one-eight-decimal-unit flag is diagnostic only; neither flag changes accounting,
-owner, control, or execution state.
+rows. Row readability, visible row count, and window completeness are separate
+fields. A missing or invalid `total`, a full page, a duplicate, an out-of-window
+row, or a non-BNB dividend row keeps the window unverified even when valid rows
+are visible. Binance's transfer and fee semantics remain unverified, and the
+separate one-eight-decimal-unit flag is diagnostic only; neither flag changes
+accounting, owner, control, or execution state.
+
+If a cycle reaches `daily_state` and fails only during the pure Earn preparation
+check, the runtime releases its own newly claimed owner only when the initial
+and current order states are explicitly `RESERVED` or `TERMINAL`, no funds are
+pending, and no state-write intent was added after the state-load metadata
+refresh. Unknown orders, uncertain writes, or an owner held before this cycle
+remain locked for manual reconciliation.
 
 The migration is a separate, one-time `Runtime` workflow mode for an old
 `trend_val` ledger. It does not activate recovery control, grant execution

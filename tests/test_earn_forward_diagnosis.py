@@ -240,6 +240,71 @@ def test_realtime_only_change_is_zero_after_counter_and_not_bonus(monkeypatch):
     assert btc["classification"] == "residual_zero_after_realtime_counter"
 
 
+@pytest.mark.parametrize(
+    "second_amount,second_reward,expected_stable",
+    [("1.1", "0.1", True), ("1.2", "0.1", False)],
+)
+def test_sampling_distinguishes_normal_realtime_growth_from_mixed_snapshot(
+    monkeypatch, second_amount, second_reward, expected_stable
+):
+    from application import earn_accrual
+    from scripts import migrate_daily_accounting_state as migration
+
+    real_collect = earn_accrual.collect_earn_checkpoint
+    refs = source()
+    install_read_stubs(monkeypatch, migration, refs)
+    monkeypatch.setattr(earn_accrual, "collect_earn_checkpoint", real_collect)
+    monkeypatch.setattr(earn_accrual, "digest", lambda _value: SCOPE)
+
+    class Client:
+        def __init__(self):
+            self.earn_reads = 0
+
+        def get_account(self):
+            return {
+                "uid": "123",
+                "balances": [
+                    {"asset": "USDT", "free": "10", "locked": "0"},
+                    {"asset": "BTC", "free": "0", "locked": "0"},
+                ],
+            }
+
+        def get_simple_earn_flexible_product_position(self, **_kwargs):
+            self.earn_reads += 1
+            amount, reward = (
+                ("1", "0")
+                if self.earn_reads == 1
+                else (second_amount, second_reward)
+            )
+            return {
+                "total": 1,
+                "rows": [{
+                    "asset": "BTC",
+                    "productId": "BTC001",
+                    "totalAmount": amount,
+                    "cumulativeRealTimeRewards": reward,
+                    "collateralAmount": "0",
+                    "autoSubscribe": False,
+                    "canRedeem": True,
+                }],
+            }
+
+    result = migration.diagnose_earn_forward(
+        refs,
+        client=Client(),
+        expected={"account_scope_sha256": SCOPE},
+        now=NOW,
+    )
+
+    assert result["sampling_sequence"] == ["spot_1", "earn_1", "spot_2", "earn_2"]
+    assert result["sampling_second_read_available"] is True
+    assert result["sampling_request_timing_stable"] is True
+    assert result["sampling_components_stable"] is expected_stable
+    assert result["sampling_residual_stable"] is expected_stable
+    assert result["sampling_stable"] is expected_stable
+    assert result["assets"]["BTC"]["second_sample_residual_matches_first"] is expected_stable
+
+
 def test_bnb_wallet_summary_matches_dividend_plus_transfer_without_claiming_fee_semantics():
     from decimal import Decimal
     from scripts import migrate_daily_accounting_state as migration
@@ -345,6 +410,34 @@ def test_bnb_wallet_summary_preserves_sanitized_source_failure_metadata():
         "total_matches_rows": False,
     }
     assert "private" not in json.dumps(result)
+
+
+def test_bnb_wallet_summary_preserves_visible_rows_without_claiming_complete():
+    from scripts import migrate_daily_accounting_state as migration
+
+    result = migration._summarize_bnb_wallet_activity(
+        {
+            "requested_surfaces_complete": False,
+            "reason_code": "bnb_wallet_history_unverified",
+            "failed_surface": "spot_dust_conversions",
+            "failure_stage": "response_validation",
+            "counts": {"bnb_dividends": 2, "spot_dust_conversions": 1},
+            "response_shape": {
+                "rows_readable": True,
+                "visible_row_count": 1,
+                "window_complete": False,
+            },
+        },
+        residual=0,
+        start=NOW-timedelta(hours=2),
+        end=NOW,
+    )
+
+    assert result["status"] == "CHECK_FAILED"
+    assert result["complete"] is False
+    assert result["dividend_count"] == 2
+    assert result["dust_record_count"] == 1
+    assert result["dust_transfer_residual_matches"] is None
 
 
 def test_unknown_order_state_returns_restricted_diagnostic(monkeypatch):

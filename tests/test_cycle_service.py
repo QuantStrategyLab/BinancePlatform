@@ -82,6 +82,7 @@ class CycleServiceTests(unittest.TestCase):
                 "selected_symbols": {},
                 "gating_summary": {},
                 "gating_events": [],
+                "state_write_intents": [],
             },
             ensure_runtime_client=lambda *_args: note("client", True),
             load_cycle_execution_settings=lambda: SimpleNamespace(
@@ -377,6 +378,86 @@ class CycleServiceTests(unittest.TestCase):
                 "reason_code": "earn_counter_reset",
             },
         )
+
+    def test_pure_daily_state_prepare_failure_releases_this_cycle_owner(self):
+        release = Mock(return_value=True)
+
+        def reconcile(*args):
+            args[2]["diagnostics"] = {
+                "earn_accrual": {
+                    "status": "blocked",
+                    "reason_code": "earn_quantity_change_unexplained",
+                }
+            }
+            raise ExecutionIntegrityError("earn_forward_accounting_unverified")
+
+        runtime = ExecutionRuntime(
+            state_owner_claim=lambda _owner: True,
+            state_owner_release=release,
+        )
+        report, _events = self._run_funds_cycle(
+            True,
+            state={"order_submission": {"state": "TERMINAL"}},
+            runtime=runtime,
+            rebase_fn=reconcile,
+        )
+
+        self.assertEqual(report["status"], "error")
+        release.assert_called_once()
+        self.assertFalse(runtime.state_owner_held)
+
+    def test_daily_state_prepare_failure_keeps_unknown_order_owner(self):
+        release = Mock(return_value=True)
+
+        def reconcile(*args):
+            args[2]["diagnostics"] = {
+                "earn_accrual": {
+                    "status": "blocked",
+                    "reason_code": "earn_quantity_change_unexplained",
+                }
+            }
+            raise ExecutionIntegrityError("earn_forward_accounting_unverified")
+
+        runtime = ExecutionRuntime(
+            state_owner_claim=lambda _owner: True,
+            state_owner_release=release,
+        )
+        self._run_funds_cycle(
+            True,
+            state={"order_submission": {"state": "SUBMISSION_UNKNOWN"}},
+            runtime=runtime,
+            rebase_fn=reconcile,
+        )
+
+        release.assert_not_called()
+        self.assertTrue(runtime.state_owner_held)
+
+    def test_daily_state_write_after_prepare_baseline_keeps_owner(self):
+        release = Mock(return_value=True)
+
+        def reconcile(*args):
+            args[2]["diagnostics"] = {
+                "earn_accrual": {
+                    "status": "blocked",
+                    "reason_code": "earn_quantity_change_unexplained",
+                }
+            }
+            args[2]["state_write_intents"].append({"reason": "unexpected"})
+            raise ExecutionIntegrityError("earn_forward_accounting_unverified")
+
+        runtime = ExecutionRuntime(
+            state_owner_claim=lambda _owner: True,
+            state_owner_release=release,
+        )
+        self._run_funds_cycle(
+            True,
+            state={"order_submission": {"state": "TERMINAL"}},
+            runtime=runtime,
+            rebase_fn=reconcile,
+        )
+
+        release.assert_not_called()
+        self.assertTrue(runtime.state_owner_held)
 
     def test_reconciled_new_day_state_resumes_after_reset_write_failure_without_double_count(self):
         state = {

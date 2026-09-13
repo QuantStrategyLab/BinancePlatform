@@ -29,6 +29,16 @@ def _record_risk_diagnostics(report, allocation):
     report["risk_flags"] = list(allocation.get("risk_flags") or ())
 
 
+def _settled_order_state(state):
+    if not isinstance(state, Mapping):
+        return None
+    record = state.get("order_submission")
+    if not isinstance(record, Mapping):
+        return None
+    status = record.get("state")
+    return status if status in {"RESERVED", "TERMINAL"} else None
+
+
 def execute_strategy_cycle(
     runtime,
     *,
@@ -77,10 +87,33 @@ def execute_strategy_cycle(
 
     state_healthy = False
     failure_stage = "state_owner_claim"
+    owner_claimed_this_cycle = False
+    initial_order_state = None
+    daily_state_write_intents_start = None
+    daily_funding_submission_start = None
+    daily_funding_side_effect_start = None
+    daily_funding_intent_lengths = None
+    daily_order_sequence_start = None
+    cycle_funding_submission_start = None
+    cycle_funding_side_effect_start = None
+    cycle_order_sequence_start = None
     try:
         if not acquire_runtime_state_owner(runtime):
             report["execution_blocked_reason"] = "state_owner_busy"
             return report
+        owner_claimed_this_cycle = (
+            not getattr(runtime, "dry_run", False)
+            and getattr(runtime, "standard_execution_permitted", True)
+            and getattr(runtime, "state_owner_held", False)
+        )
+        receipt_observation = report.get("execution_receipt_observation", {})
+        cycle_funding_submission_start = (
+            receipt_observation.get("submission_attempted_count", 0)
+            if isinstance(receipt_observation, Mapping)
+            else 0
+        )
+        cycle_funding_side_effect_start = len(getattr(runtime, "side_effect_log", ()))
+        cycle_order_sequence_start = getattr(runtime, "order_sequence", 0)
         failure_stage = "client_connect"
         if not ensure_runtime_client(runtime, report):
             return report
@@ -92,6 +125,7 @@ def execute_strategy_cycle(
 
         state, trend_pool_resolution, runtime_trend_universe, allow_new_trend_entries = cycle_state
         runtime.trade_state = state
+        initial_order_state = _settled_order_state(state)
         failure_stage = "funding_reconciliation"
         reconcile_pending_funding_submission(runtime)
         submission_state = state.get("order_submission", {}).get("state", "RESERVED")
@@ -148,6 +182,19 @@ def execute_strategy_cycle(
             return report
 
         failure_stage = "daily_state"
+        daily_state_write_intents_start = len(report.get("state_write_intents", ()))
+        receipt_observation = report.get("execution_receipt_observation", {})
+        daily_funding_submission_start = (
+            receipt_observation.get("submission_attempted_count", 0)
+            if isinstance(receipt_observation, Mapping)
+            else 0
+        )
+        daily_funding_side_effect_start = len(getattr(runtime, "side_effect_log", ()))
+        daily_order_sequence_start = getattr(runtime, "order_sequence", 0)
+        daily_funding_intent_lengths = tuple(
+            len(report.get(key, ())) if isinstance(report.get(key, ()), list) else None
+            for key in ("buy_sell_intents", "btc_dca_intents", "redemption_subscription_intents")
+        )
         now_utc = runtime.now_utc
         today_utc = now_utc.strftime("%Y-%m-%d")
         today_id_str = now_utc.strftime("%Y%m%d")
@@ -349,7 +396,78 @@ def execute_strategy_cycle(
         except Exception:
             pass
     finally:
-        if state_healthy and getattr(runtime, "state_owner_held", False):
+        reason_code = None
+        earn_diagnostics = report.get("diagnostics", {}).get("earn_accrual", {})
+        if isinstance(earn_diagnostics, Mapping):
+            reason_code = earn_diagnostics.get("reason_code")
+        current_order_state = _settled_order_state(getattr(runtime, "trade_state", None) or locals().get("state"))
+        current_receipt_observation = report.get("execution_receipt_observation", {})
+        funding_submission_unchanged = (
+            isinstance(current_receipt_observation, Mapping)
+            and current_receipt_observation.get("submission_attempted_count", 0)
+            == daily_funding_submission_start
+        )
+        funding_submission_unchanged_full_cycle = (
+            isinstance(current_receipt_observation, Mapping)
+            and current_receipt_observation.get("submission_attempted_count", 0)
+            == cycle_funding_submission_start
+        )
+        current_intent_lengths = tuple(
+            len(report.get(key, ())) if isinstance(report.get(key, ()), list) else None
+            for key in ("buy_sell_intents", "btc_dca_intents", "redemption_subscription_intents")
+        )
+        funding_intents_unchanged = current_intent_lengths == daily_funding_intent_lengths
+        funding_order_sequence_unchanged = getattr(runtime, "order_sequence", 0) == daily_order_sequence_start
+        funding_order_sequence_unchanged_full_cycle = (
+            getattr(runtime, "order_sequence", 0) == cycle_order_sequence_start
+        )
+        full_cycle_side_effects = list(getattr(runtime, "side_effect_log", ()))[cycle_funding_side_effect_start or 0:]
+        full_cycle_funding_side_effects_absent = all(
+            not str(entry.get("effect_type", "")).startswith(("order_", "earn_"))
+            for entry in full_cycle_side_effects
+            if isinstance(entry, Mapping)
+        )
+        new_side_effects = list(getattr(runtime, "side_effect_log", ()))[daily_funding_side_effect_start or 0:]
+        funding_side_effects_absent = all(
+            not str(entry.get("effect_type", "")).startswith(("order_", "earn_"))
+            for entry in new_side_effects
+            if isinstance(entry, Mapping)
+        )
+        persistent_side_effects_absent = all(
+            not (
+                str(entry.get("target", "")) == "firestore"
+                or str(entry.get("effect_type", "")).startswith("state_")
+            )
+            for entry in new_side_effects
+            if isinstance(entry, Mapping)
+        )
+        pure_daily_state_failure = (
+            not state_healthy
+            and failure_stage == "daily_state"
+            and reason_code in EARN_FORWARD_REASON_CODES
+            and owner_claimed_this_cycle
+            and initial_order_state in {"RESERVED", "TERMINAL"}
+            and current_order_state in {"RESERVED", "TERMINAL"}
+            and not getattr(runtime, "pending_funds", ())
+            and funding_submission_unchanged
+            and funding_submission_unchanged_full_cycle
+            and funding_intents_unchanged
+            and funding_order_sequence_unchanged
+            and funding_order_sequence_unchanged_full_cycle
+            and funding_side_effects_absent
+            and full_cycle_funding_side_effects_absent
+            and persistent_side_effects_absent
+            and isinstance(report.get("state_write_intents"), list)
+            and daily_state_write_intents_start is not None
+            and len(report["state_write_intents"]) == daily_state_write_intents_start
+        )
+        if pure_daily_state_failure:
+            try:
+                release_runtime_state_owner(runtime)
+            except ExecutionIntegrityError:
+                report["status"] = "error"
+                append_report_error(report, "state_owner_release_uncertain", stage="state_release")
+        elif state_healthy and getattr(runtime, "state_owner_held", False):
             try:
                 release_runtime_state_owner(runtime)
             except ExecutionIntegrityError:

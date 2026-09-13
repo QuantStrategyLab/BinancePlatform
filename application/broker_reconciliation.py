@@ -832,8 +832,12 @@ def diagnose_bnb_wallet_activity(
     if start.tzinfo is None or end.tzinfo is None or not start < end or end-start > timedelta(days=7):
         raise ValueError("balance_history_window_invalid")
     bounds = {"startTime": int(start.timestamp()*1000), "endTime": int(end.timestamp()*1000)}
-    result = {"requested_surfaces_complete": False, "counts": {},
-              "complete_balance_reconciliation": False}
+    result = {
+        "requested_surfaces_complete": False,
+        "counts": {},
+        "complete_balance_reconciliation": False,
+        "surface_diagnostics": {},
+    }
     for name, path, params, rows_key, time_key, limit in (
         ("bnb_dividends", "asset/assetDividend", {"asset": "BNB", "limit": 500}, "rows", "divTime", 500),
         ("spot_dust_conversions", "asset/dribblet", {"accountType": "SPOT"}, "userAssetDribblets", "operateTime", 100),
@@ -864,17 +868,53 @@ def diagnose_bnb_wallet_activity(
             "total_matches_rows": isinstance(rows, list) and count == len(rows),
             "page_full": isinstance(rows, list) and len(rows) >= limit,
         }
-        valid_rows = isinstance(rows, list) and all(
-            isinstance(row, Mapping) and type(row.get(time_key)) is int
-            and bounds["startTime"] <= row[time_key] <= bounds["endTime"]
-            and (name != "bnb_dividends" or row.get("asset") == "BNB") for row in rows
-        )
+        rows_readable = isinstance(rows, list) and all(isinstance(row, Mapping) for row in rows)
+        visible_row_count = len(rows) if isinstance(rows, list) else 0
+        row_keys = set()
+        valid_rows = rows_readable
+        if valid_rows:
+            for row in rows:
+                timestamp = row.get(time_key)
+                if (
+                    type(timestamp) is not int
+                    or not bounds["startTime"] <= timestamp <= bounds["endTime"]
+                    or (name == "bnb_dividends" and row.get("asset") != "BNB")
+                ):
+                    valid_rows = False
+                    break
+                if name == "bnb_dividends":
+                    identity = (row.get("id"), row.get("tranId"), timestamp)
+                    if (
+                        type(identity[0]) is not int
+                        or identity[0] < 0
+                        or type(identity[1]) is not int
+                        or identity[1] < 0
+                        or identity in row_keys
+                    ):
+                        valid_rows = False
+                        break
+                else:
+                    identity = row.get("transId")
+                    if type(identity) is not int or identity < 0 or identity in row_keys:
+                        valid_rows = False
+                        break
+                row_keys.add(identity)
+        shape.update({
+            "total_valid": count is not None and count >= 0,
+            "rows_readable": rows_readable,
+            "visible_row_count": visible_row_count,
+            "window_complete": (
+                count is not None and count >= 0 and shape["total_matches_rows"]
+                and count < limit and valid_rows
+            ),
+        })
         shape["row_time_and_asset_valid"] = valid_rows
-        if (count is None or count < 0 or not shape["total_matches_rows"]
-                or count >= limit or not valid_rows):
+        result["surface_diagnostics"][name] = shape
+        if isinstance(rows, list) and rows_readable:
+            result["counts"][name] = visible_row_count
+            if include_rows:
+                result.setdefault("_private_rows", {})[name] = rows
+        if not shape["window_complete"]:
             return {**result, "reason_code": "bnb_wallet_history_unverified", "failed_surface": name,
                     "failure_stage": "response_validation", "response_shape": shape}
-        result["counts"][name] = len(rows)
-        if include_rows:
-            result.setdefault("_private_rows", {})[name] = rows
     return {**result, "requested_surfaces_complete": True}
