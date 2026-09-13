@@ -1606,6 +1606,8 @@ def diagnose_earn_forward(refs, *, client, expected, now):
     bnb_wallet_activity = {
         "status": "NOT_CHECKED",
         "complete": False,
+        "dividend_surface_complete": False,
+        "dividend_direction_summary": {"integer_values": [], "missing": False, "mixed": False},
         "source_reason_code": None,
         "source_failed_surface": None,
         "source_failure_stage": None,
@@ -1748,6 +1750,8 @@ def diagnose_earn_forward(refs, *, client, expected, now):
         asset_results["BNB"].update({
             "wallet_activity_status": bnb_wallet_activity["status"],
             "wallet_activity_complete": bnb_wallet_activity["complete"],
+            "wallet_dividend_surface_complete": bnb_wallet_activity["dividend_surface_complete"],
+            "wallet_dividend_direction_summary": bnb_wallet_activity["dividend_direction_summary"],
             "wallet_dividend_record_count": bnb_wallet_activity["dividend_count"],
             "wallet_dust_record_count": bnb_wallet_activity["dust_record_count"],
             "wallet_dust_bnb_detail_count": bnb_wallet_activity["dust_bnb_detail_count"],
