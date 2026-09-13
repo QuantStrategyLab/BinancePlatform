@@ -440,6 +440,139 @@ def test_bnb_wallet_summary_preserves_visible_rows_without_claiming_complete():
     assert result["dust_transfer_residual_matches"] is None
 
 
+def test_bnb_wallet_summary_validates_dividend_surface_when_dust_is_incomplete():
+    from decimal import Decimal
+    from scripts import migrate_daily_accounting_state as migration
+
+    stamp = int((NOW - timedelta(hours=1)).timestamp() * 1000)
+    result = migration._summarize_bnb_wallet_activity(
+        {
+            "requested_surfaces_complete": False,
+            "reason_code": "bnb_wallet_history_unverified",
+            "failed_surface": "spot_dust_conversions",
+            "failure_stage": "response_validation",
+            "counts": {"bnb_dividends": 1, "spot_dust_conversions": 1},
+            "surface_diagnostics": {
+                "bnb_dividends": {"window_complete": True},
+                "spot_dust_conversions": {"window_complete": False},
+            },
+            "_private_rows": {
+                "bnb_dividends": [{
+                    "id": 1, "tranId": 2, "asset": "BNB", "amount": "0.1",
+                    "divTime": stamp, "direction": 1, "enInfo": "private",
+                }],
+                "spot_dust_conversions": [],
+            },
+        },
+        residual=Decimal("0.1"), start=NOW-timedelta(hours=2), end=NOW,
+    )
+
+    assert result["complete"] is False
+    assert result["dividend_surface_complete"] is True
+    assert result["dividend_residual_matches"] is True
+    assert result["dividend_net_semantics_verified"] is False
+    assert result["dust_transfer_residual_matches"] is None
+    assert result["combined_transfer_residual_matches"] is None
+    assert result["dividend_direction_summary"] == {
+        "integer_values": [1], "missing": False, "mixed": False,
+    }
+    assert "private" not in json.dumps(result)
+
+
+def test_bnb_wallet_summary_direction_is_integer_only_and_marks_missing_or_mixed():
+    from decimal import Decimal
+    from scripts import migrate_daily_accounting_state as migration
+
+    stamp = int((NOW - timedelta(hours=1)).timestamp() * 1000)
+    result = migration._summarize_bnb_wallet_activity(
+        {
+            "requested_surfaces_complete": True,
+            "_private_rows": {
+                "bnb_dividends": [
+                    {"id": 1, "tranId": 2, "asset": "BNB", "amount": "0.1", "divTime": stamp, "direction": 1},
+                    {"id": 3, "tranId": 4, "asset": "BNB", "amount": "0.2", "divTime": stamp, "direction": 2},
+                    {"id": 5, "tranId": 6, "asset": "BNB", "amount": "0.0", "divTime": stamp},
+                ],
+                "spot_dust_conversions": [],
+            },
+        },
+        residual=Decimal("0.3"), start=NOW-timedelta(hours=2), end=NOW,
+    )
+
+    assert result["dividend_direction_summary"] == {
+        "integer_values": [1, 2], "missing": True, "mixed": True,
+    }
+    assert result["dividend_net_semantics_verified"] is False
+
+
+def test_diagnose_earn_forward_exposes_partial_dividend_surface_result(monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+
+    checkpoint_value = checkpoint(
+        observed_at="2026-09-13T09:00:00+00:00", quantity="1.1", reward="0",
+    )
+    checkpoint_value["assets"]["BNB"] = {
+        "spot_free": "1", "spot_locked": "0", "products": {}, "quantity": "1",
+    }
+    current = copy.deepcopy(checkpoint_value)
+    current["observed_at"] = "2026-09-13T10:00:00+00:00"
+    current["assets"]["BNB"]["spot_free"] = "1.1"
+    current["assets"]["BNB"]["quantity"] = "1.1"
+    refs = source(checkpoint_value=checkpoint_value)
+    refs["ledger_ref"].snapshot.value["earn_accounted_net_changes"]["BNB"] = "0"
+    history = {
+        "history_complete_for_requested_surfaces": True,
+        "history_counts": {"earn_rewards": 1},
+        "reward_quantity_checks": {
+            asset: {
+                "delta_matches_bonus": False,
+                "delta_matches_realtime": False,
+                "delta_matches_visible_total": False,
+                "reward_counts": {"BONUS": 0, "REALTIME": 0},
+            }
+            for asset in ("USDT", "BTC", "BNB")
+        },
+    }
+    observations = SimpleNamespace(
+        account_scope={"account_uid": "123"}, recent_executions=(), open_orders=(),
+    )
+    install_read_stubs(
+        monkeypatch, migration, refs, current=current, history=history,
+        observations=observations,
+    )
+    monkeypatch.setattr(migration, "_symbols_from_env", lambda: ("BTCUSDT", "BNBUSDT"))
+
+    stamp = int((NOW - timedelta(hours=1)).timestamp() * 1000)
+
+    class Client:
+        def _request_margin_api(self, method, path, **_kwargs):
+            assert method == "get"
+            if path == "asset/assetDividend":
+                return {
+                    "rows": [{
+                        "id": 1, "tranId": 2, "asset": "BNB", "amount": "0.1",
+                        "divTime": stamp, "direction": 1,
+                    }],
+                    "total": 1,
+                }
+            return {"userAssetDribblets": []}
+
+    result = migration.diagnose_earn_forward(
+        refs, client=Client(), expected={"account_scope_sha256": SCOPE}, now=NOW,
+    )
+    bnb = result["assets"]["BNB"]
+
+    assert bnb["wallet_activity_complete"] is False
+    assert bnb["wallet_dividend_surface_complete"] is True
+    assert bnb["wallet_dividend_residual_matches"] is True
+    assert bnb["wallet_dividend_direction_summary"] == {
+        "integer_values": [1], "missing": False, "mixed": False,
+    }
+    assert bnb["wallet_dividend_net_semantics_verified"] is False
+    assert bnb["wallet_dust_transfer_residual_matches"] is None
+    assert bnb["wallet_combined_transfer_residual_matches"] is None
+
+
 def test_unknown_order_state_returns_restricted_diagnostic(monkeypatch):
     from scripts import migrate_daily_accounting_state as migration
 
