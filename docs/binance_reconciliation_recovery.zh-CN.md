@@ -128,14 +128,26 @@ Spot + Flexible Earn 持有资产口径，闲置理财不等于资金退出策�
 ## 向前收益记账消费者（2026-09-12）
 
 仅账本已含 `earn_accrual_checkpoint` 时启用新路径；旧账本继续使用原路径，不自动迁移。
-加载时保留 checkpoint 与 `earn_accounted_net_changes`。市场估值与记账使用同一次完整 Spot/Earn
-数量采样；既有 owner-protected writer 一次保存下一检查点、流水游标、余额及清零后的已记成交净变动。
+加载时保留 checkpoint 与 `earn_accounted_net_changes`。诊断和恢复核对按
+`Spot1 → Earn1 → Spot2 → Earn2` 顺序做有限双采样，比较两次 Spot/Earn 的数量、产品和实时收益计数；
+`sampling_stable` 还要求 Spot/Earn 分量变化可由实时收益计数解释，不再仅由 Firestore owner/账本/control
+标记稳定推出。市场估值与记账使用一次完整
+Spot/Earn 数量采样；既有 owner-protected writer 一次保存下一检查点、流水游标、余额及清零后的已记成交净变动。
 验证失败不推进；写入失败不更新内存检查点，也不自动重试。
 
 数量变化按同产品实时计数增量、已持久化的完整成交净数量/手续费、已核实当日 USDT 入金核对。
 成交在原 FILLED_ACCOUNTING_PENDING → TERMINAL 记账步骤累计原始 Decimal 数量，费用从对应资产扣除；
 不通过余额差反推资金来源。中途资金核验可更新当前余额，但不单独推进收益检查点或流水游标，避免漏掉区间资金活动。
 理财奖励已体现在权益中，不再加一次利润，也不记作外部本金。
+
+`earn-forward-diagnose` 只在内存保留原始采样行，公开结果只报告资产方向、收益/资金来源残差方向、
+记录条数和匹配标志。BNB wallet 的 `dribblet` 诊断分别报告行是否可读、可见行数和窗口是否完整；
+缺失或非法 `total`、满页、重复、越界或非 BNB dividend 行都会保持未核实，不会把已见有效行静默丢弃，
+也不会将不完整窗口写成完整资金来源。
+
+若既有运行仅在 `daily_state` 的纯 Earn 准备校验失败，且本轮 owner 已成功取得、加载时订单明确为
+`RESERVED/TERMINAL` 并持续 settled、无 pending funds、准备阶段没有新增持久写入意图，则只释放本轮自己的 owner。
+未知订单、写入结果不明或旧 owner 继续保留，旧 owner 不由诊断或运行补丁自动清除。
 
 未知/未完成订单、产品消失或更换、计数回退、新提币及未支持币种入金继续拒绝。内部申赎不算收益；
 只有同产品的总数量守恒可直接通过，产品生命周期不连续时不能猜测新的累计计数起点。

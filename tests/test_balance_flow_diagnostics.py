@@ -363,3 +363,95 @@ def test_bnb_wallet_history_accepts_decimal_string_count_without_accepting_unkno
     for value in (None, True, '-1', 'unknown', '0.0'):
         c = SimpleNamespace(_request_margin_api=lambda *a, **kw: {'total': value, 'rows': [], 'userAssetDribblets': []})
         assert diagnose_bnb_wallet_activity(c, start=NOW-timedelta(hours=2), end=NOW)['requested_surfaces_complete'] is False
+
+
+def test_bnb_wallet_dribblet_keeps_readable_rows_when_total_is_missing():
+    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+
+    stamp = int((NOW - timedelta(hours=1)).timestamp() * 1000)
+
+    def read(_method, path, **_kwargs):
+        if path.endswith("assetDividend"):
+            return {"rows": [], "total": 0}
+        return {"userAssetDribblets": [{"operateTime": stamp}]}
+
+    result = diagnose_bnb_wallet_activity(
+        SimpleNamespace(_request_margin_api=read),
+        start=NOW-timedelta(hours=2), end=NOW, include_rows=True,
+    )
+
+    assert result["requested_surfaces_complete"] is False
+    assert result["counts"]["spot_dust_conversions"] == 1
+    shape = result["surface_diagnostics"]["spot_dust_conversions"]
+    assert shape["rows_readable"] is True
+    assert shape["visible_row_count"] == 1
+    assert shape["window_complete"] is False
+    assert result["_private_rows"]["spot_dust_conversions"][0]["operateTime"] == stamp
+
+
+@pytest.mark.parametrize("response", [
+    {"total": 100, "userAssetDribblets": []},
+    {"total": "unknown", "userAssetDribblets": [{"operateTime": int((NOW - timedelta(hours=1)).timestamp() * 1000)}]},
+])
+def test_bnb_wallet_dribblet_full_or_invalid_total_never_claims_complete(response):
+    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+
+    def read(_method, path, **_kwargs):
+        if path.endswith("assetDividend"):
+            return {"rows": [], "total": 0}
+        return response
+
+    result = diagnose_bnb_wallet_activity(
+        SimpleNamespace(_request_margin_api=read), start=NOW-timedelta(hours=2), end=NOW,
+    )
+
+    assert result["requested_surfaces_complete"] is False
+    assert result["surface_diagnostics"]["spot_dust_conversions"]["window_complete"] is False
+
+
+def test_bnb_wallet_duplicate_or_non_bnb_rows_never_claim_complete():
+    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+
+    stamp = int((NOW - timedelta(hours=1)).timestamp() * 1000)
+
+    def read(_method, path, **_kwargs):
+        if path.endswith("assetDividend"):
+            return {
+                "rows": [
+                    {"id": 1, "tranId": 2, "asset": "BTC", "divTime": stamp},
+                ],
+                "total": 1,
+            }
+        return {
+            "userAssetDribblets": [
+                {"transId": 3, "operateTime": stamp},
+                {"transId": 3, "operateTime": stamp},
+            ],
+            "total": 2,
+        }
+
+    result = diagnose_bnb_wallet_activity(
+        SimpleNamespace(_request_margin_api=read), start=NOW-timedelta(hours=2), end=NOW,
+    )
+
+    assert result["requested_surfaces_complete"] is False
+    assert result["failed_surface"] == "bnb_dividends"
+    assert result["surface_diagnostics"]["bnb_dividends"]["window_complete"] is False
+
+    def read_duplicate(_method, path, **_kwargs):
+        if path.endswith("assetDividend"):
+            return {"rows": [{"id": 1, "tranId": 2, "asset": "BNB", "divTime": stamp}], "total": 1}
+        return {
+            "userAssetDribblets": [
+                {"transId": 3, "operateTime": stamp},
+                {"transId": 3, "operateTime": stamp},
+            ],
+            "total": 2,
+        }
+
+    duplicate = diagnose_bnb_wallet_activity(
+        SimpleNamespace(_request_margin_api=read_duplicate),
+        start=NOW-timedelta(hours=2), end=NOW,
+    )
+    assert duplicate["requested_surfaces_complete"] is False
+    assert duplicate["failed_surface"] == "spot_dust_conversions"
