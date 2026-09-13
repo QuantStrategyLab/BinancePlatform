@@ -65,6 +65,11 @@ uv run --no-sync python -m unittest discover -s tests -v
 - [`docs/binance_platform_rename_checklist.md`](docs/binance_platform_rename_checklist.md)
 - [`docs/operator_runbook.md`](docs/operator_runbook.md)
 
+For a forward Earn accounting failure, the disabled `main` workflow has one
+read-only `accounting_migration_action=earn-forward-diagnose` mode. It samples
+from the current ledger checkpoint and reports bounded, redacted diagnostics;
+it never clears an owner, writes accounting state, or grants execution.
+
 ## Community and security
 
 - See [CONTRIBUTING.md](CONTRIBUTING.md) for pull request scope, local verification, and documentation expectations.

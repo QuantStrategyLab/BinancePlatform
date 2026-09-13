@@ -992,6 +992,328 @@ def _read_source(refs):
     return ledger, ledger_value, control_value
 
 
+def _read_earn_diagnosis_source(refs):
+    """Read the three accounting documents without treating an owner as a blocker."""
+    owner = refs["owner_ref"].get(retry=None)
+    ledger_snapshot = refs["ledger_ref"].get(retry=None)
+    control_snapshot = refs["control_ref"].get(retry=None)
+    if not ledger_snapshot.exists:
+        raise MigrationBlocked("earn_diagnosis_ledger_missing")
+    ledger = ledger_snapshot.to_dict()
+    control = control_snapshot.to_dict() if control_snapshot.exists else None
+    if control is not None and (
+        not isinstance(control, Mapping)
+        or control.get("state") not in {
+            "RECONCILE_ONLY", "ACTIVE_LKG", "ROLLBACK_LKG", "PAUSED", "REDUCE_ONLY",
+        }
+    ):
+        raise MigrationBlocked("earn_diagnosis_control_invalid")
+
+    def marker(snapshot):
+        return {
+            "exists": snapshot.exists,
+            "update_time": (
+                _timestamp(snapshot.update_time) if snapshot.exists else None
+            ),
+            "value": snapshot.to_dict() if snapshot.exists else None,
+        }
+
+    return {
+        "owner_exists": owner.exists,
+        "owner_marker": marker(owner),
+        "ledger": ledger,
+        "ledger_marker": marker(ledger_snapshot),
+        "control": control,
+        "control_marker": marker(control_snapshot),
+    }
+
+
+def _diagnosis_decimal(value, *, signed=False):
+    from application.earn_accrual import _amount
+
+    try:
+        return _amount(str(value), signed=signed)
+    except (TypeError, ValueError, InvalidOperation):
+        raise MigrationBlocked("earn_diagnosis_numeric_input_invalid") from None
+
+
+def _direction(value):
+    return "INCREASE" if value > 0 else "DECREASE" if value < 0 else "UNCHANGED"
+
+
+def _trade_net_diagnosis(observations, *, assets):
+    """Reconstruct signed Spot deltas from normalized, bounded myTrades rows."""
+    net = {asset: Decimal(0) for asset in assets}
+    counts = {asset: 0 for asset in assets}
+    for trade in observations.recent_executions:
+        symbol = str(trade.get("symbol") or "").upper()
+        if not symbol.endswith("USDT") or len(symbol) <= 4:
+            raise MigrationBlocked("earn_diagnosis_trade_symbol_invalid")
+        asset = symbol[:-4]
+        if asset not in assets or "USDT" not in assets:
+            raise MigrationBlocked("earn_diagnosis_trade_asset_out_of_scope")
+        quantity = _diagnosis_decimal(trade.get("qty"))
+        price = _diagnosis_decimal(trade.get("price"))
+        commission = _diagnosis_decimal(trade.get("commission"))
+        commission_asset = str(trade.get("commission_asset") or "").upper()
+        if not commission_asset or commission_asset not in assets:
+            raise MigrationBlocked("earn_diagnosis_trade_asset_out_of_scope")
+        sign = Decimal(1) if trade.get("is_buyer") is True else Decimal(-1)
+        net[asset] += sign * quantity
+        net["USDT"] -= sign * quantity * price
+        net[commission_asset] -= commission
+        counts[asset] += 1
+    return net, counts
+
+
+def diagnose_earn_forward(refs, *, client, expected, now):
+    """Diagnose the current checkpoint window without changing any durable state."""
+    from application.earn_accrual import (
+        _time,
+        _validate,
+        collect_earn_checkpoint,
+    )
+
+    source = _read_earn_diagnosis_source(refs)
+    ledger = source["ledger"]
+    order_record = ledger.get("order_submission")
+    order_state_known = isinstance(order_record, Mapping) and order_record.get("state") in {
+        "RESERVED", "TERMINAL",
+    }
+    checkpoint = ledger.get("earn_accrual_checkpoint")
+    if not isinstance(checkpoint, Mapping):
+        raise MigrationBlocked("earn_diagnosis_checkpoint_missing")
+    try:
+        _validate(checkpoint)
+        checkpoint_at = _time(checkpoint["observed_at"])
+    except (TypeError, ValueError):
+        raise MigrationBlocked("earn_diagnosis_checkpoint_invalid") from None
+    expected_scope = expected.get("account_scope_sha256")
+    if not isinstance(expected_scope, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_scope):
+        raise MigrationBlocked("earn_diagnosis_account_scope_missing")
+    if checkpoint.get("account_scope_sha256") != expected_scope:
+        raise MigrationBlocked("earn_diagnosis_checkpoint_account_scope_mismatch")
+    if not isinstance(now, datetime) or now.tzinfo is None or not checkpoint_at < now:
+        raise MigrationBlocked("earn_diagnosis_checkpoint_window_invalid")
+    if now - checkpoint_at > timedelta(days=7):
+        raise MigrationBlocked("earn_diagnosis_checkpoint_window_invalid")
+
+    assets = tuple(sorted(checkpoint["assets"]))
+    if "USDT" not in assets or not 0 < len(assets) <= 32:
+        raise MigrationBlocked("earn_diagnosis_asset_scope_invalid")
+    net_values = ledger.get("earn_accounted_net_changes")
+    if not isinstance(net_values, Mapping) or set(net_values) != set(assets):
+        raise MigrationBlocked("earn_diagnosis_net_changes_missing")
+    stored_net = {
+        asset: _diagnosis_decimal(net_values[asset], signed=True) for asset in assets
+    }
+    cursor = ledger.get("external_cash_flow_cursor")
+    if not isinstance(cursor, Mapping):
+        raise MigrationBlocked("earn_diagnosis_cursor_missing")
+    try:
+        if _time(cursor.get("observed_at")) != checkpoint_at:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise MigrationBlocked("earn_diagnosis_cursor_mismatch") from None
+
+    required_symbols = tuple(f"{asset}USDT" for asset in assets if asset != "USDT")
+    configured_symbols = set(_symbols_from_env())
+    if any(symbol not in configured_symbols for symbol in required_symbols):
+        raise MigrationBlocked("earn_diagnosis_symbols_missing")
+
+    try:
+        current = collect_earn_checkpoint(
+            client,
+            assets=assets,
+            observed_at=now,
+            expected_account_scope_sha256=expected_scope,
+        )
+    except Exception:
+        raise MigrationBlocked("earn_diagnosis_checkpoint_unavailable") from None
+
+    try:
+        flows = collect_spot_usdt_external_cash_flows(
+            client, now=now, cursor=copy.deepcopy(cursor)
+        )
+    except Exception:
+        raise MigrationBlocked("earn_diagnosis_external_flow_unavailable") from None
+
+    try:
+        observations = collect_read_only_reconciliation_observations(
+            client,
+            strategy_symbols=required_symbols,
+            local_execution_ledger=ledger,
+            now=now,
+            lookback=now - checkpoint_at,
+        )
+    except Exception:
+        raise MigrationBlocked("earn_diagnosis_trade_history_unavailable") from None
+    if digest(observations.account_scope) != expected_scope:
+        raise MigrationBlocked("earn_diagnosis_account_scope_mismatch")
+    trade_net, trade_counts = _trade_net_diagnosis(observations, assets=assets)
+
+    external_principal = _diagnosis_decimal(
+        flows.get("new_deposit_principal_usdt"), signed=False
+    )
+    if flows.get("new_unsupported_deposit_count", 0) or flows.get(
+        "new_or_changed_withdrawal_count", 0
+    ):
+        external_status = "UNSUPPORTED_ACTIVITY"
+    else:
+        external_status = "OBSERVED"
+
+    observed_delta = {}
+    residual_before_realtime = {}
+    residual_after_realtime = {}
+    product_status = {}
+    realtime_delta = {}
+    for asset in assets:
+        before = checkpoint["assets"][asset]
+        after = current["assets"].get(asset)
+        if not isinstance(after, Mapping):
+            raise MigrationBlocked("earn_diagnosis_checkpoint_asset_missing")
+        observed_delta[asset] = _diagnosis_decimal(after["quantity"], signed=True) - _diagnosis_decimal(
+            before["quantity"], signed=True
+        )
+        before_products, after_products = before["products"], after["products"]
+        if set(before_products) != set(after_products):
+            product_status[asset] = "PRODUCT_LIFECYCLE_CHANGED"
+            realtime_delta[asset] = None
+        else:
+            counter_delta = Decimal(0)
+            status = "STABLE"
+            for product in before_products:
+                old_row, new_row = before_products[product], after_products[product]
+                if old_row["auto_subscribe"] != new_row["auto_subscribe"]:
+                    status = "PRODUCT_LIFECYCLE_CHANGED"
+                    break
+                delta = _diagnosis_decimal(new_row["realtime_rewards"], signed=True) - _diagnosis_decimal(
+                    old_row["realtime_rewards"], signed=True
+                )
+                if delta < 0:
+                    status = "COUNTER_RESET"
+                    break
+                counter_delta += delta
+            product_status[asset] = status
+            realtime_delta[asset] = counter_delta if status == "STABLE" else None
+        residual_before_realtime[asset] = observed_delta[asset] - stored_net[asset] - (
+            external_principal if asset == "USDT" else Decimal(0)
+        )
+        residual_after_realtime[asset] = residual_before_realtime[asset] - (
+            realtime_delta[asset] if realtime_delta[asset] is not None else Decimal(0)
+        )
+
+    history = diagnose_balance_flows(
+        client,
+        start=checkpoint_at,
+        end=now,
+        now=now,
+        reward_quantity_changes=residual_after_realtime,
+    )
+    if history.get("history_complete_for_requested_surfaces") is not True:
+        reason = history.get("reason_code")
+        if reason == "balance_history_reward_validation_failed":
+            raise MigrationBlocked("earn_diagnosis_reward_history_invalid")
+        raise MigrationBlocked("earn_diagnosis_history_incomplete")
+    reward_checks = history.get("reward_quantity_checks")
+    if not isinstance(reward_checks, Mapping) or set(reward_checks) != set(assets):
+        raise MigrationBlocked("earn_diagnosis_reward_history_invalid")
+
+    asset_results = {}
+    for asset in assets:
+        check = reward_checks.get(asset)
+        if not isinstance(check, Mapping) or not isinstance(check.get("reward_counts"), Mapping):
+            raise MigrationBlocked("earn_diagnosis_reward_history_invalid")
+        counts = check["reward_counts"]
+        if any(type(counts.get(kind)) is not int or counts[kind] < 0 for kind in ("BONUS", "REALTIME")):
+            raise MigrationBlocked("earn_diagnosis_reward_history_invalid")
+        if product_status[asset] == "PRODUCT_LIFECYCLE_CHANGED":
+            classification = "product_lifecycle_changed"
+        elif product_status[asset] == "COUNTER_RESET":
+            classification = "counter_reset"
+        elif trade_net[asset] != stored_net[asset]:
+            classification = "trade_net_unmatched"
+        elif external_status == "UNSUPPORTED_ACTIVITY" and asset == "USDT":
+            classification = "external_flow_unsupported"
+        elif product_status[asset] == "STABLE" and residual_after_realtime[asset] == 0:
+            classification = "residual_zero_after_realtime_counter"
+        elif (
+            product_status[asset] == "STABLE"
+            and residual_after_realtime[asset] > 0
+            and counts["BONUS"] > 0
+            and check.get("delta_matches_bonus")
+        ):
+            classification = "residual_matches_bonus_records"
+        else:
+            classification = "quantity_unexplained"
+        realtime_status = product_status[asset]
+        if realtime_delta[asset] is not None:
+            realtime_status = "INCREASE" if realtime_delta[asset] > 0 else "UNCHANGED"
+        external_matches = None
+        if asset == "USDT" and realtime_delta[asset] is not None:
+            external_matches = (
+                observed_delta[asset] - stored_net[asset] - realtime_delta[asset]
+                == external_principal
+            )
+        asset_results[asset] = {
+            "quantity_direction": _direction(observed_delta[asset]),
+            "residual_direction": _direction(residual_after_realtime[asset]),
+            "product_status": product_status[asset],
+            "product_count_before": len(checkpoint["assets"][asset]["products"]),
+            "product_count_current": len(current["assets"][asset]["products"]),
+            "realtime_counter_status": realtime_status,
+            "bonus_record_count": counts["BONUS"],
+            "realtime_record_count": counts["REALTIME"],
+            "residual_matches_bonus_records": (
+                None
+                if product_status[asset] != "STABLE"
+                else (
+                    residual_after_realtime[asset] > 0
+                    and counts["BONUS"] > 0
+                    and check.get("delta_matches_bonus") is True
+                )
+            ),
+            "trade_count": trade_counts[asset],
+            "trade_net_matches_persisted": trade_net[asset] == stored_net[asset],
+            "trade_net_diagnostic_only": True,
+            "external_flow_matches_residual": external_matches,
+            "external_flow_count": flows.get("new_confirmed_deposit_count", 0) if asset == "USDT" else 0,
+            "classification": classification,
+            "causal_reconciliation": False,
+        }
+
+    after = _read_earn_diagnosis_source(refs)
+    if any(
+        source[key] != after[key]
+        for key in ("owner_marker", "ledger_marker", "control_marker")
+    ):
+        raise MigrationBlocked("earn_diagnosis_state_changed_during_read")
+    return {
+        "status": "diagnosed",
+        "stage": "earn_forward_accounting_diagnosis",
+        "owner_exists": source["owner_exists"],
+        "owner_unchanged": True,
+        "ledger_unchanged": True,
+        "control_unchanged": True,
+        "sampling_stable": True,
+        "account_scope_verified": True,
+        "checkpoint_window_within_seven_days": True,
+        "order_state_known": order_state_known,
+        "diagnostic_restricted": not order_state_known,
+        "assets": asset_results,
+        "history_counts": history["history_counts"],
+        "open_order_count": len(observations.open_orders),
+        "unsupported_external_flow_count": flows.get("new_unsupported_deposit_count", 0),
+        "changed_withdrawal_count": flows.get("new_or_changed_withdrawal_count", 0),
+        "external_flow_status": external_status,
+        "causal_reconciliation": False,
+        "activation_allowed": False,
+        "no_order": True,
+        "write_performed": False,
+        "execution_authority_granted": False,
+    }
+
+
 def _private_spot_account(account, *, expected_account_scope_sha256):
     if not isinstance(account, Mapping):
         raise MigrationBlocked("private_scope_balance_invalid")
@@ -1458,6 +1780,24 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
         return inspect_control(_refs())
     if action == "quiesce":
         return _quiesce_control(_refs())
+    if action == "earn-forward-diagnose":
+        now = now or datetime.now(timezone.utc)
+        target = resolve_runtime_target_from_env(
+            env=os.environ, expected_platform_id="binance"
+        )
+        if (
+            str(getattr(getattr(target, "live_continuity", None), "state", "")).upper()
+            != "RECONCILE_ONLY"
+        ):
+            raise MigrationBlocked("runtime_target_not_reconcile_only")
+        expected = _expected_digests()
+        if not expected:
+            raise MigrationBlocked("expected_account_scope_missing")
+        refs = _refs()
+        client = connect_client(
+            os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30
+        )
+        return diagnose_earn_forward(refs, client=client, expected=expected, now=now)
     publication = (
         _private_scope_publication_context() if action == "scope-preview" else None
     )
@@ -1599,6 +1939,7 @@ def main(argv=None) -> int:
         choices=(
             "inspect",
             "quiesce",
+            "earn-forward-diagnose",
             "audit",
             "preview",
             "scope-preview",
