@@ -1046,6 +1046,47 @@ def _direction(value):
 _BNB_DIAGNOSTIC_QUANTUM = Decimal("0.00000001")
 
 
+def _validate_bnb_dividend_rows(rows, *, start_ms, end_ms):
+    if not isinstance(rows, list):
+        return None
+    row_keys = set()
+    direction_values = set()
+    direction_missing = False
+    total = Decimal(0)
+    try:
+        for row in rows:
+            if not isinstance(row, Mapping) or row.get("asset") != "BNB":
+                return None
+            div_time = row.get("divTime")
+            if type(div_time) is not int or not start_ms <= div_time <= end_ms:
+                return None
+            row_id = row.get("id")
+            tran_id = row.get("tranId")
+            if type(row_id) is not int or row_id < 0 or type(tran_id) is not int or tran_id < 0:
+                return None
+            key = (row_id, tran_id, div_time)
+            if key in row_keys:
+                return None
+            row_keys.add(key)
+            total += _diagnosis_decimal(row.get("amount"), signed=False)
+            direction = row.get("direction")
+            if type(direction) is int:
+                direction_values.add(direction)
+            else:
+                direction_missing = True
+    except (MigrationBlocked, TypeError, ValueError, InvalidOperation):
+        return None
+    return {
+        "count": len(rows),
+        "total": total,
+        "direction_summary": {
+            "integer_values": sorted(direction_values),
+            "missing": direction_missing,
+            "mixed": len(direction_values) > 1,
+        },
+    }
+
+
 def _summarize_bnb_wallet_activity(report, *, residual, start, end):
     """Compare private wallet rows to BNB residual without exposing source data."""
     private_rows = report.get("_private_rows") if isinstance(report, Mapping) else None
@@ -1057,6 +1098,8 @@ def _summarize_bnb_wallet_activity(report, *, residual, start, end):
         "source_failure_stage": None,
         "source_response_shape": None,
         "dividend_count": None,
+        "dividend_surface_complete": False,
+        "dividend_direction_summary": {"integer_values": [], "missing": False, "mixed": False},
         "dust_record_count": None,
         "dust_bnb_detail_count": None,
         "dust_non_bnb_target_count": None,
@@ -1099,6 +1142,26 @@ def _summarize_bnb_wallet_activity(report, *, residual, start, end):
                     )
                     if type(shape.get(key)) is bool or type(shape.get(key)) is int
                 }
+            surface_diagnostics = report.get("surface_diagnostics")
+            dividend_shape = (
+                surface_diagnostics.get("bnb_dividends")
+                if isinstance(surface_diagnostics, Mapping) else None
+            )
+            if (
+                isinstance(dividend_shape, Mapping)
+                and dividend_shape.get("window_complete") is True
+                and isinstance(private_rows, Mapping)
+            ):
+                validated = _validate_bnb_dividend_rows(
+                    private_rows.get("bnb_dividends"),
+                    start_ms=int(start.timestamp() * 1000),
+                    end_ms=int(end.timestamp() * 1000),
+                )
+                if validated is not None:
+                    summary["dividend_count"] = validated["count"]
+                    summary["dividend_surface_complete"] = True
+                    summary["dividend_residual_matches"] = validated["total"] == residual
+                    summary["dividend_direction_summary"] = validated["direction_summary"]
         return summary
     summary["status"] = "UNVERIFIED"
     if (
@@ -1112,27 +1175,20 @@ def _summarize_bnb_wallet_activity(report, *, residual, start, end):
 
     start_ms = int(start.timestamp() * 1000)
     end_ms = int(end.timestamp() * 1000)
-    dividend_total = Decimal(0)
     dust_transfer_total = Decimal(0)
     dust_after_fee_total = Decimal(0)
-    dividend_keys = set()
     dust_keys = set()
     try:
-        for row in private_rows["bnb_dividends"]:
-            if not isinstance(row, Mapping) or row.get("asset") != "BNB":
-                return summary
-            div_time = row.get("divTime")
-            if type(div_time) is not int or not start_ms <= div_time <= end_ms:
-                return summary
-            row_id = row.get("id")
-            tran_id = row.get("tranId")
-            if type(row_id) is not int or row_id < 0 or type(tran_id) is not int or tran_id < 0:
-                return summary
-            key = (row_id, tran_id, div_time)
-            if key in dividend_keys:
-                return summary
-            dividend_keys.add(key)
-            dividend_total += _diagnosis_decimal(row.get("amount"), signed=False)
+        validated_dividends = _validate_bnb_dividend_rows(
+            private_rows["bnb_dividends"], start_ms=start_ms, end_ms=end_ms,
+        )
+        if validated_dividends is None:
+            return summary
+        dividend_total = validated_dividends["total"]
+        summary["dividend_count"] = validated_dividends["count"]
+        summary["dividend_surface_complete"] = True
+        summary["dividend_residual_matches"] = dividend_total == residual
+        summary["dividend_direction_summary"] = validated_dividends["direction_summary"]
 
         for record in private_rows["spot_dust_conversions"]:
             if not isinstance(record, Mapping):
@@ -1191,9 +1247,7 @@ def _summarize_bnb_wallet_activity(report, *, residual, start, end):
             if detail_transfer_total != total_transfer or detail_fee_total != total_fee:
                 return summary
 
-        summary["dividend_count"] = len(private_rows["bnb_dividends"])
         summary["dust_record_count"] = len(private_rows["spot_dust_conversions"])
-        summary["dividend_residual_matches"] = dividend_total == residual
         summary["dust_transfer_residual_matches"] = dust_transfer_total == residual
         summary["dust_after_fee_residual_matches"] = dust_after_fee_total == residual
         combined_transfer = dividend_total + dust_transfer_total
