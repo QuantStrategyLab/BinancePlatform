@@ -69,6 +69,12 @@ def install_test_stubs():
         strategy_registry_module.resolve_strategy_metadata = lambda *_args, **_kwargs: types.SimpleNamespace(
             display_name="Crypto Live Pool Rotation",
         )
+        strategy_registry_module.resolve_research_strategy_metadata = strategy_registry_module.resolve_strategy_metadata
+        strategy_registry_module.resolve_research_strategy_definition = strategy_registry_module.resolve_strategy_definition
+        strategy_registry_module.resolve_runtime_target_strategy = lambda target: (
+            target,
+            strategy_registry_module.resolve_strategy_definition(getattr(target, "strategy_profile", None)),
+        )
         sys.modules["strategy_registry"] = strategy_registry_module
 
     if "strategy_runtime" not in sys.modules:
@@ -122,6 +128,33 @@ class MainRuntimeErrorNotificationTests(unittest.TestCase):
         self.assertIn("下一步", message)
         self.assertNotIn("PRIVATE_SENTINEL", message)
         self.assertNotIn("未提交订单", message)
+
+    def test_runtime_error_notification_uses_fixed_human_reason_text(self):
+        with patch.dict(os.environ, {"NOTIFY_LANG": "zh-CN", "STRATEGY_PROFILE": "crypto_live_pool_rotation"}):
+            message = main._runtime_error_notification_message(RuntimeError("recovery_control_read_failed"))
+        self.assertIn("暂时无法读取恢复配置，本次未启动交易。", message)
+        self.assertNotIn("recovery_control_read_failed", message)
+
+        with patch.dict(os.environ, {"NOTIFY_LANG": "en", "STRATEGY_PROFILE": "crypto_live_pool_rotation"}):
+            message = main._runtime_error_notification_message(RuntimeError("untrusted-provider-detail"))
+        self.assertIn("The runtime could not start safely", message)
+        self.assertNotIn("untrusted-provider-detail", message)
+
+    def test_main_reports_only_fixed_recovery_read_reason(self):
+        observed = []
+
+        def fake_run_cli_entrypoint(**_kwargs):
+            raise RuntimeError("recovery_control_read_failed")
+
+        with patch.object(main, "run_cli_entrypoint", fake_run_cli_entrypoint), \
+             patch.object(main, "_notify_runtime_error", return_value=False), \
+             patch("builtins.print", lambda *args, **_kwargs: observed.append(" ".join(map(str, args)))):
+            with self.assertRaisesRegex(RuntimeError, "runtime_setup_failed"):
+                main.main()
+
+        rendered = " ".join(observed)
+        self.assertIn("reason_code=recovery_control_read_failed", rendered)
+        self.assertNotIn("provider", rendered)
 
     def test_main_wires_cli_entrypoint_with_runtime_builder_and_cycle_runner(self):
         observed = {}
