@@ -140,6 +140,28 @@ class MainRuntimeErrorNotificationTests(unittest.TestCase):
         self.assertIn("The runtime could not start safely", message)
         self.assertNotIn("untrusted-provider-detail", message)
 
+    def test_runtime_setup_reason_projects_safe_authority_reason(self):
+        self.assertEqual(
+            main._runtime_setup_reason(
+                ValueError("live risk authority configuration invalid: runner revision mismatch")
+            ),
+            "runner_revision_mismatch",
+        )
+        self.assertEqual(
+            main._runtime_setup_reason(
+                ValueError("live risk authority configuration invalid: provider-secret-detail")
+            ),
+            "runtime_startup_failed",
+        )
+
+    def test_runtime_error_notification_uses_fixed_authority_reason_text(self):
+        with patch.dict(os.environ, {"NOTIFY_LANG": "zh-CN", "STRATEGY_PROFILE": "crypto_live_pool_rotation"}):
+            message = main._runtime_error_notification_message(
+                RuntimeError("runner_revision_mismatch")
+            )
+        self.assertIn("当前运行版本未获得现有风险授权，本次未启动交易。", message)
+        self.assertNotIn("runner_revision_mismatch", message)
+
     def test_main_reports_only_fixed_recovery_read_reason(self):
         observed = []
 

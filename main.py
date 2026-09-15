@@ -138,18 +138,73 @@ _SAFE_RUNTIME_SETUP_REASONS = frozenset({
     "runtime_recovery_not_active",
     "recovery_control_state_invalid",
     "recovery_active_binding_invalid",
+    "authority_source_incomplete",
+    "authority_file_digest_mismatch",
+    "authority_file_invalid",
+    "authority_file_unreadable",
+    "authority_file_changed",
+    "authority_json_invalid",
+    "authority_duplicate_field",
+    "authority_non_finite_value",
+    "authority_fields_invalid",
+    "authority_decision_not_approve",
+    "authority_scope_not_live",
+    "strategy_revision_unavailable",
+    "strategy_revision_mismatch",
+    "runner_revision_unavailable",
+    "runner_revision_mismatch",
+    "config_digest_mismatch",
+    "runtime_target_missing",
+    "runtime_target_identity_incomplete",
+    "runtime_target_identity_ambiguous",
+    "runtime_target_mismatch",
+    "authority_expired_or_not_effective",
 })
 _RUNTIME_ERROR_NOTIFICATION_REASONS = {
     "recovery_control_read_failed": "runtime_error_reason_recovery_control_read_failed",
     "runtime_recovery_not_active": "runtime_error_reason_recovery_not_active",
     "recovery_control_state_invalid": "runtime_error_reason_recovery_control_state_invalid",
     "recovery_active_binding_invalid": "runtime_error_reason_recovery_active_binding_invalid",
+    "runner_revision_mismatch": "runtime_error_reason_runner_revision_mismatch",
+}
+_AUTHORITY_ERROR_REASON_CODES = {
+    "authority source parameters are incomplete": "authority_source_incomplete",
+    "authority file digest mismatch": "authority_file_digest_mismatch",
+    "authority file must be a regular non-symlink file": "authority_file_invalid",
+    "authority file size is invalid": "authority_file_invalid",
+    "authority file cannot be read": "authority_file_unreadable",
+    "authority file changed while reading": "authority_file_changed",
+    "invalid authority JSON": "authority_json_invalid",
+    "duplicate authority field": "authority_duplicate_field",
+    "non-finite JSON value": "authority_non_finite_value",
+    "authority fields are unsupported or incomplete": "authority_fields_invalid",
+    "authority decision is not APPROVE": "authority_decision_not_approve",
+    "authority scope is not LIVE": "authority_scope_not_live",
+    "installed strategy revision is unavailable": "strategy_revision_unavailable",
+    "strategy revision mismatch": "strategy_revision_mismatch",
+    "runner revision is unavailable": "runner_revision_unavailable",
+    "runner revision mismatch": "runner_revision_mismatch",
+    "runner checkout has tracked modifications": "runner_revision_unavailable",
+    "config digest mismatch": "config_digest_mismatch",
+    "runtime target is missing": "runtime_target_missing",
+    "runtime target identity is incomplete": "runtime_target_identity_incomplete",
+    "runtime target account identity is ambiguous": "runtime_target_identity_ambiguous",
+    "runtime target mismatch": "runtime_target_mismatch",
+    "authority expired or not yet effective": "authority_expired_or_not_effective",
 }
 
 
 def _runtime_setup_reason(exc):
     reason = str(exc)
-    return reason if reason in _SAFE_RUNTIME_SETUP_REASONS else "runtime_startup_failed"
+    if reason in _SAFE_RUNTIME_SETUP_REASONS:
+        return reason
+    authority_prefix = "live risk authority configuration invalid: "
+    if reason.startswith(authority_prefix):
+        authority_reason = reason[len(authority_prefix):]
+        authority_reason = _AUTHORITY_ERROR_REASON_CODES.get(authority_reason, authority_reason)
+        if authority_reason in _SAFE_RUNTIME_SETUP_REASONS:
+            return authority_reason
+    return "runtime_startup_failed"
 
 
 def _load_import_safe_strategy_runtime():
