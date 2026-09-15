@@ -133,6 +133,24 @@ from trend_pool_support import (
 
 ExecutionRuntime = _ExecutionRuntime
 
+_SAFE_RUNTIME_SETUP_REASONS = frozenset({
+    "recovery_control_read_failed",
+    "runtime_recovery_not_active",
+    "recovery_control_state_invalid",
+    "recovery_active_binding_invalid",
+})
+_RUNTIME_ERROR_NOTIFICATION_REASONS = {
+    "recovery_control_read_failed": "runtime_error_reason_recovery_control_read_failed",
+    "runtime_recovery_not_active": "runtime_error_reason_recovery_not_active",
+    "recovery_control_state_invalid": "runtime_error_reason_recovery_control_state_invalid",
+    "recovery_active_binding_invalid": "runtime_error_reason_recovery_active_binding_invalid",
+}
+
+
+def _runtime_setup_reason(exc):
+    reason = str(exc)
+    return reason if reason in _SAFE_RUNTIME_SETUP_REASONS else "runtime_startup_failed"
+
 
 def _load_import_safe_strategy_runtime():
     """Keep pure replay/helpers importable when no profile is execution-enabled."""
@@ -471,10 +489,15 @@ def send_tg_msg(token, chat_id, text):
 
 def _runtime_error_notification_message(_exc):
     strategy_name = build_strategy_display_name(t)(os.getenv("STRATEGY_PROFILE", ""))
+    reason = _runtime_setup_reason(_exc)
+    reason_key = _RUNTIME_ERROR_NOTIFICATION_REASONS.get(
+        reason, "runtime_error_reason_generic"
+    )
     return "\n".join(
         (
             t("runtime_error_title"),
             t("strategy_label", name=strategy_name) if strategy_name else "",
+            t(reason_key),
             t("runtime_error_result"),
             t("runtime_error_action"),
         )
@@ -1287,6 +1310,7 @@ def main():
             exit_fn=sys.exit,
         )
     except Exception as exc:
+        reason = _runtime_setup_reason(exc)
         print(t("runtime_setup_failed"))
         frames = traceback.extract_tb(exc.__traceback__)
         stage = "runtime_setup"
@@ -1296,8 +1320,8 @@ def main():
             elif frame.filename.endswith(("strategy_loader.py", "strategy_runtime.py", "strategy_registry.py")):
                 stage = "strategy_load"
         error_type = type(exc).__name__ if type(exc) in {ValueError, KeyError, TypeError, OSError, RuntimeError} else "RuntimeError"
-        print(f"runtime_setup_failed stage={stage} error_type={error_type}")
-        if _notify_runtime_error(RuntimeError("runtime_setup_failed")):
+        print(f"runtime_setup_failed stage={stage} error_type={error_type} reason_code={reason}")
+        if _notify_runtime_error(RuntimeError(reason)):
             output_path = os.getenv("GITHUB_OUTPUT")
             if output_path:
                 with open(output_path, "a", encoding="utf-8") as output:

@@ -99,6 +99,58 @@ def test_source_digest_is_not_a_substitute_for_verifying_frozen_config():
         validate_source(source, runtime_target=args["runtime_target"], expected=args["expected"], now=NOW + timedelta(minutes=31))
 
 
+def test_recovery_control_read_failure_is_fixed_and_redacted(monkeypatch):
+    import application.reconciliation_recovery as recovery
+    import live_services
+
+    class Ref:
+        def get(self, **_kwargs):
+            raise RuntimeError("provider secret and credential details")
+
+    class Client:
+        def collection(self, name):
+            assert name == "strategy"
+            return self
+
+        def document(self, name):
+            assert name == "MULTI_ASSET_STATE__recovery"
+            return Ref()
+
+    monkeypatch.setenv("BINANCE_RECOVERY_CONTROL_ENABLED", "true")
+    monkeypatch.setattr(live_services, "get_firestore_client", lambda: Client())
+    with pytest.raises(recovery.RecoveryControlReadError) as error:
+        recovery.load_activated_target(_target())
+    assert str(error.value) == "recovery_control_read_failed"
+    assert "provider secret" not in str(error.value)
+
+
+def test_recovery_control_validation_failure_keeps_existing_reason(monkeypatch):
+    import application.reconciliation_recovery as recovery
+    import live_services
+
+    class Ref:
+        exists = True
+
+        def get(self, **_kwargs):
+            return self
+
+        @staticmethod
+        def to_dict():
+            return {"state": "UNSUPPORTED"}
+
+    class Client:
+        def collection(self, _name):
+            return self
+
+        def document(self, _name):
+            return Ref()
+
+    monkeypatch.setenv("BINANCE_RECOVERY_CONTROL_ENABLED", "true")
+    monkeypatch.setattr(live_services, "get_firestore_client", lambda: Client())
+    with pytest.raises(ValueError, match="recovery_control_state_invalid"):
+        recovery.load_activated_target(_target())
+
+
 def test_candidate_payload_tampering_rejected():
     args = inputs()
     source = collect_recovery_source(**args)

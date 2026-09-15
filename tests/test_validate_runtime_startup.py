@@ -335,6 +335,7 @@ def test_full_cycle_failure_projection_preserves_safe_daily_state_reason_code():
     ('runtime_recovery_not_active', 'runtime_recovery_not_active'),
     ('recovery_control_state_invalid', 'recovery_control_state_invalid'),
     ('recovery_active_binding_invalid', 'recovery_active_binding_invalid'),
+    ('recovery_control_read_failed', 'recovery_control_read_failed'),
     ('STRATEGY_PROFILE does not match RUNTIME_TARGET_JSON.strategy_profile', 'startup_strategy_profile_conflict'),
     ('BINANCE_DRY_RUN does not match RUNTIME_TARGET_JSON.dry_run_only', 'startup_dry_run_conflict'),
     ('runtime_recovery_not_active: DO_NOT_LOG_THIS_SYNTHETIC_TOKEN', 'runtime_startup_validation_failed'),
@@ -361,6 +362,24 @@ def test_startup_cli_reports_only_exact_safe_reasons_and_still_fails(monkeypatch
         'status': 'failed', 'stage': 'runtime_startup_validation',
         'error_type': 'ValueError', 'reason_code': expected,
     }
+
+
+def test_startup_cli_reports_reason_from_safe_runtime_exception(monkeypatch, capsys):
+    from application.reconciliation_recovery import RecoveryControlReadError
+
+    monkeypatch.setenv('RUNTIME_TARGET_ENABLED', 'false')
+    monkeypatch.delenv('BINANCE_API_KEY', raising=False)
+    monkeypatch.delenv('BINANCE_API_SECRET', raising=False)
+
+    def build():
+        raise RecoveryControlReadError()
+
+    monkeypatch.setitem(sys.modules, 'main', SimpleNamespace(build_live_runtime=build))
+    script = Path(__file__).resolve().parents[1] / 'scripts/validate_runtime_startup.py'
+    with pytest.raises(SystemExit) as error:
+        runpy.run_path(str(script), run_name='__main__')
+    assert error.value.code == 1
+    assert json.loads(capsys.readouterr().out)['reason_code'] == 'recovery_control_read_failed'
 
 @pytest.mark.parametrize(
     "authority_message, expected_reason",

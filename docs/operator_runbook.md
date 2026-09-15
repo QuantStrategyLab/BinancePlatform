@@ -670,6 +670,7 @@ python3 -m unittest discover -s tests -v
 - The runtime workflow now authenticates to Google Cloud with GitHub OIDC + Workload Identity Federation.
 - For safe runner-side verification, dispatch `main.yml` with `validate_only=true`; that loads the actual configuration, committed recovery control and strategy entrypoint without broker credentials or live execution. It also works while the runtime is paused.
 - A failed startup check reports only an exact allowlisted `reason_code`. In particular, `runtime_recovery_not_active` means the legacy strategy has no active recovery grant; validation still fails and does not activate it. Profile/dry-run conflicts and invalid recovery controls have distinct safe codes; unknown exceptions remain `runtime_startup_validation_failed`, without raw provider details. Investigate the stated prerequisite before another authorized validation attempt.
+- A live startup failure while reading the committed recovery-control document is reported as `recovery_control_read_failed`. This code covers only the read boundary; payload validation and authorization failures retain their existing reason codes. It does not retry the read or change recovery state.
 - Local manual runs can still use `GOOGLE_APPLICATION_CREDENTIALS=/path/to/gcp-sa.json` when needed.
 
 ## Escalation Guidelines

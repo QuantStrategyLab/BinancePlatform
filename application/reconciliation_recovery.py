@@ -31,6 +31,15 @@ from application.broker_reconciliation import (
 )
 
 
+class RecoveryControlReadError(RuntimeError):
+    """A recovery-control read failed before its payload could be validated."""
+
+    reason_code = "recovery_control_read_failed"
+
+    def __init__(self):
+        super().__init__(self.reason_code)
+
+
 def _reader(expected):
     return lambda *_: json.dumps(expected)
 
@@ -199,5 +208,11 @@ def load_activated_target(target):
     if os.getenv("BINANCE_RECOVERY_CONTROL_ENABLED", "false").lower() != "true":
         return target
     from live_services import get_firestore_client
-    snapshot = get_firestore_client().collection("strategy").document("MULTI_ASSET_STATE__recovery").get(retry=None)
-    return activated_target(target, snapshot.to_dict() if snapshot.exists else None, expected=_expected_digests())
+    try:
+        snapshot = get_firestore_client().collection("strategy").document("MULTI_ASSET_STATE__recovery").get(retry=None)
+        control = snapshot.to_dict() if snapshot.exists else None
+    except Exception:
+        # Keep provider and credential details out of runtime logs.  Validation
+        # failures after a successful read retain their existing reason codes.
+        raise RecoveryControlReadError() from None
+    return activated_target(target, control, expected=_expected_digests())

@@ -13,6 +13,7 @@ _SAFE_STARTUP_REASONS = {
     "runtime_recovery_not_active": "runtime_recovery_not_active",
     "recovery_control_state_invalid": "recovery_control_state_invalid",
     "recovery_active_binding_invalid": "recovery_active_binding_invalid",
+    "recovery_control_read_failed": "recovery_control_read_failed",
     "STRATEGY_PROFILE does not match RUNTIME_TARGET_JSON.strategy_profile": "startup_strategy_profile_conflict",
     "BINANCE_DRY_RUN does not match RUNTIME_TARGET_JSON.dry_run_only": "startup_dry_run_conflict",
     "full_cycle_requires_disabled_runtime": "full_cycle_requires_disabled_runtime",
@@ -143,12 +144,22 @@ def _error_type_name(exc):
     return "RuntimeError"
 
 
+def _safe_startup_reason(exc):
+    """Return an exact allowlisted reason carried by a startup exception."""
+    reason = getattr(exc, "reason_code", None)
+    if type(exc) is ValueError:
+        reason = str(exc)
+    if type(reason) is not str:
+        return None
+    return _SAFE_STARTUP_REASONS.get(reason)
+
+
 def _wrap_full_cycle_error(exc, *, failure_stage, fallback_reason):
     if isinstance(exc, FullCycleValidationError):
         return exc
     reason_code = _authority_reason_code(exc)
-    if reason_code is None and type(exc) is ValueError:
-        reason_code = _SAFE_STARTUP_REASONS.get(str(exc))
+    if reason_code is None:
+        reason_code = _safe_startup_reason(exc)
     return FullCycleValidationError(
         reason_code or fallback_reason,
         failure_stage=failure_stage,
@@ -474,8 +485,9 @@ if __name__ == "__main__":
             reason = exc.reason_code
             failure_stage = exc.failure_stage
             kind = exc.error_type
-        if type(exc) is ValueError:
-            reason = _SAFE_STARTUP_REASONS.get(str(exc), reason)
+        safe_reason = _safe_startup_reason(exc)
+        if safe_reason is not None:
+            reason = safe_reason
         output = {
             "status": "failed",
             "stage": "full_cycle_validation" if full_cycle else "runtime_startup_validation",
