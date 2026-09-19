@@ -297,7 +297,11 @@ _TEXTS = {
 
 
 def get_notify_lang() -> str:
-    return resolve_operational_notification_locale(os.getenv("NOTIFY_LANG", DEFAULT_NOTIFY_LANG))
+    # QSL_NOTIFY_LANG is the shared operator setting across platforms.
+    # Keep NOTIFY_LANG as a backward-compatible fallback for this legacy lane.
+    return resolve_operational_notification_locale(
+        os.getenv("QSL_NOTIFY_LANG") or os.getenv("NOTIFY_LANG") or DEFAULT_NOTIFY_LANG
+    )
 
 
 def build_translator(lang: str):

@@ -162,6 +162,33 @@ The monthly execution pool is locked to the accepted upstream `version` / `as_of
 - Repository variable changes are consumed by the next externally scheduled dispatch; they do not reconfigure the VPS scheduler cadence.
 - Avoid overlapping dispatches from multiple schedulers or from a second manual run while the current runtime job is still in progress.
 
+### Approved runtime release pin
+
+`BINANCE_RUNTIME_RELEASE_SHA` is the single protected repository variable that
+selects which full 40-character commit the Runtime job checks out for enabled
+strategy, reconciliation, recovery/accounting, and validate paths. It selects
+source code only and does **not** grant LIVE risk authority, change budgets, or
+replace `BINANCE_RISK_AUTHORITY_*`.
+
+- The value must be the exact lowercase 40-character commit SHA. Missing,
+  empty, or malformed values fail closed for those paths and never fall back to
+  the moving `main` tip.
+- `actions/checkout` first loads the workflow revision (`github.sha`) only so
+  the selector can run; the execution tree is then replaced by the selected
+  release SHA. `live_risk_authority.resolve_runner_revision()` continues to
+  read the real `git rev-parse HEAD` of that execution checkout. Do not forge
+  `GITHUB_SHA` to impersonate the release.
+- Pinning the application commit does **not** pin the workflow YAML itself.
+  Dispatch still runs the workflow file from the triggering revision; if that
+  workflow cannot safely drive the selected older tree, stop and migrate
+  deliberately instead of inventing compatibility shims.
+- The disabled no-op observation path does not require a release pin.
+- Optional workflow input `candidate_release_sha` may override the pin only for
+  `validate_only=true` + `full_cycle=true` while `RUNTIME_TARGET_ENABLED=false`
+  and with no reconcile/recovery/accounting write modes. The candidate still
+  must pass the real version, config, and LIVE authority gates; a mismatch
+  fails closed.
+
 ### Runtime target control and lifecycle evidence
 
 `RUNTIME_TARGET_ENABLED` is the single operator control for this target.  It

@@ -11,6 +11,8 @@ grep -Fq "STRATEGY_PROFILE: \${{ vars.STRATEGY_PROFILE || 'crypto_live_pool_rota
 grep -Fq 'RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}' "$workflow_file"
 grep -Fq 'BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON: ${{ vars.BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON }}' "$workflow_file"
 grep -Fq "RUNTIME_TARGET_ENABLED: \${{ vars.RUNTIME_TARGET_ENABLED || 'false' }}" "$workflow_file"
+grep -Fq 'BINANCE_RUNTIME_RELEASE_SHA: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA }}' "$workflow_file"
+grep -Fq 'candidate_release_sha:' "$workflow_file"
 grep -Fq 'Runtime target is disabled; broker strategy was intentionally not invoked.' "$workflow_file"
 grep -Fq 'needs.deploy.outputs.runtime_target_enabled == '\''true'\''' "$workflow_file"
 grep -Fq 'id-token: write' "$workflow_file"
@@ -24,12 +26,18 @@ grep -Fq 'echo "::error::Required repository variable ${name} is not configured.
 grep -Eq 'readonly EXPECTED_OIDC_IDENTITY_SHA256="[0-9a-f]{64}"' "$workflow_file"
 grep -Fq "printf '%s\\0%s\\0%s'" "$workflow_file"
 preflight_line="$(grep -nF -- '- name: 0. Validate deployment identity configuration' "$workflow_file" | cut -d: -f1)"
-checkout_line="$(grep -nF -- '- name: 1. Checkout latest code' "$workflow_file" | cut -d: -f1)"
+checkout_line="$(grep -nF -- '- name: 1. Checkout approved runtime release' "$workflow_file" | cut -d: -f1)"
 auth_line="$(grep -nF -- '- name: 2. Authenticate to Google Cloud' "$workflow_file" | cut -d: -f1)"
 test "$preflight_line" -lt "$checkout_line"
 test "$preflight_line" -lt "$auth_line"
+grep -Fq 'ref: ${{ steps.runtime-release.outputs.sha }}' "$workflow_file"
+grep -Fq 'Checkout workflow revision for release selection' "$workflow_file"
+if grep -Fq 'Checkout latest code' "$workflow_file"; then
+  echo "workflow must not check out latest tip for execution" >&2
+  exit 1
+fi
 grep -Fq '6. Notify Telegram on runtime workflow failure' "$workflow_file"
-grep -Fq "if: \${{ failure() && github.event.inputs.validate_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}" "$workflow_file"
+grep -Fq "if: \${{ failure() && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' && steps.strategy.outputs.runtime_failure_notified != 'true' }}" "$workflow_file"
 grep -Fq 'reports/execution_report.json' "$workflow_file"
 grep -Fq 'https://api.telegram.org/bot${TG_TOKEN}/sendMessage' "$workflow_file"
 grep -Fq 'payload.get("ok") is not True' "$workflow_file"
