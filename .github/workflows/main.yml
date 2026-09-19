@@ -65,6 +65,10 @@ on:
         description: "Exact approved preview candidate digest; required only for apply"
         type: string
         required: false
+      candidate_release_sha:
+        description: "Optional full 40-char commit SHA for validate_only+full_cycle candidate checkout only; selects code, does not grant authority"
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -109,11 +113,18 @@ jobs:
           PROPOSAL_RECIPIENT_CERTIFICATE: ${{ inputs.proposal_recipient_certificate }}
           ACCOUNTING_MIGRATION_PREVIEW_RUN_ID: ${{ inputs.accounting_migration_preview_run_id }}
           ACCOUNTING_MIGRATION_EXPECTED_DIGEST: ${{ inputs.accounting_migration_expected_digest }}
+          CANDIDATE_RELEASE_SHA_INPUT: ${{ inputs.candidate_release_sha }}
         run: |
           set -euo pipefail
           if [ "${FULL_CYCLE_INPUT:-false}" = "true" ] && { [ "$VALIDATE_ONLY_INPUT" != "true" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; }; then
             echo "::error::Full-cycle validation requires validate_only, disabled runtime, and no reconciliation mode."
             exit 1
+          fi
+          if [ -n "${CANDIDATE_RELEASE_SHA_INPUT:-}" ]; then
+            if [ "$VALIDATE_ONLY_INPUT" != "true" ] || [ "${FULL_CYCLE_INPUT:-false}" != "true" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ] || [ "${RECOVERY_ACTION_INPUT:-none}" != "none" ] || [ "${ACCOUNTING_MIGRATION_ACTION_INPUT:-none}" != "none" ]; then
+              echo "::error::candidate_release_sha is only allowed with validate_only+full_cycle while runtime is disabled and no write modes are active."
+              exit 1
+            fi
           fi
           case "${RECOVERY_ACTION_INPUT:-none}" in
             none) ;;
@@ -248,9 +259,59 @@ jobs:
             echo "::error::Repository OIDC identity variables do not match the reviewed identity contract."
             exit 1
           fi
-      - name: 1. Checkout latest code
+      - name: Checkout workflow revision for release selection
         if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Resolve approved runtime release SHA
+        id: runtime-release
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}
+        shell: bash
+        env:
+          BINANCE_RUNTIME_RELEASE_SHA: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA }}
+          CANDIDATE_RELEASE_SHA: ${{ inputs.candidate_release_sha }}
+          VALIDATE_ONLY: ${{ inputs.validate_only || 'false' }}
+          FULL_CYCLE: ${{ inputs.full_cycle || 'false' }}
+          RUNTIME_TARGET_ENABLED: ${{ env.RUNTIME_TARGET_ENABLED }}
+          RECONCILE_ONLY: ${{ inputs.reconcile_only || 'false' }}
+        run: |
+          set -euo pipefail
+          selected="$(python3 scripts/select_runtime_release_sha.py)"
+          if [[ ! "$selected" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release selection returned an invalid SHA."
+            exit 1
+          fi
+          echo "sha=$selected" >> "$GITHUB_OUTPUT"
+          echo "Selected runtime release SHA ${selected} (workflow github.sha=${GITHUB_SHA:-unknown} is not used as the execution identity)."
+
+      - name: 1. Checkout approved runtime release
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ steps.runtime-release.outputs.sha }}
+          persist-credentials: false
+
+      - name: Verify checkout matches selected runtime release SHA
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}
+        shell: bash
+        env:
+          EXPECTED_RELEASE_SHA: ${{ steps.runtime-release.outputs.sha }}
+        run: |
+          set -euo pipefail
+          expected="${EXPECTED_RELEASE_SHA}"
+          if [[ ! "$expected" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::EXPECTED_RELEASE_SHA is invalid."
+            exit 1
+          fi
+          actual="$(git rev-parse HEAD)"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::checkout HEAD does not match the selected runtime release SHA"
+            exit 1
+          fi
+          echo "Verified execution checkout HEAD=${actual} (distinct from workflow github.sha=${GITHUB_SHA:-unknown})."
 
       - name: 2. Authenticate to Google Cloud
         if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}

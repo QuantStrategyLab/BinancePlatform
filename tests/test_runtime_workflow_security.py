@@ -19,12 +19,87 @@ def _job_block(workflow: str, job: str, next_job: str | None = None) -> str:
     return workflow[start:end]
 
 
+def test_runtime_workflow_shared_config_shell_contract() -> None:
+    script = (
+        Path(__file__).resolve().parents[1]
+        / "tests"
+        / "test_runtime_workflow_shared_config.sh"
+    )
+    result = subprocess.run(
+        ["bash", str(script)], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_runtime_remote_actions_are_pinned_to_full_commit_shas() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     action_lines = [line.strip() for line in workflow.splitlines() if "uses:" in line]
 
     assert action_lines
     assert all(FULL_SHA_ACTION.fullmatch(line) for line in action_lines)
+
+
+def test_runtime_release_pin_is_required_before_execution_checkout() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+
+    assert (
+        "BINANCE_RUNTIME_RELEASE_SHA: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA }}"
+        in broker_job
+    )
+    assert "candidate_release_sha:" in workflow
+    assert "Checkout workflow revision for release selection" in broker_job
+    assert "1. Checkout approved runtime release" in broker_job
+    assert "Checkout latest code" not in broker_job
+    assert "ref: ${{ steps.runtime-release.outputs.sha }}" in broker_job
+    assert "Verify checkout matches selected runtime release SHA" in broker_job
+    assert "scripts/select_runtime_release_sha.py" in broker_job
+    resolve = broker_job[broker_job.index("Resolve approved runtime release SHA") :]
+    assert "CANDIDATE_RELEASE_SHA: ${{ inputs.candidate_release_sha }}" in resolve
+    assert (
+        "python3 scripts/select_runtime_release_sha.py"
+        in resolve.split("1. Checkout approved runtime release", 1)[0]
+    )
+
+
+def test_candidate_release_sha_guard_rejects_write_modes() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    first_step = workflow.split(
+        "      - name: 0. Validate deployment identity configuration", 1
+    )[0]
+    guard = textwrap.dedent(
+        first_step.split("        run: |\n", 1)[1].split(
+            '          case "${RUNTIME_TARGET_ENABLED,,}"', 1
+        )[0]
+    )
+    base = {
+        "FULL_CYCLE_INPUT": "true",
+        "VALIDATE_ONLY_INPUT": "true",
+        "RUNTIME_TARGET_ENABLED": "false",
+        "RECONCILE_ONLY_INPUT": "false",
+        "DIAGNOSE_BALANCES_INPUT": "false",
+        "RECONCILE_PERSIST_INPUT": "false",
+        "RECOVERY_ACTION_INPUT": "none",
+        "ACCOUNTING_MIGRATION_ACTION_INPUT": "none",
+        "CANDIDATE_RELEASE_SHA_INPUT": "a" * 40,
+    }
+    ok = subprocess.run(
+        ["/bin/bash", "-c", guard + '\nprintf "guard_passed"\n'],
+        env=base,
+        capture_output=True,
+        text=True,
+    )
+    assert ok.returncode == 0 and "guard_passed" in ok.stdout
+
+    bad = dict(base, RECONCILE_ONLY_INPUT="true")
+    denied = subprocess.run(
+        ["/bin/bash", "-c", guard + '\nprintf "guard_passed"\n'],
+        env=bad,
+        capture_output=True,
+        text=True,
+    )
+    assert denied.returncode != 0
+    assert "guard_passed" not in denied.stdout
 
 
 def test_broker_job_cannot_write_repository_contents() -> None:
