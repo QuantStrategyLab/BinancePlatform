@@ -3,10 +3,10 @@ run-name: Authority version reissue · ${{ inputs.mode }}
 
 # One-shot maintenance only. Does not enable trading, does not alter RECONCILE_ONLY
 # or risk mandate, and does not dispatch Runtime / no-submit full_cycle.
-# GITHUB_TOKEN cannot write environment secrets; apply requires a separately
-# configured BINANCE_AUTHORITY_UPDATE_TOKEN (Environments:write). This workflow is
-# not production-ready until that identity and branch/environment protections
-# are configured by operators.
+# The scoped environment token supplies GitHub configuration reads in both
+# modes.  Only apply passes it to the write gateway.  This workflow is not
+# production-ready until that identity and branch/environment protections are
+# configured by operators.
 
 on:
   workflow_dispatch:
@@ -82,7 +82,7 @@ jobs:
         id: reissue
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.BINANCE_AUTHORITY_UPDATE_TOKEN }}
           UPDATE_MODE: ${{ inputs.mode }}
           TARGET_STRATEGY_REVISION: ${{ inputs.target_strategy_revision }}
           TARGET_RUNNER_REVISION: ${{ inputs.target_runner_revision }}
