@@ -48,7 +48,10 @@ concurrency:
 
 jobs:
   reissue:
-    runs-on: self-hosted
+    # This maintenance task only reads/writes GitHub configuration.  Keep the
+    # authority secret off the persistent trading runner and use the hosted
+    # image that provides the required `gh` client.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     environment: binance-runtime
     steps:
