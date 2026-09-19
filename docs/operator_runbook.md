@@ -110,6 +110,11 @@ passes after the existing cycle reaches `cycle_complete` with a real risk
 `APPROVE`; a startup pass or a synthetic replay is not a recovery or activation
 result. Missing or invalid source material fails closed before broker reads.
 
+Maintenance-only authority version reissue (strategy + runner fields, matching
+SHA256, and source revision) is documented in `docs/authority_reissue.md`. That
+entry never enables `RUNTIME_TARGET_ENABLED`, never changes `RECONCILE_ONLY` or
+mandate values, and never dispatches Runtime or full-cycle validation.
+
 ## Execution Boundary
 
 `BinancePlatform` is the downstream execution engine.
