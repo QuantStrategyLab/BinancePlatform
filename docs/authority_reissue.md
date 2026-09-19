@@ -23,7 +23,9 @@ operator-supplied target SHA.
 ## Modes
 
 - `plan` (default): verify live preconditions + byte digest + surgical patch;
-  **zero** secret/variable writes. Do not inject the write token.
+  **zero** secret/variable writes. It uses the scoped environment token only
+  to read the current GitHub configuration; the script clears its write-token
+  input before executing the plan.
 - `apply`: same checks, then submit secret bytes, the new SHA256 variable, and
   the new source revision variable (skipping any write that is already at
   target). Requires environment secret `BINANCE_AUTHORITY_UPDATE_TOKEN`
