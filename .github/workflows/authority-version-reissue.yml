@@ -1,0 +1,114 @@
+name: Authority version reissue
+run-name: Authority version reissue · ${{ inputs.mode }}
+
+# One-shot maintenance only. Does not enable trading, does not alter RECONCILE_ONLY
+# or risk mandate, and does not dispatch Runtime / no-submit full_cycle.
+# GITHUB_TOKEN cannot write environment secrets; apply requires a separately
+# configured BINANCE_AUTHORITY_UPDATE_TOKEN (Environments:write). This workflow is
+# not production-ready until that identity and branch/environment protections
+# are configured by operators.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "plan = zero writes; apply = explicit secret+SHA256+source submit"
+        type: choice
+        required: true
+        default: plan
+        options: [plan, apply]
+      target_strategy_revision:
+        description: "Exact approved strategy commit (40-char lowercase hex); never main tip"
+        type: string
+        required: true
+      target_runner_revision:
+        description: "Exact approved trading runner commit (40-char lowercase hex); never main tip"
+        type: string
+        required: true
+      target_source_revision:
+        description: "Exact BINANCE_RISK_AUTHORITY_SOURCE_REVISION to write (40-char lowercase hex)"
+        type: string
+        required: true
+      expected_authority_sha256:
+        description: "Current BINANCE_RISK_AUTHORITY_SHA256 that must match raw secret bytes"
+        type: string
+        required: true
+      expected_source_revision:
+        description: "Current live BINANCE_RISK_AUTHORITY_SOURCE_REVISION that must match"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: authority-version-reissue-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  reissue:
+    runs-on: self-hosted
+    timeout-minutes: 15
+    environment: binance-runtime
+    steps:
+      - name: Checkout maintenance workflow revision only
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Materialize authority secret to a 0600 temp file
+        id: materialize
+        shell: bash
+        env:
+          BINANCE_RISK_AUTHORITY_JSON: ${{ secrets.BINANCE_RISK_AUTHORITY_JSON }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BINANCE_RISK_AUTHORITY_JSON:-}" ]; then
+            echo "::error::BINANCE_RISK_AUTHORITY_JSON is empty in binance-runtime."
+            exit 1
+          fi
+          umask 077
+          authority_file="$(mktemp "$RUNNER_TEMP/binance-authority-reissue.XXXXXX")"
+          printf '%s' "$BINANCE_RISK_AUTHORITY_JSON" > "$authority_file"
+          chmod 600 "$authority_file"
+          echo "authority_file=$authority_file" >> "$GITHUB_OUTPUT"
+
+      - name: Plan or apply authority version reissue
+        id: reissue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPDATE_MODE: ${{ inputs.mode }}
+          TARGET_STRATEGY_REVISION: ${{ inputs.target_strategy_revision }}
+          TARGET_RUNNER_REVISION: ${{ inputs.target_runner_revision }}
+          TARGET_SOURCE_REVISION: ${{ inputs.target_source_revision }}
+          EXPECTED_AUTHORITY_SHA256: ${{ inputs.expected_authority_sha256 }}
+          EXPECTED_SOURCE_REVISION: ${{ inputs.expected_source_revision }}
+          AUTHORITY_FILE: ${{ steps.materialize.outputs.authority_file }}
+          MAINTENANCE_WORKFLOW_SHA: ${{ github.sha }}
+          MAINTENANCE_RUN_ID: ${{ github.run_id }}
+          BINANCE_AUTHORITY_UPDATE_TOKEN: ${{ inputs.mode == 'apply' && secrets.BINANCE_AUTHORITY_UPDATE_TOKEN || '' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/update_binance_authority_reissue.py \
+            --mode "$UPDATE_MODE" \
+            --target-strategy-revision "$TARGET_STRATEGY_REVISION" \
+            --target-runner-revision "$TARGET_RUNNER_REVISION" \
+            --target-source-revision "$TARGET_SOURCE_REVISION" \
+            --expected-authority-sha256 "$EXPECTED_AUTHORITY_SHA256" \
+            --expected-source-revision "$EXPECTED_SOURCE_REVISION" \
+            --authority-file "$AUTHORITY_FILE" \
+            --maintenance-workflow-sha "$MAINTENANCE_WORKFLOW_SHA"
+
+      - name: Scrub temporary authority material
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          authority_file="${{ steps.materialize.outputs.authority_file }}"
+          if [ -n "${authority_file:-}" ] && [ -f "$authority_file" ]; then
+            : > "$authority_file"
+            rm -- "$authority_file"
+          fi
