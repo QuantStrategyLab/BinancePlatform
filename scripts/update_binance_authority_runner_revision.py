@@ -16,7 +16,6 @@ import re
 import stat
 import subprocess
 import sys
-import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
