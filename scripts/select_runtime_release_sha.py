@@ -10,7 +10,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from runtime_release_selection import main
+from runtime_release_selection import main  # noqa: E402
 
 if __name__ == "__main__":
     raise SystemExit(main())
