@@ -431,33 +431,102 @@ def test_apply_precondition_drift_before_write_is_zero_write() -> None:
     assert gateway.recorder.variable_puts == []
 
 
-def test_gh_cli_gateway_fresh_reads_and_write_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_runtime_enabled_is_read_from_repository_scope_not_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """N05 command contract: stop control is repository-scoped; authority meta stays env-scoped."""
+
     calls: list[tuple[str, ...]] = []
 
     def _fake_gh(args, *, token, input_bytes=None):
         del token, input_bytes
         calls.append(tuple(args))
-        if tuple(args[:2]) == ("variable", "get"):
-            name = args[2]
-            if name == mod.RUNTIME_ENABLED_VAR:
-                assert "--env" not in args
-                return b"false"
-            assert "--env" in args
-            return {mod.FIXED_SHA256_VAR: "1" * 64, mod.FIXED_SOURCE_VAR: OLD_SOURCE}[name].encode()
-        if tuple(args[:2]) == ("run", "list"):
+        if tuple(args[:2]) != ("variable", "get"):
             return b"[]"
-        return b""
+        name = args[2]
+        argv = tuple(args)
+        if name == mod.RUNTIME_ENABLED_VAR:
+            assert argv == (
+                "variable",
+                "get",
+                mod.RUNTIME_ENABLED_VAR,
+                "--repo",
+                mod.FIXED_REPOSITORY,
+            )
+            return b"false"
+        assert argv == (
+            "variable",
+            "get",
+            name,
+            "--repo",
+            mod.FIXED_REPOSITORY,
+            "--env",
+            mod.FIXED_ENVIRONMENT,
+        )
+        return {mod.FIXED_SHA256_VAR: "1" * 64, mod.FIXED_SOURCE_VAR: OLD_SOURCE}[name].encode()
 
     monkeypatch.setattr(mod, "_run_gh", _fake_gh)
     gateway = mod.GhCliGateway(write_token="tok", maintenance_run_id="17")
     snapshot = gateway.read_preconditions()
     assert snapshot.runtime_target_enabled == "false"
+    assert snapshot.authority_sha256 == "1" * 64
+    assert snapshot.source_revision == OLD_SOURCE
+    enabled_call = next(call for call in calls if call[2] == mod.RUNTIME_ENABLED_VAR)
+    assert "--env" not in enabled_call
+    for name in (mod.FIXED_SHA256_VAR, mod.FIXED_SOURCE_VAR):
+        call = next(call for call in calls if call[2] == name)
+        assert call[call.index("--env") + 1] == mod.FIXED_ENVIRONMENT
+
     gateway.put_environment_variable(name=mod.FIXED_SHA256_VAR, value="2" * 64)
     gateway.put_environment_variable(name=mod.FIXED_SOURCE_VAR, value=NEW_SOURCE)
     with pytest.raises(mod.AuthorityUpdateError, match="unexpected variable"):
         gateway.put_environment_variable(name="RUNTIME_TARGET_ENABLED", value="true")
     assert any(call[:3] == ("variable", "set", mod.FIXED_SHA256_VAR) for call in calls)
     assert any(call[:3] == ("variable", "set", mod.FIXED_SOURCE_VAR) for call in calls)
+
+
+@pytest.mark.parametrize(
+    "failing_name,expect_env_scope",
+    [
+        (mod.RUNTIME_ENABLED_VAR, False),
+        (mod.FIXED_SHA256_VAR, True),
+        (mod.FIXED_SOURCE_VAR, True),
+    ],
+)
+def test_missing_or_permission_failure_on_scoped_reads_is_zero_write(
+    monkeypatch: pytest.MonkeyPatch,
+    failing_name: str,
+    expect_env_scope: bool,
+) -> None:
+    raw = _authority_bytes(OLD_STRATEGY, OLD_RUNNER)
+    digest = _digest(raw)
+    write_attempts: list[tuple[str, ...]] = []
+
+    def _fake_gh(args, *, token, input_bytes=None):
+        del token
+        argv = tuple(args)
+        if argv[:2] in {("secret", "set"), ("variable", "set")}:
+            write_attempts.append(argv)
+            return b""
+        if tuple(args[:2]) == ("variable", "get") and args[2] == failing_name:
+            if expect_env_scope:
+                assert "--env" in args
+            else:
+                assert "--env" not in args
+            raise mod.AuthorityUpdateError("gh command failed (1)")
+        if tuple(args[:2]) == ("variable", "get"):
+            return {
+                mod.RUNTIME_ENABLED_VAR: "false",
+                mod.FIXED_SHA256_VAR: digest,
+                mod.FIXED_SOURCE_VAR: OLD_SOURCE,
+            }[args[2]].encode()
+        return b"[]"
+
+    monkeypatch.setattr(mod, "_run_gh", _fake_gh)
+    gateway = mod.GhCliGateway(write_token="test-token", maintenance_run_id="17")
+    with pytest.raises(mod.AuthorityUpdateError, match="gh command failed"):
+        _run(mode="apply", raw=raw, gateway=gateway, write_token_present=True)
+    assert write_attempts == []
 
 
 def test_explicit_approved_operator_hashes_are_accepted_as_inputs_not_defaults() -> None:
