@@ -834,6 +834,54 @@ def test_diagnose_cli_reports_only_exact_safe_reason_codes(monkeypatch, capsys, 
     assert "private" not in json.dumps(result)
 
 
+def test_diagnose_cli_lifecycle_blocker_is_redacted_and_has_zero_side_effects(
+    monkeypatch, capsys
+):
+    """historical_continuity_unapproved_reward_product stays fixed/safe with no writes."""
+    from scripts import binance_recovery_controller as controller
+
+    writes = []
+
+    def fail_exact(*_args, **_kwargs):
+        raise ValueError("historical_continuity_unapproved_reward_product")
+
+    monkeypatch.setattr(controller, "run", fail_exact)
+    monkeypatch.setattr(
+        controller,
+        "save_post_rebase_control",
+        lambda *args, **kwargs: writes.append(("post_rebase", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        controller,
+        "_save_control",
+        lambda *args, **kwargs: writes.append(("legacy", args, kwargs)),
+    )
+    assert controller.main(["diagnose"]) == 2
+    payload = capsys.readouterr().out
+    result = json.loads(payload)
+    assert result["status"] == "blocked"
+    assert result["reason_code"] == "historical_continuity_unapproved_reward_product"
+    assert result["no_order"] is True
+    assert set(result) <= {"status", "stage", "reason_code", "no_order"}
+    assert writes == []
+
+    def fail_leaky(*_args, **_kwargs):
+        raise ValueError(
+            "historical_continuity_unapproved_reward_product "
+            "product=BNB002 amount=0.01 purchaseId=99"
+        )
+
+    monkeypatch.setattr(controller, "run", fail_leaky)
+    assert controller.main(["diagnose"]) == 2
+    leaky_payload = capsys.readouterr().out
+    leaky = json.loads(leaky_payload)
+    assert leaky["reason_code"] == "recovery_operation_failed"
+    assert "BNB002" not in leaky_payload
+    assert "0.01" not in leaky_payload
+    assert "purchaseId" not in leaky_payload
+    assert writes == []
+
+
 def test_controller_verify_rejects_archive_metadata_change_before_confirmation_or_broker_read(monkeypatch):
     from scripts import binance_recovery_controller as controller
 
