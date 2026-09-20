@@ -45,6 +45,21 @@ def test_classify_activity_evidence_marks_missing_surfaces_unverified():
     assert all(value['status'] == 'unverified' for key, value in result.items() if key != 'all_supported')
 
 
+def test_classify_activity_evidence_accepts_earn_only_after_forward_diagnosis():
+    result = m.classify_activity_evidence(
+        history_counts={'earn_rewards': 3},
+        recent_execution_count=0,
+        flow_summary={
+            'new_confirmed_deposit_count': 0,
+            'new_unsupported_deposit_count': 0,
+            'new_or_changed_withdrawal_count': 0,
+        },
+        earn_forward_eligible=True,
+    )
+    assert result['earn'] == {'count': 3, 'status': 'forward_eligible', 'supported': True}
+    assert result['all_supported'] is True
+
+
 class ReadOnlyClient:
     def __init__(self, *, cash=600, deposits=None):
         self.cash = cash

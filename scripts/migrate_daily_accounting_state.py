@@ -2374,13 +2374,23 @@ def preview_external_cash_flow(refs, *, client, expected, now, initial_source=No
             account_snapshot=account,
         )
         recent_execution_count = len(observations.recent_executions)
-    except Exception:
+    except (BinanceReconciliationReadError, ValueError, TypeError, KeyError):
         # The category remains explicitly unverified; do not infer zero trades.
+        pass
+    earn_diagnosis = None
+    try:
+        earn_diagnosis = diagnose_earn_forward(refs, client=client, expected=expected, now=now)
+    except (MigrationBlocked, ValueError, TypeError, KeyError):
+        # Earn remains observed but unsupported unless its dedicated proof passes.
         pass
     activity = classify_activity_evidence(
         history_counts=history.get("history_counts") if isinstance(history, Mapping) else None,
         recent_execution_count=recent_execution_count,
         flow_summary=flows,
+        earn_forward_eligible=(
+            earn_diagnosis.get("forward_accounting_eligible")
+            if isinstance(earn_diagnosis, Mapping) else None
+        ),
     )
     after_account = client.get_account()
     _, after_spot = _private_spot_account(after_account, expected_account_scope_sha256=expected["account_scope_sha256"])
@@ -2396,6 +2406,10 @@ def preview_external_cash_flow(refs, *, client, expected, now, initial_source=No
         "activity_by_type": activity,
         "activity_history_complete": history.get("history_complete_for_requested_surfaces") is True,
         "activity_history_reason_code": history.get("reason_code"),
+        "earn_forward_accounting_eligible": (
+            earn_diagnosis.get("forward_accounting_eligible")
+            if isinstance(earn_diagnosis, Mapping) else False
+        ),
         "unmanaged_spot_asset_count": sum(1 for a, (free, locked) in spot if a not in assets and free + locked > 0),
         "complete_balance_reconciliation": False, "write_performed": False,
         "ledger_unchanged": True, "no_order": True, "execution_authority_granted": False,
@@ -2421,7 +2435,9 @@ def preview_external_cash_flow(refs, *, client, expected, now, initial_source=No
     return {**result, "status": "reconciled_preview" if reconciled else "baseline_preview" if flows["bootstrap"] else "no_new_deposit"}
 
 
-def classify_activity_evidence(*, history_counts, recent_execution_count, flow_summary):
+def classify_activity_evidence(
+    *, history_counts, recent_execution_count, flow_summary, earn_forward_eligible=None
+):
     """Summarize activity by accounting category without inferring causality."""
     counts = history_counts if isinstance(history_counts, Mapping) else {}
     flows = flow_summary if isinstance(flow_summary, Mapping) else None
@@ -2477,8 +2493,11 @@ def classify_activity_evidence(*, history_counts, recent_execution_count, flow_s
         },
         "earn": {
             "count": earn_count,
-            "status": "observed" if earn_count is not None else "unverified",
-            "supported": earn_count == 0,
+            "status": (
+                "forward_eligible" if earn_count and earn_forward_eligible is True
+                else "observed" if earn_count is not None else "unverified"
+            ),
+            "supported": earn_count == 0 or (earn_count is not None and earn_forward_eligible is True),
         },
     }
     return {**categories, "all_supported": all(item["supported"] for item in categories.values())}
