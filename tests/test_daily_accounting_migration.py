@@ -716,6 +716,9 @@ def test_inspect_control_reads_metadata_without_broker_or_mutation(monkeypatch, 
     assert result["state"] == "ACTIVE_LKG"
     assert result["source_run"] == {"id": 12345, "head_sha": "a" * 40}
     assert result["owner_exists"] is False
+    assert result["rebase_family"] is None
+    assert result["rebase_archive_exists"] is None
+    assert result["rebase_material_status"] is None
     assert result["no_order"] is True
     assert result["write_performed"] is False
     assert "sensitive" not in output
@@ -729,6 +732,21 @@ def test_inspect_control_does_not_export_arbitrary_state(monkeypatch):
     assert result["state"] == "INVALID"
     assert result["source_run"] is None
     assert "private payload" not in json.dumps(result)
+
+
+def test_inspect_control_classifies_invalid_prospective_rebase_without_private_rows():
+    from scripts import migrate_daily_accounting_state as migration
+
+    marker = {"archive_document": migration.PROSPECTIVE_ARCHIVE_DOCUMENT}
+    refs = {
+        "control_ref": Ref(Snapshot({"state": "RECONCILE_ONLY"})),
+        "ledger_ref": Ref(Snapshot({"accounting_rebase": marker})),
+        "owner_ref": Ref(Snapshot(None)),
+    }
+    result = migration.inspect_control(refs)
+    assert result["rebase_family"] == "prospective_rebase"
+    assert result["rebase_archive_exists"] is None
+    assert result["rebase_material_status"] is None
 
 
 def _audit_setup(monkeypatch):
