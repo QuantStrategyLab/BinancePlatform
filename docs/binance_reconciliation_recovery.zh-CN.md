@@ -124,6 +124,22 @@ Spot + Flexible Earn 持有资产口径，闲置理财不等于资金退出策�
 `automatic_accounting_ready`、`recovery_ready`、`execution_authority_granted` 均为 false；
 本功能不写账本、不迁移、不激活、不改变自动申购设置。旧的 apply 白名单没有改动。
 
+### 从今天建立新前瞻基线（2026-09-21）
+
+用户确认可采用“破坏性”语义时，仅表示**从本次观察时刻起**建立新会计基线，不是物理删除旧证据。
+操作入口仍是现有 `rebase-proposal` →（人工审阅加密预览）→ 另授权的 `prospective-rebase-apply`：
+
+- **不要求**用缺失的旧历史 / `historical_continuity` 去证明新周期；旧账本与旧归档保持不可变，
+  提案中 `historical_difference_unresolved=true`，期前收益分类为 `unreconstructed_history`。
+- **仍 fail-closed**：建立前核验账户身份、Spot、Flexible Earn、当前 ledger/control；拒绝
+  open/pending/unknown 订单、采样窗成交、未解释外部现金流变化；Spot/Earn 双读须守恒稳定；
+  加密候选绑定本次 `GITHUB_SHA`、ledger/control 摘要与观察时间。
+- `rebase-proposal` 只写本地加密 artifact，不写 Firestore、不下单、不改
+  `RUNTIME_TARGET_ENABLED` / `RECONCILE_ONLY`。
+- `prospective-rebase-apply` 仍只接受**当次人工批准**的精确提案摘要；旧 run
+  `34690028846` 的固定 digest 不能替代今天的新提案。真正落库须另一次明确授权，并在事务中
+  **新建**归档备份整本旧账，不得覆盖或清空旧 archive 链条。
+
 `application/earn_accrual.py` 提供纯 Decimal 增量守恒核对，要求调用方逐资产给出已独立核实的非利息净变动；
 不可将余额差额反推为已核实流水。该核对尚未接入日常自动记账和恢复消费者，不能将此工程预览称为
 生产自动记账已完成。实际迁移仍需具体快照确认，并完成向前记账消费者和恢复校验后再验收。
