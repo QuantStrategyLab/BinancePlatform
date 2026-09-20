@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -329,7 +329,7 @@ def test_controller_prepare_allows_verified_quiesced_prior_with_new_history(monk
         ReconciliationRecoveryTransitionPlan,
         calculate_reconciliation_recovery_confirmation_sha256,
     )
-    from tests.test_prospective_recovery_diagnosis import _controller_setup, _package
+    from tests.test_prospective_recovery_diagnosis import _controller_setup
 
     controller, target, expected, old_recovery_id, docs, writes, requests = (
         _controller_setup(monkeypatch, prepared=True)
@@ -591,7 +591,6 @@ def test_chunked_invalid_reward_rows_fail_closed(bad_row):
     }
 
     def read(method, path, **kwargs):
-        data = kwargs.get("data") or {}
         if path.startswith("capital/"):
             return []
         if path.endswith("/rewardsRecord"):
