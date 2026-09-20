@@ -183,16 +183,27 @@ replace `BINANCE_RISK_AUTHORITY_*`.
   release SHA. `live_risk_authority.resolve_runner_revision()` continues to
   read the real `git rev-parse HEAD` of that execution checkout. Do not forge
   `GITHUB_SHA` to impersonate the release.
-- Pinning the application commit does **not** pin the workflow YAML itself.
-  Dispatch still runs the workflow file from the triggering revision; if that
-  workflow cannot safely drive the selected older tree, stop and migrate
-  deliberately instead of inventing compatibility shims.
-- The disabled no-op observation path does not require a release pin.
-- Optional workflow input `candidate_release_sha` may override the pin only for
-  `validate_only=true` + `full_cycle=true` while `RUNTIME_TARGET_ENABLED=false`
-  and with no reconcile/recovery/accounting write modes. The candidate still
-  must pass the real version, config, and LIVE authority gates; a mismatch
-  fails closed.
+- Optional `BINANCE_RUNTIME_WORKFLOW_SHA` pins the workflow YAML identity that
+  loaded the job. When set, `github.sha` must equal that pin. When unset,
+  non-candidate paths require `github.sha == BINANCE_RUNTIME_RELEASE_SHA` so a
+  moving `main` tip, Dependabot merge, or other-branch dispatch cannot silently
+  change production execution identity while the app pin stays fixed. Update the
+  workflow pin (or intentionally advance both pins together) before dispatching
+  a newer workflow revision.
+- The disabled no-op observation path does not require a release or workflow
+  pin.
+- Optional workflow input `candidate_release_sha` may override the app pin only
+  for `validate_only=true` + `full_cycle=true` while `RUNTIME_TARGET_ENABLED=false`
+  and with no reconcile/recovery/accounting write modes. That candidate path may
+  omit a dedicated workflow pin so operators can validate a candidate app tree;
+  the candidate still must pass the real version, config, and LIVE authority
+  gates; a mismatch fails closed.
+- After dependency sync the job prints one `runtime_identity` line with
+  `workflow_sha`, `release_sha`, `uv_lock_sha256`, `uv_version`, and
+  `python_version`. The lock digest comes from the checked-out release tree;
+  pip/uv are not upgraded during a production cycle. Cold-cache bootstrap of a
+  missing `uv` binary is still index-resolved once and must be treated as a
+  deliberate environment seed, not as ongoing drift.
 
 ### Runtime target control and lifecycle evidence
 

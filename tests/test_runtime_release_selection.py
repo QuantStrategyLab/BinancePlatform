@@ -101,6 +101,111 @@ def test_candidate_illegal_format_rejected_even_in_allowed_mode() -> None:
         )
 
 
+def test_workflow_pin_mismatch_is_rejected_for_execution_paths() -> None:
+    with pytest.raises(
+        selection.ReleaseSelectionError, match="BINANCE_RUNTIME_WORKFLOW_SHA"
+    ):
+        selection.verify_workflow_revision(
+            configured_workflow_sha=PIN_A,
+            configured_release_sha=PIN_B,
+            actual_sha=PIN_B,
+            runtime_enabled=True,
+        )
+    assert (
+        selection.verify_workflow_revision(
+            configured_workflow_sha=PIN_A,
+            configured_release_sha=PIN_B,
+            actual_sha=PIN_A,
+            reconcile_only=True,
+        )
+        == PIN_A
+    )
+
+
+def test_missing_workflow_pin_falls_back_to_release_pin_identity() -> None:
+    assert (
+        selection.verify_workflow_revision(
+            configured_workflow_sha=None,
+            configured_release_sha=PIN_A,
+            actual_sha=PIN_A,
+            runtime_enabled=True,
+        )
+        == PIN_A
+    )
+    with pytest.raises(
+        selection.ReleaseSelectionError, match="BINANCE_RUNTIME_RELEASE_SHA"
+    ):
+        selection.verify_workflow_revision(
+            configured_workflow_sha="",
+            configured_release_sha=PIN_A,
+            actual_sha=TIP,
+            validate_only=True,
+        )
+    with pytest.raises(
+        selection.ReleaseSelectionError,
+        match="BINANCE_RUNTIME_WORKFLOW_SHA is unset",
+    ):
+        selection.verify_workflow_revision(
+            configured_workflow_sha=None,
+            configured_release_sha=None,
+            actual_sha=PIN_A,
+            runtime_enabled=True,
+        )
+
+
+def test_candidate_full_cycle_may_omit_workflow_pin() -> None:
+    assert (
+        selection.verify_workflow_revision(
+            configured_workflow_sha=None,
+            configured_release_sha=PIN_A,
+            actual_sha=TIP,
+            validate_only=True,
+            full_cycle=True,
+            runtime_enabled=False,
+            reconcile_only=False,
+            candidate_sha=PIN_B,
+        )
+        == TIP
+    )
+
+
+def test_disabled_noop_does_not_require_workflow_pin() -> None:
+    assert (
+        selection.verify_workflow_revision(
+            configured_workflow_sha=None,
+            configured_release_sha=None,
+            actual_sha=None,
+            runtime_enabled=False,
+            reconcile_only=False,
+            validate_only=False,
+        )
+        == ""
+    )
+
+
+def test_runtime_identity_triplet_is_emitted() -> None:
+    line = selection.format_runtime_identity(
+        workflow_sha=PIN_A,
+        release_sha=PIN_B,
+        uv_lock_sha256="d" * 64,
+        uv_version="uv 0.11.19",
+        python_version="3.11.9",
+    )
+    assert "workflow_sha=" + PIN_A in line
+    assert "release_sha=" + PIN_B in line
+    assert "uv_lock_sha256=" + ("d" * 64) in line
+    assert "uv_version=uv 0.11.19" in line
+    assert "python_version=3.11.9" in line
+    with pytest.raises(selection.ReleaseSelectionError, match="uv_lock_sha256"):
+        selection.format_runtime_identity(
+            workflow_sha=PIN_A,
+            release_sha=PIN_B,
+            uv_lock_sha256="not-a-hash",
+            uv_version="uv 0.11.19",
+            python_version="3.11.9",
+        )
+
+
 def test_checkout_head_mismatch_is_rejected(tmp_path: Path) -> None:
     subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
     subprocess.run(

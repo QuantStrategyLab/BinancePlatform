@@ -1,7 +1,8 @@
 """Select the configured Binance runtime release commit.
 
-This module only chooses which source tree to check out. It does not grant
-trading authority, change risk limits, or replace LIVE risk authority checks.
+This module only chooses which source tree to check out and verifies the
+approved workflow revision that loaded the job. It does not grant trading
+authority, change risk limits, or replace LIVE risk authority checks.
 Missing or illegal pins fail closed and never fall back to the moving main tip.
 """
 
@@ -15,6 +16,7 @@ import sys
 from pathlib import Path
 
 _FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _TRUTHY = frozenset({"true", "1", "yes"})
 _FALSY = frozenset({"false", "0", "no", ""})
 
@@ -33,6 +35,15 @@ def _normalize_sha(value: str | None, *, field: str) -> str | None:
         raise ReleaseSelectionError(
             f"invalid {field}: expected a full 40-character lowercase hex commit SHA"
         )
+    return text
+
+
+def _normalize_sha256(value: str | None, *, field: str) -> str:
+    if value is None or value.strip() == "":
+        raise ReleaseSelectionError(f"invalid {field}: expected a sha256 hex digest")
+    text = value.strip().lower()
+    if _SHA256.fullmatch(text) is None:
+        raise ReleaseSelectionError(f"invalid {field}: expected a sha256 hex digest")
     return text
 
 
@@ -88,6 +99,108 @@ def select_release_sha(
     return configured
 
 
+def verify_workflow_revision(
+    *,
+    configured_workflow_sha: str | None,
+    configured_release_sha: str | None = None,
+    actual_sha: str | None,
+    runtime_enabled: bool = False,
+    reconcile_only: bool = False,
+    validate_only: bool = False,
+    full_cycle: bool = False,
+    candidate_sha: str | None = None,
+) -> str:
+    """Require the dispatch-loaded workflow revision to match an approved pin.
+
+    GitHub Actions always executes the workflow YAML from the triggering
+    revision (`github.sha`). Pinning the application checkout alone does not
+    freeze that YAML. Prefer `BINANCE_RUNTIME_WORKFLOW_SHA` when set; otherwise
+    require `github.sha` to equal `BINANCE_RUNTIME_RELEASE_SHA` so main tip /
+    Dependabot / other-branch dispatches cannot silently change production
+    execution identity. The existing no-submit candidate full-cycle path may
+    omit a dedicated workflow pin so operators can validate a candidate app
+    tree. Disabled no-op observation does not require a workflow pin.
+    """
+
+    if not (runtime_enabled or reconcile_only or validate_only):
+        return ""
+
+    actual = _normalize_sha(actual_sha, field="github.sha")
+    if actual is None:
+        raise ReleaseSelectionError(
+            "github.sha is required to verify the approved workflow revision"
+        )
+
+    workflow = _normalize_sha(
+        configured_workflow_sha, field="BINANCE_RUNTIME_WORKFLOW_SHA"
+    )
+    if workflow is not None:
+        if actual != workflow:
+            raise ReleaseSelectionError(
+                "workflow revision github.sha does not match "
+                "BINANCE_RUNTIME_WORKFLOW_SHA"
+            )
+        return actual
+
+    candidate = _normalize_sha(candidate_sha, field="candidate_release_sha")
+    if (
+        candidate is not None
+        and validate_only
+        and full_cycle
+        and not runtime_enabled
+        and not reconcile_only
+    ):
+        return actual
+
+    release = _normalize_sha(
+        configured_release_sha, field="BINANCE_RUNTIME_RELEASE_SHA"
+    )
+    if release is None:
+        raise ReleaseSelectionError(
+            "BINANCE_RUNTIME_WORKFLOW_SHA is unset and "
+            "BINANCE_RUNTIME_RELEASE_SHA is missing; refusing to run workflow "
+            "YAML from an unpinned trigger"
+        )
+    if actual != release:
+        raise ReleaseSelectionError(
+            "workflow revision github.sha does not match "
+            "BINANCE_RUNTIME_RELEASE_SHA while BINANCE_RUNTIME_WORKFLOW_SHA "
+            "is unset; refuse main-tip drift"
+        )
+    return actual
+
+
+def format_runtime_identity(
+    *,
+    workflow_sha: str,
+    release_sha: str,
+    uv_lock_sha256: str,
+    uv_version: str,
+    python_version: str,
+) -> str:
+    """Return a single auditable identity line for workflow/app/lock/tooling."""
+
+    workflow = _normalize_sha(workflow_sha, field="workflow_sha")
+    release = _normalize_sha(release_sha, field="release_sha")
+    if workflow is None or release is None:
+        raise ReleaseSelectionError("workflow_sha and release_sha are required")
+    lock_digest = _normalize_sha256(uv_lock_sha256, field="uv_lock_sha256")
+    uv_text = uv_version.strip()
+    py_text = python_version.strip()
+    if not uv_text:
+        raise ReleaseSelectionError("uv_version is required")
+    if not py_text:
+        raise ReleaseSelectionError("python_version is required")
+    return (
+        "runtime_identity "
+        f"workflow_sha={workflow} "
+        f"release_sha={release} "
+        f"uv_lock_sha256={lock_digest} "
+        f"uv_version={uv_text} "
+        f"python_version={py_text}"
+    )
+
+
 def resolve_checkout_head(*, repo_root: Path | None = None) -> str:
     root = Path.cwd() if repo_root is None else repo_root
     try:
@@ -135,9 +248,49 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Verify the current checkout HEAD matches EXPECTED_RELEASE_SHA",
     )
+    parser.add_argument(
+        "--verify-workflow",
+        action="store_true",
+        help="Verify github.sha matches BINANCE_RUNTIME_WORKFLOW_SHA",
+    )
+    parser.add_argument(
+        "--emit-identity",
+        action="store_true",
+        help="Emit the workflow/release/lock/tooling identity line",
+    )
     args = parser.parse_args(argv)
 
     try:
+        if args.verify_workflow:
+            actual = verify_workflow_revision(
+                configured_workflow_sha=os.environ.get(
+                    "BINANCE_RUNTIME_WORKFLOW_SHA"
+                ),
+                configured_release_sha=os.environ.get(
+                    "BINANCE_RUNTIME_RELEASE_SHA"
+                ),
+                actual_sha=os.environ.get("GITHUB_SHA"),
+                runtime_enabled=_env_flag("RUNTIME_TARGET_ENABLED"),
+                reconcile_only=_env_flag("RECONCILE_ONLY"),
+                validate_only=_env_flag("VALIDATE_ONLY"),
+                full_cycle=_env_flag("FULL_CYCLE"),
+                candidate_sha=os.environ.get("CANDIDATE_RELEASE_SHA"),
+            )
+            print(actual)
+            return 0
+
+        if args.emit_identity:
+            print(
+                format_runtime_identity(
+                    workflow_sha=os.environ.get("WORKFLOW_SHA") or "",
+                    release_sha=os.environ.get("RELEASE_SHA") or "",
+                    uv_lock_sha256=os.environ.get("UV_LOCK_SHA256") or "",
+                    uv_version=os.environ.get("UV_VERSION") or "",
+                    python_version=os.environ.get("PYTHON_VERSION") or "",
+                )
+            )
+            return 0
+
         if args.verify:
             expected = os.environ.get("EXPECTED_RELEASE_SHA")
             actual = verify_checkout_matches_selected(expected_sha=expected or "")
