@@ -74,6 +74,16 @@ _REBASED_LEDGER_FIELDS = {
     "last_reset_date",
     "accounting_rebase",
 }
+_DAILY_LOSS_SEMANTIC_FIELDS = frozenset({
+    "daily_equity_base",
+    "daily_trend_equity_base",
+    "daily_trend_pnl_basis",
+    "daily_trend_cash_flow_usdt",
+    "daily_trend_net_invested_usdt",
+    "daily_trend_risk_base_usdt",
+    "daily_trend_third_fee_usdt",
+    "last_reset_date",
+})
 _RUN_KEYS = {"id", "head_sha", "head_branch", "event", "path"}
 
 
@@ -97,6 +107,34 @@ def _amount(value: object) -> Decimal:
     if not number.is_finite() or number < 0:
         raise ValueError("post_rebase_balance_amount_invalid")
     return number
+
+
+def _exact_decimal_sum(values: Sequence[Decimal]) -> Decimal:
+    """Sum Decimals by integer scaling; never rounds under a Decimal context cap."""
+    parts: list[tuple[int, int]] = []
+    for value in values:
+        if not isinstance(value, Decimal) or not value.is_finite():
+            raise ValueError("post_rebase_balance_amount_invalid")
+        sign, digits, exp = value.as_tuple()
+        if not isinstance(exp, int):
+            raise ValueError("post_rebase_balance_amount_invalid")
+        coeff = 0
+        for digit in digits:
+            coeff = coeff * 10 + int(digit)
+        if sign:
+            coeff = -coeff
+        parts.append((coeff, exp))
+    if not parts:
+        return Decimal(0)
+    min_exp = min(exp for _coeff, exp in parts)
+    total = 0
+    for coeff, exp in parts:
+        total += coeff * (10 ** (exp - min_exp))
+    if total == 0:
+        return Decimal(0)
+    negative = total < 0
+    digit_tuple = tuple(int(char) for char in str(abs(total)))
+    return Decimal((1 if negative else 0, digit_tuple, min_exp))
 
 
 def _quantity(value: Decimal) -> float:
@@ -578,16 +616,22 @@ def _collect_historical_continuity_private(
     counts = history.get("history_counts")
     if not isinstance(counts, Mapping):
         raise ValueError("historical_continuity_history_incomplete")
+    lifecycle_surfaces = {"earn_rewards", "earn_subscriptions", "earn_redemptions"}
     unsupported = [
         name for name, value in counts.items()
-        if name != "earn_rewards" and value not in (0, None)
+        if name not in lifecycle_surfaces and value not in (0, None)
     ]
     if unsupported:
         raise ValueError("historical_continuity_unsupported_activity")
     if counts.get("earn_rewards") not in (0, None) and type(counts.get("earn_rewards")) is not int:
         raise ValueError("historical_continuity_history_incomplete")
+    for surface in ("earn_subscriptions", "earn_redemptions"):
+        if counts.get(surface) not in (0, None) and type(counts.get(surface)) is not int:
+            raise ValueError("historical_continuity_history_incomplete")
 
     earn_rewards = int(counts.get("earn_rewards") or 0)
+    earn_subscriptions = int(counts.get("earn_subscriptions") or 0)
+    earn_redemptions = int(counts.get("earn_redemptions") or 0)
     managed = material["managed_assets"]
     expected_scope = legacy_expected.get("account_scope_sha256")
     proposed = archive["approved_proposal"]["proposed_fields"]
@@ -599,6 +643,7 @@ def _collect_historical_continuity_private(
     current_principal = ledger.get("daily_external_principal_usdt", opening_principal)
     current_cursor = ledger.get("external_cash_flow_cursor")
     current_nets = ledger.get("earn_accounted_net_changes")
+    classification_counts = history.get("reward_product_classification_counts")
 
     try:
         account = client.get_account()
@@ -661,11 +706,13 @@ def _collect_historical_continuity_private(
         for asset, value in current_snapshot.items()
     }
     try:
+        if not _daily_loss_fields_unchanged(proposed, ledger):
+            raise ValueError("daily_loss")
         if _amount(current_principal) != _amount(opening_principal):
             raise ValueError("principal")
-        if current_cursor != opening_cursor:
+        if not _cursor_evolution_allowed(opening_cursor, current_cursor, final_at=final_at):
             raise ValueError("cursor")
-        if current_nets != opening_nets:
+        if not _nets_evolution_allowed(opening_nets, current_nets, managed):
             raise ValueError("nets")
         if set(current_snapshot) != set(opening_snapshot):
             raise ValueError("scope")
@@ -677,12 +724,16 @@ def _collect_historical_continuity_private(
             raise ValueError("snapshot")
         if current_checkpoint.get("assets") != broker_checkpoint["assets"]:
             raise ValueError("checkpoint")
-        if earn_rewards == 0:
-            if (
-                current_checkpoint != opening_checkpoint
-                or current_snapshot != opening_snapshot
-                or broker_quantities != material["opening_quantities"]
-            ):
+        if not _checkpoint_nontime_metadata_equal(opening_checkpoint, current_checkpoint):
+            raise ValueError("checkpoint")
+        if earn_rewards == 0 and earn_subscriptions == 0 and earn_redemptions == 0:
+            if broker_quantities != material["opening_quantities"]:
+                raise ValueError("unchanged")
+            if ledger_snapshot_quantities != material["opening_quantities"]:
+                raise ValueError("snapshot")
+            if not _checkpoint_assets_equal(opening_checkpoint, current_checkpoint):
+                raise ValueError("unchanged")
+            if not _checkpoint_assets_equal(opening_checkpoint, broker_checkpoint):
                 raise ValueError("unchanged")
             compare_earn_checkpoints(
                 opening_checkpoint,
@@ -691,53 +742,311 @@ def _collect_historical_continuity_private(
             )
         else:
             totals = history.get("reward_quantity_totals")
-            if not isinstance(totals, Mapping):
+            if earn_rewards > 0 and not isinstance(totals, Mapping):
                 raise ValueError("rewards")
+            bonus_by_asset = {}
+            realtime_by_asset = {}
             expected_quantities = {}
             for asset, opening_qty in material["opening_quantities"].items():
-                row = totals.get(asset)
-                if not isinstance(row, Mapping):
-                    raise ValueError("rewards")
+                if earn_rewards == 0:
+                    bonus = Decimal(0)
+                    realtime = Decimal(0)
+                else:
+                    row = totals.get(asset)
+                    if not isinstance(row, Mapping):
+                        raise ValueError("rewards")
+                    bonus = _amount(row.get("BONUS"))
+                    realtime = _amount(row.get("REALTIME"))
+                bonus_by_asset[asset] = bonus
+                realtime_by_asset[asset] = realtime
                 expected_quantities[asset] = _add_reward_quantity(
-                    _amount(opening_qty), _amount(row.get("total"))
+                    _add_reward_quantity(_amount(opening_qty), bonus), realtime
                 )
             if broker_quantities != expected_quantities:
                 raise ValueError("rewards")
             if ledger_snapshot_quantities != expected_quantities:
                 raise ValueError("snapshot")
-            # Counter delta explains earn accrual; external verified nets stay zero.
-            compare_earn_checkpoints(
-                opening_checkpoint,
-                current_checkpoint,
-                verified_net_changes={asset: "0" for asset in managed},
+            opening_products = {
+                (asset, product_id)
+                for asset, row in opening_checkpoint.get("assets", {}).items()
+                if isinstance(row, Mapping)
+                for product_id in (row.get("products") or {})
+            }
+            current_products = {
+                (asset, product_id)
+                for asset, row in broker_checkpoint.get("assets", {}).items()
+                if isinstance(row, Mapping)
+                for product_id in (row.get("products") or {})
+            }
+            added_products = current_products - opening_products
+            removed_products = opening_products - current_products
+            subscription_facts = history.get("_private_lifecycle_subscription_facts") or []
+            redemption_facts = history.get("_private_lifecycle_redemption_facts") or []
+            if not isinstance(subscription_facts, list) or not isinstance(redemption_facts, list):
+                raise ValueError("lifecycle")
+            for asset, product_id in added_products:
+                matches = [
+                    fact
+                    for fact in subscription_facts
+                    if (
+                        isinstance(fact, Mapping)
+                        and fact.get("asset") == asset
+                        and fact.get("product_id") == product_id
+                    )
+                ]
+                if not matches:
+                    raise ValueError("lifecycle")
+                sub_amount = sum((_amount(fact.get("amount")) for fact in matches), Decimal(0))
+                product = broker_checkpoint["assets"][asset]["products"][product_id]
+                if _amount(product["total"]) != _add_reward_quantity(
+                    sub_amount, _amount(product["realtime_rewards"])
+                ):
+                    raise ValueError("lifecycle")
+            for asset, product_id in removed_products:
+                matches = [
+                    fact
+                    for fact in redemption_facts
+                    if (
+                        isinstance(fact, Mapping)
+                        and fact.get("asset") == asset
+                        and fact.get("product_id") == product_id
+                    )
+                ]
+                if not matches:
+                    raise ValueError("lifecycle")
+                redeem_amount = _exact_decimal_sum(
+                    [_amount(fact.get("amount")) for fact in matches]
+                )
+                opening_product = opening_checkpoint["assets"][asset]["products"][product_id]
+                if redeem_amount != _amount(opening_product["total"]):
+                    raise ValueError("lifecycle")
+            lifecycle_mutated = bool(added_products or removed_products) or any(
+                isinstance(fact, Mapping) and fact.get("asset") in managed
+                for fact in (*subscription_facts, *redemption_facts)
             )
-            compare_earn_checkpoints(
-                opening_checkpoint,
-                broker_checkpoint,
-                verified_net_changes={asset: "0" for asset in managed},
-            )
+            for asset in managed:
+                opening_row = opening_checkpoint["assets"][asset]
+                current_row = broker_checkpoint["assets"][asset]
+                asset_subs = sum(
+                    (
+                        _amount(fact.get("amount"))
+                        for fact in subscription_facts
+                        if isinstance(fact, Mapping) and fact.get("asset") == asset
+                    ),
+                    Decimal(0),
+                )
+                asset_redeems = sum(
+                    (
+                        _amount(fact.get("amount"))
+                        for fact in redemption_facts
+                        if isinstance(fact, Mapping) and fact.get("asset") == asset
+                    ),
+                    Decimal(0),
+                )
+                spot_delta = _amount(current_row["spot_free"]) - _amount(opening_row["spot_free"])
+                if spot_delta != bonus_by_asset[asset] + asset_redeems - asset_subs:
+                    raise ValueError("bonus_spot")
+                shared = set(opening_row["products"]) & set(current_row["products"])
+                counter_delta = Decimal(0)
+                for product_id in shared:
+                    before = opening_row["products"][product_id]
+                    after = current_row["products"][product_id]
+                    if before.get("auto_subscribe") != after.get("auto_subscribe"):
+                        raise ValueError("lifecycle")
+                    delta = _amount(after["realtime_rewards"]) - _amount(before["realtime_rewards"])
+                    if delta < 0:
+                        raise ValueError("lifecycle")
+                    counter_delta = _add_reward_quantity(counter_delta, delta)
+                    product_subs = sum(
+                        (
+                            _amount(fact.get("amount"))
+                            for fact in subscription_facts
+                            if (
+                                isinstance(fact, Mapping)
+                                and fact.get("asset") == asset
+                                and fact.get("product_id") == product_id
+                            )
+                        ),
+                        Decimal(0),
+                    )
+                    product_redeems = sum(
+                        (
+                            _amount(fact.get("amount"))
+                            for fact in redemption_facts
+                            if (
+                                isinstance(fact, Mapping)
+                                and fact.get("asset") == asset
+                                and fact.get("product_id") == product_id
+                            )
+                        ),
+                        Decimal(0),
+                    )
+                    principal_before = _amount(before["total"]) - _amount(before["realtime_rewards"])
+                    principal_after = _amount(after["total"]) - _amount(after["realtime_rewards"])
+                    if principal_after != principal_before + product_subs - product_redeems:
+                        raise ValueError("lifecycle")
+                for product_id, after in current_row["products"].items():
+                    if product_id in shared:
+                        continue
+                    counter_delta = _add_reward_quantity(
+                        counter_delta, _amount(after["realtime_rewards"])
+                    )
+                if counter_delta != realtime_by_asset[asset]:
+                    raise ValueError("realtime_earn")
+            if not lifecycle_mutated:
+                compare_earn_checkpoints(
+                    opening_checkpoint,
+                    current_checkpoint,
+                    verified_net_changes={
+                        asset: format(bonus_by_asset[asset], "f") for asset in managed
+                    },
+                )
+                compare_earn_checkpoints(
+                    opening_checkpoint,
+                    broker_checkpoint,
+                    verified_net_changes={
+                        asset: format(bonus_by_asset[asset], "f") for asset in managed
+                    },
+                )
     except (KeyError, TypeError, ValueError, InvalidOperation):
         raise ValueError("historical_continuity_conservation_unverified") from None
 
+    proof = {
+        "history_complete_for_requested_surfaces": True,
+        "history_counts": dict(counts),
+        "chunk_count": history.get("chunk_count"),
+        "quantity_double_read_match": True,
+        "managed_asset_count": len(managed),
+        "non_managed_spot_policy": "observe_only",
+        "observed_non_managed_asset_count": observed_count,
+        "earn_rewards_observed": earn_rewards,
+        "earn_reward_conservation_verified": earn_rewards > 0 or earn_subscriptions > 0,
+        "current_ledger_bound": True,
+        "opening_checkpoint_used_as_bridge": False,
+    }
+    if isinstance(classification_counts, Mapping):
+        proof["reward_product_classification_counts"] = {
+            str(key): int(value)
+            for key, value in classification_counts.items()
+            if key in {
+                "opening_approved",
+                "lifecycle_subscription_proven",
+                "out_of_scope_asset",
+                "lifecycle_evidence_incomplete",
+                "product_mapping_ambiguous",
+                "unexplained_managed_impact",
+            }
+            and type(value) is int
+        }
     return {
         "observed_at": final_at,
         "observations": observations,
         "current_ledger_sha256": material["current_ledger_sha256"],
         "archive_sha256": material["archive_sha256"],
-        "proof": {
-            "history_complete_for_requested_surfaces": True,
-            "history_counts": dict(counts),
-            "chunk_count": history.get("chunk_count"),
-            "quantity_double_read_match": True,
-            "managed_asset_count": len(managed),
-            "non_managed_spot_policy": "observe_only",
-            "observed_non_managed_asset_count": observed_count,
-            "earn_rewards_observed": earn_rewards,
-            "earn_reward_conservation_verified": earn_rewards > 0,
-            "current_ledger_bound": True,
-            "opening_checkpoint_used_as_bridge": False,
-        },
+        "proof": proof,
     }
+
+
+def _cursor_evolution_allowed(
+    opening_cursor: object,
+    current_cursor: object,
+    *,
+    final_at: datetime,
+) -> bool:
+    """Allow evidenced cursor time advancement; never invent or copy records."""
+    if opening_cursor == current_cursor:
+        return True
+    if not isinstance(opening_cursor, Mapping) or not isinstance(current_cursor, Mapping):
+        return False
+    if current_cursor.get("version") != opening_cursor.get("version"):
+        return False
+    opening_records = opening_cursor.get("records")
+    current_records = current_cursor.get("records")
+    if opening_records != current_records:
+        return False
+    try:
+        opening_at = _utc(opening_cursor.get("observed_at"))
+        current_at = _utc(current_cursor.get("observed_at"))
+    except ValueError:
+        return False
+    return opening_at <= current_at <= final_at
+
+
+def _nets_evolution_allowed(
+    opening_nets: object,
+    current_nets: object,
+    managed: Sequence[str],
+) -> bool:
+    """Allow accounted nets to remain zero without requiring byte-identical opening."""
+    if opening_nets == current_nets:
+        return True
+    if not isinstance(current_nets, Mapping):
+        return False
+    if set(current_nets) != set(managed):
+        return False
+    try:
+        return all(_amount(current_nets[asset]) == 0 for asset in managed)
+    except (KeyError, TypeError, ValueError, InvalidOperation):
+        return False
+
+
+def _daily_loss_fields_unchanged(
+    opening_fields: Mapping[str, object],
+    ledger: Mapping[str, object],
+) -> bool:
+    """Daily-loss semantics stay frozen until independently recomputed."""
+    for field in _DAILY_LOSS_SEMANTIC_FIELDS:
+        if ledger.get(field) != opening_fields.get(field):
+            return False
+    return True
+
+
+def _checkpoint_nontime_metadata_equal(
+    left: Mapping[str, object],
+    right: Mapping[str, object],
+) -> bool:
+    """Authority/scope metadata must match; observed_at and assets may evolve."""
+    if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+        return False
+    ignore = {"observed_at", "assets"}
+    left_keys = set(left) - ignore
+    right_keys = set(right) - ignore
+    if left_keys != right_keys:
+        return False
+    for key in left_keys:
+        left_val = left[key]
+        right_val = right[key]
+        if key == "execution_authority_granted":
+            if left_val is not False or right_val is not False:
+                return False
+            continue
+        if key == "account_scope_sha256":
+            if (
+                type(left_val) is not str
+                or type(right_val) is not str
+                or left_val != right_val
+            ):
+                return False
+            continue
+        if left_val != right_val:
+            return False
+    return True
+
+
+def _checkpoint_assets_equal(
+    left: Mapping[str, object],
+    right: Mapping[str, object],
+) -> bool:
+    """No-activity checkpoints may advance observed_at only; other fields stay fixed."""
+    if not isinstance(left, Mapping) or not isinstance(right, Mapping):
+        return False
+    left_keys = set(left) - {"observed_at"}
+    right_keys = set(right) - {"observed_at"}
+    if left_keys != right_keys:
+        return False
+    if not _checkpoint_nontime_metadata_equal(left, right):
+        return False
+    return left.get("assets") == right.get("assets")
 
 
 def _historical_spot_digest(
@@ -774,7 +1083,7 @@ def _historical_spot_digest(
 def collect_historical_continuity_diagnosis(**kwargs) -> dict[str, object]:
     """Sanitized read-only diagnosis for opening→now continuity via chunked history."""
     private = _collect_historical_continuity_private(**kwargs)
-    return {
+    result = {
         "status": "diagnosed",
         "source_kind": HISTORICAL_CONTINUITY_KIND,
         "current_ledger_sha256": private["current_ledger_sha256"],
@@ -784,6 +1093,10 @@ def collect_historical_continuity_diagnosis(**kwargs) -> dict[str, object]:
         "write_performed": False,
         "execution_authority_granted": False,
     }
+    counts = private["proof"].get("reward_product_classification_counts")
+    if isinstance(counts, Mapping):
+        result["reward_product_classification_counts"] = dict(counts)
+    return result
 
 
 def collect_historical_continuity_source(**kwargs) -> dict[str, object]:

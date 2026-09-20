@@ -23,6 +23,17 @@ NOW_BEYOND = OPENING_AT + timedelta(days=8)
 LATER_BEYOND = NOW_BEYOND + timedelta(seconds=1)
 
 
+def _evolve_ledger_without_daily_loss(ledger, *, observed_at):
+    """Advance only cash-flow cursor time; leave daily-loss semantic fields untouched."""
+    evolved = copy.deepcopy(ledger)
+    cursor = copy.deepcopy(evolved["external_cash_flow_cursor"])
+    cursor["observed_at"] = (
+        observed_at.isoformat() if hasattr(observed_at, "isoformat") else observed_at
+    )
+    evolved["external_cash_flow_cursor"] = cursor
+    return evolved
+
+
 def _bnb_earn_row(*, total="2", rewards="0.1", collateral="0"):
     return {
         "asset": "BNB",
@@ -92,15 +103,133 @@ def test_chunked_balance_flows_accepts_explicit_span_beyond_max_history_when_com
     assert spans[0][1] + 1 == spans[1][0]
 
 
-def test_chunked_balance_flows_rejects_incomplete_page_in_any_chunk():
+def test_chunked_balance_flows_accepts_exact_full_single_page_when_total_matches():
+    """A page at the API size limit is complete when total equals the row count."""
     from application.broker_reconciliation import diagnose_chunked_balance_flows
 
-    client, _calls = _empty_history_client(page_full_surface="rewardsRecord")
+    end = OPENING_AT + timedelta(days=1)
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        start_ms = data.get("startTime")
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/rewardsRecord"):
+            rows = [
+                {
+                    "asset": "BNB",
+                    "type": "REALTIME",
+                    "projectId": "BNB001",
+                    "time": start_ms + i,
+                    "rewards": "0",
+                }
+                for i in range(100)
+            ]
+            return {"rows": rows, "total": 100}
+        return {"rows": [], "total": 0}
 
     result = diagnose_chunked_balance_flows(
-        client, start=OPENING_AT, end=NOW_BEYOND, now=NOW_BEYOND
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=end,
+        now=end,
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
     )
+    assert result["history_complete_for_requested_surfaces"] is True
+    assert result["history_counts"]["earn_rewards"] == 100
 
+
+def test_chunked_balance_flows_paginates_full_reward_pages():
+    """Full pages must continue until the final short page; identities stay unique."""
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    end = OPENING_AT + timedelta(days=1)
+    start_ms = int(OPENING_AT.timestamp() * 1000)
+    pages_seen = []
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/rewardsRecord"):
+            current = int(data.get("current") or 1)
+            pages_seen.append(current)
+            if current == 1:
+                rows = [
+                    {
+                        "asset": "BNB",
+                        "type": "REALTIME",
+                        "projectId": "BNB001",
+                        "time": start_ms + i,
+                        "rewards": "0.001",
+                    }
+                    for i in range(100)
+                ]
+                return {"rows": rows, "total": 150}
+            if current == 2:
+                rows = [
+                    {
+                        "asset": "BNB",
+                        "type": "REALTIME",
+                        "projectId": "BNB001",
+                        "time": start_ms + 100 + i,
+                        "rewards": "0.001",
+                    }
+                    for i in range(50)
+                ]
+                return {"rows": rows, "total": 150}
+            return {"rows": [], "total": 150}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=end,
+        now=end,
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert pages_seen == [1, 2]
+    assert result["history_complete_for_requested_surfaces"] is True
+    assert result["history_counts"]["earn_rewards"] == 150
+    assert result["reward_quantity_totals"]["BNB"]["REALTIME"] == "0.150"
+
+
+def test_chunked_balance_flows_rejects_full_page_when_total_exceeds_visible_rows():
+    """Full page with a larger total and no further pages must fail closed."""
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        start_ms = data.get("startTime")
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/rewardsRecord"):
+            current = int(data.get("current") or 1)
+            if current == 1:
+                return {
+                    "rows": [
+                        {
+                            "asset": "BNB",
+                            "type": "REALTIME",
+                            "projectId": "BNB001",
+                            "time": start_ms + i,
+                            "rewards": "0",
+                        }
+                        for i in range(100)
+                    ],
+                    "total": 150,
+                }
+            return {"rows": [], "total": 150}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+    )
     assert result["history_complete_for_requested_surfaces"] is False
     assert result["reason_code"] == "balance_history_incomplete"
 
@@ -155,7 +284,7 @@ def test_historical_continuity_diagnosis_accepts_earn_only_beyond_max_history(mo
     assert NOW_BEYOND - OPENING_AT > MAX_HISTORY
     # Evolved ledger: digest no longer equals opening; must not use earn checkpoint as bridge.
     ledger = copy.deepcopy(ledger)
-    ledger["daily_equity_base"] = float(ledger["daily_equity_base"]) + 0.01
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
     assert digest(ledger) != digest(
         {**archive["ledger"], **archive["approved_proposal"]["proposed_fields"],
          "accounting_rebase": ledger["accounting_rebase"]}
@@ -260,7 +389,7 @@ def test_historical_continuity_fails_closed_on_unsupported_or_open_activity(
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
-    ledger["daily_equity_base"] = float(ledger["daily_equity_base"]) + 0.01
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
 
     class BusyClient(ProspectiveClient):
         def get_my_trades(self, **_kwargs):
@@ -280,11 +409,16 @@ def test_historical_continuity_fails_closed_on_unsupported_or_open_activity(
         def _request_margin_api(self, method, path, **kwargs):
             if change == "deposit" and path == "capital/deposit/hisrec":
                 stamp = int((OPENING_AT + timedelta(days=1)).timestamp() * 1000)
-                return [{
-                    "id": "dep-1", "amount": "10", "coin": "USDT", "status": 1,
-                    "insertTime": stamp, "completeTime": stamp, "walletType": 0,
-                    "transferType": 0, "txId": "tx-1",
-                }]
+                data = kwargs.get("data") or {}
+                start_ms = data.get("startTime")
+                end_ms = data.get("endTime")
+                if type(start_ms) is int and type(end_ms) is int and start_ms <= stamp <= end_ms:
+                    return [{
+                        "id": "dep-1", "amount": "10", "coin": "USDT", "status": 1,
+                        "insertTime": stamp, "completeTime": stamp, "walletType": 0,
+                        "transferType": 0, "txId": "tx-1",
+                    }]
+                return []
             if path.startswith("capital/"):
                 return []
             if path == "asset/assetDividend":
@@ -393,7 +527,7 @@ def test_controller_prepare_allows_verified_quiesced_prior_with_new_history(monk
     # Evolved current ledger bound as verification target.
     ledger = docs["MULTI_ASSET_STATE"].snapshot.value
     ledger = copy.deepcopy(ledger)
-    ledger["daily_equity_base"] = float(ledger["daily_equity_base"]) + 0.01
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
     docs["MULTI_ASSET_STATE"].snapshot.value = ledger
 
     result = controller.run("prepare")
@@ -620,7 +754,7 @@ def test_historical_continuity_rejects_tail_activity_between_observed_and_final(
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
-    ledger["daily_equity_base"] = float(ledger["daily_equity_base"]) + 0.01
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
     history_client, _calls = _empty_history_client()
     tail_ms = int(LATER_BEYOND.timestamp() * 1000)
 
@@ -755,7 +889,7 @@ def test_historical_continuity_rejects_earn_product_or_collateral_change(monkeyp
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
-    ledger["daily_equity_base"] = float(ledger["daily_equity_base"]) + 0.01
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
     history_client, _calls = _empty_history_client()
 
     class BrokenEarnClient(ProspectiveClient):
@@ -797,7 +931,7 @@ def test_validate_historical_continuity_source_require_fresh_false_ignores_age(
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
-    ledger["daily_equity_base"] = float(ledger["daily_equity_base"]) + 0.01
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
     history_client, _calls = _empty_history_client()
 
     class StableClient(ProspectiveClient):
@@ -910,7 +1044,7 @@ def test_historical_continuity_rejects_checkpoint_after_final_at(monkeypatch):
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
-    ledger["daily_equity_base"] = float(ledger["daily_equity_base"]) + 0.01
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
     late = LATER_BEYOND + timedelta(seconds=5)
     cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
     cp["observed_at"] = late.isoformat()
@@ -942,8 +1076,8 @@ def test_historical_continuity_rejects_checkpoint_after_final_at(monkeypatch):
         )
 
 
-def test_chunked_rejects_unapproved_reward_project_id():
-    """B: reward projectId must belong to opening/approved Earn products."""
+def test_chunked_rejects_reward_product_without_lifecycle_evidence():
+    """Reward projectId outside opening set still fails without subscription proof."""
     from application.broker_reconciliation import diagnose_chunked_balance_flows
 
     stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
@@ -970,6 +1104,112 @@ def test_chunked_rejects_unapproved_reward_project_id():
     assert result["history_complete_for_requested_surfaces"] is False
     assert result["reason_code"] == "balance_history_unapproved_reward_product"
     assert "reward_quantity_totals" not in result
+    counts = result.get("reward_product_classification_counts")
+    assert isinstance(counts, dict)
+    assert counts.get("lifecycle_evidence_incomplete", 0) >= 1
+    assert "UNAPPROVED_PRODUCT" not in str(result)
+
+
+def test_chunked_accepts_reward_product_proven_by_subscription_lifecycle():
+    """Managed asset + SUCCESS subscription evidence may admit a post-opening product."""
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    sub_stamp = int((OPENING_AT + timedelta(minutes=30)).timestamp() * 1000)
+    reward_stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    subscription = {
+        "asset": "BNB",
+        "productId": "BNB002",
+        "amount": "1",
+        "time": sub_stamp,
+        "type": "AUTO",
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "purchaseId": 42,
+    }
+    reward = {
+        "asset": "BNB",
+        "rewards": "0.01",
+        "type": "REALTIME",
+        "projectId": "BNB002",
+        "time": reward_stamp,
+    }
+
+    def read(method, path, **kwargs):
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            return {"rows": [subscription], "total": 1}
+        if path.endswith("/rewardsRecord"):
+            return {"rows": [reward], "total": 1}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert result["history_complete_for_requested_surfaces"] is True
+    assert result["reward_quantity_totals"]["BNB"]["REALTIME"] == "0.01"
+    counts = result["reward_product_classification_counts"]
+    assert counts["lifecycle_subscription_proven"] == 1
+    assert counts.get("lifecycle_evidence_incomplete", 0) == 0
+    public = {
+        key: value
+        for key, value in result.items()
+        if not str(key).startswith("_private_")
+    }
+    assert "BNB002" not in str(public)
+
+
+def test_chunked_rejects_out_of_scope_reward_product_even_with_subscription():
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    subscription = {
+        "asset": "ETH",
+        "productId": "ETH001",
+        "amount": "1",
+        "time": stamp - 1,
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "type": "AUTO",
+        "purchaseId": 7,
+    }
+    reward = {
+        "asset": "ETH",
+        "rewards": "0.01",
+        "type": "REALTIME",
+        "projectId": "ETH001",
+        "time": stamp,
+    }
+
+    def read(method, path, **kwargs):
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            return {"rows": [subscription], "total": 1}
+        if path.endswith("/rewardsRecord"):
+            return {"rows": [reward], "total": 1}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] in {
+        "balance_history_unapproved_reward_product",
+        "balance_history_incomplete",
+        "balance_history_reward_validation_failed",
+    }
+    assert "ETH001" not in str(result)
 
 
 def test_chunked_covers_final_millisecond_when_span_is_max_chunk_plus_one_ms():
@@ -1043,7 +1283,7 @@ def test_validate_require_fresh_false_still_rejects_binding_tamper(monkeypatch, 
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
-    ledger["daily_equity_base"] = float(ledger["daily_equity_base"]) + 0.01
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
     history_client, _calls = _empty_history_client()
 
     class StableClient(ProspectiveClient):
@@ -1117,4 +1357,1600 @@ def test_validate_require_fresh_false_still_rejects_binding_tamper(monkeypatch, 
             legacy_expected=legacy,
             now=LATER_BEYOND + timedelta(minutes=31),
             require_fresh=False,
+        )
+
+
+def test_historical_continuity_accepts_evidenced_cursor_advancement(monkeypatch):
+    """Cursor observed_at may advance with identical records when rewards conserve."""
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    reward_stamp = int((OPENING_AT + timedelta(days=1)).timestamp() * 1000)
+    reward_row = {
+        "asset": "BNB",
+        "rewards": "0.00000001",
+        "type": "REALTIME",
+        "projectId": "BNB001",
+        "time": reward_stamp,
+    }
+    cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
+    cp["observed_at"] = NOW_BEYOND.isoformat()
+    cp["assets"]["BNB"]["products"]["BNB001"]["realtime_rewards"] = "0.10000001"
+    cp["assets"]["BNB"]["products"]["BNB001"]["total"] = "2.00000001"
+    cp["assets"]["BNB"]["quantity"] = "3.00000001"
+    ledger["earn_accrual_checkpoint"] = cp
+    ledger["last_balance_snapshot"] = {"USDT": 100.0, "BNB": 3.00000001}
+    ledger["external_cash_flow_cursor"] = {
+        "version": 1,
+        "observed_at": NOW_BEYOND.isoformat(),
+        "records": copy.deepcopy(
+            archive["approved_proposal"]["proposed_fields"]["external_cash_flow_cursor"][
+                "records"
+            ]
+        ),
+    }
+
+    history_client, _calls = _empty_history_client(
+        reward_rows_by_window={
+            (
+                int(OPENING_AT.timestamp() * 1000),
+                int((OPENING_AT + timedelta(days=7)).timestamp() * 1000),
+            ): [reward_row],
+        }
+    )
+
+    class RewardClient(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            return _earn_page_for_asset(
+                asset,
+                [_bnb_earn_row(total="2.00000001", rewards="0.10000001")],
+            )
+
+        def get_account(self):
+            return {
+                "uid": "synthetic",
+                "balances": [
+                    {"asset": "USDT", "free": "100", "locked": "0"},
+                    {"asset": "BNB", "free": "1", "locked": "0"},
+                ],
+            }
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return history_client._request_margin_api(method, path, **kwargs)
+
+    result = collect_historical_continuity_diagnosis(
+        client=RewardClient(),
+        runtime_target=_target(),
+        legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+        ledger=ledger,
+        archive=archive,
+        symbols=("BNBUSDT",),
+        source_run={
+            "id": 400,
+            "head_sha": "b" * 40,
+            "head_branch": "main",
+            "event": "workflow_dispatch",
+            "path": ".github/workflows/main.yml",
+        },
+        migration_run={
+            "id": 34690695663,
+            "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+            "head_branch": "main",
+            "event": "workflow_dispatch",
+            "path": ".github/workflows/main.yml",
+        },
+        now=NOW_BEYOND,
+        clock=lambda: LATER_BEYOND,
+    )
+    assert result["status"] == "diagnosed"
+    assert result["no_order"] is True
+    assert result["execution_authority_granted"] is False
+
+
+def test_historical_continuity_bonus_and_realtime_conserve_separately(monkeypatch):
+    """BONUS credits Spot; REALTIME accrues in Earn — both raise total once."""
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    t_bonus = int((OPENING_AT + timedelta(hours=2)).timestamp() * 1000)
+    t_real = int((OPENING_AT + timedelta(hours=3)).timestamp() * 1000)
+    reward_rows = [
+        {
+            "asset": "BNB",
+            "rewards": "0.01",
+            "type": "BONUS",
+            "projectId": "BNB001",
+            "time": t_bonus,
+        },
+        {
+            "asset": "BNB",
+            "rewards": "0.02",
+            "type": "REALTIME",
+            "projectId": "BNB001",
+            "time": t_real,
+        },
+    ]
+    # Spot +0.01 BONUS, Earn total/counter +0.02 REALTIME.
+    cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
+    cp["observed_at"] = NOW_BEYOND.isoformat()
+    cp["assets"]["BNB"]["spot_free"] = "1.01"
+    cp["assets"]["BNB"]["products"]["BNB001"]["realtime_rewards"] = "0.12"
+    cp["assets"]["BNB"]["products"]["BNB001"]["total"] = "2.02"
+    cp["assets"]["BNB"]["quantity"] = "3.03"
+    ledger["earn_accrual_checkpoint"] = cp
+    ledger["last_balance_snapshot"] = {"USDT": "100", "BNB": "3.03"}
+    ledger["external_cash_flow_cursor"] = {
+        "version": 1,
+        "observed_at": NOW_BEYOND.isoformat(),
+        "records": {},
+    }
+
+    history_client, _calls = _empty_history_client(
+        reward_rows_by_window={
+            (
+                int(OPENING_AT.timestamp() * 1000),
+                int((OPENING_AT + timedelta(days=7)).timestamp() * 1000),
+            ): reward_rows,
+        }
+    )
+
+    class RewardClient(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            return _earn_page_for_asset(
+                asset, [_bnb_earn_row(total="2.02", rewards="0.12")]
+            )
+
+        def get_account(self):
+            return {
+                "uid": "synthetic",
+                "balances": [
+                    {"asset": "USDT", "free": "100", "locked": "0"},
+                    {"asset": "BNB", "free": "1.01", "locked": "0"},
+                ],
+            }
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return history_client._request_margin_api(method, path, **kwargs)
+
+    result = collect_historical_continuity_diagnosis(
+        client=RewardClient(),
+        runtime_target=_target(),
+        legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+        ledger=ledger,
+        archive=archive,
+        symbols=("BNBUSDT",),
+        source_run={
+            "id": 400,
+            "head_sha": "b" * 40,
+            "head_branch": "main",
+            "event": "workflow_dispatch",
+            "path": ".github/workflows/main.yml",
+        },
+        migration_run={
+            "id": 34690695663,
+            "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+            "head_branch": "main",
+            "event": "workflow_dispatch",
+            "path": ".github/workflows/main.yml",
+        },
+        now=NOW_BEYOND,
+        clock=lambda: LATER_BEYOND,
+    )
+    assert result["status"] == "diagnosed"
+    assert result["no_order"] is True
+
+
+def test_historical_continuity_rejects_treating_bonus_as_realtime_earn(monkeypatch):
+    """Applying BONUS into Earn totals (and not Spot) must not conserve."""
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    t_bonus = int((OPENING_AT + timedelta(hours=2)).timestamp() * 1000)
+    reward_rows = [
+        {
+            "asset": "BNB",
+            "rewards": "0.01",
+            "type": "BONUS",
+            "projectId": "BNB001",
+            "time": t_bonus,
+        },
+    ]
+    # Wrong: BONUS applied to Earn product instead of Spot.
+    cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
+    cp["observed_at"] = NOW_BEYOND.isoformat()
+    cp["assets"]["BNB"]["products"]["BNB001"]["realtime_rewards"] = "0.11"
+    cp["assets"]["BNB"]["products"]["BNB001"]["total"] = "2.01"
+    cp["assets"]["BNB"]["quantity"] = "3.01"
+    ledger["earn_accrual_checkpoint"] = cp
+    ledger["last_balance_snapshot"] = {"USDT": "100", "BNB": "3.01"}
+
+    history_client, _calls = _empty_history_client(
+        reward_rows_by_window={
+            (
+                int(OPENING_AT.timestamp() * 1000),
+                int((OPENING_AT + timedelta(days=7)).timestamp() * 1000),
+            ): reward_rows,
+        }
+    )
+
+    class RewardClient(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            return _earn_page_for_asset(
+                asset, [_bnb_earn_row(total="2.01", rewards="0.11")]
+            )
+
+        def get_account(self):
+            return {
+                "uid": "synthetic",
+                "balances": [
+                    {"asset": "USDT", "free": "100", "locked": "0"},
+                    {"asset": "BNB", "free": "1", "locked": "0"},
+                ],
+            }
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return history_client._request_margin_api(method, path, **kwargs)
+
+    with pytest.raises(ValueError, match="historical_continuity_conservation_unverified"):
+        collect_historical_continuity_diagnosis(
+            client=RewardClient(),
+            runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            ledger=ledger,
+            archive=archive,
+            symbols=("BNBUSDT",),
+            source_run={
+                "id": 400,
+                "head_sha": "b" * 40,
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            migration_run={
+                "id": 34690695663,
+                "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            now=NOW_BEYOND,
+            clock=lambda: LATER_BEYOND,
+        )
+
+
+def test_historical_continuity_accepts_lifecycle_product_with_subscription(monkeypatch):
+    """Post-opening subscribed product rewards may conserve when evidence is complete."""
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    sub_stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    reward_stamp = int((OPENING_AT + timedelta(hours=2)).timestamp() * 1000)
+    # Move 1 BNB from spot into new product BNB002, then +0.01 REALTIME on BNB002.
+    # Opening: spot 1 + BNB001 2 = 3. After: spot 0 + BNB001 2 + BNB002 1.01 = 3.01
+    cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
+    cp["observed_at"] = NOW_BEYOND.isoformat()
+    cp["assets"]["BNB"]["spot_free"] = "0"
+    cp["assets"]["BNB"]["products"]["BNB002"] = {
+        "total": "1.01",
+        "realtime_rewards": "0.01",
+        "auto_subscribe": True,
+        "can_redeem": True,
+    }
+    cp["assets"]["BNB"]["quantity"] = "3.01"
+    ledger["earn_accrual_checkpoint"] = cp
+    ledger["last_balance_snapshot"] = {"USDT": "100", "BNB": "3.01"}
+    ledger["external_cash_flow_cursor"] = {
+        "version": 1,
+        "observed_at": NOW_BEYOND.isoformat(),
+        "records": {},
+    }
+
+    subscription = {
+        "asset": "BNB",
+        "productId": "BNB002",
+        "amount": "1",
+        "time": sub_stamp,
+        "type": "AUTO",
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "purchaseId": 99,
+    }
+    reward = {
+        "asset": "BNB",
+        "rewards": "0.01",
+        "type": "REALTIME",
+        "projectId": "BNB002",
+        "time": reward_stamp,
+    }
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        start_ms = data.get("startTime")
+        end_ms = data.get("endTime")
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            if type(start_ms) is int and type(end_ms) is int and start_ms <= sub_stamp <= end_ms:
+                return {"rows": [subscription], "total": 1}
+            return {"rows": [], "total": 0}
+        if path.endswith("/rewardsRecord"):
+            if type(start_ms) is int and type(end_ms) is int and start_ms <= reward_stamp <= end_ms:
+                return {"rows": [reward], "total": 1}
+            return {"rows": [], "total": 0}
+        return {"rows": [], "total": 0}
+
+    class LifecycleClient(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            rows = [
+                _bnb_earn_row(),
+                {
+                    "asset": "BNB",
+                    "productId": "BNB002",
+                    "totalAmount": "1.01",
+                    "cumulativeRealTimeRewards": "0.01",
+                    "collateralAmount": "0",
+                    "autoSubscribe": True,
+                    "canRedeem": True,
+                },
+            ]
+            return _earn_page_for_asset(asset, rows)
+
+        def get_account(self):
+            return {
+                "uid": "synthetic",
+                "balances": [
+                    {"asset": "USDT", "free": "100", "locked": "0"},
+                    {"asset": "BNB", "free": "0", "locked": "0"},
+                ],
+            }
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return read(method, path, **kwargs)
+
+    result = collect_historical_continuity_diagnosis(
+        client=LifecycleClient(),
+        runtime_target=_target(),
+        legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+        ledger=ledger,
+        archive=archive,
+        symbols=("BNBUSDT",),
+        source_run={
+            "id": 400,
+            "head_sha": "b" * 40,
+            "head_branch": "main",
+            "event": "workflow_dispatch",
+            "path": ".github/workflows/main.yml",
+        },
+        migration_run={
+            "id": 34690695663,
+            "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+            "head_branch": "main",
+            "event": "workflow_dispatch",
+            "path": ".github/workflows/main.yml",
+        },
+        now=NOW_BEYOND,
+        clock=lambda: LATER_BEYOND,
+    )
+    assert result["status"] == "diagnosed"
+    assert result["no_order"] is True
+    assert result["execution_authority_granted"] is False
+
+
+@pytest.mark.parametrize(
+    "bad_subscription",
+    [
+        {"asset": "BNB", "productId": "BNB002", "time": None, "status": "SUCCESS",
+         "sourceAccount": "SPOT", "purchaseId": 1, "amount": "1", "type": "AUTO"},
+        {"asset": "BNB", "productId": "BNB002",
+         "time": int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000),
+         "status": "SUCCESS", "sourceAccount": "SPOT", "purchaseId": 1, "type": "AUTO"},
+        {"asset": "BNB", "productId": "BNB002", "amount": "-1",
+         "time": int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000),
+         "status": "SUCCESS", "sourceAccount": "SPOT", "purchaseId": 1, "type": "AUTO"},
+        {"asset": "BNB", "productId": "BNB002", "amount": "1",
+         "time": int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000),
+         "status": "PENDING", "sourceAccount": "SPOT", "purchaseId": 1, "type": "AUTO"},
+        {"asset": "BNB", "productId": "BNB002", "amount": "1",
+         "time": int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000),
+         "status": "SUCCESS", "sourceAccount": "SPOT", "type": "AUTO"},
+        {},
+    ],
+)
+def test_chunked_rejects_invalid_subscription_lifecycle_rows(bad_subscription):
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    def read(method, path, **kwargs):
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            return {"rows": [bad_subscription], "total": 1}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] in {
+        "balance_history_incomplete",
+        "balance_history_reward_validation_failed",
+        "balance_history_duplicate_event",
+    }
+
+
+def test_chunked_rejects_duplicate_subscription_identity():
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    row = {
+        "asset": "BNB",
+        "productId": "BNB002",
+        "amount": "1",
+        "time": stamp,
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "type": "AUTO",
+        "purchaseId": 42,
+    }
+
+    def read(method, path, **kwargs):
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            return {"rows": [row, dict(row)], "total": 2}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] in {
+        "balance_history_duplicate_event",
+        "balance_history_incomplete",
+        "balance_history_reward_validation_failed",
+    }
+
+
+def test_chunked_rejects_reward_before_subscription_for_new_product():
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    reward_stamp = int((OPENING_AT + timedelta(minutes=10)).timestamp() * 1000)
+    sub_stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    subscription = {
+        "asset": "BNB",
+        "productId": "BNB002",
+        "amount": "1",
+        "time": sub_stamp,
+        "type": "AUTO",
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "purchaseId": 42,
+    }
+    reward = {
+        "asset": "BNB",
+        "rewards": "0.01",
+        "type": "REALTIME",
+        "projectId": "BNB002",
+        "time": reward_stamp,
+    }
+
+    def read(method, path, **kwargs):
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            return {"rows": [subscription], "total": 1}
+        if path.endswith("/rewardsRecord"):
+            return {"rows": [reward], "total": 1}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] == "balance_history_unapproved_reward_product"
+
+
+def test_chunked_rejects_later_page_total_disagreement():
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    start_ms = int(OPENING_AT.timestamp() * 1000)
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/rewardsRecord"):
+            current = int(data.get("current") or 1)
+            if current == 1:
+                return {
+                    "rows": [
+                        {
+                            "asset": "BNB",
+                            "type": "REALTIME",
+                            "projectId": "BNB001",
+                            "time": start_ms + i,
+                            "rewards": "0",
+                        }
+                        for i in range(100)
+                    ],
+                    "total": 150,
+                }
+            return {
+                "rows": [
+                    {
+                        "asset": "BNB",
+                        "type": "REALTIME",
+                        "projectId": "BNB001",
+                        "time": start_ms + 100 + i,
+                        "rewards": "0",
+                    }
+                    for i in range(50)
+                ],
+                "total": 200,
+            }
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] == "balance_history_incomplete"
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["daily_equity_base", "daily_trend_cash_flow_usdt", "daily_trend_risk_base_usdt"],
+)
+def test_historical_continuity_rejects_unverified_daily_loss_field_change(monkeypatch, field):
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    ledger[field] = float(ledger.get(field) or 0) + 0.01
+    history_client, _calls = _empty_history_client()
+
+    class StableClient(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            return _earn_page_for_asset(asset, [_bnb_earn_row()])
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return history_client._request_margin_api(method, path, **kwargs)
+
+    with pytest.raises(ValueError, match="historical_continuity_conservation_unverified"):
+        collect_historical_continuity_diagnosis(
+            client=StableClient(),
+            runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            ledger=ledger,
+            archive=archive,
+            symbols=("BNBUSDT",),
+            source_run={
+                "id": 400,
+                "head_sha": "b" * 40,
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            migration_run={
+                "id": 34690695663,
+                "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            now=NOW_BEYOND,
+            clock=lambda: LATER_BEYOND,
+        )
+
+
+def test_historical_continuity_allows_checkpoint_observed_at_without_activity(monkeypatch):
+    """No earn activity: checkpoint/cursor timestamps may advance; quantities stay fixed."""
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
+    cp["observed_at"] = NOW_BEYOND.isoformat()
+    ledger["earn_accrual_checkpoint"] = cp
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
+    history_client, _calls = _empty_history_client()
+
+    class StableClient(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            return _earn_page_for_asset(asset, [_bnb_earn_row()])
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return history_client._request_margin_api(method, path, **kwargs)
+
+    result = collect_historical_continuity_diagnosis(
+        client=StableClient(),
+        runtime_target=_target(),
+        legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+        ledger=ledger,
+        archive=archive,
+        symbols=("BNBUSDT",),
+        source_run={
+            "id": 400,
+            "head_sha": "b" * 40,
+            "head_branch": "main",
+            "event": "workflow_dispatch",
+            "path": ".github/workflows/main.yml",
+        },
+        migration_run={
+            "id": 34690695663,
+            "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+            "head_branch": "main",
+            "event": "workflow_dispatch",
+            "path": ".github/workflows/main.yml",
+        },
+        now=NOW_BEYOND,
+        clock=lambda: LATER_BEYOND,
+    )
+    assert result["status"] == "diagnosed"
+    assert result["no_order"] is True
+    assert result["execution_authority_granted"] is False
+
+
+def test_historical_continuity_rejects_product_add_with_only_count_not_matching_fact(
+    monkeypatch,
+):
+    """Subscription count alone cannot authorize a new product without matching facts."""
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    sub_stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
+    cp["observed_at"] = NOW_BEYOND.isoformat()
+    cp["assets"]["BNB"]["spot_free"] = "0"
+    cp["assets"]["BNB"]["products"]["BNB002"] = {
+        "total": "1",
+        "realtime_rewards": "0",
+        "auto_subscribe": True,
+        "can_redeem": True,
+    }
+    cp["assets"]["BNB"]["quantity"] = "3"
+    ledger["earn_accrual_checkpoint"] = cp
+    ledger["last_balance_snapshot"] = {"USDT": "100", "BNB": "3"}
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
+
+    subscription = {
+        "asset": "BNB",
+        "productId": "BNB003",
+        "amount": "1",
+        "time": sub_stamp,
+        "type": "AUTO",
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "purchaseId": 77,
+    }
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        start_ms = data.get("startTime")
+        end_ms = data.get("endTime")
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            if type(start_ms) is int and type(end_ms) is int and start_ms <= sub_stamp <= end_ms:
+                return {"rows": [subscription], "total": 1}
+            return {"rows": [], "total": 0}
+        return {"rows": [], "total": 0}
+
+    class Client(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            rows = [
+                _bnb_earn_row(),
+                {
+                    "asset": "BNB",
+                    "productId": "BNB002",
+                    "totalAmount": "1",
+                    "cumulativeRealTimeRewards": "0",
+                    "collateralAmount": "0",
+                    "autoSubscribe": True,
+                    "canRedeem": True,
+                },
+            ]
+            return _earn_page_for_asset(asset, rows)
+
+        def get_account(self):
+            return {
+                "uid": "synthetic",
+                "balances": [
+                    {"asset": "USDT", "free": "100", "locked": "0"},
+                    {"asset": "BNB", "free": "0", "locked": "0"},
+                ],
+            }
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return read(method, path, **kwargs)
+
+    with pytest.raises(ValueError, match="historical_continuity_conservation_unverified"):
+        collect_historical_continuity_diagnosis(
+            client=Client(),
+            runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            ledger=ledger,
+            archive=archive,
+            symbols=("BNBUSDT",),
+            source_run={
+                "id": 400,
+                "head_sha": "b" * 40,
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            migration_run={
+                "id": 34690695663,
+                "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            now=NOW_BEYOND,
+            clock=lambda: LATER_BEYOND,
+        )
+
+def test_historical_continuity_rejects_product_removal_with_underfunded_redemption(
+    monkeypatch,
+):
+    """Removing BNB001 total=2 cannot be diagnosed from a 0.001 redemption alone."""
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    redeem_stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
+    cp["observed_at"] = NOW_BEYOND.isoformat()
+    cp["assets"]["BNB"]["spot_free"] = "3"
+    cp["assets"]["BNB"]["products"] = {}
+    cp["assets"]["BNB"]["quantity"] = "3"
+    ledger["earn_accrual_checkpoint"] = cp
+    ledger["last_balance_snapshot"] = {"USDT": "100", "BNB": "3"}
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
+
+    redemption = {
+        "asset": "BNB",
+        "projectId": "BNB001",
+        "amount": "0.001",
+        "time": redeem_stamp,
+        "status": "PAID",
+        "destAccount": "SPOT",
+        "redeemId": 501,
+    }
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        start_ms = data.get("startTime")
+        end_ms = data.get("endTime")
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/redemptionRecord"):
+            if type(start_ms) is int and type(end_ms) is int and start_ms <= redeem_stamp <= end_ms:
+                return {"rows": [redemption], "total": 1}
+            return {"rows": [], "total": 0}
+        return {"rows": [], "total": 0}
+
+    class RemovalClient(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            return _earn_page_for_asset(asset, [])
+
+        def get_account(self):
+            return {
+                "uid": "synthetic",
+                "balances": [
+                    {"asset": "USDT", "free": "100", "locked": "0"},
+                    {"asset": "BNB", "free": "3", "locked": "0"},
+                ],
+            }
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return read(method, path, **kwargs)
+
+    with pytest.raises(ValueError, match="historical_continuity_conservation_unverified"):
+        collect_historical_continuity_diagnosis(
+            client=RemovalClient(),
+            runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            ledger=ledger,
+            archive=archive,
+            symbols=("BNBUSDT",),
+            source_run={
+                "id": 400,
+                "head_sha": "b" * 40,
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            migration_run={
+                "id": 34690695663,
+                "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            now=NOW_BEYOND,
+            clock=lambda: LATER_BEYOND,
+        )
+
+
+def test_historical_continuity_rejects_shared_product_principal_drop_without_redemption(
+    monkeypatch,
+):
+    """Shared BNB001 principal drop is not covered by adding BNB002 alone."""
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    sub_stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
+    cp["observed_at"] = NOW_BEYOND.isoformat()
+    # BNB001 principal silently drops 1 while BNB002 is funded by a subscription.
+    cp["assets"]["BNB"]["products"]["BNB001"]["total"] = "1"
+    cp["assets"]["BNB"]["products"]["BNB001"]["realtime_rewards"] = "0.1"
+    cp["assets"]["BNB"]["products"]["BNB002"] = {
+        "total": "1",
+        "realtime_rewards": "0",
+        "auto_subscribe": True,
+        "can_redeem": True,
+    }
+    cp["assets"]["BNB"]["spot_free"] = "1"
+    cp["assets"]["BNB"]["quantity"] = "3"
+    ledger["earn_accrual_checkpoint"] = cp
+    ledger["last_balance_snapshot"] = {"USDT": "100", "BNB": "3"}
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
+
+    subscription = {
+        "asset": "BNB",
+        "productId": "BNB002",
+        "amount": "1",
+        "time": sub_stamp,
+        "type": "AUTO",
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "purchaseId": 802,
+    }
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        start_ms = data.get("startTime")
+        end_ms = data.get("endTime")
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            if type(start_ms) is int and type(end_ms) is int and start_ms <= sub_stamp <= end_ms:
+                return {"rows": [subscription], "total": 1}
+            return {"rows": [], "total": 0}
+        return {"rows": [], "total": 0}
+
+    class MigrationClient(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            rows = [
+                {
+                    "asset": "BNB",
+                    "productId": "BNB001",
+                    "totalAmount": "1",
+                    "cumulativeRealTimeRewards": "0.1",
+                    "collateralAmount": "0",
+                    "autoSubscribe": True,
+                    "canRedeem": True,
+                },
+                {
+                    "asset": "BNB",
+                    "productId": "BNB002",
+                    "totalAmount": "1",
+                    "cumulativeRealTimeRewards": "0",
+                    "collateralAmount": "0",
+                    "autoSubscribe": True,
+                    "canRedeem": True,
+                },
+            ]
+            return _earn_page_for_asset(asset, rows)
+
+        def get_account(self):
+            return {
+                "uid": "synthetic",
+                "balances": [
+                    {"asset": "USDT", "free": "100", "locked": "0"},
+                    {"asset": "BNB", "free": "1", "locked": "0"},
+                ],
+            }
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return read(method, path, **kwargs)
+
+    with pytest.raises(ValueError, match="historical_continuity_conservation_unverified"):
+        collect_historical_continuity_diagnosis(
+            client=MigrationClient(),
+            runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            ledger=ledger,
+            archive=archive,
+            symbols=("BNBUSDT",),
+            source_run={
+                "id": 400,
+                "head_sha": "b" * 40,
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            migration_run={
+                "id": 34690695663,
+                "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            now=NOW_BEYOND,
+            clock=lambda: LATER_BEYOND,
+        )
+
+
+def test_chunked_rejects_lifecycle_row_with_product_bound_to_other_asset():
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    subscription = {
+        "asset": "USDT",
+        "productId": "BNB001",
+        "amount": "1",
+        "time": stamp,
+        "type": "AUTO",
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "purchaseId": 901,
+    }
+
+    def read(method, path, **kwargs):
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            return {"rows": [subscription], "total": 1}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+        managed_reward_assets=("BNB", "USDT"),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] in {
+        "balance_history_incomplete",
+        "balance_history_reward_validation_failed",
+    }
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["account_scope_sha256", "execution_authority_granted"],
+)
+def test_historical_continuity_rejects_no_activity_nontime_checkpoint_field(
+    monkeypatch, tamper
+):
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
+    cp["observed_at"] = NOW_BEYOND.isoformat()
+    if tamper == "account_scope_sha256":
+        cp["account_scope_sha256"] = "a" * 64
+    else:
+        cp["execution_authority_granted"] = True
+    ledger["earn_accrual_checkpoint"] = cp
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
+    history_client, _calls = _empty_history_client()
+
+    class StableClient(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            return _earn_page_for_asset(asset, [_bnb_earn_row()])
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return history_client._request_margin_api(method, path, **kwargs)
+
+    with pytest.raises(ValueError, match="historical_continuity_conservation_unverified"):
+        collect_historical_continuity_diagnosis(
+            client=StableClient(),
+            runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            ledger=ledger,
+            archive=archive,
+            symbols=("BNBUSDT",),
+            source_run={
+                "id": 400,
+                "head_sha": "b" * 40,
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            migration_run={
+                "id": 34690695663,
+                "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            now=NOW_BEYOND,
+            clock=lambda: LATER_BEYOND,
+        )
+
+
+def test_chunked_rejects_reward_when_subscription_shares_exact_millisecond():
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    subscription = {
+        "asset": "BNB",
+        "productId": "BNB002",
+        "amount": "1",
+        "time": stamp,
+        "type": "AUTO",
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "purchaseId": 42,
+    }
+    reward = {
+        "asset": "BNB",
+        "rewards": "0.01",
+        "type": "REALTIME",
+        "projectId": "BNB002",
+        "time": stamp,
+    }
+
+    def read(method, path, **kwargs):
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            return {"rows": [subscription], "total": 1}
+        if path.endswith("/rewardsRecord"):
+            return {"rows": [reward], "total": 1}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] == "balance_history_unapproved_reward_product"
+
+
+def test_chunked_rejects_transfer_page_identity_repeat_even_when_total_matches():
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    start_ms = int(OPENING_AT.timestamp() * 1000)
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        if path.startswith("capital/"):
+            return []
+        if path == "asset/transfer" and data.get("type") == "MAIN_FUNDING":
+            current = int(data.get("current") or 1)
+            if current == 1:
+                return {
+                    "rows": [
+                        {
+                            "tranId": 1000 + i,
+                            "asset": "USDT",
+                            "amount": "1",
+                            "timestamp": start_ms + i,
+                            "status": "CONFIRMED",
+                        }
+                        for i in range(100)
+                    ],
+                    "total": 150,
+                }
+            return {
+                "rows": [
+                    {
+                        "tranId": 1000 + i,
+                        "asset": "USDT",
+                        "amount": "1",
+                        "timestamp": start_ms + i,
+                        "status": "CONFIRMED",
+                    }
+                    for i in range(50)
+                ],
+                "total": 150,
+            }
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] == "balance_history_incomplete"
+    assert result["failed_surface"] == "transfer_main_funding"
+
+
+def test_historical_continuity_rejects_removal_redeem_rounded_equal_to_total(
+    monkeypatch,
+):
+    """Removal redeem must not equal product total via Decimal context rounding."""
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    redeem_stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    near_two = "1.99999999999999999999999999999"
+    cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
+    cp["observed_at"] = NOW_BEYOND.isoformat()
+    cp["assets"]["BNB"]["spot_free"] = "3"
+    cp["assets"]["BNB"]["products"] = {}
+    cp["assets"]["BNB"]["quantity"] = "3"
+    ledger["earn_accrual_checkpoint"] = cp
+    ledger["last_balance_snapshot"] = {"USDT": "100", "BNB": "3"}
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
+
+    redemption = {
+        "asset": "BNB",
+        "projectId": "BNB001",
+        "amount": near_two,
+        "time": redeem_stamp,
+        "status": "PAID",
+        "destAccount": "SPOT",
+        "redeemId": 551,
+    }
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        start_ms = data.get("startTime")
+        end_ms = data.get("endTime")
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/redemptionRecord"):
+            if type(start_ms) is int and type(end_ms) is int and start_ms <= redeem_stamp <= end_ms:
+                return {"rows": [redemption], "total": 1}
+            return {"rows": [], "total": 0}
+        return {"rows": [], "total": 0}
+
+    class RemovalClient(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            return _earn_page_for_asset(asset, [])
+
+        def get_account(self):
+            return {
+                "uid": "synthetic",
+                "balances": [
+                    {"asset": "USDT", "free": "100", "locked": "0"},
+                    {"asset": "BNB", "free": "3", "locked": "0"},
+                ],
+            }
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return read(method, path, **kwargs)
+
+    with pytest.raises(ValueError, match="historical_continuity_conservation_unverified"):
+        collect_historical_continuity_diagnosis(
+            client=RemovalClient(),
+            runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            ledger=ledger,
+            archive=archive,
+            symbols=("BNBUSDT",),
+            source_run={
+                "id": 400,
+                "head_sha": "b" * 40,
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            migration_run={
+                "id": 34690695663,
+                "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            now=NOW_BEYOND,
+            clock=lambda: LATER_BEYOND,
+        )
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["account_scope_sha256", "execution_authority_granted"],
+)
+def test_historical_continuity_rejects_lifecycle_nontime_checkpoint_tamper(
+    monkeypatch, tamper
+):
+    """Valid subscription lifecycle still requires nontime checkpoint fields."""
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    sub_stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    reward_stamp = int((OPENING_AT + timedelta(hours=2)).timestamp() * 1000)
+    cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
+    cp["observed_at"] = NOW_BEYOND.isoformat()
+    cp["assets"]["BNB"]["spot_free"] = "0"
+    cp["assets"]["BNB"]["products"]["BNB002"] = {
+        "total": "1.01",
+        "realtime_rewards": "0.01",
+        "auto_subscribe": True,
+        "can_redeem": True,
+    }
+    cp["assets"]["BNB"]["quantity"] = "3.01"
+    if tamper == "account_scope_sha256":
+        cp["account_scope_sha256"] = "b" * 64
+    else:
+        cp["execution_authority_granted"] = True
+    ledger["earn_accrual_checkpoint"] = cp
+    ledger["last_balance_snapshot"] = {"USDT": "100", "BNB": "3.01"}
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
+
+    subscription = {
+        "asset": "BNB",
+        "productId": "BNB002",
+        "amount": "1",
+        "time": sub_stamp,
+        "type": "AUTO",
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "purchaseId": 99,
+    }
+    reward = {
+        "asset": "BNB",
+        "rewards": "0.01",
+        "type": "REALTIME",
+        "projectId": "BNB002",
+        "time": reward_stamp,
+    }
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        start_ms = data.get("startTime")
+        end_ms = data.get("endTime")
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            if type(start_ms) is int and type(end_ms) is int and start_ms <= sub_stamp <= end_ms:
+                return {"rows": [subscription], "total": 1}
+            return {"rows": [], "total": 0}
+        if path.endswith("/rewardsRecord"):
+            if type(start_ms) is int and type(end_ms) is int and start_ms <= reward_stamp <= end_ms:
+                return {"rows": [reward], "total": 1}
+            return {"rows": [], "total": 0}
+        return {"rows": [], "total": 0}
+
+    class LifecycleClient(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            rows = [
+                _bnb_earn_row(),
+                {
+                    "asset": "BNB",
+                    "productId": "BNB002",
+                    "totalAmount": "1.01",
+                    "cumulativeRealTimeRewards": "0.01",
+                    "collateralAmount": "0",
+                    "autoSubscribe": True,
+                    "canRedeem": True,
+                },
+            ]
+            return _earn_page_for_asset(asset, rows)
+
+        def get_account(self):
+            return {
+                "uid": "synthetic",
+                "balances": [
+                    {"asset": "USDT", "free": "100", "locked": "0"},
+                    {"asset": "BNB", "free": "0", "locked": "0"},
+                ],
+            }
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return read(method, path, **kwargs)
+
+    with pytest.raises(ValueError, match="historical_continuity_conservation_unverified"):
+        collect_historical_continuity_diagnosis(
+            client=LifecycleClient(),
+            runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            ledger=ledger,
+            archive=archive,
+            symbols=("BNBUSDT",),
+            source_run={
+                "id": 400,
+                "head_sha": "b" * 40,
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            migration_run={
+                "id": 34690695663,
+                "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            now=NOW_BEYOND,
+            clock=lambda: LATER_BEYOND,
+        )
+
+
+@pytest.mark.parametrize(
+    "bad_row",
+    [
+        {
+            "asset": "USDT",
+            "amount": "1",
+            "timestamp": int(OPENING_AT.timestamp() * 1000),
+            "status": "CONFIRMED",
+        },
+        {
+            "tranId": "1001",
+            "asset": "USDT",
+            "amount": "1",
+            "timestamp": int(OPENING_AT.timestamp() * 1000),
+            "status": "CONFIRMED",
+        },
+    ],
+)
+def test_chunked_rejects_transfer_row_without_strict_tran_id(bad_row):
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        if path.startswith("capital/"):
+            return []
+        if path == "asset/transfer" and data.get("type") == "MAIN_FUNDING":
+            return {"rows": [bad_row], "total": 1}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] == "balance_history_incomplete"
+    assert result["failed_surface"] == "transfer_main_funding"
+
+
+def test_historical_continuity_rejects_removal_redeem_sum_hiding_extreme_tail(
+    monkeypatch,
+):
+    """2 + 1e-1001 must not conserve as product total 2 under capped Decimal prec."""
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    redeem_stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
+    cp["observed_at"] = NOW_BEYOND.isoformat()
+    cp["assets"]["BNB"]["spot_free"] = "3"
+    cp["assets"]["BNB"]["products"] = {}
+    cp["assets"]["BNB"]["quantity"] = "3"
+    ledger["earn_accrual_checkpoint"] = cp
+    ledger["last_balance_snapshot"] = {"USDT": "100", "BNB": "3"}
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
+
+    redemptions = [
+        {
+            "asset": "BNB",
+            "projectId": "BNB001",
+            "amount": "2",
+            "time": redeem_stamp,
+            "status": "PAID",
+            "destAccount": "SPOT",
+            "redeemId": 701,
+        },
+        {
+            "asset": "BNB",
+            "projectId": "BNB001",
+            "amount": "1E-1001",
+            "time": redeem_stamp + 1,
+            "status": "PAID",
+            "destAccount": "SPOT",
+            "redeemId": 702,
+        },
+    ]
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        start_ms = data.get("startTime")
+        end_ms = data.get("endTime")
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/redemptionRecord"):
+            rows = [
+                row
+                for row in redemptions
+                if type(start_ms) is int
+                and type(end_ms) is int
+                and start_ms <= row["time"] <= end_ms
+            ]
+            return {"rows": rows, "total": len(rows)}
+        return {"rows": [], "total": 0}
+
+    class RemovalClient(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            return _earn_page_for_asset(asset, [])
+
+        def get_account(self):
+            return {
+                "uid": "synthetic",
+                "balances": [
+                    {"asset": "USDT", "free": "100", "locked": "0"},
+                    {"asset": "BNB", "free": "3", "locked": "0"},
+                ],
+            }
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return read(method, path, **kwargs)
+
+    with pytest.raises(
+        ValueError,
+        match="historical_continuity_(conservation_unverified|history_incomplete)",
+    ):
+        collect_historical_continuity_diagnosis(
+            client=RemovalClient(),
+            runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            ledger=ledger,
+            archive=archive,
+            symbols=("BNBUSDT",),
+            source_run={
+                "id": 400,
+                "head_sha": "b" * 40,
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            migration_run={
+                "id": 34690695663,
+                "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            now=NOW_BEYOND,
+            clock=lambda: LATER_BEYOND,
+        )
+
+
+def test_historical_continuity_rejects_lifecycle_execution_authority_zero(
+    monkeypatch,
+):
+    """Integer 0 must not satisfy execution_authority_granted is False."""
+    from application.rebased_recovery import collect_historical_continuity_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    ledger = copy.deepcopy(ledger)
+    sub_stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
+    reward_stamp = int((OPENING_AT + timedelta(hours=2)).timestamp() * 1000)
+    cp = copy.deepcopy(ledger["earn_accrual_checkpoint"])
+    cp["observed_at"] = NOW_BEYOND.isoformat()
+    cp["assets"]["BNB"]["spot_free"] = "0"
+    cp["assets"]["BNB"]["products"]["BNB002"] = {
+        "total": "1.01",
+        "realtime_rewards": "0.01",
+        "auto_subscribe": True,
+        "can_redeem": True,
+    }
+    cp["assets"]["BNB"]["quantity"] = "3.01"
+    cp["execution_authority_granted"] = 0
+    ledger["earn_accrual_checkpoint"] = cp
+    ledger["last_balance_snapshot"] = {"USDT": "100", "BNB": "3.01"}
+    ledger = _evolve_ledger_without_daily_loss(ledger, observed_at=NOW_BEYOND)
+
+    subscription = {
+        "asset": "BNB",
+        "productId": "BNB002",
+        "amount": "1",
+        "time": sub_stamp,
+        "type": "AUTO",
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "purchaseId": 99,
+    }
+    reward = {
+        "asset": "BNB",
+        "rewards": "0.01",
+        "type": "REALTIME",
+        "projectId": "BNB002",
+        "time": reward_stamp,
+    }
+
+    def read(method, path, **kwargs):
+        data = kwargs.get("data") or {}
+        start_ms = data.get("startTime")
+        end_ms = data.get("endTime")
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            if type(start_ms) is int and type(end_ms) is int and start_ms <= sub_stamp <= end_ms:
+                return {"rows": [subscription], "total": 1}
+            return {"rows": [], "total": 0}
+        if path.endswith("/rewardsRecord"):
+            if type(start_ms) is int and type(end_ms) is int and start_ms <= reward_stamp <= end_ms:
+                return {"rows": [reward], "total": 1}
+            return {"rows": [], "total": 0}
+        return {"rows": [], "total": 0}
+
+    class LifecycleClient(ProspectiveClient):
+        def get_simple_earn_flexible_product_position(self, *, current, size, asset=None):
+            rows = [
+                _bnb_earn_row(),
+                {
+                    "asset": "BNB",
+                    "productId": "BNB002",
+                    "totalAmount": "1.01",
+                    "cumulativeRealTimeRewards": "0.01",
+                    "collateralAmount": "0",
+                    "autoSubscribe": True,
+                    "canRedeem": True,
+                },
+            ]
+            return _earn_page_for_asset(asset, rows)
+
+        def get_account(self):
+            return {
+                "uid": "synthetic",
+                "balances": [
+                    {"asset": "USDT", "free": "100", "locked": "0"},
+                    {"asset": "BNB", "free": "0", "locked": "0"},
+                ],
+            }
+
+        def _request_margin_api(self, method, path, **kwargs):
+            return read(method, path, **kwargs)
+
+    with pytest.raises(ValueError, match="historical_continuity_conservation_unverified"):
+        collect_historical_continuity_diagnosis(
+            client=LifecycleClient(),
+            runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            ledger=ledger,
+            archive=archive,
+            symbols=("BNBUSDT",),
+            source_run={
+                "id": 400,
+                "head_sha": "b" * 40,
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            migration_run={
+                "id": 34690695663,
+                "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+                "head_branch": "main",
+                "event": "workflow_dispatch",
+                "path": ".github/workflows/main.yml",
+            },
+            now=NOW_BEYOND,
+            clock=lambda: LATER_BEYOND,
         )

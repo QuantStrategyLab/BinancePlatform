@@ -41,10 +41,146 @@ _EXTERNAL_CASH_FLOW_PAGE_SIZE = 1000
 _EXTERNAL_CASH_FLOW_MAX_RECORDS = 256
 _EXTERNAL_CASH_FLOW_CURSOR_VERSION = 1
 _BNB_DIVIDEND_PAGE_SIZE = 500
+_MAX_HISTORY_PAGES = 20
+_REWARD_PRODUCT_CLASSIFICATION_CODES = (
+    "opening_approved",
+    "lifecycle_subscription_proven",
+    "out_of_scope_asset",
+    "lifecycle_evidence_incomplete",
+    "product_mapping_ambiguous",
+    "unexplained_managed_impact",
+)
 
 
 class BinanceReconciliationReadError(RuntimeError):
     """One necessary read-only exchange or local-ledger surface is unavailable."""
+
+
+def _empty_reward_product_classification_counts() -> dict[str, int]:
+    return {code: 0 for code in _REWARD_PRODUCT_CLASSIFICATION_CODES}
+
+
+def _empty_lifecycle_evidence(
+    approved_products: frozenset[tuple[str, str]] | None = None,
+) -> dict[str, object]:
+    product_assets: dict[str, str] = {}
+    for asset, product_id in approved_products or ():
+        prior = product_assets.get(product_id)
+        if prior is not None and prior != asset:
+            raise ValueError("lifecycle_product_asset_ambiguous")
+        product_assets[product_id] = asset
+    return {
+        "subscriptions": [],
+        "redemptions": [],
+        "seen_subscription_ids": set(),
+        "seen_redemption_ids": set(),
+        "product_assets": product_assets,
+    }
+
+
+def _surface_row_identity(name: str, row: Mapping[str, object]) -> object | None:
+    """Stable identity for cross-page / cross-chunk pagination dedupe.
+
+    Reward rows keep their existing in-surface / cross-chunk validators; this
+    helper covers deposits, withdrawals, earn lifecycle, and transfers.
+    """
+    if name in {"deposits", "withdrawals"}:
+        identity = row.get("id")
+        if identity is None or identity == "" or isinstance(identity, (dict, list, set)):
+            return None
+        return (name, identity)
+    if name == "earn_subscriptions":
+        identity = row.get("purchaseId")
+        if type(identity) is not int or identity < 0:
+            return None
+        return (name, identity)
+    if name == "earn_redemptions":
+        identity = row.get("redeemId")
+        if type(identity) is not int or identity < 0:
+            return None
+        return (name, identity)
+    if name.startswith("transfer_"):
+        identity = row.get("tranId")
+        if type(identity) is not int or identity < 0:
+            return None
+        return (name, identity)
+    return None
+
+
+def _lifecycle_amount(value: object) -> Decimal:
+    if not isinstance(value, str) or not value or len(value) > 80:
+        raise ValueError("lifecycle_row_invalid")
+    try:
+        amount = Decimal(value)
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError("lifecycle_row_invalid") from exc
+    if not amount.is_finite() or amount <= 0:
+        raise ValueError("lifecycle_row_invalid")
+    return amount
+
+
+def _ingest_lifecycle_rows(
+    surface: str,
+    rows: Sequence[Mapping[str, object]],
+    *,
+    bounds: Mapping[str, int],
+    managed_assets: frozenset[str] | None,
+    evidence: dict[str, object],
+) -> None:
+    """Fail closed on every subscription/redemption row when lifecycle mode is on."""
+    subscribe = surface == "earn_subscriptions"
+    facts_key = "subscriptions" if subscribe else "redemptions"
+    seen_key = "seen_subscription_ids" if subscribe else "seen_redemption_ids"
+    id_key = "purchaseId" if subscribe else "redeemId"
+    product_key = "productId" if subscribe else "projectId"
+    status_ok = "SUCCESS" if subscribe else "PAID"
+    account_key = "sourceAccount" if subscribe else "destAccount"
+    facts = evidence[facts_key]
+    seen_ids = evidence[seen_key]
+    assert isinstance(facts, list) and isinstance(seen_ids, set)
+    for row in rows:
+        if not isinstance(row, Mapping) or not row:
+            raise ValueError("lifecycle_row_invalid")
+        asset = row.get("asset")
+        product = row.get(product_key)
+        stamp = row.get("time")
+        identity = row.get(id_key)
+        status = row.get("status")
+        account = row.get(account_key)
+        if (
+            not isinstance(asset, str)
+            or not asset
+            or not isinstance(product, str)
+            or not product
+            or type(stamp) is not int
+            or not bounds["startTime"] <= stamp <= bounds["endTime"]
+            or status != status_ok
+            or account != "SPOT"
+            or type(identity) is not int
+            or identity < 0
+        ):
+            raise ValueError("lifecycle_row_invalid")
+        if managed_assets is not None and asset not in managed_assets:
+            raise ValueError("lifecycle_row_invalid")
+        product_assets = evidence.setdefault("product_assets", {})
+        assert isinstance(product_assets, dict)
+        bound = product_assets.get(product)
+        if bound is not None and bound != asset:
+            raise ValueError("lifecycle_row_invalid")
+        product_assets[product] = asset
+        amount = _lifecycle_amount(row.get("amount"))
+        if identity in seen_ids:
+            raise ValueError("duplicate_lifecycle_event")
+        seen_ids.add(identity)
+        facts.append(
+            {
+                "asset": asset,
+                "product_id": product,
+                "amount": format(amount, "f"),
+                "time": stamp,
+                "identity": identity,
+            }
+        )
 
 
 def _text(value: object) -> str:
@@ -840,12 +976,19 @@ def diagnose_balance_flows(
     _seen_reward_identities: set[tuple[object, ...]] | None = None,
     _reward_sum_sink: dict[str, dict[str, Decimal]] | None = None,
     _approved_reward_products: frozenset[tuple[str, str]] | None = None,
+    _lifecycle_evidence: dict[str, object] | None = None,
+    _reward_product_classification_counts: dict[str, int] | None = None,
+    _managed_reward_assets: frozenset[str] | None = None,
+    _seen_surface_identities: dict[str, set[object]] | None = None,
 ) -> dict[str, object]:
     """Read a bounded activity summary, never an enrollment or reconciliation.
 
-    Only documented GET surfaces are used. Each gets one finite page; a full
-    list or a total exceeding the page stops collection. No amounts, private account rows, provider text, or observed baseline hashes
-    are emitted. Optional delta checks name only the supplied managed assets.
+    Only documented GET surfaces are used. Pages continue until a short page or
+    an exact total match; a full page with an unverifiable remainder fails
+    closed. No amounts, private account rows, provider text, or observed
+    baseline hashes are emitted. Optional delta checks name only the supplied
+    managed assets. Opening reward products or complete subscription lifecycle
+    evidence on managed assets may admit a reward product.
     """
     now = now or datetime.now(timezone.utc)
     if (start.tzinfo is None or end.tzinfo is None or not start < end <= now
@@ -867,6 +1010,15 @@ def diagnose_balance_flows(
         surfaces.append((f"transfer_{transfer_type.lower()}", "asset/transfer",
                          {"size": 100, "current": 1, "type": transfer_type}, False))
     counts = dict.fromkeys(name for name, *_ in surfaces)
+    classification_counts = (
+        _reward_product_classification_counts
+        if _reward_product_classification_counts is not None
+        else (
+            _empty_reward_product_classification_counts()
+            if _approved_reward_products is not None
+            else None
+        )
+    )
     result = {
         "reason_code": "balance_history_activity_summary",
         "history_complete_for_requested_surfaces": False,
@@ -876,151 +1028,374 @@ def diagnose_balance_flows(
         "baseline_rows_available": False,
         "execution_authority_granted": False,
     }
+    if classification_counts is not None:
+        result["reward_product_classification_counts"] = classification_counts
     reward_rows = None
+    managed_assets = _managed_reward_assets
+    if managed_assets is None and _reward_sum_sink is not None:
+        managed_assets = frozenset(_reward_sum_sink)
+    if managed_assets is None and reward_quantity_changes is not None:
+        managed_assets = frozenset(reward_quantity_changes)
+
+    def _incomplete(name, *, page_full, rows_is_list, total_valid, total):
+        return {
+            **result,
+            "reason_code": "balance_history_incomplete",
+            "failed_surface": name,
+            "response_shape": {
+                "rows_is_list": rows_is_list,
+                "total_valid": total_valid,
+                "total_is_zero": bool(total_valid and int(total) == 0),
+                "page_full": page_full,
+            },
+        }
+
+    def _fetch_surface(name, path, parameters, is_list):
+        page_size = int(parameters.get("limit", parameters.get("size")))
+        collected: list[Mapping[str, object]] = []
+        locked_total = None
+        total_valid = is_list
+        page_seen = (
+            _seen_surface_identities.setdefault(name, set())
+            if _seen_surface_identities is not None
+            else set()
+        )
+        for page_index in range(1, _MAX_HISTORY_PAGES + 1):
+            page_params = dict(parameters)
+            if is_list:
+                page_params["offset"] = len(collected)
+            else:
+                page_params["current"] = page_index
+            try:
+                response = client._request_margin_api(
+                    "get", path, signed=True, data={**bounds, **page_params}
+                )
+            except Exception:
+                return None, {
+                    **result,
+                    "reason_code": "balance_history_read_failed",
+                    "failed_surface": name,
+                }
+            if is_list:
+                rows = response
+                total = None
+            else:
+                rows = response.get("rows") if isinstance(response, Mapping) else None
+                total = response.get("total") if isinstance(response, Mapping) else None
+                total_valid = (type(total) is int and total >= 0) or (
+                    isinstance(total, str) and total.isdecimal()
+                )
+                if (
+                    total_valid
+                    and int(total) == 0
+                    and isinstance(response, Mapping)
+                    and "rows" not in response
+                ):
+                    rows = []
+                if not total_valid:
+                    return None, _incomplete(
+                        name,
+                        page_full=isinstance(rows, list) and len(rows) >= page_size,
+                        rows_is_list=isinstance(rows, list),
+                        total_valid=False,
+                        total=total,
+                    )
+                page_total = int(total)
+                if locked_total is None:
+                    locked_total = page_total
+                elif page_total != locked_total:
+                    return None, _incomplete(
+                        name,
+                        page_full=isinstance(rows, list) and len(rows) >= page_size,
+                        rows_is_list=isinstance(rows, list),
+                        total_valid=True,
+                        total=locked_total,
+                    )
+            if not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows):
+                return None, _incomplete(
+                    name,
+                    page_full=isinstance(rows, list) and len(rows) >= page_size,
+                    rows_is_list=isinstance(rows, list),
+                    total_valid=total_valid,
+                    total=0 if is_list else (locked_total if locked_total is not None else total),
+                )
+            for row in rows:
+                identity = _surface_row_identity(name, row)
+                if identity is None:
+                    if name.startswith("transfer_"):
+                        return None, _incomplete(
+                            name,
+                            page_full=len(rows) >= page_size,
+                            rows_is_list=True,
+                            total_valid=total_valid,
+                            total=(
+                                0
+                                if is_list
+                                else (locked_total if locked_total is not None else total)
+                            ),
+                        )
+                    continue
+                if identity in page_seen:
+                    return None, _incomplete(
+                        name,
+                        page_full=len(rows) >= page_size,
+                        rows_is_list=True,
+                        total_valid=total_valid,
+                        total=0 if is_list else (locked_total if locked_total is not None else total),
+                    )
+                page_seen.add(identity)
+            page_full = len(rows) >= page_size
+            if is_list:
+                collected.extend(rows)
+                if not page_full:
+                    return collected, None
+                continue
+            if len(rows) == 0:
+                if len(collected) == locked_total:
+                    return collected, None
+                return None, _incomplete(
+                    name,
+                    page_full=False,
+                    rows_is_list=True,
+                    total_valid=True,
+                    total=locked_total,
+                )
+            collected.extend(rows)
+            if locked_total < len(collected):
+                return None, _incomplete(
+                    name,
+                    page_full=page_full,
+                    rows_is_list=True,
+                    total_valid=True,
+                    total=locked_total,
+                )
+            if len(collected) == locked_total:
+                return collected, None
+            if not page_full:
+                return None, _incomplete(
+                    name,
+                    page_full=False,
+                    rows_is_list=True,
+                    total_valid=True,
+                    total=locked_total,
+                )
+        return None, _incomplete(
+            name,
+            page_full=True,
+            rows_is_list=True,
+            total_valid=total_valid,
+            total=locked_total or 0,
+        )
+
     for name, path, parameters, is_list in surfaces:
-        try:
-            response = client._request_margin_api("get", path, signed=True, data={**bounds, **parameters})
-        except Exception:
-            return {**result, "reason_code": "balance_history_read_failed", "failed_surface": name}
-        rows = response if is_list else response.get("rows") if isinstance(response, Mapping) else None
-        total = None if is_list or not isinstance(response, Mapping) else response.get("total")
-        total_valid = (type(total) is int and total >= 0) or (isinstance(total, str) and total.isdecimal())
-        if not is_list and total_valid and int(total) == 0 and "rows" not in response:
-            rows = []
-        if (not isinstance(rows, list) or any(not isinstance(row, Mapping) for row in rows)
-                or len(rows) >= parameters.get("limit", parameters.get("size"))
-                or (not is_list and (not total_valid or int(total) != len(rows)))):
-            return {
-                **result, "reason_code": "balance_history_incomplete", "failed_surface": name,
-                "response_shape": {
-                    "rows_is_list": isinstance(rows, list),
-                    "total_valid": total_valid,
-                    "total_is_zero": total_valid and int(total) == 0,
-                    "page_full": isinstance(rows, list) and len(rows) >= parameters.get("limit", parameters.get("size")),
-                },
-            }
+        rows, failure = _fetch_surface(name, path, parameters, is_list)
+        if failure is not None:
+            return failure
+        assert rows is not None
         counts[name] = len(rows)
-        if name == "earn_rewards":
-            reward_rows = rows
-            if (
-                reward_quantity_changes is not None
-                or _seen_reward_identities is not None
-                or _reward_sum_sink is not None
-                or _approved_reward_products is not None
+        if name in {"earn_subscriptions", "earn_redemptions"} and _lifecycle_evidence is not None:
+            try:
+                _ingest_lifecycle_rows(
+                    name,
+                    rows,
+                    bounds=bounds,
+                    managed_assets=managed_assets,
+                    evidence=_lifecycle_evidence,
+                )
+            except ValueError as exc:
+                code = str(exc)
+                if code == "duplicate_lifecycle_event":
+                    return {
+                        **result,
+                        "reason_code": "balance_history_duplicate_event",
+                        "failed_surface": name,
+                        "history_complete_for_requested_surfaces": False,
+                    }
+                return {
+                    **result,
+                    "reason_code": "balance_history_incomplete",
+                    "failed_surface": name,
+                    "history_complete_for_requested_surfaces": False,
+                }
+        if name == "earn_subscriptions":
+            if all(
+                all(isinstance(row.get(key), str) for key in ("type", "status", "sourceAccount"))
+                for row in rows
             ):
-                try:
-                    seen = set()
-                    sums = (
-                        {asset: {"BONUS": Decimal(0), "REALTIME": Decimal(0)} for asset in reward_quantity_changes}
-                        if reward_quantity_changes is not None else None
-                    )
-                    counts_by_asset = (
-                        {asset: {"BONUS": 0, "REALTIME": 0} for asset in reward_quantity_changes}
-                        if reward_quantity_changes is not None else None
-                    )
-                    strict_rows = (
-                        _seen_reward_identities is not None
-                        or _reward_sum_sink is not None
-                        or _approved_reward_products is not None
-                    )
-                    for row in rows:
-                        asset, kind = row.get("asset"), row.get("type")
-                        timestamp = row.get("time")
-                        project = row.get("projectId")
-                        identity = (asset, kind, project, timestamp)
-                        # Cross-chunk duplicates must be detected before window checks:
-                        # a later chunk may re-emit an earlier identity outside its bounds.
-                        if _seen_reward_identities is not None and identity in _seen_reward_identities:
-                            return {
-                                **result,
-                                "reason_code": "balance_history_duplicate_event",
-                                "failed_surface": name,
-                                "history_complete_for_requested_surfaces": False,
-                            }
-                        if (
-                            type(timestamp) is not int
-                            or not bounds["startTime"] <= timestamp <= bounds["endTime"]
-                        ):
-                            if reward_quantity_changes is not None or strict_rows:
-                                raise ValueError("reward_row_invalid")
-                            continue
-                        if kind not in {"BONUS", "REALTIME"}:
-                            if strict_rows:
-                                raise ValueError("reward_row_invalid")
-                            if reward_quantity_changes is not None:
-                                continue
-                            continue
-                        if _approved_reward_products is not None and (
-                            not isinstance(asset, str)
-                            or not isinstance(project, str)
-                            or (asset, project) not in _approved_reward_products
-                        ):
-                            raise ValueError("unapproved_reward_product")
-                        if identity in seen:
-                            if reward_quantity_changes is not None or strict_rows:
-                                raise ValueError("reward_row_invalid")
-                            return {
-                                **result,
-                                "reason_code": "balance_history_duplicate_event",
-                                "failed_surface": name,
-                                "history_complete_for_requested_surfaces": False,
-                            }
-                        seen.add(identity)
-                        if _seen_reward_identities is not None:
-                            _seen_reward_identities.add(identity)
-                        try:
-                            quantity = Decimal(str(row.get("rewards")))
-                        except (InvalidOperation, TypeError, ValueError):
-                            raise ValueError("reward_row_invalid") from None
-                        if not quantity.is_finite() or quantity < 0:
-                            raise ValueError("reward_row_invalid")
-                        if _reward_sum_sink is not None:
-                            if asset not in _reward_sum_sink:
-                                raise ValueError("reward_row_invalid")
-                            _reward_sum_sink[asset][kind] = _add_reward_quantity(
-                                _reward_sum_sink[asset][kind], quantity
-                            )
-                        if sums is None or asset not in sums:
-                            continue
-                        sums[asset][kind] = _add_reward_quantity(sums[asset][kind], quantity)
-                        counts_by_asset[asset][kind] += 1
-                    if reward_quantity_changes is not None:
-                        result["reward_quantity_checks"] = {
-                            asset: {
-                                "delta_matches_bonus": delta == sums[asset]["BONUS"],
-                                "delta_matches_realtime": delta == sums[asset]["REALTIME"],
-                                "delta_matches_visible_total": delta == _add_reward_quantity(
-                                    sums[asset]["BONUS"], sums[asset]["REALTIME"]
-                                ),
-                                "reward_counts": counts_by_asset[asset],
-                                "causal_reconciliation": False,
-                            }
-                            for asset, delta in reward_quantity_changes.items()
-                        }
-                except ValueError as exc:
-                    if str(exc) == "unapproved_reward_product":
+                result["automatic_spot_earn_subscriptions"] = sum(
+                    row.get("type") == "AUTO"
+                    and row.get("status") == "SUCCESS"
+                    and row.get("sourceAccount") == "SPOT"
+                    for row in rows
+                )
+        if name != "earn_rewards":
+            continue
+        reward_rows = rows
+        if (
+            reward_quantity_changes is not None
+            or _seen_reward_identities is not None
+            or _reward_sum_sink is not None
+            or _approved_reward_products is not None
+        ):
+            try:
+                seen = set()
+                sums = (
+                    {asset: {"BONUS": Decimal(0), "REALTIME": Decimal(0)} for asset in reward_quantity_changes}
+                    if reward_quantity_changes is not None else None
+                )
+                counts_by_asset = (
+                    {asset: {"BONUS": 0, "REALTIME": 0} for asset in reward_quantity_changes}
+                    if reward_quantity_changes is not None else None
+                )
+                strict_rows = (
+                    _seen_reward_identities is not None
+                    or _reward_sum_sink is not None
+                    or _approved_reward_products is not None
+                )
+                opening_products = _approved_reward_products or frozenset()
+                subscription_facts = (
+                    list(_lifecycle_evidence.get("subscriptions") or [])
+                    if isinstance(_lifecycle_evidence, Mapping)
+                    else []
+                )
+                for row in rows:
+                    asset, kind = row.get("asset"), row.get("type")
+                    timestamp = row.get("time")
+                    project = row.get("projectId")
+                    identity = (asset, kind, project, timestamp)
+                    # Cross-chunk duplicates must be detected before window checks:
+                    # a later chunk may re-emit an earlier identity outside its bounds.
+                    if _seen_reward_identities is not None and identity in _seen_reward_identities:
                         return {
                             **result,
-                            "reason_code": "balance_history_unapproved_reward_product",
+                            "reason_code": "balance_history_duplicate_event",
                             "failed_surface": name,
                             "history_complete_for_requested_surfaces": False,
                         }
-                    return {**result, "reason_code": "balance_history_reward_validation_failed", "failed_surface": name}
-                except (TypeError, DecimalException):
-                    return {**result, "reason_code": "balance_history_reward_validation_failed", "failed_surface": name}
-            if account is not None and expected_digests is not None:
-                result["spot_bonus_reconciliation"] = diagnose_bonus_reward_balance(
-                    account, rewards=reward_rows, expected_digests=expected_digests, start=start, end=end,
-                )
-                if result["spot_bonus_reconciliation"]["reason_code"] == "spot_bonus_reward_rows_invalid":
-                    return {**result, "reason_code": "balance_history_reward_validation_failed", "failed_surface": name}
-        if name == "earn_subscriptions" and all(
-            all(isinstance(row.get(key), str) for key in ("type", "status", "sourceAccount")) for row in rows
-        ):
-            result["automatic_spot_earn_subscriptions"] = sum(
-                row.get("type") == "AUTO" and row.get("status") == "SUCCESS"
-                and row.get("sourceAccount") == "SPOT" for row in rows
+                    if (
+                        type(timestamp) is not int
+                        or not bounds["startTime"] <= timestamp <= bounds["endTime"]
+                    ):
+                        if reward_quantity_changes is not None or strict_rows:
+                            raise ValueError("reward_row_invalid")
+                        continue
+                    if kind not in {"BONUS", "REALTIME"}:
+                        if strict_rows:
+                            raise ValueError("reward_row_invalid")
+                        continue
+                    if _approved_reward_products is not None:
+                        if not isinstance(asset, str) or not isinstance(project, str) or not project:
+                            if classification_counts is not None:
+                                classification_counts["lifecycle_evidence_incomplete"] += 1
+                            raise ValueError("unapproved_reward_product")
+                        if managed_assets is not None and asset not in managed_assets:
+                            if classification_counts is not None:
+                                classification_counts["out_of_scope_asset"] += 1
+                            raise ValueError("unapproved_reward_product")
+                        earlier_subs = [
+                            fact
+                            for fact in subscription_facts
+                            if (
+                                fact.get("product_id") == project
+                                and type(fact.get("time")) is int
+                                and fact["time"] < timestamp
+                            )
+                        ]
+                        if (asset, project) in opening_products:
+                            if classification_counts is not None:
+                                classification_counts["opening_approved"] += 1
+                        elif any(
+                            fact.get("asset") == asset and fact.get("product_id") == project
+                            for fact in earlier_subs
+                        ):
+                            if any(fact.get("asset") != asset for fact in earlier_subs):
+                                if classification_counts is not None:
+                                    classification_counts["product_mapping_ambiguous"] += 1
+                                raise ValueError("unapproved_reward_product")
+                            if classification_counts is not None:
+                                classification_counts["lifecycle_subscription_proven"] += 1
+                        elif earlier_subs:
+                            if classification_counts is not None:
+                                classification_counts["product_mapping_ambiguous"] += 1
+                            raise ValueError("unapproved_reward_product")
+                        elif managed_assets is not None and asset in managed_assets:
+                            if classification_counts is not None:
+                                classification_counts["lifecycle_evidence_incomplete"] += 1
+                            raise ValueError("unapproved_reward_product")
+                        else:
+                            if classification_counts is not None:
+                                classification_counts["unexplained_managed_impact"] += 1
+                            raise ValueError("unapproved_reward_product")
+                    if identity in seen:
+                        if reward_quantity_changes is not None or strict_rows:
+                            raise ValueError("reward_row_invalid")
+                        return {
+                            **result,
+                            "reason_code": "balance_history_duplicate_event",
+                            "failed_surface": name,
+                            "history_complete_for_requested_surfaces": False,
+                        }
+                    seen.add(identity)
+                    if _seen_reward_identities is not None:
+                        _seen_reward_identities.add(identity)
+                    try:
+                        quantity = Decimal(str(row.get("rewards")))
+                    except (InvalidOperation, TypeError, ValueError):
+                        raise ValueError("reward_row_invalid") from None
+                    if not quantity.is_finite() or quantity < 0:
+                        raise ValueError("reward_row_invalid")
+                    if _reward_sum_sink is not None:
+                        if asset not in _reward_sum_sink:
+                            raise ValueError("reward_row_invalid")
+                        _reward_sum_sink[asset][kind] = _add_reward_quantity(
+                            _reward_sum_sink[asset][kind], quantity
+                        )
+                    if sums is None or asset not in sums:
+                        continue
+                    sums[asset][kind] = _add_reward_quantity(sums[asset][kind], quantity)
+                    counts_by_asset[asset][kind] += 1
+                if reward_quantity_changes is not None:
+                    result["reward_quantity_checks"] = {
+                        asset: {
+                            "delta_matches_bonus": delta == sums[asset]["BONUS"],
+                            "delta_matches_realtime": delta == sums[asset]["REALTIME"],
+                            "delta_matches_visible_total": delta == _add_reward_quantity(
+                                sums[asset]["BONUS"], sums[asset]["REALTIME"]
+                            ),
+                            "reward_counts": counts_by_asset[asset],
+                            "causal_reconciliation": False,
+                        }
+                        for asset, delta in reward_quantity_changes.items()
+                    }
+            except ValueError as exc:
+                if str(exc) == "unapproved_reward_product":
+                    return {
+                        **result,
+                        "reason_code": "balance_history_unapproved_reward_product",
+                        "failed_surface": name,
+                        "history_complete_for_requested_surfaces": False,
+                    }
+                return {
+                    **result,
+                    "reason_code": "balance_history_reward_validation_failed",
+                    "failed_surface": name,
+                }
+            except (TypeError, DecimalException):
+                return {
+                    **result,
+                    "reason_code": "balance_history_reward_validation_failed",
+                    "failed_surface": name,
+                }
+        if account is not None and expected_digests is not None:
+            result["spot_bonus_reconciliation"] = diagnose_bonus_reward_balance(
+                account, rewards=reward_rows, expected_digests=expected_digests, start=start, end=end,
             )
+            if result["spot_bonus_reconciliation"]["reason_code"] == "spot_bonus_reward_rows_invalid":
+                return {
+                    **result,
+                    "reason_code": "balance_history_reward_validation_failed",
+                    "failed_surface": name,
+                }
     result["history_complete_for_requested_surfaces"] = True
     return result
 
@@ -1046,8 +1421,9 @@ def diagnose_chunked_balance_flows(
     closed. Reward identities are deduplicated across chunks; a duplicate fails
     closed. When managed_reward_assets is set, BONUS/REALTIME reward quantities
     are summed from the first validated pass only — never by re-fetching the
-    rewards surface. When approved_reward_products is set, every reward
-    projectId must belong to that approved Earn product set.
+    rewards surface. When approved_reward_products is set, opening products or
+    complete subscription lifecycle evidence on managed assets may admit a
+    reward product; diagnostics expose only fixed classification counts.
     """
     now = now or datetime.now(timezone.utc)
     if (
@@ -1062,6 +1438,7 @@ def diagnose_chunked_balance_flows(
     counts: dict[str, int | None] = {}
     chunk_count = 0
     seen_rewards: set[tuple[object, ...]] = set()
+    seen_surface_identities: dict[str, set[object]] = {}
     reward_assets = tuple(
         dict.fromkeys(str(asset).upper() for asset in (managed_reward_assets or ()) if str(asset).strip())
     )
@@ -1071,6 +1448,24 @@ def diagnose_chunked_balance_flows(
     approved_products = (
         frozenset(approved_reward_products) if approved_reward_products is not None else None
     )
+    try:
+        lifecycle_evidence = (
+            _empty_lifecycle_evidence(approved_products) if approved_products is not None else None
+        )
+    except ValueError:
+        return {
+            "reason_code": "balance_history_incomplete",
+            "history_complete_for_requested_surfaces": False,
+            "history_counts": {},
+            "chunk_count": 0,
+            "complete_balance_reconciliation": False,
+            "baseline_rows_available": False,
+            "execution_authority_granted": False,
+        }
+    classification_counts = (
+        _empty_reward_product_classification_counts() if approved_products is not None else None
+    )
+    managed_asset_set = frozenset(reward_assets) if reward_assets else None
     cursor = start
     while cursor < end:
         chunk_end = min(cursor + max_chunk, end)
@@ -1084,14 +1479,21 @@ def diagnose_chunked_balance_flows(
             _seen_reward_identities=seen_rewards,
             _reward_sum_sink=reward_sums if reward_assets else None,
             _approved_reward_products=approved_products,
+            _lifecycle_evidence=lifecycle_evidence,
+            _reward_product_classification_counts=classification_counts,
+            _managed_reward_assets=managed_asset_set,
+            _seen_surface_identities=seen_surface_identities,
         )
         chunk_count += 1
         if chunk.get("history_complete_for_requested_surfaces") is not True:
-            return {
+            failure = {
                 **chunk,
                 "chunk_count": chunk_count,
                 "history_complete_for_requested_surfaces": False,
             }
+            if classification_counts is not None:
+                failure["reward_product_classification_counts"] = dict(classification_counts)
+            return failure
         chunk_counts = chunk.get("history_counts")
         if not isinstance(chunk_counts, Mapping):
             return {
@@ -1136,6 +1538,16 @@ def diagnose_chunked_balance_flows(
         "baseline_rows_available": False,
         "execution_authority_granted": False,
     }
+    if classification_counts is not None:
+        result["reward_product_classification_counts"] = dict(classification_counts)
+    if lifecycle_evidence is not None:
+        # Private continuity-only facts; never part of public diagnostic emission.
+        result["_private_lifecycle_subscription_facts"] = list(
+            lifecycle_evidence["subscriptions"]
+        )
+        result["_private_lifecycle_redemption_facts"] = list(
+            lifecycle_evidence["redemptions"]
+        )
     if reward_assets:
         result["reward_quantity_totals"] = {
             asset: {
