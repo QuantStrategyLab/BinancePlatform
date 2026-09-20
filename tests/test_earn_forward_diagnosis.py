@@ -150,6 +150,52 @@ def test_existing_owner_is_reported_but_does_not_block_read_only_diagnosis(monke
     assert refs["ledger_ref"].snapshot.value["earn_accounted_net_changes"] == {"USDT": "0", "BTC": "0"}
 
 
+def test_stable_reward_only_interval_is_eligible_for_forward_accounting(monkeypatch):
+    from application import earn_accrual
+    from scripts import migrate_daily_accounting_state as migration
+
+    real_collect = earn_accrual.collect_earn_checkpoint
+    refs = source(owner=False)
+    install_read_stubs(monkeypatch, migration, refs)
+    monkeypatch.setattr(earn_accrual, "collect_earn_checkpoint", real_collect)
+    monkeypatch.setattr(earn_accrual, "digest", lambda _value: SCOPE)
+
+    class Client:
+        def get_account(self):
+            return {
+                "uid": "123",
+                "balances": [
+                    {"asset": "USDT", "free": "10", "locked": "0"},
+                    {"asset": "BTC", "free": "0", "locked": "0"},
+                ],
+            }
+
+        def get_simple_earn_flexible_product_position(self, **_kwargs):
+            return {
+                "total": 1,
+                "rows": [{
+                    "asset": "BTC",
+                    "productId": "BTC001",
+                    "totalAmount": "1.1",
+                    "cumulativeRealTimeRewards": "0",
+                    "collateralAmount": "0",
+                    "autoSubscribe": False,
+                    "canRedeem": True,
+                }],
+            }
+
+    result = migration.diagnose_earn_forward(
+        refs,
+        client=Client(),
+        expected={"account_scope_sha256": SCOPE},
+        now=NOW,
+    )
+    assert result["sampling_stable"] is True
+    assert result["forward_accounting_eligible"] is True
+    assert result["forward_accounting_write_permitted"] is False
+    assert result["execution_authority_granted"] is False
+
+
 def test_realtime_counter_is_subtracted_before_bonus_residual_match(monkeypatch):
     from scripts import migrate_daily_accounting_state as migration
 

@@ -69,6 +69,12 @@ BTC、BNB、USDT 保留固定角色，不能混入趋势部分重复计值。本
 `diagnose` 仅验证材料；通过不表示已发布候选、已人工确认或已恢复交易。
 首次流水 cursor 初始化仍暂缓，不能修改冻结账本以绕过恢复校验。
 
+`earn-forward-diagnose` 还会输出独立的 `forward_accounting_eligible`。它只表示当前
+`Spot1 → Earn1 → Spot2 → Earn2` 区间稳定、产品生命周期未变化、没有未支持外部资金流、订单状态已知，
+并且余额变化可以由 checkpoint/reward 证据解释；`forward_accounting_write_permitted` 始终为 false。
+该资格不等于完整历史对账、恢复候选或交易权限，实际写入仍必须消费现有 owner-protected writer，
+并重新核对控制、账本和账户状态。
+
 
 ## 闲置理财资金链更正（2026-09-12）
 
