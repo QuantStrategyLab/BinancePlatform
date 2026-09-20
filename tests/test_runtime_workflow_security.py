@@ -62,6 +62,41 @@ def test_runtime_release_pin_is_required_before_execution_checkout() -> None:
     )
 
 
+def test_runtime_workflow_revision_pin_is_required_before_release_selection() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+
+    assert "Verify approved workflow revision" in broker_job
+    assert (
+        "BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA }}"
+        in broker_job
+    )
+    assert "--verify-workflow" in broker_job
+    assert broker_job.index("Verify approved workflow revision") < broker_job.index(
+        "Resolve approved runtime release SHA"
+    )
+    verify = broker_job[
+        broker_job.index("Verify approved workflow revision") : broker_job.index(
+            "Resolve approved runtime release SHA"
+        )
+    ]
+    assert "python3 scripts/select_runtime_release_sha.py --verify-workflow" in verify
+
+
+def test_runtime_dependency_bootstrap_does_not_upgrade_pip_or_uv() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    deps = broker_job.split(
+        "      - name: 3. Prepare or update dependency environment", 1
+    )[1].split("      - name: Download approved accounting migration preview", 1)[0]
+
+    assert "pip install --upgrade" not in deps
+    assert "ensurepip --upgrade" not in deps
+    assert "runtime_identity" in broker_job
+    assert "uv_lock_sha256" in broker_job
+    assert "Reusing existing uv binary in dependency venv (no upgrade)." in deps
+
+
 def test_candidate_release_sha_guard_rejects_write_modes() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     first_step = workflow.split(

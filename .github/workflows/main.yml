@@ -266,6 +266,26 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - name: Verify approved workflow revision
+        if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}
+        shell: bash
+        env:
+          BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA }}
+          BINANCE_RUNTIME_RELEASE_SHA: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA }}
+          CANDIDATE_RELEASE_SHA: ${{ inputs.candidate_release_sha }}
+          VALIDATE_ONLY: ${{ inputs.validate_only || 'false' }}
+          FULL_CYCLE: ${{ inputs.full_cycle || 'false' }}
+          RUNTIME_TARGET_ENABLED: ${{ env.RUNTIME_TARGET_ENABLED }}
+          RECONCILE_ONLY: ${{ inputs.reconcile_only || 'false' }}
+        run: |
+          set -euo pipefail
+          verified="$(python3 scripts/select_runtime_release_sha.py --verify-workflow)"
+          if [[ ! "$verified" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Workflow revision verification returned an invalid SHA."
+            exit 1
+          fi
+          echo "Verified workflow revision github.sha=${verified}."
+
       - name: Resolve approved runtime release SHA
         id: runtime-release
         if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}
@@ -285,7 +305,7 @@ jobs:
             exit 1
           fi
           echo "sha=$selected" >> "$GITHUB_OUTPUT"
-          echo "Selected runtime release SHA ${selected} (workflow github.sha=${GITHUB_SHA:-unknown} is not used as the execution identity)."
+          echo "Selected runtime release SHA ${selected} (workflow github.sha=${GITHUB_SHA:-unknown} is not used as the application execution identity)."
 
       - name: 1. Checkout approved runtime release
         if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}
@@ -364,8 +384,8 @@ jobs:
             if "$VENV_PATH/bin/python" -m pip --version >/dev/null 2>&1; then
               return 0
             fi
-            echo "pip missing from dependency venv; bootstrapping with ensurepip."
-            "$VENV_PATH/bin/python" -m ensurepip --upgrade
+            echo "pip missing from dependency venv; bootstrapping with ensurepip (no upgrade)."
+            "$VENV_PATH/bin/python" -m ensurepip
           }
 
           if [ ! -x "$VENV_PATH/bin/python" ]; then
@@ -384,8 +404,16 @@ jobs:
           fi
 
           ensure_venv_pip
-          install_with_retry "Install uv into dependency venv" \
-            "$VENV_PATH/bin/python" -m pip install --upgrade pip uv
+          # Do not upgrade pip or uv during production cycles: a fixed release
+          # pin must not silently pull newer tooling from the network.
+          # Cold caches still install whatever index resolves once; record the
+          # resulting uv version in the runtime identity line below.
+          if [ ! -x "$VENV_PATH/bin/uv" ]; then
+            install_with_retry "Install uv into dependency venv without upgrade" \
+              "$VENV_PATH/bin/python" -m pip install pip uv
+          else
+            echo "Reusing existing uv binary in dependency venv (no upgrade)."
+          fi
 
           export UV_PROJECT_ENVIRONMENT="$VENV_PATH"
           UV_BIN="$VENV_PATH/bin/uv"
@@ -403,6 +431,17 @@ jobs:
             echo "$CURR_HASH" > "$HASH_FILE"
             echo "$CURR_PYTHON_VERSION" > "$PYTHON_VERSION_FILE"
           fi
+
+          UV_VERSION_TEXT="$("$UV_BIN" --version)"
+          if [[ ! "$CURR_HASH" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::uv.lock sha256 is invalid."
+            exit 1
+          fi
+          if [[ ! "${GITHUB_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::GITHUB_SHA is invalid for runtime identity."
+            exit 1
+          fi
+          echo "runtime_identity workflow_sha=${GITHUB_SHA} release_sha=${{ steps.runtime-release.outputs.sha }} uv_lock_sha256=${CURR_HASH} uv_version=${UV_VERSION_TEXT} python_version=${CURR_PYTHON_VERSION}"
 
       - name: Download approved accounting migration preview
         if: ${{ inputs.accounting_migration_action == 'apply' }}
