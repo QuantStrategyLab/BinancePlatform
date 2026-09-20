@@ -914,6 +914,266 @@ def test_rebase_proposal_encryption_errors_are_sanitized():
         migration.encrypt_rebase_proposal({"private_value": 123}, certificate="invalid certificate " * 30)
 
 
+def _prospective_evidence(**changes):
+    """Shape returned by collect_prospective_opening for from-today baseline proposals."""
+    value = {
+        "opening_mode": "prospective",
+        "current_observation_complete": True,
+        "account_scope_sha256": "a" * 64,
+        "balance_snapshot": {"USDT": 500.0, "BTC": 0.1, "BNB": 0.25, "ETH": 2.0},
+        "prices": {"BTCUSDT": 100000.0, "BNBUSDT": 1000.0, "ETHUSDT": 2000.0},
+        "open_order_count": 0,
+        "history_complete": False,
+        "history_counts": None,
+        "recent_execution_count": None,
+        "observation_started_at": NOW.isoformat(),
+        "observation_completed_at": (NOW + timedelta(seconds=10)).isoformat(),
+        "earn_accrual_checkpoint": {
+            "observed_at": (NOW + timedelta(seconds=10)).isoformat(),
+            "account_scope_sha256": "a" * 64,
+            "execution_authority_granted": False,
+            "assets": {
+                "USDT": {
+                    "quantity": "500",
+                    "spot_free": "500",
+                    "spot_locked": "0",
+                    "products": {},
+                },
+                "BTC": {
+                    "quantity": "0.1",
+                    "spot_free": "0.1",
+                    "spot_locked": "0",
+                    "products": {},
+                },
+                "BNB": {
+                    "quantity": "0.25",
+                    "spot_free": "0.15",
+                    "spot_locked": "0",
+                    "products": {
+                        "BNB001": {
+                            "total": "0.1",
+                            "realtime_rewards": "0.01",
+                            "auto_subscribe": True,
+                            "can_redeem": True,
+                        }
+                    },
+                },
+                "ETH": {
+                    "quantity": "2.0",
+                    "spot_free": "2.0",
+                    "spot_locked": "0",
+                    "products": {},
+                },
+            },
+        },
+        "external_cash_flow_cursor": {
+            "version": 1,
+            "observed_at": (NOW + timedelta(seconds=10)).isoformat(),
+            "records": {},
+        },
+        "utc_date": NOW.date().isoformat(),
+    }
+    value.update(changes)
+    return value
+
+
+def test_prospective_proposal_accepts_incomplete_legacy_history_as_unreconciled_context():
+    """From-today baseline must not require reconstructing missing pre-start history."""
+    from scripts import migrate_daily_accounting_state as migration
+
+    ledger = _ledger(
+        last_reset_date="2026-08-01",
+        accounting_rebase={
+            "archive_document": "MULTI_ASSET_STATE__before_rebase_legacy",
+            "historical_difference_unresolved": True,
+        },
+        earn_accrual_checkpoint={"observed_at": "2026-08-01T00:00:00+00:00"},
+    )
+    original = copy.deepcopy(ledger)
+    evidence = _prospective_evidence()
+    result = migration.build_rebase_proposal(ledger=ledger, evidence=evidence, observed_at=NOW)
+    assert ledger == original
+    assert result["opening_mode"] == "prospective"
+    assert result["historical_difference_unresolved"] is True
+    assert result["pre_start_income_classification"] == "unreconstructed_history"
+    assert result["executable_candidate"] is False
+    assert result["automatic_accounting_ready"] is False
+    assert result["recovery_ready"] is False
+    assert result["execution_authority_granted"] is False
+    assert result["no_order"] is True
+    assert result["write_performed"] is False
+    assert result["observation_started_at"] == evidence["observation_started_at"]
+    assert result["observation_completed_at"] == evidence["observation_completed_at"]
+    assert result["proposed_fields"]["last_reset_date"] == NOW.date().isoformat()
+    assert result["proposed_fields"]["earn_accrual_checkpoint"] == evidence["earn_accrual_checkpoint"]
+    assert result["proposed_fields"]["earn_accounted_net_changes"] == {
+        "USDT": "0",
+        "BTC": "0",
+        "BNB": "0",
+        "ETH": "0",
+    }
+    # Legacy archive marker stays on the unchanged ledger; proposal only describes new fields.
+    assert ledger["accounting_rebase"]["archive_document"] == "MULTI_ASSET_STATE__before_rebase_legacy"
+    assert "accounting_rebase" not in result["proposed_fields"]
+
+
+@pytest.mark.parametrize(
+    "order_state",
+    [
+        {"state": "PENDING"},
+        {"state": "UNKNOWN"},
+        {"state": "TERMINAL", "extra": True},
+        {},
+    ],
+)
+def test_prospective_proposal_blocks_unsafe_or_unknown_order_state(order_state):
+    from scripts import migrate_daily_accounting_state as migration
+
+    with pytest.raises(migration.MigrationBlocked, match="unsafe_order_state"):
+        migration.build_rebase_proposal(
+            ledger=_ledger(order_submission=order_state),
+            evidence=_prospective_evidence(),
+            observed_at=NOW,
+        )
+
+
+@pytest.mark.parametrize(
+    "changes,match",
+    [
+        ({"open_order_count": 1}, "rebase_proposal_current_state_unsettled"),
+        ({"current_observation_complete": False}, "rebase_proposal_current_state_unsettled"),
+        ({"external_cash_flow_cursor": None}, "rebase_proposal_current_state_unsettled"),
+        (
+            {"earn_accrual_checkpoint": {"account_scope_sha256": "b" * 64, "assets": {}}},
+            "rebase_proposal_current_state_unsettled",
+        ),
+        ({"balance_snapshot": {"USDT": 1.0}}, "rebase_proposal_balances_incomplete"),
+    ],
+)
+def test_prospective_proposal_blocks_unsettled_or_inconsistent_current_state(changes, match):
+    from scripts import migrate_daily_accounting_state as migration
+
+    with pytest.raises(migration.MigrationBlocked, match=match):
+        migration.build_rebase_proposal(
+            ledger=_ledger(),
+            evidence=_prospective_evidence(**changes),
+            observed_at=NOW,
+        )
+
+
+def test_prospective_opening_blocks_spot_earn_double_read_divergence(monkeypatch):
+    from scripts.migrate_daily_accounting_state import MigrationBlocked, collect_prospective_opening
+    from tests.test_earn_accrual_checkpoint import checkpoint, client
+
+    c = client()
+    original = c.get_simple_earn_flexible_product_position
+    reads = []
+
+    def positions(**kwargs):
+        payload = original(**kwargs)
+        if reads:
+            payload = copy.deepcopy(payload)
+            payload["rows"][0]["totalAmount"] = "9"
+        reads.append(True)
+        return payload
+
+    c.get_simple_earn_flexible_product_position = positions
+    c.get_open_orders = lambda: []
+    c.get_my_trades = lambda **kwargs: []
+    c.get_avg_price = lambda **kwargs: {"price": "500"}
+    with pytest.raises(MigrationBlocked, match="prospective_opening_changed_during_read"):
+        collect_prospective_opening(
+            c,
+            ledger={"last_balance_snapshot": {"BNB": 2.9}},
+            expected={"account_scope_sha256": checkpoint()["account_scope_sha256"]},
+            now=NOW,
+            clock=lambda: NOW + timedelta(seconds=10),
+            collect_cash_flows=lambda *a, **kw: {
+                "cursor": {"version": 1, "observed_at": NOW.isoformat(), "records": {}}
+            },
+        )
+
+
+def test_prospective_proposal_runtime_binds_run_fingerprint_without_ledger_or_order_writes(
+    monkeypatch, tmp_path, capsys
+):
+    from scripts import migrate_daily_accounting_state as migration
+
+    now = datetime.now(timezone.utc)
+    ledger = _ledger(
+        last_reset_date="2026-08-11",
+        accounting_rebase={"archive_document": "MULTI_ASSET_STATE__before_rebase_legacy"},
+    )
+    original_ledger = copy.deepcopy(ledger)
+    refs = {
+        "ledger_ref": Ref(Snapshot(ledger)),
+        "owner_ref": Ref(Snapshot(None)),
+        "control_ref": Ref(Snapshot({"state": "RECONCILE_ONLY"})),
+    }
+    captured = []
+
+    def encrypt(proposal, **kwargs):
+        captured.append(proposal)
+        return b"synthetic encrypted bytes"
+
+    monkeypatch.setattr(migration, "require_runtime_context", lambda: None)
+    monkeypatch.setattr(
+        migration,
+        "resolve_runtime_target_from_env",
+        lambda **kw: SimpleNamespace(live_continuity=SimpleNamespace(state="RECONCILE_ONLY")),
+    )
+    monkeypatch.setattr(migration, "_expected_digests", lambda: {"account_scope_sha256": "a" * 64})
+    monkeypatch.setattr(migration, "_refs", lambda: refs)
+    monkeypatch.setattr(migration, "connect_client", lambda *a, **kw: object())
+    monkeypatch.setattr(
+        migration,
+        "collect_prospective_opening",
+        lambda *a, **kw: _prospective_evidence(utc_date=now.date().isoformat()),
+    )
+    monkeypatch.setattr(migration, "encrypt_rebase_proposal", encrypt)
+    monkeypatch.setattr(migration, "REBASE_PROPOSAL_PATH", tmp_path / "proposal.cms")
+    monkeypatch.setattr(
+        migration,
+        "build_candidate",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not build apply candidate")),
+    )
+    monkeypatch.setattr(
+        migration,
+        "get_firestore_client",
+        lambda: (_ for _ in ()).throw(AssertionError("must not open firestore writer")),
+    )
+    for key, value in {
+        "GITHUB_SHA": "f" * 40,
+        "BINANCE_API_KEY": "synthetic",
+        "BINANCE_API_SECRET": "synthetic",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+    assert migration.main(["rebase-proposal"]) == 0
+    public = json.loads(capsys.readouterr().out)
+    assert public == {
+        "status": "encrypted_proposal_ready",
+        "stage": "accounting_rebase_proposal",
+        "executable_candidate": False,
+        "ledger_unchanged": True,
+        "no_order": True,
+        "write_performed": False,
+        "execution_authority_granted": False,
+    }
+    assert len(captured) == 1
+    proposal = captured[0]
+    assert proposal["source_sha"] == "f" * 40
+    assert proposal["ledger_sha256"] == migration.digest(original_ledger)
+    assert proposal["control_sha256"] == migration.digest({"state": "RECONCILE_ONLY"})
+    assert proposal["historical_difference_unresolved"] is True
+    assert proposal["opening_mode"] == "prospective"
+    assert refs["ledger_ref"].snapshot.value == original_ledger
+    assert (
+        refs["ledger_ref"].snapshot.value["accounting_rebase"]["archive_document"]
+        == "MULTI_ASSET_STATE__before_rebase_legacy"
+    )
+
+
 def test_rebase_proposal_collects_prices_even_for_same_day_ledger(monkeypatch):
     migration, _, client, expected, _, _ = _audit_setup(monkeypatch)
     quotes = []
