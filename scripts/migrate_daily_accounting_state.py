@@ -33,6 +33,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from application.broker_reconciliation import (
+    BinanceReconciliationReadError,
     _expected_digests,
     calculate_broker_observation_sha256 as digest,
     collect_read_only_reconciliation_observations,
@@ -267,7 +268,7 @@ def collect_prospective_opening(client, *, ledger, expected, now, clock=None,
         raise
     except EarnCheckpointUnavailable as error:
         raise MigrationBlocked(str(error)) from None
-    except Exception:
+    except (BinanceReconciliationReadError, ValueError, TypeError, KeyError):
         raise MigrationBlocked(f'prospective_opening_{stage}_unavailable') from None
 
 
@@ -2354,6 +2355,33 @@ def preview_external_cash_flow(refs, *, client, expected, now, initial_source=No
         }
         reason = str(exc) if str(exc) in safe_codes else "cash_flow_preview_read_failed"
         raise MigrationBlocked(reason) from None
+    history = diagnose_balance_flows(
+        client,
+        start=now - timedelta(days=7),
+        end=now,
+        now=now,
+        account=account,
+        expected_digests=expected,
+    )
+    recent_execution_count = None
+    try:
+        observations = collect_read_only_reconciliation_observations(
+            client,
+            strategy_symbols=_symbols_from_env(),
+            local_execution_ledger=ledger,
+            now=now,
+            lookback=timedelta(days=7),
+            account_snapshot=account,
+        )
+        recent_execution_count = len(observations.recent_executions)
+    except Exception:
+        # The category remains explicitly unverified; do not infer zero trades.
+        pass
+    activity = classify_activity_evidence(
+        history_counts=history.get("history_counts") if isinstance(history, Mapping) else None,
+        recent_execution_count=recent_execution_count,
+        flow_summary=flows,
+    )
     after_account = client.get_account()
     _, after_spot = _private_spot_account(after_account, expected_account_scope_sha256=expected["account_scope_sha256"])
     after_balances = _strict_balance_snapshot(client, after_account["balances"], assets)
@@ -2365,6 +2393,9 @@ def preview_external_cash_flow(refs, *, client, expected, now, initial_source=No
         "stage": "external_cash_flow_preview", "observed_at": now.isoformat(),
         "cash_flow_history_read": True, "cursor_present": ledger.get("external_cash_flow_cursor") is not None,
         "new_confirmed_deposit_count": flows["new_confirmed_deposit_count"],
+        "activity_by_type": activity,
+        "activity_history_complete": history.get("history_complete_for_requested_surfaces") is True,
+        "activity_history_reason_code": history.get("reason_code"),
         "unmanaged_spot_asset_count": sum(1 for a, (free, locked) in spot if a not in assets and free + locked > 0),
         "complete_balance_reconciliation": False, "write_performed": False,
         "ledger_unchanged": True, "no_order": True, "execution_authority_granted": False,
@@ -2388,6 +2419,69 @@ def preview_external_cash_flow(refs, *, client, expected, now, initial_source=No
         }
         return {**result, "status": "blocked", "reason_code": reason if reason in safe_codes else "cash_flow_preview_unverifiable"}
     return {**result, "status": "reconciled_preview" if reconciled else "baseline_preview" if flows["bootstrap"] else "no_new_deposit"}
+
+
+def classify_activity_evidence(*, history_counts, recent_execution_count, flow_summary):
+    """Summarize activity by accounting category without inferring causality."""
+    counts = history_counts if isinstance(history_counts, Mapping) else {}
+    flows = flow_summary if isinstance(flow_summary, Mapping) else None
+
+    def _nonnegative_int(value):
+        return type(value) is int and value >= 0
+
+    trade_count = recent_execution_count if _nonnegative_int(recent_execution_count) else None
+    if flows is None:
+        deposit_count = withdrawal_count = None
+        deposit_supported = withdrawal_supported = False
+        deposit_status = withdrawal_status = "unverified"
+    else:
+        deposit_count = flows.get("new_confirmed_deposit_count")
+        withdrawal_count = flows.get("new_or_changed_withdrawal_count")
+        deposit_count = deposit_count if _nonnegative_int(deposit_count) else None
+        withdrawal_count = withdrawal_count if _nonnegative_int(withdrawal_count) else None
+        unsupported = flows.get("new_unsupported_deposit_count")
+        deposit_supported = deposit_count is not None and unsupported == 0
+        withdrawal_supported = withdrawal_count == 0
+        deposit_status = "observed" if deposit_count is not None else "unverified"
+        withdrawal_status = "observed" if withdrawal_count is not None else "unverified"
+
+    transfer_count = sum(
+        value for key, value in counts.items()
+        if isinstance(key, str) and key.startswith("transfer_") and _nonnegative_int(value)
+    ) if counts else None
+    earn_count = sum(
+        value for key, value in counts.items()
+        if key in {"earn_rewards", "earn_subscriptions", "earn_redemptions"}
+        and _nonnegative_int(value)
+    ) if counts else None
+    categories = {
+        "trade": {
+            "count": trade_count,
+            "status": "observed" if trade_count is not None else "unverified",
+            "supported": trade_count == 0,
+        },
+        "deposit": {
+            "count": deposit_count,
+            "status": deposit_status,
+            "supported": deposit_supported,
+        },
+        "withdrawal": {
+            "count": withdrawal_count,
+            "status": withdrawal_status,
+            "supported": withdrawal_supported,
+        },
+        "internal_transfer": {
+            "count": transfer_count,
+            "status": "observed" if transfer_count is not None else "unverified",
+            "supported": transfer_count == 0,
+        },
+        "earn": {
+            "count": earn_count,
+            "status": "observed" if earn_count is not None else "unverified",
+            "supported": earn_count == 0,
+        },
+    }
+    return {**categories, "all_supported": all(item["supported"] for item in categories.values())}
 
 
 def inspect_control(refs):
