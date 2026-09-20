@@ -1,5 +1,6 @@
 import copy
 import json
+import os
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -10,8 +11,19 @@ from tests.test_daily_accounting_migration import Ref, Snapshot, _ledger
 from tests.test_approved_accounting_rebase import ArchiveTransaction
 from tests.test_forward_earn_accounting import materials, NOW
 
+PROPOSAL_RUN_ID = "35525044419"
 
-def setup(monkeypatch):
+
+def _complete_proposal(proposal, run_id=PROPOSAL_RUN_ID):
+    proposal = copy.deepcopy(proposal)
+    proposal["proposal_run_id"] = run_id
+    proposal["archive_document"] = m.prospective_archive_document(run_id)
+    proposal["opening_mode"] = "prospective"
+    proposal["executable_candidate"] = False
+    return proposal
+
+
+def setup(monkeypatch, run_id=PROPOSAL_RUN_ID):
     initial, fresh, _cash = materials()
     cp = initial['earn_accrual_checkpoint']
     ledger = _ledger(last_balance_snapshot={'USDT': 100, 'BNB': 3}, accounting_rebase={'archive_document': 'preserve_old_archive'})
@@ -21,11 +33,14 @@ def setup(monkeypatch):
     fields = {k: copy.deepcopy(initial.get(k, 0)) for k in m._ACCOUNTING_FIELDS}
     fields.update(earn_accrual_checkpoint=cp, earn_accounted_net_changes={'USDT': '0', 'BNB': '0'},
                   external_cash_flow_cursor=initial['external_cash_flow_cursor'])
-    proposal = {'source_sha': 'c625413dcc601412358efbb5373e38788da95d0e',
-                'ledger_sha256': m.digest(ledger), 'control_sha256': m.digest(control),
-                'ledger_update_time': m._timestamp(refs['ledger_ref'].snapshot.update_time),
-                'proposed_fields': fields, 'historical_difference_unresolved': True}
-    monkeypatch.setattr(m, 'APPROVED_PROSPECTIVE_SHA256', m.digest(proposal))
+    proposal = _complete_proposal({
+        'source_sha': 'c625413dcc601412358efbb5373e38788da95d0e',
+        'ledger_sha256': m.digest(ledger),
+        'control_sha256': m.digest(control),
+        'ledger_update_time': m._timestamp(refs['ledger_ref'].snapshot.update_time),
+        'proposed_fields': fields,
+        'historical_difference_unresolved': True,
+    }, run_id=run_id)
     return refs, archive, proposal, fresh
 
 
@@ -33,11 +48,40 @@ def test_exact_approval_loaded_without_retaining_secret(monkeypatch):
     _, _, proposal, _ = setup(monkeypatch)
     monkeypatch.setenv('BINANCE_APPROVED_PROSPECTIVE_OPENING', json.dumps(proposal))
     assert m._load_prospective_approval() == proposal
-    import os
     assert 'BINANCE_APPROVED_PROSPECTIVE_OPENING' not in os.environ
 
 
-@pytest.mark.parametrize('change', ['ledger', 'control', 'owner', 'archive', 'version', 'payload'])
+@pytest.mark.parametrize('defect', [
+    'missing_run_id',
+    'invalid_run_id',
+    'tampered_run_id',
+    'archive_mismatch',
+    'legacy_fixed_digest',
+    'missing_historical_flag',
+])
+def test_approval_rejects_missing_illegal_or_legacy_bindings(monkeypatch, defect):
+    _, _, proposal, _ = setup(monkeypatch)
+    if defect == 'missing_run_id':
+        proposal.pop('proposal_run_id')
+    elif defect == 'invalid_run_id':
+        proposal['proposal_run_id'] = '0'
+        proposal['archive_document'] = m.prospective_archive_document(PROPOSAL_RUN_ID)
+    elif defect == 'tampered_run_id':
+        proposal['proposal_run_id'] = '99999999999'
+    elif defect == 'archive_mismatch':
+        proposal['archive_document'] = 'MULTI_ASSET_STATE__before_rebase_1'
+    elif defect == 'legacy_fixed_digest':
+        # Force the retired fixed digest path to fail closed for new applies.
+        monkeypatch.setattr(m, 'digest', lambda _value: m.APPROVED_PROSPECTIVE_SHA256)
+    else:
+        proposal['historical_difference_unresolved'] = False
+    monkeypatch.setenv('BINANCE_APPROVED_PROSPECTIVE_OPENING', json.dumps(proposal))
+    with pytest.raises(m.MigrationBlocked, match='prospective_approval_'):
+        m._load_prospective_approval()
+    assert 'BINANCE_APPROVED_PROSPECTIVE_OPENING' not in os.environ
+
+
+@pytest.mark.parametrize('change', ['ledger', 'control', 'owner', 'archive', 'version', 'binding'])
 def test_prospective_cas_rejects_changes_before_any_write(monkeypatch, change):
     refs, archive, proposal, _ = setup(monkeypatch)
     if change == 'ledger': refs['ledger_ref'].snapshot.value['daily_equity_base'] += 1
@@ -45,14 +89,14 @@ def test_prospective_cas_rejects_changes_before_any_write(monkeypatch, change):
     if change == 'owner': refs['owner_ref'] = Ref(Snapshot({'owner': 'busy'}))
     if change == 'archive': archive.snapshot = Snapshot({'old': True})
     if change == 'version': refs['ledger_ref'].snapshot.update_time = NOW.isoformat()
-    if change == 'payload': proposal['proposed_fields']['daily_equity_base'] += 1
+    if change == 'binding': proposal['ledger_sha256'] = '0' * 64
     tx = ArchiveTransaction()
     with pytest.raises(m.MigrationBlocked):
         m._prospective_transaction(tx, refs=refs, archive_ref=archive, approved=proposal, now=NOW)
     assert not tx.writes and not tx.creates
 
 
-def test_prospective_transaction_archives_entire_prior_ledger_and_preserves_control(monkeypatch):
+def test_prospective_transaction_binds_dynamic_archive_and_marker(monkeypatch):
     refs, archive, proposal, _ = setup(monkeypatch)
     tx = ArchiveTransaction()
     written = m._prospective_transaction(tx, refs=refs, archive_ref=archive, approved=proposal, now=NOW)
@@ -61,10 +105,21 @@ def test_prospective_transaction_archives_entire_prior_ledger_and_preserves_cont
     assert backup['ledger'] == refs['ledger_ref'].snapshot.value
     assert backup['recovery_control'] == refs['control_ref'].snapshot.value
     assert backup['ledger']['accounting_rebase']['archive_document'] == 'preserve_old_archive'
+    expected_archive = m.prospective_archive_document(PROPOSAL_RUN_ID)
+    assert written['archive_document'] == expected_archive
+    assert written['approved_proposal_run_id'] == PROPOSAL_RUN_ID
+    assert written['approved_proposal_sha256'] == m.digest(proposal)
     patch = tx.writes[0][1]
     assert patch['earn_accounted_net_changes'] == {'USDT': '0', 'BNB': '0'}
     assert 'is_circuit_broken' not in patch and 'order_submission' not in patch
-    assert patch['accounting_rebase']['approved_proposal_run_id'] == '34690028846'
+    assert patch['accounting_rebase'] == {
+        'archive_document': expected_archive,
+        'started_at': NOW.isoformat(),
+        'opening_balance_observed_at': proposal['proposed_fields']['earn_accrual_checkpoint']['observed_at'],
+        'historical_difference_unresolved': True,
+        'approved_proposal_run_id': PROPOSAL_RUN_ID,
+        'approved_proposal_sha256': m.digest(proposal),
+    }
     assert written['new_ledger_sha256'] == m.digest({**backup['ledger'], **patch})
 
 
@@ -85,7 +140,6 @@ def test_preflight_allows_only_continuous_income_since_approved_snapshot(monkeyp
     checkpoint['account_scope_sha256'] = cp_scope
     refs['control_ref'].snapshot.value['source']['original_evidence']['account_scope_sha256'] = cp_scope
     approved['control_sha256'] = m.digest(refs['control_ref'].snapshot.value)
-    monkeypatch.setattr(m, 'APPROVED_PROSPECTIVE_SHA256', m.digest(approved))
     kwargs = dict(refs=refs, client=object(), expected={'account_scope_sha256': cp_scope},
                   approved=approved, now=NOW-timedelta(seconds=10), clock=lambda: NOW)
     if change:
@@ -98,7 +152,14 @@ def test_preflight_allows_only_continuous_income_since_approved_snapshot(monkeyp
 def test_apply_is_single_attempt_and_archives_without_activating(monkeypatch, outcome):
     from google.cloud import firestore
     refs, archive, approved, _ = setup(monkeypatch)
-    refs['ledger_ref'].parent = SimpleNamespace(document=lambda name: archive)
+    expected_archive = m.prospective_archive_document(PROPOSAL_RUN_ID)
+    created = {}
+
+    def document(name):
+        assert name == expected_archive
+        return archive
+
+    refs['ledger_ref'].parent = SimpleNamespace(document=document)
     committed = []
     class Owner(Ref):
         def get(self, **kw):
@@ -107,7 +168,7 @@ def test_apply_is_single_attempt_and_archives_without_activating(monkeypatch, ou
     refs['owner_ref'] = Owner(Snapshot(None))
     class Tx(ArchiveTransaction):
         def create(self, ref, value):
-            super().create(ref, value); ref.snapshot = Snapshot(copy.deepcopy(value))
+            super().create(ref, value); ref.snapshot = Snapshot(copy.deepcopy(value)); created[ref] = True
         def update(self, ref, value):
             super().update(ref, value); ref.snapshot.value.update(copy.deepcopy(value))
     tx, attempts = Tx(), []
@@ -128,11 +189,36 @@ def test_apply_is_single_attempt_and_archives_without_activating(monkeypatch, ou
         result = m._apply_prospective_rebase(refs, **kwargs)
         assert result['status'] == 'rebased' and result['control_unchanged'] is True
         assert result['execution_authority_granted'] is False
+        assert result['archive_document'] == expected_archive
+        assert result['approved_proposal_run_id'] == PROPOSAL_RUN_ID
+        assert result['approved_proposal_sha256'] == m.digest(approved)
         monkeypatch.setenv('BINANCE_APPROVED_PROSPECTIVE_OPENING', json.dumps(approved))
-        with pytest.raises(m.MigrationBlocked): m._apply_prospective_rebase(refs, **kwargs)
+        with pytest.raises(m.MigrationBlocked, match='prospective_archive_already_exists'):
+            m._apply_prospective_rebase(refs, **kwargs)
+        assert len(tx.creates) == len(tx.writes) == 1
     else:
         with pytest.raises(m.MigrationApplyUncertain) as error: m._apply_prospective_rebase(refs, **kwargs)
         assert 'private' not in str(error.value)
-    assert attempts == [1] and len(tx.creates) == len(tx.writes) == 1
+        assert attempts == [1] and len(tx.creates) == len(tx.writes) == 1
     assert refs['control_ref'].snapshot.value['state'] == 'RECONCILE_ONLY'
     assert refs['ledger_ref'].snapshot.value['is_circuit_broken'] is True
+
+
+def test_apply_rejects_existing_archive_with_zero_writes(monkeypatch):
+    from google.cloud import firestore
+    refs, archive, approved, _ = setup(monkeypatch)
+    archive.snapshot = Snapshot({'already': True})
+    refs['ledger_ref'].parent = SimpleNamespace(
+        document=lambda name: archive if name == m.prospective_archive_document(PROPOSAL_RUN_ID) else None
+    )
+    attempts = []
+    monkeypatch.setattr(firestore, 'transactional', lambda fn: fn, raising=False)
+    monkeypatch.setattr(m, 'get_firestore_client', lambda: SimpleNamespace(
+        transaction=lambda **kw: attempts.append(kw) or (_ for _ in ()).throw(AssertionError('no tx'))
+    ))
+    monkeypatch.setattr(m, '_prospective_preflight', lambda **kw: (_ for _ in ()).throw(AssertionError('no preflight')))
+    monkeypatch.setenv('BINANCE_APPROVED_PROSPECTIVE_OPENING', json.dumps(approved))
+    with pytest.raises(m.MigrationBlocked, match='prospective_archive_already_exists'):
+        m._apply_prospective_rebase(refs, client=object(), expected={}, now=NOW, fixed_now=True)
+    assert attempts == []
+    assert 'BINANCE_APPROVED_PROSPECTIVE_OPENING' not in os.environ

@@ -42,6 +42,8 @@ from scripts.migrate_daily_accounting_state import (
     APPROVED_PROSPECTIVE_SHA256,
     PROSPECTIVE_ARCHIVE_DOCUMENT,
     REBASE_ARCHIVE_DOCUMENT as ARCHIVE_DOCUMENT,
+    is_prospective_archive_document,
+    prospective_archive_document,
 )
 
 
@@ -162,15 +164,41 @@ def validate_prospective_rebase_material(
     ledger: Mapping[str, object],
     archive: Mapping[str, object],
 ) -> dict[str, object]:
-    """Validate the exact new opening without enrolling it for recovery."""
-    if (
-        not isinstance(ledger, Mapping)
-        or not isinstance(archive, Mapping)
-        or digest(archive) != PROSPECTIVE_ARCHIVE_SHA256
-    ):
+    """Validate a prospective opening archive without enrolling it for recovery.
+
+    The completed 2026-09-12 migration stays bound to its exact digests. Newer
+    one-shot applies bind dynamically through proposal_run_id + digest.
+    """
+    if not isinstance(ledger, Mapping) or not isinstance(archive, Mapping):
         raise ValueError("prospective_rebase_archive_invalid")
-    if digest(ledger) != PROSPECTIVE_LEDGER_SHA256:
-        raise ValueError("prospective_rebase_ledger_invalid")
+    archive_document = archive.get("archive_document")
+    if archive_document == PROSPECTIVE_ARCHIVE_DOCUMENT:
+        if digest(archive) != PROSPECTIVE_ARCHIVE_SHA256:
+            raise ValueError("prospective_rebase_archive_invalid")
+        if digest(ledger) != PROSPECTIVE_LEDGER_SHA256:
+            raise ValueError("prospective_rebase_ledger_invalid")
+        required_approval_digest = APPROVED_PROSPECTIVE_SHA256
+        required_run_id = PROSPECTIVE_APPROVED_PROPOSAL_RUN_ID
+        required_ledger_digest = PROSPECTIVE_LEDGER_SHA256
+    elif is_prospective_archive_document(archive_document):
+        required_approval_digest = archive.get("approved_proposal_sha256")
+        required_run_id = archive.get("approved_proposal_run_id")
+        required_ledger_digest = archive.get("new_ledger_sha256")
+        try:
+            expected_archive = prospective_archive_document(required_run_id)
+        except Exception:
+            raise ValueError("prospective_rebase_archive_invalid") from None
+        if (
+            not isinstance(required_approval_digest, str)
+            or len(required_approval_digest) != 64
+            or expected_archive != archive_document
+            or not isinstance(required_ledger_digest, str)
+            or len(required_ledger_digest) != 64
+            or digest(ledger) != required_ledger_digest
+        ):
+            raise ValueError("prospective_rebase_archive_invalid")
+    else:
+        raise ValueError("prospective_rebase_archive_invalid")
 
     old_ledger = archive.get("ledger")
     archived_control = archive.get("recovery_control")
@@ -194,16 +222,20 @@ def validate_prospective_rebase_material(
         or not isinstance(approved, Mapping)
         or not isinstance(proposed, Mapping)
         or not isinstance(marker, Mapping)
-        or digest(approved) != APPROVED_PROSPECTIVE_SHA256
+        or digest(approved) != required_approval_digest
         or approved.get("historical_difference_unresolved") is not True
         or approved.get("ledger_sha256") != digest(old_ledger)
         or approved.get("control_sha256") != digest(archived_control)
-        or archive.get("archive_document") != PROSPECTIVE_ARCHIVE_DOCUMENT
-        or archive.get("approved_proposal_run_id") != PROSPECTIVE_APPROVED_PROPOSAL_RUN_ID
-        or archive.get("approved_proposal_sha256") != APPROVED_PROSPECTIVE_SHA256
+        or archive.get("approved_proposal_run_id") != required_run_id
+        or archive.get("approved_proposal_sha256") != required_approval_digest
         or archive.get("historical_difference_unresolved") is not True
-        or archive.get("new_ledger_sha256") != PROSPECTIVE_LEDGER_SHA256
+        or archive.get("new_ledger_sha256") != required_ledger_digest
         or archive.get("valuation_price_source") != "binance_get_avg_price_estimate"
+    ):
+        raise ValueError("prospective_rebase_archive_invalid")
+    if archive_document != PROSPECTIVE_ARCHIVE_DOCUMENT and (
+        approved.get("proposal_run_id") != required_run_id
+        or approved.get("archive_document") != archive_document
     ):
         raise ValueError("prospective_rebase_archive_invalid")
     if (

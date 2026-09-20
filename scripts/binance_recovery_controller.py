@@ -39,7 +39,7 @@ from application.rebased_recovery import (
     MAX_HISTORY,
     MIGRATION_RUN_ID,
     MIGRATION_RUN_SHA,
-    PROSPECTIVE_ARCHIVE_DOCUMENT,
+    PROSPECTIVE_ARCHIVE_DOCUMENT,  # noqa: F401 - re-exported for tests
     PROSPECTIVE_MIGRATION_RUN_ID,
     PROSPECTIVE_MIGRATION_RUN_SHA,
     collect_historical_continuity_diagnosis,
@@ -55,6 +55,7 @@ from application.rebased_recovery import (
     validate_post_rebase_source,
 )
 from live_services import get_firestore_client
+from scripts.migrate_daily_accounting_state import is_prospective_archive_document
 from scripts.reconcile_frozen_live_baseline import _symbols_from_env
 
 REPOSITORY = "QuantStrategyLab/BinancePlatform"
@@ -300,12 +301,10 @@ def run(action, recovery_id=""):
         raise ValueError("recovery_ledger_unavailable_or_owned")
     ledger = ledger_snapshot.to_dict()
     marker = ledger.get("accounting_rebase")
-    is_prospective_rebase = (
-        isinstance(marker, dict)
-        and marker.get("archive_document") == PROSPECTIVE_ARCHIVE_DOCUMENT
-    )
+    archive_document = marker.get("archive_document") if isinstance(marker, dict) else None
+    is_prospective_rebase = is_prospective_archive_document(archive_document)
     if is_prospective_rebase:
-        refs["archive_ref"] = collection.document(PROSPECTIVE_ARCHIVE_DOCUMENT)
+        refs["archive_ref"] = collection.document(archive_document)
     archive_snapshot = refs["archive_ref"].get(retry=None)
     archive = archive_snapshot.to_dict() if archive_snapshot.exists else None
     is_post_rebase = archive is not None
