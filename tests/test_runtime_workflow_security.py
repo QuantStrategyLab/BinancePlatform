@@ -149,6 +149,116 @@ def test_reconciliation_only_can_collect_evidence_while_normal_runtime_is_disabl
     assert '"$VENV_PATH/bin/python" main.py' in broker_job
 
 
+def test_strategy_step_passes_and_revalidates_runtime_controls_before_main() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    strategy = broker_job.split("      - name: 4. Run trading strategy", 1)[1].split(
+        "      - name: Remove protected LIVE risk authority source", 1
+    )[0]
+
+    assert "RUNTIME_TARGET_ENABLED: ${{ env.RUNTIME_TARGET_ENABLED }}" in strategy
+    assert "RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}" in strategy
+    assert (
+        'if [ -z "${RUNTIME_TARGET_JSON:-}" ]; then'
+        in strategy
+    )
+    assert (
+        'if [ "${VALIDATE_ONLY:-false}" = "true" ]; then'
+        in strategy
+    )
+    assert (
+        'if [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ]; then'
+        in strategy.split('if [ "${VALIDATE_ONLY:-false}" = "true" ]; then', 1)[1]
+    )
+    assert "assert_standard_execution_entry_permitted" in strategy
+    assert strategy.index("assert_standard_execution_entry_permitted") < strategy.index(
+        '"$VENV_PATH/bin/python" main.py'
+    )
+    assert (
+        'if [ "${RUNTIME_TARGET_ENABLED:-}" != "true" ]; then'
+        in strategy.split('if [ "${RECONCILE_ONLY:-false}" = "true" ]; then', 1)[1]
+    )
+
+
+def test_live_strategy_entry_shell_gates_fail_closed_before_python() -> None:
+    """Shell prechecks must refuse missing JSON / disabled switch without assuming safety."""
+    import subprocess
+    import textwrap
+
+    preamble = textwrap.dedent(
+        """\
+        set -euo pipefail
+        if [ -z "${RUNTIME_TARGET_JSON:-}" ]; then
+          echo "missing RUNTIME_TARGET_JSON" >&2
+          exit 1
+        fi
+        if [ "${VALIDATE_ONLY:-false}" = "true" ]; then
+          if [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ]; then
+            echo "validate requires disabled runtime" >&2
+            exit 1
+          fi
+          echo "validate_control_ok"
+          exit 0
+        fi
+        if [ "${RUNTIME_TARGET_ENABLED:-}" != "true" ]; then
+          echo "enabled gate" >&2
+          exit 1
+        fi
+        echo "shell_control_ok"
+        """
+    )
+    cases = [
+        ({"RUNTIME_TARGET_ENABLED": "true"}, False, "missing"),
+        (
+            {
+                "RUNTIME_TARGET_ENABLED": "false",
+                "RUNTIME_TARGET_JSON": '{"platform_id":"binance"}',
+            },
+            False,
+            "enabled",
+        ),
+        (
+            {
+                "RUNTIME_TARGET_ENABLED": "true",
+                "RUNTIME_TARGET_JSON": '{"platform_id":"binance"}',
+            },
+            True,
+            "shell_control_ok",
+        ),
+        (
+            {
+                "VALIDATE_ONLY": "true",
+                "RUNTIME_TARGET_ENABLED": "true",
+                "RUNTIME_TARGET_JSON": '{"platform_id":"binance"}',
+            },
+            False,
+            "validate",
+        ),
+        (
+            {
+                "VALIDATE_ONLY": "true",
+                "RUNTIME_TARGET_ENABLED": "false",
+                "RUNTIME_TARGET_JSON": '{"platform_id":"binance"}',
+            },
+            True,
+            "validate_control_ok",
+        ),
+    ]
+    for env, allowed, marker in cases:
+        result = subprocess.run(
+            ["bash", "-c", preamble],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert (result.returncode == 0) is allowed, (env, result.stdout, result.stderr)
+        if allowed:
+            assert marker in result.stdout
+        else:
+            assert marker in result.stderr
+
+
 def test_oidc_and_notification_workflows_pin_remote_actions() -> None:
     for path in (WATCHDOG_WORKFLOW, HEARTBEAT_WORKFLOW):
         workflow = path.read_text(encoding="utf-8")

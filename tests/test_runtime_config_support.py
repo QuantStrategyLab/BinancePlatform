@@ -16,7 +16,12 @@ for path in (QPK_SRC, CRYPTO_STRATEGIES_SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from runtime_config_support import build_live_runtime, load_cycle_execution_settings
+from runtime_config_support import (
+    assert_standard_execution_entry_permitted,
+    build_live_runtime,
+    load_cycle_execution_settings,
+    resolve_runtime_target_enabled_flag,
+)
 from strategy_registry import (
     BINANCE_PLATFORM,
     BINANCE_ENABLED_PROFILES,
@@ -24,6 +29,7 @@ from strategy_registry import (
     DEFAULT_STRATEGY_PROFILE,
     get_platform_profile_status_matrix,
     get_supported_profiles_for_platform,
+    resolve_research_strategy_definition,
 )
 
 
@@ -223,48 +229,138 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             runtime = build_live_runtime()
 
         self.assertFalse(runtime.dry_run)
+        self.assertFalse(runtime.standard_execution_permitted)
         self.assertEqual(runtime.runtime_target.service_name, "binance-platform")
         self.assertEqual(runtime.runtime_target.strategy_profile, DEFAULT_STRATEGY_PROFILE)
 
-    def test_live_continuity_paused_state_suppresses_standard_execution(self):
-        runtime_target = {
+    def test_missing_runtime_target_enabled_fails_closed(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertFalse(resolve_runtime_target_enabled_flag())
+        with patch.dict(os.environ, {"RUNTIME_TARGET_ENABLED": "false"}, clear=True):
+            self.assertFalse(resolve_runtime_target_enabled_flag())
+        with patch.dict(os.environ, {"RUNTIME_TARGET_ENABLED": "true"}, clear=True):
+            self.assertTrue(resolve_runtime_target_enabled_flag())
+        with patch.dict(os.environ, {"RUNTIME_TARGET_ENABLED": "perhaps"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "RUNTIME_TARGET_ENABLED must be true or false"):
+                resolve_runtime_target_enabled_flag()
+
+    def _continuity_runtime_target(self, *, state: str, dry_run_only: bool = False):
+        from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
+        from quant_platform_kit.common.runtime_target import build_runtime_target
+
+        payload = {
             "platform_id": "binance",
             "strategy_profile": DEFAULT_STRATEGY_PROFILE,
-            "dry_run_only": False,
-            "execution_mode": "live",
+            "dry_run_only": dry_run_only,
             "deployment_selector": "default",
             "account_selector": ["default"],
             "account_scope": "default",
             "service_name": "binance-platform",
-            "live_continuity": {
-                "state": "PAUSED",
+        }
+        return build_runtime_target(
+            **payload,
+            live_continuity={
+                "state": state,
                 "baseline_kind": "legacy_authorized",
                 "baseline_id": "binance-lkg-20260830",
-                "baseline_target_sha256": "a" * 64,
+                "baseline_target_sha256": runtime_target_fingerprint(payload),
                 "captured_at": "2026-08-30",
             },
-        }
-        from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
+            continuity_fingerprint_payload=payload,
+        )
 
-        runtime_target["live_continuity"]["baseline_target_sha256"] = runtime_target_fingerprint(runtime_target)
-        with patch.dict(
+    def _patch_resolved_target(self, runtime_target):
+        definition = resolve_research_strategy_definition(
+            runtime_target.strategy_profile,
+            platform_id=BINANCE_PLATFORM,
+        )
+        return patch(
+            "runtime_config_support._resolve_runtime_target",
+            return_value=(runtime_target, definition),
+        )
+
+    def test_live_continuity_paused_state_suppresses_standard_execution(self):
+        runtime_target = self._continuity_runtime_target(state="PAUSED")
+        with self._patch_resolved_target(runtime_target), patch.dict(
             os.environ,
             {
-                "RUNTIME_TARGET_JSON": json.dumps(runtime_target),
-                "STRATEGY_PROFILE": DEFAULT_STRATEGY_PROFILE,
                 "BINANCE_DRY_RUN": "false",
                 "RUNTIME_TARGET_ENABLED": "true",
             },
             clear=True,
         ):
-            if not BINANCE_ENABLED_PROFILES:
-                with self.assertRaisesRegex(ValueError, "Unsupported STRATEGY_PROFILE"):
-                    build_live_runtime()
-                return
             runtime = build_live_runtime()
 
         self.assertFalse(runtime.dry_run)
         self.assertFalse(runtime.standard_execution_permitted)
+
+    def test_reconcile_only_blocks_live_entry_even_when_dry_run_false(self):
+        runtime_target = self._continuity_runtime_target(state="RECONCILE_ONLY")
+        with self._patch_resolved_target(runtime_target), patch.dict(
+            os.environ,
+            {
+                "BINANCE_DRY_RUN": "false",
+                "RUNTIME_TARGET_ENABLED": "true",
+            },
+            clear=True,
+        ):
+            runtime = build_live_runtime()
+            with self.assertRaisesRegex(RuntimeError, "refusing live strategy entry"):
+                assert_standard_execution_entry_permitted()
+
+        self.assertFalse(runtime.dry_run)
+        self.assertFalse(runtime.standard_execution_permitted)
+
+    def test_disabled_switch_blocks_live_entry_independent_of_dry_run(self):
+        runtime_target = self._continuity_runtime_target(state="ACTIVE_LKG")
+        with self._patch_resolved_target(runtime_target), patch.dict(
+            os.environ,
+            {
+                "BINANCE_DRY_RUN": "false",
+                "RUNTIME_TARGET_ENABLED": "false",
+            },
+            clear=True,
+        ):
+            runtime = build_live_runtime()
+            with self.assertRaisesRegex(RuntimeError, "refusing live strategy entry"):
+                assert_standard_execution_entry_permitted()
+
+        self.assertFalse(runtime.dry_run)
+        self.assertFalse(runtime.standard_execution_permitted)
+
+    def test_paper_dry_run_path_remains_dry_when_enabled(self):
+        runtime_target = self._continuity_runtime_target(state="ACTIVE_LKG", dry_run_only=True)
+        with self._patch_resolved_target(runtime_target), patch.dict(
+            os.environ,
+            {
+                "BINANCE_DRY_RUN": "true",
+                "RUNTIME_TARGET_ENABLED": "true",
+            },
+            clear=True,
+        ):
+            runtime = build_live_runtime()
+            settings = assert_standard_execution_entry_permitted()
+
+        self.assertTrue(runtime.dry_run)
+        self.assertTrue(runtime.standard_execution_permitted)
+        self.assertTrue(settings.runtime_target_enabled)
+
+    def test_active_live_entry_requires_enabled_and_continuity(self):
+        runtime_target = self._continuity_runtime_target(state="ACTIVE_LKG")
+        with self._patch_resolved_target(runtime_target), patch.dict(
+            os.environ,
+            {
+                "BINANCE_DRY_RUN": "false",
+                "RUNTIME_TARGET_ENABLED": "true",
+            },
+            clear=True,
+        ):
+            runtime = build_live_runtime()
+            settings = assert_standard_execution_entry_permitted()
+
+        self.assertFalse(runtime.dry_run)
+        self.assertTrue(runtime.standard_execution_permitted)
+        self.assertTrue(settings.runtime_target_enabled)
 
     def test_runtime_target_and_legacy_dry_run_variable_must_match(self):
         runtime_target = {
