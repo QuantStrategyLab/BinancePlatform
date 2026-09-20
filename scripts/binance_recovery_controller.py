@@ -97,7 +97,10 @@ DIAGNOSTIC_REASON_CODES = frozenset({
     "historical_continuity_broker_read_failed", "historical_continuity_checkpoint_unavailable",
     "historical_continuity_conservation_unverified",
     "historical_continuity_duplicate_event", "historical_continuity_history_incomplete",
+    "historical_continuity_migration_run_invalid", "historical_continuity_observation_timeline_invalid",
     "historical_continuity_observation_window_invalid", "historical_continuity_open_orders_present",
+    "historical_continuity_quantity_changed_during_read", "historical_continuity_source_run_invalid",
+    "historical_continuity_unapproved_reward_product",
     "historical_continuity_unsupported_activity", "historical_continuity_window_invalid",
 })
 
