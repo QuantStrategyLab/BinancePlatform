@@ -6,6 +6,7 @@ packages contain hashes and bounded counters, never account rows or amounts.
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation, localcontext
@@ -63,6 +64,61 @@ PROSPECTIVE_MIGRATION_RUN_ID = 34690695663
 PROSPECTIVE_MIGRATION_RUN_SHA = "a3ef5660e6d25fcfd5a7dedd10536a32eedde203"
 PROSPECTIVE_LEDGER_SHA256 = "8c02ec9b5aa716edbffed7e98eb67bbdbf2b951d09588652478564d5e82c63b1"
 PROSPECTIVE_ARCHIVE_SHA256 = "375a38c47bf47e64ae16f6a7ba0ea6e97a70ec48d9a361264ce9ea27693fcce5"
+
+
+def prospective_migration_binding(archive: Mapping[str, object]) -> dict[str, object]:
+    """Bind diagnose/prepare/verify to archive+proposal identity; no self-auth hash."""
+    if not isinstance(archive, Mapping):
+        raise ValueError("prospective_rebase_archive_invalid")
+    archive_document = archive.get("archive_document")
+    if archive_document == PROSPECTIVE_ARCHIVE_DOCUMENT:
+        if digest(archive) != PROSPECTIVE_ARCHIVE_SHA256:
+            raise ValueError("prospective_rebase_archive_invalid")
+        return {
+            "run_id": PROSPECTIVE_MIGRATION_RUN_ID,
+            "head_sha": PROSPECTIVE_MIGRATION_RUN_SHA,
+            "archive_document": PROSPECTIVE_ARCHIVE_DOCUMENT,
+            "archive_sha256": PROSPECTIVE_ARCHIVE_SHA256,
+            "ledger_sha256": PROSPECTIVE_LEDGER_SHA256,
+            "approval_sha256": APPROVED_PROSPECTIVE_SHA256,
+            "proposal_run_id": PROSPECTIVE_APPROVED_PROPOSAL_RUN_ID,
+            "historical": True,
+        }
+    if not is_prospective_archive_document(archive_document):
+        raise ValueError("prospective_rebase_archive_invalid")
+    approved = archive.get("approved_proposal")
+    if not isinstance(approved, Mapping):
+        raise ValueError("prospective_rebase_archive_invalid")
+    try:
+        proposal_run_id = str(approved.get("proposal_run_id") or "").strip()
+        expected_document = prospective_archive_document(proposal_run_id)
+        source_sha = approved.get("source_sha")
+        approval_digest = digest(approved)
+        ledger_digest = archive.get("new_ledger_sha256")
+    except Exception as exc:
+        raise ValueError("prospective_rebase_archive_invalid") from exc
+    if (
+        expected_document != archive_document
+        or archive.get("approved_proposal_run_id") != proposal_run_id
+        or archive.get("approved_proposal_sha256") != approval_digest
+        or approved.get("archive_document") != archive_document
+        or not isinstance(source_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
+        or not isinstance(ledger_digest, str)
+        or len(ledger_digest) != 64
+        or approval_digest != archive.get("approved_proposal_sha256")
+    ):
+        raise ValueError("prospective_rebase_archive_invalid")
+    return {
+        "run_id": int(proposal_run_id),
+        "head_sha": source_sha,
+        "archive_document": archive_document,
+        "archive_sha256": digest(archive),
+        "ledger_sha256": ledger_digest,
+        "approval_sha256": approval_digest,
+        "proposal_run_id": proposal_run_id,
+        "historical": False,
+    }
 
 _REBASED_LEDGER_FIELDS = {
     "daily_trend_pnl_basis",
@@ -338,6 +394,7 @@ def _collect_prospective_rebase_private(
     """Collect private forward proof and stable Spot evidence in memory."""
     _validate_frozen_target(runtime_target)
     material = validate_prospective_rebase_material(ledger, archive)
+    binding = prospective_migration_binding(archive)
     observed_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     opening_at = material["opening_at"]
     if not opening_at < observed_at or observed_at - opening_at > MAX_HISTORY:
@@ -345,9 +402,11 @@ def _collect_prospective_rebase_private(
     if not _valid_run(source_run):
         raise ValueError("prospective_rebase_source_run_invalid")
     if not _valid_run(migration_run) or (
-        migration_run["id"] != PROSPECTIVE_MIGRATION_RUN_ID
-        or migration_run["head_sha"] != PROSPECTIVE_MIGRATION_RUN_SHA
+        migration_run["id"] != binding["run_id"]
+        or migration_run["head_sha"] != binding["head_sha"]
     ):
+        raise ValueError("prospective_rebase_migration_run_invalid")
+    if digest(ledger) != binding["ledger_sha256"] or digest(archive) != binding["archive_sha256"]:
         raise ValueError("prospective_rebase_migration_run_invalid")
 
     assets = material["managed_assets"]
@@ -424,7 +483,7 @@ def _collect_prospective_rebase_private(
     if (
         first_state.get("earn_accrual_checkpoint") != first
         or second_state.get("earn_accrual_checkpoint") != second
-        or digest(ledger) != PROSPECTIVE_LEDGER_SHA256
+        or digest(ledger) != binding["ledger_sha256"]
     ):
         raise ValueError("prospective_rebase_conservation_unverified")
 
@@ -509,12 +568,9 @@ def validate_historical_continuity_material(
     archive: Mapping[str, object],
 ) -> dict[str, object]:
     """Validate immutable opening archive; current ledger is verification target only."""
-    if (
-        not isinstance(ledger, Mapping)
-        or not isinstance(archive, Mapping)
-        or digest(archive) != PROSPECTIVE_ARCHIVE_SHA256
-    ):
+    if not isinstance(ledger, Mapping) or not isinstance(archive, Mapping):
         raise ValueError("historical_continuity_archive_invalid")
+    binding = prospective_migration_binding(archive)
     old_ledger = archive.get("ledger")
     archived_control = archive.get("recovery_control")
     approved = archive.get("approved_proposal")
@@ -537,14 +593,15 @@ def validate_historical_continuity_material(
         or not isinstance(approved, Mapping)
         or not isinstance(proposed, Mapping)
         or not isinstance(marker, Mapping)
-        or digest(approved) != APPROVED_PROSPECTIVE_SHA256
+        or digest(approved) != binding["approval_sha256"]
         or approved.get("historical_difference_unresolved") is not True
         or approved.get("ledger_sha256") != digest(old_ledger)
         or approved.get("control_sha256") != digest(archived_control)
-        or archive.get("archive_document") != PROSPECTIVE_ARCHIVE_DOCUMENT
-        or archive.get("approved_proposal_run_id") != PROSPECTIVE_APPROVED_PROPOSAL_RUN_ID
-        or archive.get("approved_proposal_sha256") != APPROVED_PROSPECTIVE_SHA256
+        or archive.get("archive_document") != binding["archive_document"]
+        or archive.get("approved_proposal_run_id") != binding["proposal_run_id"]
+        or archive.get("approved_proposal_sha256") != binding["approval_sha256"]
         or archive.get("historical_difference_unresolved") is not True
+        or digest(archive) != binding["archive_sha256"]
         or dict(marker) != expected_marker
         or ledger.get("order_submission", {}).get("state") not in {"RESERVED", "TERMINAL"}
     ):
@@ -564,7 +621,7 @@ def validate_historical_continuity_material(
         },
         "managed_assets": tuple(opening_checkpoint["assets"]),
         "current_ledger_sha256": digest(ledger),
-        "archive_sha256": digest(archive),
+        "archive_sha256": binding["archive_sha256"],
         "archived_control": archived_control,
     }
 
@@ -585,6 +642,7 @@ def _collect_historical_continuity_private(
     """Chunked Binance history from approved opening; ledger is verification target only."""
     _validate_frozen_target(runtime_target)
     material = validate_historical_continuity_material(ledger, archive)
+    binding = prospective_migration_binding(archive)
     observed_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     opening_at = material["opening_at"]
     if not opening_at < observed_at:
@@ -592,9 +650,11 @@ def _collect_historical_continuity_private(
     if not _valid_run(source_run):
         raise ValueError("historical_continuity_source_run_invalid")
     if not _valid_run(migration_run) or (
-        migration_run["id"] != PROSPECTIVE_MIGRATION_RUN_ID
-        or migration_run["head_sha"] != PROSPECTIVE_MIGRATION_RUN_SHA
+        migration_run["id"] != binding["run_id"]
+        or migration_run["head_sha"] != binding["head_sha"]
     ):
+        raise ValueError("historical_continuity_migration_run_invalid")
+    if digest(archive) != binding["archive_sha256"]:
         raise ValueError("historical_continuity_migration_run_invalid")
 
     # Current ledger earn checkpoint cannot substitute for archive-bound history.
@@ -1233,6 +1293,13 @@ def collect_historical_continuity_source(**kwargs) -> dict[str, object]:
     observations = private["observations"]
     if digest(ledger) != private["current_ledger_sha256"]:
         raise ValueError("historical_continuity_ledger_changed")
+    binding = prospective_migration_binding(archive)
+    if (
+        migration_run["id"] != binding["run_id"]
+        or migration_run["head_sha"] != binding["head_sha"]
+        or private["archive_sha256"] != binding["archive_sha256"]
+    ):
+        raise ValueError("historical_continuity_migration_run_invalid")
     reconciled = _evidence(
         runtime_target=runtime_target,
         account_scope_sha256=legacy_expected["account_scope_sha256"],
@@ -1243,7 +1310,7 @@ def collect_historical_continuity_source(**kwargs) -> dict[str, object]:
         "kind": HISTORICAL_CONTINUITY_KIND,
         "run": dict(source_run),
         "migration_run": dict(migration_run),
-        "archive_document": PROSPECTIVE_ARCHIVE_DOCUMENT,
+        "archive_document": binding["archive_document"],
         "archive_sha256": private["archive_sha256"],
         "current_ledger_sha256": private["current_ledger_sha256"],
         "new_ledger_sha256": private["current_ledger_sha256"],
@@ -1320,11 +1387,8 @@ def validate_historical_continuity_source(
         evidence_digest_ok = False
     if (
         source.get("kind") != HISTORICAL_CONTINUITY_KIND
-        or source.get("migration_run", {}).get("id") != PROSPECTIVE_MIGRATION_RUN_ID
-        or source.get("migration_run", {}).get("head_sha") != PROSPECTIVE_MIGRATION_RUN_SHA
         or not _valid_run(source.get("migration_run"))
         or not _valid_run(source.get("run"))
-        or source.get("archive_document") != PROSPECTIVE_ARCHIVE_DOCUMENT
         or source.get("frozen_expected_sha256") != digest(legacy_expected)
         or source.get("runtime_target_sha256") != digest(runtime_target.to_dict())
         or source.get("historical_difference_unresolved") is not True
@@ -1366,6 +1430,28 @@ def validate_historical_continuity_source(
         or not evidence_digest_ok
     ):
         raise ValueError("historical_continuity_source_binding_mismatch")
+    archive_document = source.get("archive_document")
+    migration_run = source.get("migration_run")
+    if archive_document == PROSPECTIVE_ARCHIVE_DOCUMENT:
+        if (
+            migration_run.get("id") != PROSPECTIVE_MIGRATION_RUN_ID
+            or migration_run.get("head_sha") != PROSPECTIVE_MIGRATION_RUN_SHA
+            or source.get("archive_sha256") != PROSPECTIVE_ARCHIVE_SHA256
+        ):
+            raise ValueError("historical_continuity_source_binding_mismatch")
+    elif is_prospective_archive_document(archive_document):
+        try:
+            expected_document = prospective_archive_document(str(migration_run["id"]))
+        except Exception as exc:
+            raise ValueError("historical_continuity_source_binding_mismatch") from exc
+        if (
+            expected_document != archive_document
+            or not isinstance(migration_run.get("head_sha"), str)
+            or not re.fullmatch(r"[0-9a-f]{40}", migration_run["head_sha"])
+        ):
+            raise ValueError("historical_continuity_source_binding_mismatch")
+    else:
+        raise ValueError("historical_continuity_source_binding_mismatch")
     if require_fresh:
         reference = now or datetime.now(timezone.utc)
         if not (observed_at <= reference <= observed_at + timedelta(minutes=30)):
@@ -1399,6 +1485,14 @@ def collect_prospective_rebase_source(**kwargs) -> dict[str, object]:
     migration_run = kwargs["migration_run"]
     observed_at = private["observed_at"]
     observations = private["observations"]
+    binding = prospective_migration_binding(archive)
+    if (
+        digest(ledger) != binding["ledger_sha256"]
+        or digest(archive) != binding["archive_sha256"]
+        or migration_run["id"] != binding["run_id"]
+        or migration_run["head_sha"] != binding["head_sha"]
+    ):
+        raise ValueError("prospective_rebase_migration_run_invalid")
     reconciled = _evidence(
         runtime_target=runtime_target,
         account_scope_sha256=legacy_expected["account_scope_sha256"],
@@ -1409,9 +1503,9 @@ def collect_prospective_rebase_source(**kwargs) -> dict[str, object]:
         "kind": "prospective_rebase",
         "run": dict(source_run),
         "migration_run": dict(migration_run),
-        "archive_document": PROSPECTIVE_ARCHIVE_DOCUMENT,
-        "archive_sha256": digest(archive),
-        "new_ledger_sha256": digest(ledger),
+        "archive_document": binding["archive_document"],
+        "archive_sha256": binding["archive_sha256"],
+        "new_ledger_sha256": binding["ledger_sha256"],
         "frozen_expected_sha256": digest(legacy_expected),
         "runtime_target_sha256": digest(runtime_target.to_dict()),
         "symbols_sha256": digest(list(symbols)),
@@ -1482,11 +1576,6 @@ def validate_prospective_rebase_source(
         or source.get("kind") != "prospective_rebase"
         or not _valid_run(source.get("run"))
         or not _valid_run(source.get("migration_run"))
-        or source["migration_run"].get("id") != PROSPECTIVE_MIGRATION_RUN_ID
-        or source["migration_run"].get("head_sha") != PROSPECTIVE_MIGRATION_RUN_SHA
-        or source.get("archive_document") != PROSPECTIVE_ARCHIVE_DOCUMENT
-        or source.get("archive_sha256") != PROSPECTIVE_ARCHIVE_SHA256
-        or source.get("new_ledger_sha256") != PROSPECTIVE_LEDGER_SHA256
         or source.get("frozen_expected_sha256") != digest(legacy_expected)
         or source.get("runtime_target_sha256") != digest(runtime_target.to_dict())
         or source.get("historical_difference_unresolved") is not True
@@ -1498,7 +1587,7 @@ def validate_prospective_rebase_source(
         or candidate.source_evidence_sha256 != (evidence.evidence_sha256,)
         or candidate.expected_digests != expected_digests
         or candidate.account_scope_sha256 != legacy_expected.get("account_scope_sha256")
-        or candidate.local_execution_ledger_sha256 != PROSPECTIVE_LEDGER_SHA256
+        or candidate.local_execution_ledger_sha256 != source.get("new_ledger_sha256")
         or candidate.platform_id != runtime_target.platform_id
         or candidate.strategy_profile != runtime_target.strategy_profile
         or candidate.baseline_id != runtime_target.live_continuity.baseline_id
@@ -1518,6 +1607,29 @@ def validate_prospective_rebase_source(
         or evidence.recent_executions_match is not True
         or evidence.local_execution_ledger_match is not True
     ):
+        raise ValueError("prospective_rebase_source_binding_mismatch")
+    archive_document = source.get("archive_document")
+    migration_run = source.get("migration_run")
+    if archive_document == PROSPECTIVE_ARCHIVE_DOCUMENT:
+        if (
+            migration_run.get("id") != PROSPECTIVE_MIGRATION_RUN_ID
+            or migration_run.get("head_sha") != PROSPECTIVE_MIGRATION_RUN_SHA
+            or source.get("archive_sha256") != PROSPECTIVE_ARCHIVE_SHA256
+            or source.get("new_ledger_sha256") != PROSPECTIVE_LEDGER_SHA256
+        ):
+            raise ValueError("prospective_rebase_source_binding_mismatch")
+    elif is_prospective_archive_document(archive_document):
+        try:
+            expected_document = prospective_archive_document(str(migration_run["id"]))
+        except Exception as exc:
+            raise ValueError("prospective_rebase_source_binding_mismatch") from exc
+        if (
+            expected_document != archive_document
+            or not isinstance(migration_run.get("head_sha"), str)
+            or not re.fullmatch(r"[0-9a-f]{40}", migration_run["head_sha"])
+        ):
+            raise ValueError("prospective_rebase_source_binding_mismatch")
+    else:
         raise ValueError("prospective_rebase_source_binding_mismatch")
     if require_fresh:
         evaluated = evaluate_broker_reconciliation_baseline_enrollment(

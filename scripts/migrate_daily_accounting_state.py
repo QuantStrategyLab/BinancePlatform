@@ -466,7 +466,91 @@ def _validate_prospective_approval(approved):
         raise MigrationBlocked("prospective_approval_mismatch")
 
 
-def _prospective_preflight(*, refs, client, expected, approved, now, clock=None):
+def _verified_control_account_scope(control, *, expected, runtime_target):
+    """Return account_scope proven by the live control package; never guess fields."""
+    from application.reconciliation_recovery import (
+        validate_source,
+        verify_quiesced_prior_activation,
+    )
+
+    if not isinstance(control, Mapping) or control.get("state") != "RECONCILE_ONLY":
+        raise MigrationBlocked("prospective_control_identity_unverified")
+    source = control.get("source")
+    if not isinstance(source, Mapping):
+        raise MigrationBlocked("prospective_control_identity_unverified")
+    expected_scope = expected.get("account_scope_sha256")
+    if not isinstance(expected_scope, str) or len(expected_scope) != 64:
+        raise MigrationBlocked("prospective_control_identity_unverified")
+
+    has_confirmation = "confirmation" in control
+    has_transition = "transition_plan" in control
+    try:
+        if has_confirmation or has_transition:
+            if not (has_confirmation and has_transition):
+                raise ValueError("incomplete quiesced prior")
+            candidate = verify_quiesced_prior_activation(
+                control, runtime_target=runtime_target, expected=expected
+            )
+        else:
+            kind = source.get("kind")
+            if kind == "prospective_rebase":
+                from application.rebased_recovery import validate_prospective_rebase_source
+
+                candidate = validate_prospective_rebase_source(
+                    control,
+                    runtime_target=runtime_target,
+                    legacy_expected=expected,
+                    require_fresh=False,
+                )
+            elif kind == "post_rebase":
+                from application.rebased_recovery import validate_post_rebase_source
+
+                candidate = validate_post_rebase_source(
+                    control,
+                    runtime_target=runtime_target,
+                    legacy_expected=expected,
+                    require_fresh=False,
+                )
+            elif kind == "historical_continuity":
+                from application.rebased_recovery import validate_historical_continuity_source
+
+                candidate = validate_historical_continuity_source(
+                    control,
+                    runtime_target=runtime_target,
+                    legacy_expected=expected,
+                    require_fresh=False,
+                )
+            elif (
+                "original_evidence" in source
+                and "reconciled_evidence" in source
+                and "candidate" in control
+            ):
+                # Re-validate package consistency at its own observation time; apply already
+                # binds control_sha256 and a separate 24h opening window.
+                observed = source["reconciled_evidence"].get("observed_at")
+                if isinstance(observed, datetime):
+                    reference = observed.astimezone(timezone.utc)
+                elif isinstance(observed, str):
+                    reference = datetime.fromisoformat(observed.replace("Z", "+00:00"))
+                else:
+                    raise ValueError("enrollment observation missing")
+                candidate = validate_source(
+                    control,
+                    runtime_target=runtime_target,
+                    expected=expected,
+                    now=reference,
+                )
+            else:
+                raise ValueError("unsupported control identity surface")
+        scope = candidate.account_scope_sha256
+    except (KeyError, TypeError, ValueError, AttributeError):
+        raise MigrationBlocked("prospective_control_identity_unverified") from None
+    if not isinstance(scope, str) or scope != expected_scope:
+        raise MigrationBlocked("prospective_control_identity_unverified")
+    return scope
+
+
+def _prospective_preflight(*, refs, client, expected, approved, now, runtime_target, clock=None):
     from application.earn_accrual import compare_earn_checkpoints, _time
     clock = clock or (lambda: datetime.now(timezone.utc))
     _validate_prospective_approval(approved)
@@ -477,12 +561,15 @@ def _prospective_preflight(*, refs, client, expected, approved, now, clock=None)
         raise MigrationBlocked("prospective_source_changed")
     _validate_control(control)
     _validate_safe_order_state(ledger)
+    control_scope = _verified_control_account_scope(
+        control, expected=expected, runtime_target=runtime_target
+    )
     fields = approved["proposed_fields"]
     previous = fields["earn_accrual_checkpoint"]
     opened = _time(previous["observed_at"])
     if (not opened < now <= opened + timedelta(hours=24) or opened.date() != now.date()
             or previous["account_scope_sha256"] != expected["account_scope_sha256"]
-            or previous["account_scope_sha256"] != control["source"]["original_evidence"]["account_scope_sha256"]):
+            or previous["account_scope_sha256"] != control_scope):
         raise MigrationBlocked("prospective_opening_identity_or_time_changed")
     fresh = collect_prospective_opening(client, ledger=ledger, expected=expected, now=now, clock=clock)
     try:
@@ -502,6 +589,8 @@ def _prospective_preflight(*, refs, client, expected, approved, now, clock=None)
         decision = clock()
         if not end <= decision <= now + TTL or decision.date() != opened.date():
             raise ValueError
+    except MigrationBlocked:
+        raise
     except Exception:
         raise MigrationBlocked("prospective_continuity_unverified") from None
     return decision
@@ -555,7 +644,7 @@ def _prospective_transaction(transaction, *, refs, archive_ref, approved, now):
     }
 
 
-def _apply_prospective_rebase(refs, *, client, expected, now, fixed_now):
+def _apply_prospective_rebase(refs, *, client, expected, now, fixed_now, runtime_target):
     from google.cloud import firestore
     approved = _load_prospective_approval()
     archive_document = prospective_archive_document(approved["proposal_run_id"])
@@ -564,8 +653,11 @@ def _apply_prospective_rebase(refs, *, client, expected, now, fixed_now):
     archive_ref = refs["ledger_ref"].parent.document(archive_document)
     if archive_ref.get(retry=None).exists:
         raise MigrationBlocked("prospective_archive_already_exists")
-    decision = _prospective_preflight(refs=refs, client=client, expected=expected, approved=approved,
-                                     now=now, clock=(lambda: now + timedelta(seconds=1)) if fixed_now else None)
+    decision = _prospective_preflight(
+        refs=refs, client=client, expected=expected, approved=approved,
+        now=now, runtime_target=runtime_target,
+        clock=(lambda: now + timedelta(seconds=1)) if fixed_now else None,
+    )
 
     @firestore.transactional
     def apply(transaction):
@@ -2187,10 +2279,24 @@ def _validated_private_scope_source(refs, *, initial_source=None):
     archive = archive_snapshot.to_dict()
     try:
         material = validate_material(ledger, archive)
-        approved_account_scope = archive["recovery_control"]["source"][
-            "original_evidence"
-        ]["account_scope_sha256"]
-        if not isinstance(approved_account_scope, str):
+        if source_kind == "prospective_rebase":
+            approved = archive.get("approved_proposal")
+            proposed = approved.get("proposed_fields") if isinstance(approved, Mapping) else None
+            checkpoint = (
+                proposed.get("earn_accrual_checkpoint")
+                if isinstance(proposed, Mapping)
+                else None
+            )
+            approved_account_scope = (
+                checkpoint.get("account_scope_sha256")
+                if isinstance(checkpoint, Mapping)
+                else None
+            )
+        else:
+            approved_account_scope = archive["recovery_control"]["source"][
+                "original_evidence"
+            ]["account_scope_sha256"]
+        if not isinstance(approved_account_scope, str) or len(approved_account_scope) != 64:
             raise ValueError("account scope")
         opening_quantities = material.get("opening_quantities")
         if not isinstance(opening_quantities, Mapping) or not opening_quantities:
@@ -2897,7 +3003,10 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
     if action == "audit":
         return audit_ledger(refs, client=client, expected=expected, now=now)
     if action == "prospective-rebase-apply":
-        return _apply_prospective_rebase(refs, client=client, expected=expected, now=now, fixed_now=fixed_now)
+        return _apply_prospective_rebase(
+            refs, client=client, expected=expected, now=now, fixed_now=fixed_now,
+            runtime_target=target,
+        )
     if action == "rebase-apply":
         return _apply_approved_rebase(refs, client=client, expected=expected, now=now, fixed_now=fixed_now)
     evidence = (collect_prospective_opening(client, ledger=ledger, now=now, expected=expected)

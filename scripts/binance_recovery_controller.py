@@ -40,13 +40,14 @@ from application.rebased_recovery import (
     MIGRATION_RUN_ID,
     MIGRATION_RUN_SHA,
     PROSPECTIVE_ARCHIVE_DOCUMENT,  # noqa: F401 - re-exported for tests
-    PROSPECTIVE_MIGRATION_RUN_ID,
-    PROSPECTIVE_MIGRATION_RUN_SHA,
+    PROSPECTIVE_MIGRATION_RUN_ID,  # noqa: F401 - re-exported for tests
+    PROSPECTIVE_MIGRATION_RUN_SHA,  # noqa: F401 - re-exported for tests
     collect_historical_continuity_diagnosis,
     collect_historical_continuity_source,
     collect_prospective_rebase_diagnosis,
     collect_prospective_rebase_source,
     collect_post_rebase_source,
+    prospective_migration_binding,
     validate_historical_continuity_material,
     validate_historical_continuity_source,
     validate_prospective_rebase_material,
@@ -332,6 +333,7 @@ def run(action, recovery_id=""):
                     raise
                 material = validate_historical_continuity_material(ledger, archive)
                 use_historical_continuity = True
+            binding = prospective_migration_binding(archive)
             if previous is not None and previous != material["archived_control"]:
                 previous_kind = (
                     previous.get("source", {}).get("kind")
@@ -399,8 +401,8 @@ def run(action, recovery_id=""):
                         if verified_stored_run != stored_run:
                             raise ValueError("prospective_rebase_prepare_control_changed")
             migration_run = verified_run(
-                PROSPECTIVE_MIGRATION_RUN_ID,
-                expected_sha=PROSPECTIVE_MIGRATION_RUN_SHA,
+                binding["run_id"],
+                expected_sha=binding["head_sha"],
             )
             collect_kwargs = {
                 "client": client,
@@ -568,7 +570,7 @@ def run(action, recovery_id=""):
         validation_at = datetime.now(timezone.utc)
         migration_run = previous["source"]["migration_run"]
         if verified_run(
-            migration_run["id"], expected_sha=PROSPECTIVE_MIGRATION_RUN_SHA
+            migration_run["id"], expected_sha=migration_run["head_sha"]
         ) != migration_run:
             raise ValueError("historical_continuity_migration_run_changed")
         if archive is None:
@@ -576,6 +578,12 @@ def run(action, recovery_id=""):
         if digest(archive) != previous["source"].get("archive_sha256"):
             raise ValueError("prospective_rebase_archive_changed")
         validate_historical_continuity_material(ledger, archive)
+        binding = prospective_migration_binding(archive)
+        if (
+            migration_run["id"] != binding["run_id"]
+            or migration_run["head_sha"] != binding["head_sha"]
+        ):
+            raise ValueError("historical_continuity_migration_run_changed")
         if digest(ledger) != previous["source"].get("current_ledger_sha256"):
             raise ValueError("historical_continuity_ledger_changed")
         candidate = validate_historical_continuity_source(
@@ -588,7 +596,7 @@ def run(action, recovery_id=""):
         validation_at = datetime.now(timezone.utc)
         migration_run = previous["source"]["migration_run"]
         if verified_run(
-            migration_run["id"], expected_sha=PROSPECTIVE_MIGRATION_RUN_SHA
+            migration_run["id"], expected_sha=migration_run["head_sha"]
         ) != migration_run:
             raise ValueError("prospective_rebase_migration_run_changed")
         if archive is None:
@@ -596,6 +604,14 @@ def run(action, recovery_id=""):
         if digest(archive) != previous["source"].get("archive_sha256"):
             raise ValueError("prospective_rebase_archive_changed")
         validate_prospective_rebase_material(ledger, archive)
+        binding = prospective_migration_binding(archive)
+        if (
+            migration_run["id"] != binding["run_id"]
+            or migration_run["head_sha"] != binding["head_sha"]
+            or previous["source"].get("archive_document") != binding["archive_document"]
+            or previous["source"].get("new_ledger_sha256") != binding["ledger_sha256"]
+        ):
+            raise ValueError("prospective_rebase_migration_run_changed")
         candidate = validate_prospective_rebase_source(
             previous,
             runtime_target=target,

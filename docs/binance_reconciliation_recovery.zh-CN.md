@@ -142,6 +142,11 @@ Spot + Flexible Earn 持有资产口径，闲置理财不等于资金退出策�
 - **旧 proposal / 旧固定摘要不能替代新 proposal**。一次性语义由精确 proposal digest + 动态归档名
   `MULTI_ASSET_STATE__before_rebase_{proposal_run_id}` 的存在性守卫保证：成功 apply 后再次执行会被
   archive guard 拒绝；不得覆盖或清空旧 archive 链条。
+- apply 前通过既有受保护确认链 / control 源校验取得账户身份，不硬读可能缺失的
+  `source.original_evidence`；结构错配返回固定脱敏 reason code（如
+  `prospective_control_identity_unverified`），不吞成无上下文 `migration_blocked`。
+- 下游 diagnose/prepare/verify 对新基线使用同一 `proposal_run_id` + `source_sha` + 动态 archive /
+  digest 贯通；历史 `34690028846` 归档仅只读识别，不当作新审批。
 
 `application/earn_accrual.py` 提供纯 Decimal 增量守恒核对，要求调用方逐资产给出已独立核实的非利息净变动；
 不可将余额差额反推为已核实流水。该核对尚未接入日常自动记账和恢复消费者，不能将此工程预览称为
