@@ -7,6 +7,7 @@ still match it. The caller verifies the designated workflow/storage provenance.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import datetime, timezone
 
 from quant_platform_kit.common.broker_reconciliation import (
@@ -149,6 +150,78 @@ def verify_confirmation(payload, *, recovery_id, candidate):
     return ReconciliationRecoveryConfirmation.from_dict(payload.get("confirmation", {}))
 
 
+def verify_quiesced_prior_activation(control, *, runtime_target, expected):
+    """Prove a quiesced control still carries a fully bound prior activation.
+
+    Intentional RECONCILE_ONLY downgrade retains confirmation/transition_plan.
+    Those records must verify before a new candidate may be prepared; deleting
+    them is not an accepted bypass.
+    """
+    from quant_platform_kit.common.reconciliation_recovery import ReconciliationRecoveryTransitionPlan
+
+    if not isinstance(control, Mapping) or control.get("state") != "RECONCILE_ONLY":
+        raise ValueError("recovery_quiesced_prior_invalid")
+    if "confirmation" not in control or "transition_plan" not in control:
+        raise ValueError("recovery_quiesced_prior_invalid")
+    source = control.get("source")
+    if not isinstance(source, Mapping):
+        raise ValueError("recovery_quiesced_prior_invalid")
+    if source.get("kind") == "prospective_rebase":
+        from application.rebased_recovery import validate_prospective_rebase_source
+
+        candidate = validate_prospective_rebase_source(
+            control,
+            runtime_target=runtime_target,
+            legacy_expected=expected,
+            require_fresh=False,
+        )
+    elif source.get("kind") == "post_rebase":
+        from application.rebased_recovery import validate_post_rebase_source
+
+        candidate = validate_post_rebase_source(
+            control,
+            runtime_target=runtime_target,
+            legacy_expected=expected,
+            require_fresh=False,
+        )
+    elif source.get("kind") == "historical_continuity":
+        from application.rebased_recovery import validate_historical_continuity_source
+
+        candidate = validate_historical_continuity_source(
+            control,
+            runtime_target=runtime_target,
+            legacy_expected=expected,
+            require_fresh=False,
+        )
+    else:
+        candidate = BrokerReconciliationBaselineCandidate.from_dict(control["candidate"])
+    try:
+        plan = ReconciliationRecoveryTransitionPlan.from_dict(control["transition_plan"])
+        confirmation = ReconciliationRecoveryConfirmation.from_dict(control["confirmation"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("recovery_quiesced_prior_invalid") from exc
+    if (
+        source.get("runtime_target_sha256") != digest(runtime_target.to_dict())
+        or source.get("frozen_expected_sha256") != digest(expected)
+        or candidate.source_receipts_sha256 != digest(source)
+        or candidate.account_scope_sha256 != expected["account_scope_sha256"]
+        or plan.candidate_sha256 != candidate.candidate_sha256
+        or confirmation.candidate_sha256 != candidate.candidate_sha256
+        or confirmation.dual_review_binding_sha256 != candidate.candidate_sha256
+        or plan.confirmation_sha256 != confirmation.confirmation_sha256
+        or plan.recovery_id != control.get("recovery_id")
+        or confirmation.recovery_id != plan.recovery_id
+        or plan.expected_digests != candidate.expected_digests
+        or plan.baseline_id != runtime_target.live_continuity.baseline_id
+        or plan.baseline_target_sha256 != runtime_target.live_continuity.baseline_target_sha256
+        or candidate.baseline_id != plan.baseline_id
+        or candidate.baseline_target_sha256 != plan.baseline_target_sha256
+        or plan.verified_at <= confirmation.confirmed_at
+    ):
+        raise ValueError("recovery_quiesced_prior_invalid")
+    return candidate
+
+
 def activated_target(target, control, *, expected):
     """Read a previously committed transition; never activate from a candidate alone."""
     from quant_platform_kit.common.reconciliation_recovery import ReconciliationRecoveryTransitionPlan
@@ -172,6 +245,15 @@ def activated_target(target, control, *, expected):
         from application.rebased_recovery import validate_post_rebase_source
 
         candidate = validate_post_rebase_source(
+            control,
+            runtime_target=target,
+            legacy_expected=expected,
+            require_fresh=False,
+        )
+    elif source.get("kind") == "historical_continuity":
+        from application.rebased_recovery import validate_historical_continuity_source
+
+        candidate = validate_historical_continuity_source(
             control,
             runtime_target=target,
             legacy_expected=expected,
