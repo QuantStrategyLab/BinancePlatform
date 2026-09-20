@@ -1425,6 +1425,49 @@ def _trade_net_diagnosis(observations, *, assets):
     return net, counts
 
 
+def _forward_accounting_eligibility(*, result, asset_results):
+    """Return whether the stable observation may feed forward accounting.
+
+    This is deliberately narrower than causal reconciliation and never grants
+    execution authority.  It only admits a stable Earn/checkpoint interval
+    with no unsupported external flow and a separately verified BNB dividend
+    surface when BNB needs that explanation.
+    """
+    if (
+        result.get("owner_exists")
+        or result.get("order_state_known") is not True
+        or result.get("open_order_count") != 0
+        or result.get("sampling_stable") is not True
+        or result.get("account_scope_verified") is not True
+        or result.get("control_unchanged") is not True
+        or result.get("ledger_unchanged") is not True
+        or result.get("unsupported_external_flow_count") != 0
+        or result.get("changed_withdrawal_count") != 0
+    ):
+        return False
+    for asset, check in asset_results.items():
+        if (
+            check.get("product_status") != "STABLE"
+            or check.get("trade_net_matches_persisted") is not True
+            or check.get("second_sample_residual_matches_first") is not True
+            or check.get("classification") not in {
+                "residual_zero_after_realtime_counter",
+                "residual_matches_bonus_records",
+            }
+        ):
+            return False
+        if asset == "USDT" and check.get("external_flow_count", 0) > 0:
+            if check.get("external_flow_matches_residual") is not True:
+                return False
+        if asset == "BNB" and check.get("residual_matches_bonus_records") is True:
+            if (
+                check.get("wallet_activity_complete") is not True
+                or check.get("wallet_dividend_residual_matches") is not True
+            ):
+                return False
+    return True
+
+
 def diagnose_earn_forward(refs, *, client, expected, now):
     """Diagnose the current checkpoint window without changing any durable state."""
     from application.earn_accrual import (
@@ -1930,7 +1973,7 @@ def diagnose_earn_forward(refs, *, client, expected, now):
         for key in ("owner_marker", "ledger_marker", "control_marker")
     ):
         raise MigrationBlocked("earn_diagnosis_state_changed_during_read")
-    return {
+    result = {
         "status": "diagnosed",
         "stage": "earn_forward_accounting_diagnosis",
         "owner_exists": source["owner_exists"],
@@ -1963,6 +2006,11 @@ def diagnose_earn_forward(refs, *, client, expected, now):
         "write_performed": False,
         "execution_authority_granted": False,
     }
+    result["forward_accounting_eligible"] = _forward_accounting_eligibility(
+        result=result, asset_results=asset_results
+    )
+    result["forward_accounting_write_permitted"] = False
+    return result
 
 
 def _private_spot_account(account, *, expected_account_scope_sha256):
