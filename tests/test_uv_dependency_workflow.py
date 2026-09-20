@@ -1,4 +1,10 @@
+import os
 import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -42,13 +48,18 @@ class UvDependencyWorkflowTests(unittest.TestCase):
         self.assertNotIn("QuantPlatformKit/main/QPK_PIN", ci)
         self.assertIn("uv lock --check", ci)
         self.assertIn('LOCK_FILE="uv.lock"', runtime)
-        self.assertIn('"$VENV_PATH/bin/python" -m ensurepip', runtime)
-        self.assertNotIn('"$VENV_PATH/bin/python" -m ensurepip --upgrade', runtime)
-        self.assertIn('"$VENV_PATH/bin/python" -m pip install pip uv', runtime)
+        self.assertIn('UV_TOOL_VENV="${CACHE_ROOT}/uv-tool"', runtime)
+        self.assertIn('"$UV_TOOL_VENV/bin/python" -m ensurepip', runtime)
+        self.assertNotIn('"$UV_TOOL_VENV/bin/python" -m ensurepip --upgrade', runtime)
+        self.assertIn('"$UV_TOOL_VENV/bin/python" -m pip install pip uv', runtime)
+        self.assertNotIn('"$UV_TOOL_VENV/bin/python" -m pip install --upgrade pip uv', runtime)
+        self.assertNotIn('"$VENV_PATH/bin/python" -m pip install pip uv', runtime)
         self.assertNotIn('"$VENV_PATH/bin/python" -m pip install --upgrade pip uv', runtime)
         self.assertIn('export UV_PROJECT_ENVIRONMENT="$VENV_PATH"', runtime)
-        self.assertIn('UV_BIN="$VENV_PATH/bin/uv"', runtime)
+        self.assertIn('UV_BIN="$UV_TOOL_VENV/bin/uv"', runtime)
+        self.assertNotIn('UV_BIN="$VENV_PATH/bin/uv"', runtime)
         self.assertIn('"$UV_BIN" sync --frozen --no-dev', runtime)
+        self.assertIn('UV_VERSION_TEXT="$("$UV_BIN" --version)"', runtime)
         self.assertNotIn('"$PYTHON_BIN" -m pip install --upgrade pip uv', runtime)
         self.assertIn("python -m pip install --upgrade pip uv", watchdog)
         self.assertIn("uv sync --frozen --no-dev", watchdog)
@@ -61,6 +72,88 @@ class UvDependencyWorkflowTests(unittest.TestCase):
         self.assertNotIn("requirements-lock.txt", ci)
         self.assertNotIn("requirements.txt", ci)
 
+    def test_uv_outside_project_env_remains_callable_after_sync(self) -> None:
+        """Regression for run 35540307399: uv used for sync must stay callable after it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project_dir = root / "project"
+            project_venv = root / "project-venv"
+            tool_venv = root / "uv-tool"
+            project_dir.mkdir()
+            (project_dir / "pyproject.toml").write_text(
+                textwrap.dedent(
+                    """\
+                    [project]
+                    name = "uv-lifecycle-fixture"
+                    version = "0.0.0"
+                    requires-python = ">=3.11"
+                    dependencies = []
+
+                    [build-system]
+                    requires = ["hatchling"]
+                    build-backend = "hatchling.build"
+
+                    [tool.hatch.build.targets.wheel]
+                    packages = ["uv_lifecycle_fixture"]
+                    """
+                ),
+                encoding="utf-8",
+            )
+            pkg = project_dir / "uv_lifecycle_fixture"
+            pkg.mkdir()
+            (pkg / "__init__.py").write_text('"""fixture package"""\n', encoding="utf-8")
+
+            subprocess.run([sys.executable, "-m", "venv", str(tool_venv)], check=True)
+            subprocess.run([sys.executable, "-m", "venv", str(project_venv)], check=True)
+            uv_bin = tool_venv / "bin" / "uv"
+            system_uv = shutil.which("uv")
+            if system_uv:
+                shutil.copy2(system_uv, uv_bin)
+                uv_bin.chmod(0o755)
+            else:
+                tool_python = tool_venv / "bin" / "python"
+                if not (tool_venv / "bin" / "pip").exists():
+                    subprocess.run([str(tool_python), "-m", "ensurepip"], check=True)
+                subprocess.run(
+                    [str(tool_python), "-m", "pip", "install", "pip", "uv"],
+                    check=True,
+                )
+            self.assertTrue(uv_bin.is_file(), "tool uv binary missing after install")
+            self.assertNotEqual(
+                uv_bin.resolve().parent,
+                (project_venv / "bin").resolve(),
+                "tool uv must live outside the project sync target",
+            )
+
+            sync_env = {
+                **os.environ,
+                "UV_PROJECT_ENVIRONMENT": str(project_venv),
+            }
+            subprocess.run(
+                [str(uv_bin), "lock"],
+                cwd=project_dir,
+                env=sync_env,
+                check=True,
+            )
+            subprocess.run(
+                [str(uv_bin), "sync", "--frozen", "--no-dev"],
+                cwd=project_dir,
+                env=sync_env,
+                check=True,
+            )
+
+            self.assertTrue(uv_bin.is_file(), "tool uv binary missing after project sync")
+            version = subprocess.run(
+                [str(uv_bin), "--version"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertIn("uv", version.stdout.lower())
+            self.assertTrue(
+                (project_venv / "bin" / "python").is_file(),
+                "project environment should remain usable after sync",
+            )
 
 if __name__ == "__main__":
     unittest.main()

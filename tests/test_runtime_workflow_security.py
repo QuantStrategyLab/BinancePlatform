@@ -94,8 +94,9 @@ def test_runtime_dependency_bootstrap_does_not_upgrade_pip_or_uv() -> None:
     assert "ensurepip --upgrade" not in deps
     assert "runtime_identity" in broker_job
     assert "uv_lock_sha256" in broker_job
-    assert "Reusing existing uv binary in dependency venv (no upgrade)." in deps
-
+    assert "Reusing existing uv binary in tool venv (no upgrade)." in deps
+    assert 'UV_BIN="$UV_TOOL_VENV/bin/uv"' in deps
+    assert 'UV_BIN="$VENV_PATH/bin/uv"' not in deps
 
 def test_candidate_release_sha_guard_rejects_write_modes() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")

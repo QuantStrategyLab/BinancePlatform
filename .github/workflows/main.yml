@@ -355,6 +355,10 @@ jobs:
 
           CACHE_ROOT="${RUNNER_WORKSPACE}/.runtime-cache/binance-platform"
           VENV_PATH="${CACHE_ROOT}/venv"
+          # Keep the uv binary outside UV_PROJECT_ENVIRONMENT: project sync
+          # removes packages not in the lockfile, including a uv installed into
+          # the dependency venv (see run 35540307399).
+          UV_TOOL_VENV="${CACHE_ROOT}/uv-tool"
           HASH_FILE="${CACHE_ROOT}/uv.lock.sha256"
           PYTHON_VERSION_FILE="${CACHE_ROOT}/python.version"
           CURR_HASH=$(sha256sum "$LOCK_FILE" | cut -d' ' -f1)
@@ -380,12 +384,24 @@ jobs:
             return 1
           }
 
-          ensure_venv_pip() {
-            if "$VENV_PATH/bin/python" -m pip --version >/dev/null 2>&1; then
+          ensure_tool_uv() {
+            if [ -x "$UV_TOOL_VENV/bin/uv" ]; then
+              echo "Reusing existing uv binary in tool venv (no upgrade)."
               return 0
             fi
-            echo "pip missing from dependency venv; bootstrapping with ensurepip (no upgrade)."
-            "$VENV_PATH/bin/python" -m ensurepip
+            echo "Creating uv tool venv at $UV_TOOL_VENV."
+            rm -rf "$UV_TOOL_VENV"
+            "$PYTHON_BIN" -m venv "$UV_TOOL_VENV"
+            if ! "$UV_TOOL_VENV/bin/python" -m pip --version >/dev/null 2>&1; then
+              echo "pip missing from uv tool venv; bootstrapping with ensurepip (no upgrade)."
+              "$UV_TOOL_VENV/bin/python" -m ensurepip
+            fi
+            # Do not upgrade pip or uv during production cycles: a fixed release
+            # pin must not silently pull newer tooling from the network.
+            # Cold caches still install whatever index resolves once; record the
+            # resulting uv version in the runtime identity line below.
+            install_with_retry "Install uv into tool venv without upgrade" \
+              "$UV_TOOL_VENV/bin/python" -m pip install pip uv
           }
 
           if [ ! -x "$VENV_PATH/bin/python" ]; then
@@ -401,22 +417,14 @@ jobs:
           fi
           if [ "$VENV_RECREATED" = "true" ]; then
             rm -f "$HASH_FILE" "$PYTHON_VERSION_FILE"
+            # Interpreter change invalidates a cached tool uv built for the old
+            # Python; drop it so ensure_tool_uv reinstalls without --upgrade.
+            rm -rf "$UV_TOOL_VENV"
           fi
 
-          ensure_venv_pip
-          # Do not upgrade pip or uv during production cycles: a fixed release
-          # pin must not silently pull newer tooling from the network.
-          # Cold caches still install whatever index resolves once; record the
-          # resulting uv version in the runtime identity line below.
-          if [ ! -x "$VENV_PATH/bin/uv" ]; then
-            install_with_retry "Install uv into dependency venv without upgrade" \
-              "$VENV_PATH/bin/python" -m pip install pip uv
-          else
-            echo "Reusing existing uv binary in dependency venv (no upgrade)."
-          fi
-
+          ensure_tool_uv
           export UV_PROJECT_ENVIRONMENT="$VENV_PATH"
-          UV_BIN="$VENV_PATH/bin/uv"
+          UV_BIN="$UV_TOOL_VENV/bin/uv"
 
           if [ "$VENV_RECREATED" = "false" ] && [ -f "$HASH_FILE" ] && [ "$CURR_HASH" = "$(cat "$HASH_FILE")" ]; then
             echo "$LOCK_FILE unchanged; reusing cached venv."
@@ -432,6 +440,7 @@ jobs:
             echo "$CURR_PYTHON_VERSION" > "$PYTHON_VERSION_FILE"
           fi
 
+          # Must remain callable after project sync (tool venv is not the sync target).
           UV_VERSION_TEXT="$("$UV_BIN" --version)"
           if [[ ! "$CURR_HASH" =~ ^[0-9a-f]{64}$ ]]; then
             echo "::error::uv.lock sha256 is invalid."
