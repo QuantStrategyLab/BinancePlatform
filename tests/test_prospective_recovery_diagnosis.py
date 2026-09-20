@@ -142,6 +142,15 @@ class Client:
         if path == "asset/assetDividend":
             self.dividend_reads += 1
             stamp = int((NOW - timedelta(minutes=1)).timestamp() * 1000)
+            data = kwargs.get("data") or {}
+            start_ms = data.get("startTime")
+            end_ms = data.get("endTime")
+            if (
+                type(start_ms) is int
+                and type(end_ms) is int
+                and not start_ms < stamp <= end_ms
+            ):
+                return {"total": 0, "rows": []}
             dividend_id = 7 if self.change != "dividend_between_reads" or self.dividend_reads == 1 else 8
             return {"total": 1, "rows": [{
                 "id": dividend_id, "tranId": 9, "asset": "BNB",
@@ -191,6 +200,77 @@ def test_prospective_diagnosis_accepts_income_growth_without_mutating_ledger(mon
         "write_performed": False,
         "execution_authority_granted": False,
     }
+
+
+def test_prospective_diagnosis_rejects_history_beyond_max_window(monkeypatch):
+    """Opening→now must stay within MAX_HISTORY; do not enlarge or bypass it."""
+    from application.rebased_recovery import MAX_HISTORY, collect_prospective_rebase_diagnosis
+
+    ledger, archive, _control = _material(monkeypatch)
+    too_late = OPENING_AT + MAX_HISTORY + timedelta(seconds=1)
+
+    with pytest.raises(ValueError, match="prospective_rebase_history_window_invalid"):
+        collect_prospective_rebase_diagnosis(
+            client=Client(),
+            runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            ledger=ledger,
+            archive=archive,
+            symbols=("BNBUSDT",),
+            source_run={"id": 400, "head_sha": "b" * 40, "head_branch": "main",
+                        "event": "workflow_dispatch", "path": ".github/workflows/main.yml"},
+            migration_run={"id": 34690695663, "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+                           "head_branch": "main", "event": "workflow_dispatch",
+                           "path": ".github/workflows/main.yml"},
+            now=too_late,
+            clock=lambda: too_late + timedelta(seconds=1),
+        )
+
+
+def test_prospective_diagnosis_rejects_ledger_checkpoint_as_continuity_bridge(monkeypatch):
+    """Current ledger earn checkpoint is not archive-bound continuous evidence."""
+    from application.earn_accrual import prepare_forward_earn_state
+    from application.rebased_recovery import collect_prospective_rebase_diagnosis
+
+    opening, archive, _control = _material(monkeypatch)
+    mid_at = OPENING_AT + timedelta(minutes=10)
+    mid_checkpoint = copy.deepcopy(opening["earn_accrual_checkpoint"])
+    mid_checkpoint["observed_at"] = mid_at.isoformat()
+    mid_checkpoint["assets"]["BNB"]["products"]["BNB001"].update(
+        total="2.00000001", realtime_rewards="0.10000001"
+    )
+    mid_checkpoint["assets"]["BNB"]["quantity"] = "3.00000001"
+    evolved = prepare_forward_earn_state(
+        opening,
+        mid_checkpoint,
+        {
+            "new_deposit_principal_usdt": "0",
+            "new_deposit_completed_at": [],
+            "new_confirmed_deposit_count": 0,
+            "new_unsupported_deposit_count": 0,
+            "new_or_changed_withdrawal_count": 0,
+            "bnb_dividend_quantity": "0",
+            "cursor": {"version": 1, "observed_at": mid_at.isoformat(), "records": {}},
+        },
+    )
+    assert digest(evolved) != digest(opening)
+
+    with pytest.raises(ValueError, match="prospective_rebase_ledger_invalid"):
+        collect_prospective_rebase_diagnosis(
+            client=Client(),
+            runtime_target=_target(),
+            legacy_expected={"account_scope_sha256": digest({"account_uid": "synthetic"})},
+            ledger=evolved,
+            archive=archive,
+            symbols=("BNBUSDT",),
+            source_run={"id": 400, "head_sha": "b" * 40, "head_branch": "main",
+                        "event": "workflow_dispatch", "path": ".github/workflows/main.yml"},
+            migration_run={"id": 34690695663, "head_sha": "a3ef5660e6d25fcfd5a7dedd10536a32eedde203",
+                           "head_branch": "main", "event": "workflow_dispatch",
+                           "path": ".github/workflows/main.yml"},
+            now=NOW,
+            clock=lambda: LATER,
+        )
 
 
 @pytest.mark.parametrize(

@@ -2053,25 +2053,47 @@ def _private_spot_account(account, *, expected_account_scope_sha256):
 def _validated_private_scope_source(refs, *, initial_source=None):
     # Lazy import avoids a module cycle: rebased_recovery aliases the approved
     # roots from this migration module.
-    from application.rebased_recovery import validate_post_rebase_material
+    from application.rebased_recovery import (
+        validate_post_rebase_material,
+        validate_prospective_rebase_material,
+    )
 
     ledger_snapshot, ledger, control = initial_source or _read_source(refs)
-    archive_ref = refs["ledger_ref"].parent.document(REBASE_ARCHIVE_DOCUMENT)
+    marker = ledger.get("accounting_rebase")
+    archive_document = (
+        marker.get("archive_document")
+        if isinstance(marker, Mapping)
+        else None
+    )
+    if archive_document == PROSPECTIVE_ARCHIVE_DOCUMENT:
+        validate_material = validate_prospective_rebase_material
+        source_kind = "prospective_rebase"
+    elif archive_document == REBASE_ARCHIVE_DOCUMENT:
+        validate_material = validate_post_rebase_material
+        source_kind = "post_rebase"
+    else:
+        raise MigrationBlocked("private_scope_source_invalid")
+    archive_ref = refs["ledger_ref"].parent.document(archive_document)
     archive_snapshot = archive_ref.get(retry=None)
     if not archive_snapshot.exists:
         raise MigrationBlocked("private_scope_source_invalid")
     archive = archive_snapshot.to_dict()
     try:
-        material = validate_post_rebase_material(ledger, archive)
+        material = validate_material(ledger, archive)
         approved_account_scope = archive["recovery_control"]["source"][
             "original_evidence"
         ]["account_scope_sha256"]
         if not isinstance(approved_account_scope, str):
             raise ValueError("account scope")
+        opening_quantities = material.get("opening_quantities")
+        if not isinstance(opening_quantities, Mapping) or not opening_quantities:
+            raise ValueError("opening quantities")
     except (KeyError, TypeError, ValueError):
         raise MigrationBlocked("private_scope_source_invalid") from None
     return {
         "archive_ref": archive_ref,
+        "archive_document": archive_document,
+        "source_kind": source_kind,
         "material": material,
         "approved_account_scope_sha256": approved_account_scope,
         "binding": {
@@ -2123,10 +2145,10 @@ def collect_private_spot_scope_preview(
     return {
         "status": "observed",
         "observed_at": observed_at.astimezone(timezone.utc).isoformat(),
-        "source_kind": "post_rebase",
+        "source_kind": before["source_kind"],
         "source": {
             "source_sha": source_sha,
-            "archive_document": REBASE_ARCHIVE_DOCUMENT,
+            "archive_document": before["archive_document"],
             "archive_sha256": before["binding"]["archive_sha256"],
             "ledger_sha256": before["binding"]["ledger_sha256"],
             "account_scope_sha256": account_scope,

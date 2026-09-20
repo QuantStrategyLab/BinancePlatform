@@ -470,3 +470,87 @@ def test_scope_preview_rejects_oversized_publication_before_http(
     assert client.calls == 2
     assert requests == []
     assert not output_path.exists()
+
+
+def test_scope_preview_selects_prospective_archive_from_valid_marker(
+    monkeypatch, tmp_path, capsys
+):
+    from scripts import binance_recovery_controller as controller
+    from tests.test_prospective_recovery_diagnosis import _material
+
+    ledger, archive, control = _material(monkeypatch)
+    account_scope = migration.digest({"account_uid": "synthetic"})
+    account = _account(uid="synthetic")
+    ledger_ref = CountingRef(Snapshot(ledger))
+    archive_ref = CountingRef(Snapshot(archive))
+    legacy_archive_ref = CountingRef(Snapshot(None))
+
+    def select_archive(name):
+        if name == migration.PROSPECTIVE_ARCHIVE_DOCUMENT:
+            return archive_ref
+        if name == migration.REBASE_ARCHIVE_DOCUMENT:
+            return legacy_archive_ref
+        raise AssertionError(f"unexpected archive document {name}")
+
+    ledger_ref.parent = SimpleNamespace(document=select_archive)
+    refs = {
+        "ledger_ref": ledger_ref,
+        "control_ref": CountingRef(Snapshot(control)),
+        "owner_ref": CountingRef(Snapshot(None)),
+    }
+    client = AccountClient([account, account])
+    expected = {"account_scope_sha256": account_scope}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(migration, "require_runtime_context", lambda: None)
+    monkeypatch.setattr(
+        migration,
+        "resolve_runtime_target_from_env",
+        lambda **kwargs: SimpleNamespace(
+            live_continuity=SimpleNamespace(state="RECONCILE_ONLY")
+        ),
+    )
+    monkeypatch.setattr(migration, "_expected_digests", lambda: expected)
+    monkeypatch.setattr(migration, "_refs", lambda: refs)
+    monkeypatch.setattr(migration, "connect_client", lambda *args, **kwargs: client)
+    monkeypatch.setattr(
+        migration,
+        "datetime",
+        SimpleNamespace(
+            now=lambda *_: NOW,
+            fromisoformat=datetime.fromisoformat,
+            strptime=datetime.strptime,
+        ),
+    )
+    monkeypatch.setattr(
+        migration.os,
+        "environ",
+        {
+            "GITHUB_SHA": "f" * 40,
+            "BINANCE_API_KEY": "synthetic",
+            "BINANCE_API_SECRET": "synthetic",
+            "GITHUB_RUN_ID": "34620000001",
+            "RECONCILIATION_RECOVERY_SYNC_TOKEN": "synthetic sync token",
+        },
+    )
+    requests = []
+
+    def request(_url, _token, *, payload=None):
+        requests.append(copy.deepcopy(payload))
+        return {
+            "ok": True,
+            "observed_at": payload["observed_at"],
+            "source_run_id": payload["source_run_id"],
+            "asset_count": len(payload["assets"]),
+        }
+
+    monkeypatch.setattr(controller, "request_json", request)
+
+    assert migration.main(["scope-preview"]) == 0
+    assert legacy_archive_ref.calls == 0
+    assert archive_ref.calls >= 2
+    assert {row["asset"] for row in requests[0]["assets"]} >= {"DOGE", "BTC", "ETH"}
+    assert "BNB" not in {row["asset"] for row in requests[0]["assets"]}
+    assert "USDT" not in {row["asset"] for row in requests[0]["assets"]}
+    output = capsys.readouterr().out
+    assert "DOGE" not in output
+    assert json.loads(output)["status"] == "private_scope_published"

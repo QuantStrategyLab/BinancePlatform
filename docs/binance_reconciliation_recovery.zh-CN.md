@@ -188,6 +188,14 @@ create完整旧账本、旧控制、原审批材料及新账本摘要；update�
 复用现有向前记账消费者，在内存核对两次 Spot/Earn 采样、收益计数和已核实资金流；
 两次采样之间也必须守恒，不能用余额差猜测本金。检查自新期初以来受管交易范围内的成交与全账户挂单，
 结束后读回账本、控制、归档保持不变且无 owner。历史未知差额继续保留。
+期初至观察时刻仍受 `MAX_HISTORY=7` 天约束；不得放大、删除或绕过该窗口。
+现有 archive/recovery control/ledger 中**没有**经 archive、运行与账户绑定的中间连续可信
+checkpoint 证据；当前账本内 `earn_accrual_checkpoint` 不能当作可信连续区段起点。
+因此超过七天或期初后合法演进导致整本 digest 变化时，现有路径继续 fail-closed；
+连续区段证明需另增受保护的证据产生路径，本轮不新增通用 writer。
+
+`scope-preview` 按账本有效 `accounting_rebase.archive_document` 选择 legacy 或 prospective
+归档，仍只向私有 console 做一次需 ack 的 POST，不写 Firestore、不自动纳管资产。
 
 此检查不写账、不生成候选、不发布控制台授权；原 prepare/verify/activate 根保持不变。
 检查通过只证明当次新期初向前核算一致，不表示交易恢复或完整日常业务周期验收。
