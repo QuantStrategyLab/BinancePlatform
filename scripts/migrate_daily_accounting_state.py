@@ -60,9 +60,9 @@ PRIVATE_SCOPE_CONSOLE_URL = (
     "https://qsl-strategy-switch-console.pigbibi.workers.dev"
     "/api/internal/binance-private-scope"
 )
-# Operator-approved control from read-only Runtime 34586531344. One exact downgrade.
-QUIESCE_CONTROL_SHA256 = "68318adcf853fe755409814c8707d3338f0af7927da396a60547c8375e9af5c4"
-QUIESCE_CONTROL_UPDATE_TIME = "2026-09-08T18:31:35.004893Z"
+# Operator-approved current control from read-only Runtime 35501649014. One exact downgrade.
+QUIESCE_CONTROL_SHA256 = "3ba1f2535a439960a43a46ea99f28911842b5dcf2c77cce30f55e6303947872b"
+QUIESCE_CONTROL_UPDATE_TIME = "2026-09-12T13:29:06.395700Z"
 # User approved the concrete new-start proposal from Runtime 34601984051.
 # One exact ledger/control/quantity set; prices are freshly observed at execution.
 APPROVED_REBASE_LEDGER_SHA256 = "6171bd4d33196b25da6b2a9b23311f46dd1dc0e8a324aaec83f657d6a5e2a042"

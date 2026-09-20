@@ -288,7 +288,7 @@ time and estimates are not a standing permission to overwrite balances.
 
 `accounting_migration_action=audit` with `reconcile_only=true` and a disabled
 target performs a read-only ledger diagnosis. It requires the exact preserved
-recovery source inspected in Runtime `34586531344`, after its approved downgrade.
+recovery source inspected in Runtime `35501649014`, after its approved downgrade.
 It compares current Spot plus Flexible Earn totals with the ledger's managed
 asset snapshot, reporting missing assets separately from mismatches. Separately,
 it checks BONUS rewards since the recovered source observation against that
@@ -353,7 +353,7 @@ the broker, write a candidate or change any record. It cannot grant approval for
 a state transition; the existing preview/apply requirements remain unchanged.
 
 The operator approved one downgrade of the exact control inspected by Runtime
-`34586531344`: use `reconcile_only=true` and `accounting_migration_action=quiesce`
+`35501649014`: use `reconcile_only=true` and `accounting_migration_action=quiesce`
 with the target still disabled and no other runtime in flight. This single-use
 path binds the reviewed control digest and update time in source; it changes
 only `state` from `ACTIVE_LKG` to `RECONCILE_ONLY`, inside one non-retrying
