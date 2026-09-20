@@ -415,11 +415,12 @@ weaken its evidence checks. Diagnosis success never grants recovery authority.
 
 If that diagnosis reports `post_rebase_unknown_spot_balance`, an operator may
 run the separate `accounting_migration_action=scope-preview` with the runtime
-disabled and `reconcile_only=true`. This action validates the approved private
-rebase archive, the unchanged current ledger and the archived account identity,
-then calls the Spot account endpoint exactly twice. It does not read order,
-transfer, Earn, history or market-price endpoints and does not write Firestore
-or recovery control.
+disabled and `reconcile_only=true`. This action validates the archive named by
+the current ledger's `accounting_rebase.archive_document` marker (legacy post
+rebase or prospective), the marker-bound current ledger and the archived
+account identity, then calls the Spot account endpoint exactly twice. It does
+not read order, transfer, Earn, history or market-price endpoints and does not
+write Firestore or recovery control.
 
 On success, the runner sends one bounded HTTPS request directly to the private
 strategy console. The report is available only through the authenticated admin

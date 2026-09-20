@@ -173,8 +173,21 @@ def validate_prospective_rebase_material(
         or ledger.get("order_submission", {}).get("state") not in {"RESERVED", "TERMINAL"}
     ):
         raise ValueError("prospective_rebase_ledger_invalid")
+    raw_opening = ledger.get("last_balance_snapshot")
+    if (
+        not isinstance(raw_opening, Mapping)
+        or not raw_opening
+        or any(not isinstance(asset, str) or not asset for asset in raw_opening)
+    ):
+        raise ValueError("prospective_rebase_ledger_invalid")
+    opening_quantities = {
+        asset.upper(): _quantity(_amount(value)) for asset, value in raw_opening.items()
+    }
+    if len(opening_quantities) != len(raw_opening):
+        raise ValueError("prospective_rebase_ledger_invalid")
     return {
         "opening_at": _utc(marker["opening_balance_observed_at"]),
+        "opening_quantities": opening_quantities,
         "managed_assets": tuple(proposed["earn_accrual_checkpoint"]["assets"]),
         "archived_control": archived_control,
     }
