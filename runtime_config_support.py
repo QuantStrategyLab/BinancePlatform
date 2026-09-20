@@ -37,6 +37,23 @@ def get_env_bool(name: str, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def resolve_runtime_target_enabled_flag() -> bool:
+    """Return the operator stop-control flag.
+
+    Missing or blank values fail closed as disabled.  Non-literal values raise
+    so a misconfigured environment cannot silently reopen trading.  This flag
+    alone never grants orders; continuity must also permit standard execution.
+    """
+
+    raw = os.getenv("RUNTIME_TARGET_ENABLED")
+    if raw is None or not str(raw).strip():
+        return False
+    value = str(raw).strip().lower()
+    if value not in {"true", "false"}:
+        raise ValueError("RUNTIME_TARGET_ENABLED must be true or false")
+    return value == "true"
+
+
 def get_env_csv(name: str, default_values: list[str] | tuple[str, ...]) -> list[str]:
     raw = os.getenv(name)
     if raw is None or not str(raw).strip():
@@ -80,10 +97,27 @@ def load_cycle_execution_settings() -> CycleExecutionSettings:
         strategy_domain=strategy_definition.domain,
         runtime_target=runtime_target,
         runtime_target_enabled=(
-            get_env_bool("RUNTIME_TARGET_ENABLED", default=True)
+            resolve_runtime_target_enabled_flag()
             and runtime_target_permits_standard_execution(runtime_target)
         ),
     )
+
+
+def assert_standard_execution_entry_permitted() -> CycleExecutionSettings:
+    """Fail closed before the live strategy entrypoint may run.
+
+    Used by the Runtime workflow so a false switch, missing switch, or
+    RECONCILE_ONLY continuity cannot reach ``main.py`` even when dry-run is
+    false.  validate_only / reconcile_only paths must not call this helper.
+    """
+
+    settings = load_cycle_execution_settings()
+    if not settings.runtime_target_enabled:
+        raise RuntimeError(
+            "standard execution not permitted by RUNTIME_TARGET_ENABLED/"
+            "live_continuity; refusing live strategy entry"
+        )
+    return settings
 
 
 def _resolve_runtime_target():
