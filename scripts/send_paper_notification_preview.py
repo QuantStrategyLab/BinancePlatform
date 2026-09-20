@@ -11,10 +11,15 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 import sys
 
-from live_services import send_tg_msg
-from notify_i18n_support import build_strategy_display_name, build_translator
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from live_services import send_tg_msg  # noqa: E402
+from notify_i18n_support import build_strategy_display_name, build_translator  # noqa: E402
 
 _MAX_PREVIEW_MESSAGES = 6
 _PREVIEW_STRATEGY_PROFILE = "crypto_equity_combo"
