@@ -62,6 +62,7 @@ def _empty_reward_product_classification_counts() -> dict[str, int]:
 
 def _empty_lifecycle_evidence(
     approved_products: frozenset[tuple[str, str]] | None = None,
+    opening_totals: Mapping[tuple[str, str], Decimal] | None = None,
 ) -> dict[str, object]:
     product_assets: dict[str, str] = {}
     for asset, product_id in approved_products or ():
@@ -69,12 +70,36 @@ def _empty_lifecycle_evidence(
         if prior is not None and prior != asset:
             raise ValueError("lifecycle_product_asset_ambiguous")
         product_assets[product_id] = asset
+    totals: dict[tuple[str, str], Decimal] = {}
+    if opening_totals is not None:
+        for key, value in opening_totals.items():
+            if (
+                not isinstance(key, tuple)
+                or len(key) != 2
+                or not isinstance(key[0], str)
+                or not key[0]
+                or not isinstance(key[1], str)
+                or not key[1]
+                or not isinstance(value, Decimal)
+                or not value.is_finite()
+                or value < 0
+            ):
+                raise ValueError("lifecycle_row_invalid")
+            asset, product_id = key
+            prior = product_assets.get(product_id)
+            if prior is not None and prior != asset:
+                raise ValueError("lifecycle_product_asset_ambiguous")
+            product_assets[product_id] = asset
+            totals[(asset, product_id)] = value
     return {
         "subscriptions": [],
         "redemptions": [],
+        "rewards": [],
         "seen_subscription_ids": set(),
         "seen_redemption_ids": set(),
         "product_assets": product_assets,
+        "opening_totals": totals,
+        "opening_products": frozenset(approved_products or ()),
     }
 
 
@@ -183,6 +208,157 @@ def _ingest_lifecycle_rows(
         )
 
 
+def _finalize_lifecycle_reward_classification(
+    evidence: Mapping[str, object],
+    *,
+    managed_assets: frozenset[str] | None,
+    classification_counts: dict[str, int],
+) -> None:
+    """Classify rewards only after product-level lifecycle quantity checks.
+
+    Available quantity is simulated per product in time order. Rewards require a
+    strictly earlier positive balance on the same asset+product; same-millisecond
+    subscription+reward, redeem-before-subscribe, over-redemption, and
+    post-liquidation rewards fail closed. Success counts are recorded only after
+    every product finishes conservation so a later failure cannot retain proven
+    or opening_approved tallies.
+    """
+    for code in _REWARD_PRODUCT_CLASSIFICATION_CODES:
+        classification_counts[code] = 0
+    opening_products = evidence.get("opening_products") or frozenset()
+    opening_totals = evidence.get("opening_totals") or {}
+    if not isinstance(opening_products, frozenset) or not isinstance(opening_totals, Mapping):
+        raise ValueError("unapproved_reward_product")
+    subscriptions = evidence.get("subscriptions") or []
+    redemptions = evidence.get("redemptions") or []
+    rewards = evidence.get("rewards") or []
+    if (
+        not isinstance(subscriptions, list)
+        or not isinstance(redemptions, list)
+        or not isinstance(rewards, list)
+    ):
+        raise ValueError("unapproved_reward_product")
+
+    fact_products: set[tuple[str, str]] = set()
+    for fact in (*subscriptions, *redemptions, *rewards):
+        if not isinstance(fact, Mapping):
+            classification_counts["lifecycle_evidence_incomplete"] += 1
+            raise ValueError("unapproved_reward_product")
+        asset = fact.get("asset")
+        product_id = fact.get("product_id")
+        if not isinstance(asset, str) or not asset or not isinstance(product_id, str) or not product_id:
+            classification_counts["lifecycle_evidence_incomplete"] += 1
+            raise ValueError("unapproved_reward_product")
+        fact_products.add((asset, product_id))
+    # Working product set is exactly opening ∪ all observed lifecycle facts.
+    product_keys = set(opening_products) | fact_products
+    pending_success: list[str] = []
+
+    for asset, product_id in sorted(product_keys):
+        if managed_assets is not None and asset not in managed_assets:
+            classification_counts["out_of_scope_asset"] += 1
+            raise ValueError("unapproved_reward_product")
+        is_opening = (asset, product_id) in opening_products
+        if (asset, product_id) in opening_totals:
+            available: Decimal | None = opening_totals[(asset, product_id)]
+        elif is_opening:
+            # Opening membership without a verifiable opening total cannot prove
+            # post-liquidation attribution once redemptions exist.
+            available = None
+        else:
+            available = Decimal(0)
+
+        events: list[tuple[str, int, Decimal, Mapping[str, object]]] = []
+        for fact in subscriptions:
+            if fact.get("asset") == asset and fact.get("product_id") == product_id:
+                events.append(("subscribe", int(fact["time"]), Decimal(str(fact["amount"])), fact))
+        for fact in redemptions:
+            if fact.get("asset") == asset and fact.get("product_id") == product_id:
+                events.append(("redeem", int(fact["time"]), Decimal(str(fact["amount"])), fact))
+        for fact in rewards:
+            if fact.get("asset") == asset and fact.get("product_id") == product_id:
+                events.append(("reward", int(fact["time"]), Decimal(str(fact["amount"])), fact))
+        events.sort(key=lambda item: (item[1], {"subscribe": 0, "reward": 1, "redeem": 2}[item[0]]))
+
+        index = 0
+        while index < len(events):
+            stamp = events[index][1]
+            batch = []
+            while index < len(events) and events[index][1] == stamp:
+                batch.append(events[index])
+                index += 1
+            prior_available = available
+            batch_subs = [item for item in batch if item[0] == "subscribe"]
+            batch_rewards = [item for item in batch if item[0] == "reward"]
+            batch_redeems = [item for item in batch if item[0] == "redeem"]
+            for _kind, _time, amount, _fact in batch_subs:
+                if available is None:
+                    classification_counts["lifecycle_evidence_incomplete"] += 1
+                    raise ValueError("unapproved_reward_product")
+                try:
+                    available = _add_reward_quantity(available, amount)
+                except (InvalidOperation, ValueError, ArithmeticError):
+                    classification_counts["lifecycle_evidence_incomplete"] += 1
+                    raise ValueError("unapproved_reward_product") from None
+            if batch_rewards and batch_subs:
+                # Same-millisecond subscription cannot prove reward accrual.
+                classification_counts["lifecycle_evidence_incomplete"] += 1
+                raise ValueError("unapproved_reward_product")
+            for _kind, _time, amount, fact in batch_rewards:
+                kind = fact.get("kind")
+                if kind not in {"BONUS", "REALTIME"}:
+                    classification_counts["lifecycle_evidence_incomplete"] += 1
+                    raise ValueError("unapproved_reward_product")
+                if prior_available is None:
+                    if not is_opening or any(
+                        event[0] == "redeem" for event in events if event[1] <= stamp
+                    ):
+                        classification_counts["lifecycle_evidence_incomplete"] += 1
+                        raise ValueError("unapproved_reward_product")
+                elif prior_available <= 0:
+                    classification_counts["lifecycle_evidence_incomplete"] += 1
+                    raise ValueError("unapproved_reward_product")
+                if not is_opening:
+                    earlier_sub = any(
+                        event[0] == "subscribe" and event[1] < stamp for event in events
+                    )
+                    if not earlier_sub:
+                        classification_counts["lifecycle_evidence_incomplete"] += 1
+                        raise ValueError("unapproved_reward_product")
+                    pending_success.append("lifecycle_subscription_proven")
+                else:
+                    pending_success.append("opening_approved")
+                if kind == "REALTIME" and available is not None:
+                    try:
+                        available = _add_reward_quantity(available, amount)
+                    except (InvalidOperation, ValueError, ArithmeticError):
+                        classification_counts["lifecycle_evidence_incomplete"] += 1
+                        raise ValueError("unapproved_reward_product") from None
+            for _kind, _time, amount, _fact in batch_redeems:
+                if available is None:
+                    classification_counts["lifecycle_evidence_incomplete"] += 1
+                    raise ValueError("unapproved_reward_product")
+                try:
+                    if available < amount:
+                        classification_counts["lifecycle_evidence_incomplete"] += 1
+                        raise ValueError("unapproved_reward_product")
+                    available = _subtract_lifecycle_quantity(available, amount)
+                except ValueError as exc:
+                    if str(exc) == "unapproved_reward_product":
+                        raise
+                    classification_counts["lifecycle_evidence_incomplete"] += 1
+                    raise ValueError("unapproved_reward_product") from None
+                except (InvalidOperation, ArithmeticError):
+                    classification_counts["lifecycle_evidence_incomplete"] += 1
+                    raise ValueError("unapproved_reward_product") from None
+                if available < 0:
+                    classification_counts["lifecycle_evidence_incomplete"] += 1
+                    raise ValueError("unapproved_reward_product")
+
+    for code in pending_success:
+        classification_counts[code] += 1
+
+
 def _text(value: object) -> str:
     return str(value or "").strip()
 
@@ -197,6 +373,38 @@ def _reward_sum_prec(*values: Decimal) -> int:
     min_lsd = min(value.as_tuple().exponent for value in nonzero)
     span = max_msd - min_lsd + 1
     return max(50, min(span + 8, 1000))
+
+
+def _exact_decimal_coeff_exp(value: Decimal) -> tuple[int, int]:
+    if not isinstance(value, Decimal) or not value.is_finite():
+        raise ValueError("lifecycle_quantity_imprecise")
+    sign, digits, exp = value.as_tuple()
+    if not isinstance(exp, int):
+        raise ValueError("lifecycle_quantity_imprecise")
+    coeff = 0
+    for digit in digits:
+        coeff = coeff * 10 + int(digit)
+    if sign:
+        coeff = -coeff
+    return coeff, exp
+
+
+def _subtract_lifecycle_quantity(left: Decimal, right: Decimal) -> Decimal:
+    """Exact left - right by integer scaling; never uses default Decimal rounding."""
+    left_coeff, left_exp = _exact_decimal_coeff_exp(left)
+    right_coeff, right_exp = _exact_decimal_coeff_exp(right)
+    min_exp = min(left_exp, right_exp)
+    try:
+        total = left_coeff * (10 ** (left_exp - min_exp)) - right_coeff * (
+            10 ** (right_exp - min_exp)
+        )
+    except OverflowError as exc:
+        raise ValueError("lifecycle_quantity_imprecise") from exc
+    if total == 0:
+        return Decimal(0)
+    negative = total < 0
+    digit_tuple = tuple(int(char) for char in str(abs(total)))
+    return Decimal((1 if negative else 0, digit_tuple, min_exp))
 
 
 def _add_reward_quantity(left: Decimal, right: Decimal) -> Decimal:
@@ -1252,12 +1460,6 @@ def diagnose_balance_flows(
                     or _reward_sum_sink is not None
                     or _approved_reward_products is not None
                 )
-                opening_products = _approved_reward_products or frozenset()
-                subscription_facts = (
-                    list(_lifecycle_evidence.get("subscriptions") or [])
-                    if isinstance(_lifecycle_evidence, Mapping)
-                    else []
-                )
                 for row in rows:
                     asset, kind = row.get("asset"), row.get("type")
                     timestamp = row.get("time")
@@ -1292,40 +1494,15 @@ def diagnose_balance_flows(
                             if classification_counts is not None:
                                 classification_counts["out_of_scope_asset"] += 1
                             raise ValueError("unapproved_reward_product")
-                        earlier_subs = [
-                            fact
-                            for fact in subscription_facts
-                            if (
-                                fact.get("product_id") == project
-                                and type(fact.get("time")) is int
-                                and fact["time"] < timestamp
-                            )
-                        ]
-                        if (asset, project) in opening_products:
-                            if classification_counts is not None:
-                                classification_counts["opening_approved"] += 1
-                        elif any(
-                            fact.get("asset") == asset and fact.get("product_id") == project
-                            for fact in earlier_subs
-                        ):
-                            if any(fact.get("asset") != asset for fact in earlier_subs):
+                        if _lifecycle_evidence is not None:
+                            product_assets = _lifecycle_evidence.setdefault("product_assets", {})
+                            assert isinstance(product_assets, dict)
+                            bound = product_assets.get(project)
+                            if bound is not None and bound != asset:
                                 if classification_counts is not None:
                                     classification_counts["product_mapping_ambiguous"] += 1
                                 raise ValueError("unapproved_reward_product")
-                            if classification_counts is not None:
-                                classification_counts["lifecycle_subscription_proven"] += 1
-                        elif earlier_subs:
-                            if classification_counts is not None:
-                                classification_counts["product_mapping_ambiguous"] += 1
-                            raise ValueError("unapproved_reward_product")
-                        elif managed_assets is not None and asset in managed_assets:
-                            if classification_counts is not None:
-                                classification_counts["lifecycle_evidence_incomplete"] += 1
-                            raise ValueError("unapproved_reward_product")
-                        else:
-                            if classification_counts is not None:
-                                classification_counts["unexplained_managed_impact"] += 1
-                            raise ValueError("unapproved_reward_product")
+                            product_assets[project] = asset
                     if identity in seen:
                         if reward_quantity_changes is not None or strict_rows:
                             raise ValueError("reward_row_invalid")
@@ -1344,6 +1521,24 @@ def diagnose_balance_flows(
                         raise ValueError("reward_row_invalid") from None
                     if not quantity.is_finite() or quantity < 0:
                         raise ValueError("reward_row_invalid")
+                    if (
+                        _approved_reward_products is not None
+                        and _lifecycle_evidence is not None
+                        and isinstance(asset, str)
+                        and isinstance(project, str)
+                    ):
+                        # Store only after strict row validation; classify later.
+                        reward_facts = _lifecycle_evidence.setdefault("rewards", [])
+                        assert isinstance(reward_facts, list)
+                        reward_facts.append(
+                            {
+                                "asset": asset,
+                                "product_id": project,
+                                "amount": _format_reward_quantity(quantity),
+                                "time": timestamp,
+                                "kind": kind,
+                            }
+                        )
                     if _reward_sum_sink is not None:
                         if asset not in _reward_sum_sink:
                             raise ValueError("reward_row_invalid")
@@ -1411,6 +1606,7 @@ def diagnose_chunked_balance_flows(
     max_chunk: timedelta = timedelta(days=7),
     managed_reward_assets: Sequence[str] | None = None,
     approved_reward_products: set[tuple[str, str]] | frozenset[tuple[str, str]] | None = None,
+    opening_reward_product_totals: Mapping[tuple[str, str], str] | None = None,
 ) -> dict[str, object]:
     """Aggregate abutting <=max_chunk windows; never enlarges a single-window call.
 
@@ -1423,7 +1619,8 @@ def diagnose_chunked_balance_flows(
     are summed from the first validated pass only — never by re-fetching the
     rewards surface. When approved_reward_products is set, opening products or
     complete subscription lifecycle evidence on managed assets may admit a
-    reward product; diagnostics expose only fixed classification counts.
+    reward product; diagnostics expose only fixed classification counts after
+    product-level available-quantity checks finish.
     """
     now = now or datetime.now(timezone.utc)
     if (
@@ -1448,9 +1645,42 @@ def diagnose_chunked_balance_flows(
     approved_products = (
         frozenset(approved_reward_products) if approved_reward_products is not None else None
     )
+    opening_totals: dict[tuple[str, str], Decimal] | None = None
+    if opening_reward_product_totals is not None:
+        opening_totals = {}
+        try:
+            for key, raw in opening_reward_product_totals.items():
+                if (
+                    not isinstance(key, tuple)
+                    or len(key) != 2
+                    or not isinstance(key[0], str)
+                    or not key[0]
+                    or not isinstance(key[1], str)
+                    or not key[1]
+                    or not isinstance(raw, str)
+                    or not raw
+                    or len(raw) > 80
+                ):
+                    raise ValueError("lifecycle_row_invalid")
+                amount = Decimal(raw)
+                if not amount.is_finite() or amount < 0:
+                    raise ValueError("lifecycle_row_invalid")
+                opening_totals[(key[0], key[1])] = amount
+        except (InvalidOperation, TypeError, ValueError):
+            return {
+                "reason_code": "balance_history_incomplete",
+                "history_complete_for_requested_surfaces": False,
+                "history_counts": {},
+                "chunk_count": 0,
+                "complete_balance_reconciliation": False,
+                "baseline_rows_available": False,
+                "execution_authority_granted": False,
+            }
     try:
         lifecycle_evidence = (
-            _empty_lifecycle_evidence(approved_products) if approved_products is not None else None
+            _empty_lifecycle_evidence(approved_products, opening_totals)
+            if approved_products is not None
+            else None
         )
     except ValueError:
         return {
@@ -1528,6 +1758,31 @@ def diagnose_chunked_balance_flows(
         else:
             break
 
+    if lifecycle_evidence is not None and classification_counts is not None:
+        try:
+            _finalize_lifecycle_reward_classification(
+                lifecycle_evidence,
+                managed_assets=managed_asset_set,
+                classification_counts=classification_counts,
+            )
+        except ValueError as exc:
+            code = str(exc)
+            reason = (
+                "balance_history_unapproved_reward_product"
+                if code == "unapproved_reward_product"
+                else "balance_history_incomplete"
+            )
+            return {
+                "reason_code": reason,
+                "history_complete_for_requested_surfaces": False,
+                "history_counts": counts,
+                "chunk_count": chunk_count,
+                "reward_product_classification_counts": dict(classification_counts),
+                "complete_balance_reconciliation": False,
+                "baseline_rows_available": False,
+                "execution_authority_granted": False,
+            }
+
     result = {
         "reason_code": "balance_history_activity_summary",
         "history_complete_for_requested_surfaces": True,
@@ -1548,6 +1803,7 @@ def diagnose_chunked_balance_flows(
         result["_private_lifecycle_redemption_facts"] = list(
             lifecycle_evidence["redemptions"]
         )
+        result["_private_lifecycle_reward_facts"] = list(lifecycle_evidence["rewards"])
     if reward_assets:
         result["reward_quantity_totals"] = {
             asset: {

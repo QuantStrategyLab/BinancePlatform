@@ -2814,7 +2814,7 @@ def test_historical_continuity_rejects_removal_redeem_sum_hiding_extreme_tail(
 
     with pytest.raises(
         ValueError,
-        match="historical_continuity_(conservation_unverified|history_incomplete)",
+        match="historical_continuity_(conservation_unverified|history_incomplete|unapproved_reward_product)",
     ):
         collect_historical_continuity_diagnosis(
             client=RemovalClient(),
@@ -2954,3 +2954,356 @@ def test_historical_continuity_rejects_lifecycle_execution_authority_zero(
             now=NOW_BEYOND,
             clock=lambda: LATER_BEYOND,
         )
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "post_liquidation_reward",
+        "redeem_before_subscribe",
+        "same_ms_subscribe_reward",
+    ],
+)
+def test_chunked_rejects_lifecycle_order_and_post_liquidation_rewards(scenario):
+    """Rewards need a strictly earlier positive product balance; same-ms sub fails."""
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    sub_stamp = int((OPENING_AT + timedelta(minutes=10)).timestamp() * 1000)
+    mid_stamp = int((OPENING_AT + timedelta(minutes=20)).timestamp() * 1000)
+    reward_stamp = int((OPENING_AT + timedelta(minutes=30)).timestamp() * 1000)
+    subscription = {
+        "asset": "BNB",
+        "productId": "BNB002",
+        "amount": "1",
+        "time": sub_stamp,
+        "type": "AUTO",
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "purchaseId": 11,
+    }
+    redemption = {
+        "asset": "BNB",
+        "projectId": "BNB002",
+        "amount": "1",
+        "time": mid_stamp,
+        "status": "PAID",
+        "destAccount": "SPOT",
+        "redeemId": 12,
+        "type": "FAST",
+    }
+    reward = {
+        "asset": "BNB",
+        "rewards": "0.01",
+        "type": "REALTIME",
+        "projectId": "BNB002",
+        "time": reward_stamp,
+    }
+    rows = {
+        "/subscriptionRecord": [subscription],
+        "/redemptionRecord": [],
+        "/rewardsRecord": [reward],
+    }
+    if scenario == "post_liquidation_reward":
+        rows["/redemptionRecord"] = [redemption]
+    elif scenario == "redeem_before_subscribe":
+        rows["/redemptionRecord"] = [dict(redemption, time=sub_stamp - 1, redeemId=13)]
+    else:
+        rows["/subscriptionRecord"] = [dict(subscription, time=reward_stamp)]
+        rows["/rewardsRecord"] = [dict(reward, time=reward_stamp)]
+
+    def read(method, path, **kwargs):
+        if path.startswith("capital/"):
+            return []
+        for suffix, payload in rows.items():
+            if path.endswith(suffix):
+                return {"rows": payload, "total": len(payload)}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] == "balance_history_unapproved_reward_product"
+    counts = result["reward_product_classification_counts"]
+    assert counts["lifecycle_subscription_proven"] == 0
+    assert counts.get("lifecycle_evidence_incomplete", 0) >= 1
+    public = {
+        key: value
+        for key, value in result.items()
+        if not str(key).startswith("_private_")
+    }
+    assert "BNB002" not in str(public)
+
+
+def test_chunked_rejects_product_gap_masked_by_sibling_product_balance():
+    """Sibling product inventory must not cover another product's post-liquidation reward."""
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    sub_a = int((OPENING_AT + timedelta(minutes=5)).timestamp() * 1000)
+    sub_b = int((OPENING_AT + timedelta(minutes=6)).timestamp() * 1000)
+    redeem_a = int((OPENING_AT + timedelta(minutes=15)).timestamp() * 1000)
+    reward_a = int((OPENING_AT + timedelta(minutes=25)).timestamp() * 1000)
+    subscriptions = [
+        {
+            "asset": "BNB",
+            "productId": "BNB002",
+            "amount": "1",
+            "time": sub_a,
+            "type": "AUTO",
+            "status": "SUCCESS",
+            "sourceAccount": "SPOT",
+            "purchaseId": 21,
+        },
+        {
+            "asset": "BNB",
+            "productId": "BNB003",
+            "amount": "1",
+            "time": sub_b,
+            "type": "AUTO",
+            "status": "SUCCESS",
+            "sourceAccount": "SPOT",
+            "purchaseId": 22,
+        },
+    ]
+    redemption = {
+        "asset": "BNB",
+        "projectId": "BNB002",
+        "amount": "1",
+        "time": redeem_a,
+        "status": "PAID",
+        "destAccount": "SPOT",
+        "redeemId": 23,
+        "type": "FAST",
+    }
+    reward = {
+        "asset": "BNB",
+        "rewards": "0.01",
+        "type": "REALTIME",
+        "projectId": "BNB002",
+        "time": reward_a,
+    }
+
+    def read(method, path, **kwargs):
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            return {"rows": subscriptions, "total": 2}
+        if path.endswith("/redemptionRecord"):
+            return {"rows": [redemption], "total": 1}
+        if path.endswith("/rewardsRecord"):
+            return {"rows": [reward], "total": 1}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] == "balance_history_unapproved_reward_product"
+    assert result["reward_product_classification_counts"]["lifecycle_subscription_proven"] == 0
+    public = {
+        key: value
+        for key, value in result.items()
+        if not str(key).startswith("_private_")
+    }
+    assert "BNB002" not in str(public)
+    assert "BNB003" not in str(public)
+
+
+def test_chunked_rejects_over_redemption_without_reporting_amounts():
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    sub_stamp = int((OPENING_AT + timedelta(minutes=10)).timestamp() * 1000)
+    redeem_stamp = int((OPENING_AT + timedelta(minutes=20)).timestamp() * 1000)
+    subscription = {
+        "asset": "BNB",
+        "productId": "BNB002",
+        "amount": "1",
+        "time": sub_stamp,
+        "type": "AUTO",
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "purchaseId": 31,
+    }
+    redemption = {
+        "asset": "BNB",
+        "projectId": "BNB002",
+        "amount": "2",
+        "time": redeem_stamp,
+        "status": "PAID",
+        "destAccount": "SPOT",
+        "redeemId": 32,
+        "type": "FAST",
+    }
+
+    def read(method, path, **kwargs):
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            return {"rows": [subscription], "total": 1}
+        if path.endswith("/redemptionRecord"):
+            return {"rows": [redemption], "total": 1}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] == "balance_history_unapproved_reward_product"
+    public = {
+        key: value
+        for key, value in result.items()
+        if not str(key).startswith("_private_")
+    }
+    assert "BNB002" not in str(public)
+    assert "purchaseId" not in str(public)
+    assert "redeemId" not in str(public)
+
+
+def test_chunked_rejects_over_redeem_after_tiny_redeem_without_decimal_rounding():
+    """Subscribe 1, redeem 1e-40, then redeem 1 must fail; default Decimal prec must not hide remainder."""
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    sub_stamp = int((OPENING_AT + timedelta(minutes=10)).timestamp() * 1000)
+    tiny_stamp = int((OPENING_AT + timedelta(minutes=20)).timestamp() * 1000)
+    full_stamp = int((OPENING_AT + timedelta(minutes=30)).timestamp() * 1000)
+    subscription = {
+        "asset": "BNB",
+        "productId": "BNB002",
+        "amount": "1",
+        "time": sub_stamp,
+        "type": "AUTO",
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "purchaseId": 41,
+    }
+    redemptions = [
+        {
+            "asset": "BNB",
+            "projectId": "BNB002",
+            "amount": "1E-40",
+            "time": tiny_stamp,
+            "status": "PAID",
+            "destAccount": "SPOT",
+            "redeemId": 42,
+            "type": "FAST",
+        },
+        {
+            "asset": "BNB",
+            "projectId": "BNB002",
+            "amount": "1",
+            "time": full_stamp,
+            "status": "PAID",
+            "destAccount": "SPOT",
+            "redeemId": 43,
+            "type": "FAST",
+        },
+    ]
+
+    def read(method, path, **kwargs):
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            return {"rows": [subscription], "total": 1}
+        if path.endswith("/redemptionRecord"):
+            return {"rows": redemptions, "total": 2}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] == "balance_history_unapproved_reward_product"
+    counts = result["reward_product_classification_counts"]
+    assert counts["lifecycle_subscription_proven"] == 0
+    assert counts["opening_approved"] == 0
+    assert counts.get("lifecycle_evidence_incomplete", 0) >= 1
+    public = {
+        key: value
+        for key, value in result.items()
+        if not str(key).startswith("_private_")
+    }
+    assert "1E-40" not in str(public)
+    assert "BNB002" not in str(public)
+
+
+def test_chunked_failure_classification_excludes_prior_success_counts():
+    """A later over-redeem must not leave lifecycle_subscription_proven from earlier rewards."""
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+
+    sub_stamp = int((OPENING_AT + timedelta(minutes=5)).timestamp() * 1000)
+    reward_stamp = int((OPENING_AT + timedelta(minutes=15)).timestamp() * 1000)
+    redeem_stamp = int((OPENING_AT + timedelta(minutes=25)).timestamp() * 1000)
+    subscription = {
+        "asset": "BNB",
+        "productId": "BNB002",
+        "amount": "1",
+        "time": sub_stamp,
+        "type": "AUTO",
+        "status": "SUCCESS",
+        "sourceAccount": "SPOT",
+        "purchaseId": 51,
+    }
+    reward = {
+        "asset": "BNB",
+        "rewards": "0.01",
+        "type": "REALTIME",
+        "projectId": "BNB002",
+        "time": reward_stamp,
+    }
+    redemption = {
+        "asset": "BNB",
+        "projectId": "BNB002",
+        "amount": "2",
+        "time": redeem_stamp,
+        "status": "PAID",
+        "destAccount": "SPOT",
+        "redeemId": 52,
+        "type": "FAST",
+    }
+
+    def read(method, path, **kwargs):
+        if path.startswith("capital/"):
+            return []
+        if path.endswith("/subscriptionRecord"):
+            return {"rows": [subscription], "total": 1}
+        if path.endswith("/rewardsRecord"):
+            return {"rows": [reward], "total": 1}
+        if path.endswith("/redemptionRecord"):
+            return {"rows": [redemption], "total": 1}
+        return {"rows": [], "total": 0}
+
+    result = diagnose_chunked_balance_flows(
+        SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,
+        end=OPENING_AT + timedelta(days=1),
+        now=OPENING_AT + timedelta(days=1),
+        managed_reward_assets=("BNB",),
+        approved_reward_products={("BNB", "BNB001")},
+    )
+    assert result["history_complete_for_requested_surfaces"] is False
+    assert result["reason_code"] == "balance_history_unapproved_reward_product"
+    counts = result["reward_product_classification_counts"]
+    assert counts["lifecycle_subscription_proven"] == 0
+    assert counts["opening_approved"] == 0
+    assert counts.get("lifecycle_evidence_incomplete", 0) >= 1
+    assert "reward_quantity_totals" not in result

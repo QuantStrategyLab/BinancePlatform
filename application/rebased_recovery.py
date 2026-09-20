@@ -596,6 +596,19 @@ def _collect_historical_continuity_private(
         for product_id in (row.get("products") or {})
         if isinstance(product_id, str) and product_id
     )
+    opening_reward_product_totals: dict[tuple[str, str], str] = {}
+    for asset, row in material["opening_checkpoint"].get("assets", {}).items():
+        if not isinstance(row, Mapping):
+            continue
+        products = row.get("products") or {}
+        if not isinstance(products, Mapping):
+            continue
+        for product_id, product in products.items():
+            if not isinstance(product_id, str) or not product_id or not isinstance(product, Mapping):
+                continue
+            total = product.get("total")
+            if isinstance(total, str) and total:
+                opening_reward_product_totals[(asset, product_id)] = total
 
     # History must cover through final_at before integrity / conservation checks.
     history = diagnose_chunked_balance_flows(
@@ -605,6 +618,7 @@ def _collect_historical_continuity_private(
         now=final_at,
         managed_reward_assets=material["managed_assets"],
         approved_reward_products=approved_reward_products,
+        opening_reward_product_totals=opening_reward_product_totals,
     )
     if history.get("history_complete_for_requested_surfaces") is not True:
         reason = history.get("reason_code")
@@ -782,8 +796,82 @@ def _collect_historical_continuity_private(
             removed_products = opening_products - current_products
             subscription_facts = history.get("_private_lifecycle_subscription_facts") or []
             redemption_facts = history.get("_private_lifecycle_redemption_facts") or []
-            if not isinstance(subscription_facts, list) or not isinstance(redemption_facts, list):
+            reward_facts = history.get("_private_lifecycle_reward_facts") or []
+            if (
+                not isinstance(subscription_facts, list)
+                or not isinstance(redemption_facts, list)
+                or not isinstance(reward_facts, list)
+            ):
                 raise ValueError("lifecycle")
+            fact_products: set[tuple[str, str]] = set()
+            for fact in (*subscription_facts, *redemption_facts, *reward_facts):
+                if not isinstance(fact, Mapping):
+                    raise ValueError("lifecycle")
+                asset = fact.get("asset")
+                product_id = fact.get("product_id")
+                if (
+                    not isinstance(asset, str)
+                    or not asset
+                    or not isinstance(product_id, str)
+                    or not product_id
+                ):
+                    raise ValueError("lifecycle")
+                fact_products.add((asset, product_id))
+            # Product universe is opening ∪ ending ∪ all lifecycle facts.
+            product_universe = opening_products | current_products | fact_products
+            for asset, product_id in product_universe:
+                opening_total = Decimal(0)
+                if (asset, product_id) in opening_products:
+                    opening_total = _amount(
+                        opening_checkpoint["assets"][asset]["products"][product_id]["total"]
+                    )
+                sub_total = _exact_decimal_sum(
+                    [
+                        _amount(fact.get("amount"))
+                        for fact in subscription_facts
+                        if (
+                            isinstance(fact, Mapping)
+                            and fact.get("asset") == asset
+                            and fact.get("product_id") == product_id
+                        )
+                    ]
+                )
+                redeem_total = _exact_decimal_sum(
+                    [
+                        _amount(fact.get("amount"))
+                        for fact in redemption_facts
+                        if (
+                            isinstance(fact, Mapping)
+                            and fact.get("asset") == asset
+                            and fact.get("product_id") == product_id
+                        )
+                    ]
+                )
+                realtime_total = _exact_decimal_sum(
+                    [
+                        _amount(fact.get("amount"))
+                        for fact in reward_facts
+                        if (
+                            isinstance(fact, Mapping)
+                            and fact.get("asset") == asset
+                            and fact.get("product_id") == product_id
+                            and fact.get("kind") == "REALTIME"
+                        )
+                    ]
+                )
+                simulated = _add_reward_quantity(
+                    _add_reward_quantity(opening_total, sub_total), realtime_total
+                ) - redeem_total
+                if simulated < 0:
+                    raise ValueError("lifecycle")
+                if (asset, product_id) in current_products:
+                    ending_total = _amount(
+                        broker_checkpoint["assets"][asset]["products"][product_id]["total"]
+                    )
+                    if simulated != ending_total:
+                        raise ValueError("lifecycle")
+                elif simulated != 0:
+                    raise ValueError("lifecycle")
             for asset, product_id in added_products:
                 matches = [
                     fact
