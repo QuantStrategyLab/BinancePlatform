@@ -359,9 +359,49 @@ def encrypt_rebase_proposal(proposal, *, certificate):
         raise MigrationBlocked("proposal_encryption_failed") from None
 
 
-# Operator approved the complete encrypted proposal from Runtime 34690028846.
-APPROVED_PROSPECTIVE_SHA256 = "cad5cd02ebc554835492cc99f78b0639656a4261617dc8492fbc65c16f1d56a2"
+# Historical completed prospective migration (Runtime 34690028846). Kept only so
+# recovery/inspect can still bind that already-applied archive; new proposals and
+# apply no longer use these fixed roots.
 PROSPECTIVE_ARCHIVE_DOCUMENT = "MULTI_ASSET_STATE__before_rebase_34690028846"
+APPROVED_PROSPECTIVE_SHA256 = "cad5cd02ebc554835492cc99f78b0639656a4261617dc8492fbc65c16f1d56a2"
+_PROSPECTIVE_ARCHIVE_PREFIX = "MULTI_ASSET_STATE__before_rebase_"
+_PROPOSAL_RUN_ID_RE = re.compile(r"^[1-9][0-9]{0,19}$")
+_PROSPECTIVE_PROPOSED_FIELD_KEYS = _ACCOUNTING_FIELDS | {
+    "earn_accrual_checkpoint",
+    "earn_accounted_net_changes",
+    "external_cash_flow_cursor",
+}
+
+
+def _proposal_run_id(raw: object) -> str:
+    """Validate a workflow run id that is bound into a one-shot proposal."""
+    text = str(raw or "").strip()
+    if not _PROPOSAL_RUN_ID_RE.fullmatch(text):
+        raise MigrationBlocked("proposal_run_id_invalid")
+    return text
+
+
+def proposal_run_id_from_env() -> str:
+    """Prefer GITHUB_RUN_ID; tests may set an explicit synthetic value."""
+    return _proposal_run_id(os.environ.get("GITHUB_RUN_ID", ""))
+
+
+def prospective_archive_document(proposal_run_id: object) -> str:
+    """Archive name for one prospective apply; existence is the one-shot guard."""
+    run_id = _proposal_run_id(proposal_run_id)
+    return f"{_PROSPECTIVE_ARCHIVE_PREFIX}{run_id}"
+
+
+def is_prospective_archive_document(name: object) -> bool:
+    if not isinstance(name, str):
+        return False
+    # Legacy approved rebase uses the same before_rebase_* prefix; keep it post_rebase.
+    if name == REBASE_ARCHIVE_DOCUMENT:
+        return False
+    if name == PROSPECTIVE_ARCHIVE_DOCUMENT:
+        return True
+    prefix = _PROSPECTIVE_ARCHIVE_PREFIX
+    return name.startswith(prefix) and _PROPOSAL_RUN_ID_RE.fullmatch(name[len(prefix):]) is not None
 
 
 def _load_prospective_approval():
@@ -372,16 +412,57 @@ def _load_prospective_approval():
         approved = json.loads(raw)
         _validate_prospective_approval(approved)
         return approved
+    except MigrationBlocked:
+        raise
     except Exception:
         raise MigrationBlocked("prospective_approval_unavailable") from None
 
 
 def _validate_prospective_approval(approved):
-    if (not isinstance(approved, Mapping) or digest(approved) != APPROVED_PROSPECTIVE_SHA256
-            or approved.get("source_sha") != "c625413dcc601412358efbb5373e38788da95d0e"
-            or approved.get("historical_difference_unresolved") is not True
-            or set(approved.get("proposed_fields", {})) != _ACCOUNTING_FIELDS | {
-                "earn_accrual_checkpoint", "earn_accounted_net_changes", "external_cash_flow_cursor"}):
+    """Accept only a complete proposal binding; never a fixed historical digest."""
+    if not isinstance(approved, Mapping):
+        raise MigrationBlocked("prospective_approval_mismatch")
+    # Reject the retired fixed digest so an old secret cannot apply as today's baseline.
+    if digest(approved) == APPROVED_PROSPECTIVE_SHA256:
+        raise MigrationBlocked("prospective_approval_mismatch")
+    try:
+        run_id = _proposal_run_id(approved.get("proposal_run_id"))
+    except MigrationBlocked as exc:
+        raise MigrationBlocked("prospective_approval_mismatch") from exc
+    source_sha = approved.get("source_sha")
+    ledger_sha = approved.get("ledger_sha256")
+    control_sha = approved.get("control_sha256")
+    ledger_update_time = approved.get("ledger_update_time")
+    proposed = approved.get("proposed_fields")
+    if (
+        approved.get("historical_difference_unresolved") is not True
+        or approved.get("opening_mode") != "prospective"
+        or approved.get("executable_candidate") is not False
+        or not isinstance(source_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
+        or not isinstance(ledger_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", ledger_sha)
+        or not isinstance(control_sha, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", control_sha)
+        or not isinstance(ledger_update_time, str)
+        or not ledger_update_time
+        or not isinstance(proposed, Mapping)
+        or set(proposed) != _PROSPECTIVE_PROPOSED_FIELD_KEYS
+        or prospective_archive_document(run_id) != approved.get("archive_document")
+    ):
+        raise MigrationBlocked("prospective_approval_mismatch")
+    checkpoint = proposed.get("earn_accrual_checkpoint")
+    nets = proposed.get("earn_accounted_net_changes")
+    cursor = proposed.get("external_cash_flow_cursor")
+    if (
+        not isinstance(checkpoint, Mapping)
+        or not isinstance(checkpoint.get("assets"), Mapping)
+        or not checkpoint["assets"]
+        or not isinstance(nets, Mapping)
+        or set(nets) != set(checkpoint["assets"])
+        or any(value != "0" for value in nets.values())
+        or not isinstance(cursor, Mapping)
+    ):
         raise MigrationBlocked("prospective_approval_mismatch")
 
 
@@ -394,6 +475,8 @@ def _prospective_preflight(*, refs, client, expected, approved, now, clock=None)
             or _timestamp(snapshot.update_time) != approved["ledger_update_time"]
             or _finite(ledger.get("daily_external_principal_usdt", 0)) != 0):
         raise MigrationBlocked("prospective_source_changed")
+    _validate_control(control)
+    _validate_safe_order_state(ledger)
     fields = approved["proposed_fields"]
     previous = fields["earn_accrual_checkpoint"]
     opened = _time(previous["observed_at"])
@@ -426,6 +509,9 @@ def _prospective_preflight(*, refs, client, expected, approved, now, clock=None)
 
 def _prospective_transaction(transaction, *, refs, archive_ref, approved, now):
     _validate_prospective_approval(approved)
+    run_id = _proposal_run_id(approved["proposal_run_id"])
+    archive_document = prospective_archive_document(run_id)
+    approval_digest = digest(approved)
     owner = refs["owner_ref"].get(transaction=transaction, retry=None)
     current = refs["ledger_ref"].get(transaction=transaction, retry=None)
     control = refs["control_ref"].get(transaction=transaction, retry=None)
@@ -439,25 +525,43 @@ def _prospective_transaction(transaction, *, refs, archive_ref, approved, now):
     _validate_safe_order_state(ledger)
     _validate_control(recovery)
     proposed = copy.deepcopy(approved["proposed_fields"])
-    marker = {"archive_document": PROSPECTIVE_ARCHIVE_DOCUMENT, "started_at": now.isoformat(),
-              "opening_balance_observed_at": proposed["earn_accrual_checkpoint"]["observed_at"],
-              "historical_difference_unresolved": True, "approved_proposal_run_id": "34690028846",
-              "approved_proposal_sha256": APPROVED_PROSPECTIVE_SHA256}
+    marker = {
+        "archive_document": archive_document,
+        "started_at": now.isoformat(),
+        "opening_balance_observed_at": proposed["earn_accrual_checkpoint"]["observed_at"],
+        "historical_difference_unresolved": True,
+        "approved_proposal_run_id": run_id,
+        "approved_proposal_sha256": approval_digest,
+    }
     patch = {**proposed, "accounting_rebase": marker}
     new_digest = digest({**ledger, **patch})
-    backup = {"ledger": copy.deepcopy(ledger), "recovery_control": copy.deepcopy(recovery),
-              "ledger_update_time": _timestamp(current.update_time), **marker,
-              "approved_proposal": copy.deepcopy(approved), "new_ledger_sha256": new_digest,
-              "valuation_price_source": "binance_get_avg_price_estimate"}
+    backup = {
+        "ledger": copy.deepcopy(ledger),
+        "recovery_control": copy.deepcopy(recovery),
+        "ledger_update_time": _timestamp(current.update_time),
+        **marker,
+        "approved_proposal": copy.deepcopy(approved),
+        "new_ledger_sha256": new_digest,
+        "valuation_price_source": "binance_get_avg_price_estimate",
+    }
     transaction.create(archive_ref, backup)
     transaction.update(refs["ledger_ref"], patch)
-    return {"new_ledger_sha256": new_digest, "archive_sha256": digest(backup)}
+    return {
+        "new_ledger_sha256": new_digest,
+        "archive_sha256": digest(backup),
+        "archive_document": archive_document,
+        "approved_proposal_run_id": run_id,
+        "approved_proposal_sha256": approval_digest,
+    }
 
 
 def _apply_prospective_rebase(refs, *, client, expected, now, fixed_now):
     from google.cloud import firestore
     approved = _load_prospective_approval()
-    archive_ref = refs["ledger_ref"].parent.document(PROSPECTIVE_ARCHIVE_DOCUMENT)
+    archive_document = prospective_archive_document(approved["proposal_run_id"])
+    if approved.get("archive_document") != archive_document:
+        raise MigrationBlocked("prospective_approval_mismatch")
+    archive_ref = refs["ledger_ref"].parent.document(archive_document)
     if archive_ref.get(retry=None).exists:
         raise MigrationBlocked("prospective_archive_already_exists")
     decision = _prospective_preflight(refs=refs, client=client, expected=expected, approved=approved,
@@ -484,8 +588,11 @@ def _apply_prospective_rebase(refs, *, client, expected, now, fixed_now):
     except Exception:
         raise MigrationApplyUncertain("prospective_readback_uncertain") from None
     return {"status": "rebased", "stage": "prospective_accounting_apply",
-            "approved_proposal_run_id": "34690028846", "archive_document": PROSPECTIVE_ARCHIVE_DOCUMENT,
-            "ledger_update_time": updated_at, **written, "old_ledger_archived": True,
+            "approved_proposal_run_id": written["approved_proposal_run_id"],
+            "archive_document": written["archive_document"],
+            "approved_proposal_sha256": written["approved_proposal_sha256"],
+            "ledger_update_time": updated_at, "new_ledger_sha256": written["new_ledger_sha256"],
+            "archive_sha256": written["archive_sha256"], "old_ledger_archived": True,
             "historical_difference_unresolved": True, "control_unchanged": True, "no_order": True,
             "write_performed": True, "execution_authority_granted": False}
 
@@ -2065,12 +2172,12 @@ def _validated_private_scope_source(refs, *, initial_source=None):
         if isinstance(marker, Mapping)
         else None
     )
-    if archive_document == PROSPECTIVE_ARCHIVE_DOCUMENT:
-        validate_material = validate_prospective_rebase_material
-        source_kind = "prospective_rebase"
-    elif archive_document == REBASE_ARCHIVE_DOCUMENT:
+    if archive_document == REBASE_ARCHIVE_DOCUMENT:
         validate_material = validate_post_rebase_material
         source_kind = "post_rebase"
+    elif is_prospective_archive_document(archive_document):
+        validate_material = validate_prospective_rebase_material
+        source_kind = "prospective_rebase"
     else:
         raise MigrationBlocked("private_scope_source_invalid")
     archive_ref = refs["ledger_ref"].parent.document(archive_document)
@@ -2555,10 +2662,10 @@ def inspect_control(refs):
         else None
     )
     rebase_family = (
-        "prospective_rebase"
-        if rebase_document == PROSPECTIVE_ARCHIVE_DOCUMENT
-        else "post_rebase"
+        "post_rebase"
         if rebase_document == REBASE_ARCHIVE_DOCUMENT
+        else "prospective_rebase"
+        if is_prospective_archive_document(rebase_document)
         else "unknown"
         if rebase_document is not None
         else None
@@ -2578,9 +2685,11 @@ def inspect_control(refs):
             order_state = ledger_value.get("order_submission", {}).get("state")
             order_state_safe = order_state in {"RESERVED", "TERMINAL"}
             if rebase_family == "prospective_rebase":
-                from application.rebased_recovery import PROSPECTIVE_LEDGER_SHA256
-
-                ledger_digest_match = digest(ledger_value) == PROSPECTIVE_LEDGER_SHA256
+                expected_ledger_digest = archive_value.get("new_ledger_sha256")
+                ledger_digest_match = (
+                    isinstance(expected_ledger_digest, str)
+                    and digest(ledger_value) == expected_ledger_digest
+                )
                 expected_marker = {
                     key: archive_value.get(key)
                     for key in (
@@ -2803,14 +2912,22 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
         if (digest(ledger) != digest(after_ledger) or digest(control) != digest(after_control)
                 or _timestamp(ledger_snapshot.update_time) != _timestamp(after_snapshot.update_time)):
             raise MigrationBlocked("proposal_ledger_changed_during_read")
-        proposal.update(source_sha=os.environ["GITHUB_SHA"], ledger_update_time=_timestamp(ledger_snapshot.update_time),
-                        ledger_sha256=digest(ledger), control_sha256=digest(control))
+        run_id = proposal_run_id_from_env()
+        proposal.update(
+            proposal_run_id=run_id,
+            archive_document=prospective_archive_document(run_id),
+            source_sha=os.environ["GITHUB_SHA"],
+            ledger_update_time=_timestamp(ledger_snapshot.update_time),
+            ledger_sha256=digest(ledger),
+            control_sha256=digest(control),
+        )
         encrypted = encrypt_rebase_proposal(proposal, certificate=os.environ.get("PROPOSAL_RECIPIENT_CERTIFICATE", ""))
         REBASE_PROPOSAL_PATH.parent.mkdir(parents=True, exist_ok=True)
         REBASE_PROPOSAL_PATH.write_bytes(encrypted)
         return {"status": "encrypted_proposal_ready", "stage": "accounting_rebase_proposal",
                 "executable_candidate": False, "ledger_unchanged": True, "no_order": True,
-                "write_performed": False, "execution_authority_granted": False}
+                "write_performed": False, "execution_authority_granted": False,
+                "proposal_run_id": run_id}
     if action == "preview":
         candidate = build_candidate(
             ledger=ledger,

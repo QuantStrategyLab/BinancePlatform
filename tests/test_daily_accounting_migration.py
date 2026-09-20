@@ -897,13 +897,17 @@ def test_rebase_proposal_runtime_writes_only_encrypted_local_artifact(monkeypatc
     def forbidden(*a, **kw): raise AssertionError("proposal must not apply or make a migration candidate")
     monkeypatch.setattr(migration, "build_candidate", forbidden)
     monkeypatch.setattr(migration, "get_firestore_client", forbidden)
-    for key, value in {"GITHUB_SHA": "f" * 40, "BINANCE_API_KEY": "synthetic", "BINANCE_API_SECRET": "synthetic"}.items():
+    for key, value in {"GITHUB_SHA": "f" * 40, "GITHUB_RUN_ID": "35525044419", "BINANCE_API_KEY": "synthetic", "BINANCE_API_SECRET": "synthetic"}.items():
         monkeypatch.setenv(key, value)
     assert migration.main(["rebase-proposal"]) == 0
     output = capsys.readouterr().out
-    assert json.loads(output)["executable_candidate"] is False
+    public = json.loads(output)
+    assert public["executable_candidate"] is False
+    assert public["proposal_run_id"] == "35525044419"
     assert "14750" not in output and "500.0" not in output
     assert len(encrypted_payloads) == 1
+    assert encrypted_payloads[0]["proposal_run_id"] == "35525044419"
+    assert encrypted_payloads[0]["archive_document"] == migration.prospective_archive_document("35525044419")
     assert (tmp_path / "proposal.cms").read_bytes() == b"synthetic encrypted bytes"
     assert refs["ledger_ref"].snapshot.value == ledger
 
@@ -1144,6 +1148,7 @@ def test_prospective_proposal_runtime_binds_run_fingerprint_without_ledger_or_or
     )
     for key, value in {
         "GITHUB_SHA": "f" * 40,
+        "GITHUB_RUN_ID": "35525044419",
         "BINANCE_API_KEY": "synthetic",
         "BINANCE_API_SECRET": "synthetic",
     }.items():
@@ -1159,10 +1164,13 @@ def test_prospective_proposal_runtime_binds_run_fingerprint_without_ledger_or_or
         "no_order": True,
         "write_performed": False,
         "execution_authority_granted": False,
+        "proposal_run_id": "35525044419",
     }
     assert len(captured) == 1
     proposal = captured[0]
     assert proposal["source_sha"] == "f" * 40
+    assert proposal["proposal_run_id"] == "35525044419"
+    assert proposal["archive_document"] == migration.prospective_archive_document("35525044419")
     assert proposal["ledger_sha256"] == migration.digest(original_ledger)
     assert proposal["control_sha256"] == migration.digest({"state": "RECONCILE_ONLY"})
     assert proposal["historical_difference_unresolved"] is True

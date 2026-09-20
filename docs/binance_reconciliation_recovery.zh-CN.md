@@ -133,12 +133,15 @@ Spot + Flexible Earn 持有资产口径，闲置理财不等于资金退出策�
   提案中 `historical_difference_unresolved=true`，期前收益分类为 `unreconstructed_history`。
 - **仍 fail-closed**：建立前核验账户身份、Spot、Flexible Earn、当前 ledger/control；拒绝
   open/pending/unknown 订单、采样窗成交、未解释外部现金流变化；Spot/Earn 双读须守恒稳定；
-  加密候选绑定本次 `GITHUB_SHA`、ledger/control 摘要与观察时间。
+  加密候选绑定本次 `GITHUB_RUN_ID`（`proposal_run_id`）、`GITHUB_SHA`、ledger/control 摘要与观察时间。
 - `rebase-proposal` 只写本地加密 artifact，不写 Firestore、不下单、不改
   `RUNTIME_TARGET_ENABLED` / `RECONCILE_ONLY`。
-- `prospective-rebase-apply` 仍只接受**当次人工批准**的精确提案摘要；旧 run
-  `34690028846` 的固定 digest 不能替代今天的新提案。真正落库须另一次明确授权，并在事务中
-  **新建**归档备份整本旧账，不得覆盖或清空旧 archive 链条。
+- `prospective-rebase-apply` 只从受保护环境的 `BINANCE_APPROVED_PROSPECTIVE_OPENING` 读取**完整批准
+  proposal JSON**（由环境/操作审批控制），在内存校验后立即从环境移除；不把完整 JSON 放进
+  workflow_dispatch input，也不写入仓库、日志或明文 artifact。
+- **旧 proposal / 旧固定摘要不能替代新 proposal**。一次性语义由精确 proposal digest + 动态归档名
+  `MULTI_ASSET_STATE__before_rebase_{proposal_run_id}` 的存在性守卫保证：成功 apply 后再次执行会被
+  archive guard 拒绝；不得覆盖或清空旧 archive 链条。
 
 `application/earn_accrual.py` 提供纯 Decimal 增量守恒核对，要求调用方逐资产给出已独立核实的非利息净变动；
 不可将余额差额反推为已核实流水。该核对尚未接入日常自动记账和恢复消费者，不能将此工程预览称为
@@ -179,23 +182,16 @@ Spot/Earn 数量采样；既有 owner-protected writer 一次保存下一检查�
 9月11日旧 apply/recovery 根保持不变。新迁移需要具体快照的人工确认，随后基于真实迁移和完整归档
 绑定恢复验证；本改动没有切换期初、解除熔断或授权实盘。
 
-## 已批准的新期初一次迁移（2026-09-12）
+## 历史：已批准的新期初一次迁移（2026-09-12，Runtime 34690028846）
 
-用户已批准 Runtime `34690028846` 的完整方案。`prospective-rebase-apply` 仅接受其精确审批内容摘要，
-通过临时受保护的 `BINANCE_APPROVED_PROSPECTIVE_OPENING` 环境输入在内存读取；不在仓库、日志或
-明文工件保存账户内容。配置只对该显式停用迁移步骤提供，使用后删除；不传递本机解密私钥，
-日常生产不依赖该临时配置或 Mac。
+以下记录已完成的历史落库，**不是**当前操作说明。当前 `prospective-rebase-apply` 绑定当次
+`rebase-proposal` 的 `proposal_run_id` 与完整批准 proposal；旧固定 digest /
+`MULTI_ASSET_STATE__before_rebase_34690028846` 仅用于识别该次已落库归档，不能作为新提案的批准内容。
 
-只写原批准快照字段，生效观察时间保留为批准快照时点，不用执行时价格改写批准估值。
-执行前核对原账本、控制及版本、账户身份；快照须同日且不超过24小时。批准时点至当前须零挂单/成交、
-流水去重记录不变，Spot+Earn增量只能由同产品实时收益计数解释。原有非零外部本金累计会阻断，
-不能借新期初重置未批准的其他字段。
-
-单次事务同时读取 owner/ledger/control/新archive，只有身份和版本均保持不变且archive不存在才执行：
-create完整旧账本、旧控制、原审批材料及新账本摘要；update批准的会计字段和新归档标记。
-新归档为 `MULTI_ASSET_STATE__before_rebase_34690028846`，旧归档及其链条保留。提交或读回不明即uncertain，
-不重复提交。成功读回整本账、归档和未改变的控制后才报告迁移完成。旧rebase-apply常量和恢复路径未切换，
-本操作不解除熔断、不改策略、不恢复调度或交易。
+当时用户批准 Runtime `34690028846` 的完整方案，经临时受保护的
+`BINANCE_APPROVED_PROSPECTIVE_OPENING` 在内存读取；不在仓库、日志或明文工件保存账户内容。
+单次事务归档整本旧账到 `MULTI_ASSET_STATE__before_rebase_34690028846`，旧归档链条保留。
+该操作未解除熔断、未改策略、未恢复调度或交易。
 
 ## 新期初只读核验（2026-09-12）
 
