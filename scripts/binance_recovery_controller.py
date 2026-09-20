@@ -26,17 +26,29 @@ from quant_platform_kit.common.broker_reconciliation_enrollment import DEFAULT_B
 from quant_platform_kit.common.reconciliation_recovery import evaluate_reconciliation_recovery_activation
 from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
 from application.broker_reconciliation import _expected_digests, build_reconciliation_candidate, collect_read_only_reconciliation_observations, diagnose_balance_snapshot
-from application.reconciliation_recovery import collect_recovery_source, console_snapshot, validate_source, verify_confirmation
+from application.reconciliation_recovery import (
+    collect_recovery_source,
+    console_snapshot,
+    validate_source,
+    verify_confirmation,
+    verify_quiesced_prior_activation,
+)
 from application.rebased_recovery import (
     ARCHIVE_DOCUMENT,
+    HISTORICAL_CONTINUITY_KIND,
+    MAX_HISTORY,
     MIGRATION_RUN_ID,
     MIGRATION_RUN_SHA,
     PROSPECTIVE_ARCHIVE_DOCUMENT,
     PROSPECTIVE_MIGRATION_RUN_ID,
     PROSPECTIVE_MIGRATION_RUN_SHA,
+    collect_historical_continuity_diagnosis,
+    collect_historical_continuity_source,
     collect_prospective_rebase_diagnosis,
     collect_prospective_rebase_source,
     collect_post_rebase_source,
+    validate_historical_continuity_material,
+    validate_historical_continuity_source,
     validate_prospective_rebase_material,
     validate_prospective_rebase_source,
     validate_post_rebase_material,
@@ -81,6 +93,12 @@ DIAGNOSTIC_REASON_CODES = frozenset({
     "prospective_rebase_open_orders_present", "prospective_rebase_recent_executions_present",
     "prospective_rebase_source_run_invalid", "prospective_rebase_state_changed_during_read",
     "prospective_rebase_spot_changed_during_read", "prospective_rebase_spot_unverified",
+    "historical_continuity_account_identity_mismatch", "historical_continuity_archive_invalid",
+    "historical_continuity_broker_read_failed", "historical_continuity_checkpoint_unavailable",
+    "historical_continuity_conservation_unverified",
+    "historical_continuity_duplicate_event", "historical_continuity_history_incomplete",
+    "historical_continuity_observation_window_invalid", "historical_continuity_open_orders_present",
+    "historical_continuity_unsupported_activity", "historical_continuity_window_invalid",
 })
 
 
@@ -301,49 +319,83 @@ def run(action, recovery_id=""):
         if is_prospective_rebase:
             if archive is None:
                 raise ValueError("prospective_rebase_archive_missing")
-            material = validate_prospective_rebase_material(ledger, archive)
             collected_at = datetime.now(timezone.utc)
-            if previous != material["archived_control"]:
-                stored_candidate = validate_prospective_rebase_source(
-                    previous,
-                    runtime_target=target,
-                    legacy_expected=expected,
-                    now=collected_at,
-                    require_fresh=False,
+            try:
+                material = validate_prospective_rebase_material(ledger, archive)
+                use_historical_continuity = (
+                    collected_at - material["opening_at"] > MAX_HISTORY
                 )
+            except ValueError as exc:
+                if str(exc) != "prospective_rebase_ledger_invalid":
+                    raise
+                material = validate_historical_continuity_material(ledger, archive)
+                use_historical_continuity = True
+            if previous is not None and previous != material["archived_control"]:
+                previous_kind = (
+                    previous.get("source", {}).get("kind")
+                    if isinstance(previous.get("source"), dict) else None
+                )
+                if previous_kind == HISTORICAL_CONTINUITY_KIND:
+                    stored_candidate = validate_historical_continuity_source(
+                        previous,
+                        runtime_target=target,
+                        legacy_expected=expected,
+                        now=collected_at,
+                        require_fresh=False,
+                    )
+                else:
+                    stored_candidate = validate_prospective_rebase_source(
+                        previous,
+                        runtime_target=target,
+                        legacy_expected=expected,
+                        now=collected_at,
+                        require_fresh=False,
+                    )
                 if action == "prepare":
-                    stored_run = previous["source"]["run"]
-                    candidate_is_future = stored_candidate.last_observed_at > collected_at
-                    candidate_is_expired = (
-                        collected_at - stored_candidate.last_observed_at
-                        > DEFAULT_BROKER_RECONCILIATION_ENROLLMENT_MAX_AGE
-                    )
-                    if (
-                        "confirmation" in previous
-                        or "transition_plan" in previous
-                        or candidate_is_future
-                        or stored_run["id"] == current_run["id"]
-                        or not re.fullmatch(
-                            rf"binance-{stored_run['id']}-[1-9][0-9]*",
-                            str(previous.get("recovery_id") or ""),
+                    has_confirmation = "confirmation" in previous
+                    has_transition = "transition_plan" in previous
+                    if has_confirmation or has_transition:
+                        if not (has_confirmation and has_transition):
+                            raise ValueError("prospective_rebase_prepare_control_changed")
+                        try:
+                            verify_quiesced_prior_activation(
+                                previous, runtime_target=target, expected=expected
+                            )
+                        except ValueError as exc:
+                            raise ValueError(
+                                "prospective_rebase_prepare_control_changed"
+                            ) from exc
+                    else:
+                        stored_run = previous["source"]["run"]
+                        candidate_is_future = stored_candidate.last_observed_at > collected_at
+                        candidate_is_expired = (
+                            collected_at - stored_candidate.last_observed_at
+                            > DEFAULT_BROKER_RECONCILIATION_ENROLLMENT_MAX_AGE
                         )
-                    ):
-                        raise ValueError("prospective_rebase_prepare_control_changed")
-                    accepted_conclusions = (
-                        ("success", "failure") if candidate_is_expired else ("failure",)
-                    )
-                    try:
-                        verified_stored_run = verified_run(
-                            stored_run["id"],
-                            expected_sha=stored_run["head_sha"],
-                            accepted_conclusions=accepted_conclusions,
+                        if (
+                            candidate_is_future
+                            or stored_run["id"] == current_run["id"]
+                            or not re.fullmatch(
+                                rf"binance-{stored_run['id']}-[1-9][0-9]*",
+                                str(previous.get("recovery_id") or ""),
+                            )
+                        ):
+                            raise ValueError("prospective_rebase_prepare_control_changed")
+                        accepted_conclusions = (
+                            ("success", "failure") if candidate_is_expired else ("failure",)
                         )
-                    except ValueError:
-                        raise ValueError(
-                            "prospective_rebase_prepare_control_changed"
-                        ) from None
-                    if verified_stored_run != stored_run:
-                        raise ValueError("prospective_rebase_prepare_control_changed")
+                        try:
+                            verified_stored_run = verified_run(
+                                stored_run["id"],
+                                expected_sha=stored_run["head_sha"],
+                                accepted_conclusions=accepted_conclusions,
+                            )
+                        except ValueError:
+                            raise ValueError(
+                                "prospective_rebase_prepare_control_changed"
+                            ) from None
+                        if verified_stored_run != stored_run:
+                            raise ValueError("prospective_rebase_prepare_control_changed")
             migration_run = verified_run(
                 PROSPECTIVE_MIGRATION_RUN_ID,
                 expected_sha=PROSPECTIVE_MIGRATION_RUN_SHA,
@@ -360,37 +412,70 @@ def run(action, recovery_id=""):
                 "now": collected_at,
                 "clock": prospective_clock,
             }
-            if action == "diagnose":
-                result = collect_prospective_rebase_diagnosis(**collect_kwargs)
-                STAGE = "readback"
-                after_control = refs["control_ref"].get(retry=None)
-                after_ledger = refs["ledger_ref"].get(retry=None)
-                after_owner = refs["owner_ref"].get(retry=None)
-                after_archive = refs["archive_ref"].get(retry=None)
-                if (
-                    not after_control.exists
-                    or after_control.to_dict() != previous
-                    or not after_ledger.exists
-                    or digest(after_ledger.to_dict()) != digest(ledger)
-                    or after_owner.exists
-                    or not after_archive.exists
-                    or digest(after_archive.to_dict()) != digest(archive)
-                ):
-                    raise ValueError("prospective_rebase_state_changed_during_read")
-                return {
-                    **result,
-                    "ledger_unchanged": True,
-                    "control_unchanged": True,
-                    "owner_absent": True,
-                    "archive_unchanged": True,
-                }
-            package = collect_prospective_rebase_source(**collect_kwargs)
-            candidate = validate_prospective_rebase_source(
-                package,
-                runtime_target=target,
-                legacy_expected=expected,
-                now=prospective_clock(),
-            )
+            if use_historical_continuity:
+                if action == "diagnose":
+                    result = collect_historical_continuity_diagnosis(**collect_kwargs)
+                    STAGE = "readback"
+                    after_control = refs["control_ref"].get(retry=None)
+                    after_ledger = refs["ledger_ref"].get(retry=None)
+                    after_owner = refs["owner_ref"].get(retry=None)
+                    after_archive = refs["archive_ref"].get(retry=None)
+                    if (
+                        not after_control.exists
+                        or after_control.to_dict() != previous
+                        or not after_ledger.exists
+                        or digest(after_ledger.to_dict()) != digest(ledger)
+                        or after_owner.exists
+                        or not after_archive.exists
+                        or digest(after_archive.to_dict()) != digest(archive)
+                    ):
+                        raise ValueError("prospective_rebase_state_changed_during_read")
+                    return {
+                        **result,
+                        "ledger_unchanged": True,
+                        "control_unchanged": True,
+                        "owner_absent": True,
+                        "archive_unchanged": True,
+                    }
+                package = collect_historical_continuity_source(**collect_kwargs)
+                candidate = validate_historical_continuity_source(
+                    package,
+                    runtime_target=target,
+                    legacy_expected=expected,
+                    now=prospective_clock(),
+                )
+            else:
+                if action == "diagnose":
+                    result = collect_prospective_rebase_diagnosis(**collect_kwargs)
+                    STAGE = "readback"
+                    after_control = refs["control_ref"].get(retry=None)
+                    after_ledger = refs["ledger_ref"].get(retry=None)
+                    after_owner = refs["owner_ref"].get(retry=None)
+                    after_archive = refs["archive_ref"].get(retry=None)
+                    if (
+                        not after_control.exists
+                        or after_control.to_dict() != previous
+                        or not after_ledger.exists
+                        or digest(after_ledger.to_dict()) != digest(ledger)
+                        or after_owner.exists
+                        or not after_archive.exists
+                        or digest(after_archive.to_dict()) != digest(archive)
+                    ):
+                        raise ValueError("prospective_rebase_state_changed_during_read")
+                    return {
+                        **result,
+                        "ledger_unchanged": True,
+                        "control_unchanged": True,
+                        "owner_absent": True,
+                        "archive_unchanged": True,
+                    }
+                package = collect_prospective_rebase_source(**collect_kwargs)
+                candidate = validate_prospective_rebase_source(
+                    package,
+                    runtime_target=target,
+                    legacy_expected=expected,
+                    now=prospective_clock(),
+                )
         elif is_post_rebase:
             collected_at = datetime.now(timezone.utc)
             migration_run = verified_run(MIGRATION_RUN_ID, expected_sha=MIGRATION_RUN_SHA)
@@ -464,7 +549,7 @@ def run(action, recovery_id=""):
         result = {"status": "awaiting_human_confirmation", "recovery_id": recovery_id, "candidate_sha256": candidate.candidate_sha256, "no_order": True, "execution_authority_granted": False}
         if is_post_rebase:
             result.update(
-                source_kind="prospective_rebase" if is_prospective_rebase else "post_rebase",
+                source_kind=package["source"]["kind"],
                 historical_difference_unresolved=True,
             )
         return result
@@ -474,9 +559,30 @@ def run(action, recovery_id=""):
     if verified_run(source_run["id"], expected_sha=source_run["head_sha"]) != source_run:
         raise ValueError("recovery_source_run_changed")
     source_kind = previous.get("source", {}).get("kind")
+    is_historical_continuity = source_kind == HISTORICAL_CONTINUITY_KIND
     is_prospective_rebase = source_kind == "prospective_rebase"
-    is_post_rebase = source_kind in {"post_rebase", "prospective_rebase"}
-    if is_prospective_rebase:
+    is_post_rebase = source_kind in {"post_rebase", "prospective_rebase", HISTORICAL_CONTINUITY_KIND}
+    if is_historical_continuity:
+        validation_at = datetime.now(timezone.utc)
+        migration_run = previous["source"]["migration_run"]
+        if verified_run(
+            migration_run["id"], expected_sha=PROSPECTIVE_MIGRATION_RUN_SHA
+        ) != migration_run:
+            raise ValueError("historical_continuity_migration_run_changed")
+        if archive is None:
+            raise ValueError("prospective_rebase_archive_missing")
+        if digest(archive) != previous["source"].get("archive_sha256"):
+            raise ValueError("prospective_rebase_archive_changed")
+        validate_historical_continuity_material(ledger, archive)
+        if digest(ledger) != previous["source"].get("current_ledger_sha256"):
+            raise ValueError("historical_continuity_ledger_changed")
+        candidate = validate_historical_continuity_source(
+            previous,
+            runtime_target=target,
+            legacy_expected=expected,
+            now=validation_at,
+        )
+    elif is_prospective_rebase:
         validation_at = datetime.now(timezone.utc)
         migration_run = previous["source"]["migration_run"]
         if verified_run(
@@ -527,7 +633,51 @@ def run(action, recovery_id=""):
     if not ledger_snapshot.exists or refs["owner_ref"].get(retry=None).exists:
         raise ValueError("recovery_ledger_unavailable_or_owned")
     ledger = ledger_snapshot.to_dict()
-    if is_prospective_rebase:
+    if is_historical_continuity:
+        archive_snapshot = refs["archive_ref"].get(retry=None)
+        if not archive_snapshot.exists:
+            raise ValueError("prospective_rebase_archive_missing")
+        archive = archive_snapshot.to_dict()
+        if digest(archive) != previous["source"].get("archive_sha256"):
+            raise ValueError("prospective_rebase_archive_changed")
+        validate_historical_continuity_material(ledger, archive)
+        if digest(ledger) != previous["source"].get("current_ledger_sha256"):
+            raise ValueError("historical_continuity_ledger_changed")
+        fresh = collect_historical_continuity_source(
+            client=client,
+            runtime_target=target,
+            legacy_expected=expected,
+            ledger=ledger,
+            archive=archive,
+            symbols=symbols,
+            source_run=current_run,
+            migration_run=migration_run,
+            now=observed_at,
+            clock=prospective_clock,
+        )
+        fresh_candidate = validate_historical_continuity_source(
+            fresh,
+            runtime_target=target,
+            legacy_expected=expected,
+            now=prospective_clock(),
+        )
+        if (
+            fresh_candidate.account_scope_sha256 != candidate.account_scope_sha256
+            or fresh_candidate.expected_digests != candidate.expected_digests
+            or fresh["source"]["current_ledger_sha256"]
+            != previous["source"]["current_ledger_sha256"]
+        ):
+            raise ValueError("historical_continuity_fresh_candidate_changed")
+        current_evidence = BrokerReconciliationEvidence.from_dict(
+            fresh["source"]["reconciled_evidence"]
+        )
+        validate_historical_continuity_source(
+            previous,
+            runtime_target=target,
+            legacy_expected=expected,
+            now=prospective_clock(),
+        )
+    elif is_prospective_rebase:
         archive_snapshot = refs["archive_ref"].get(retry=None)
         if not archive_snapshot.exists:
             raise ValueError("prospective_rebase_archive_missing")

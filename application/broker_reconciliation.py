@@ -12,7 +12,7 @@ import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, DecimalException, localcontext
+from decimal import Decimal, DecimalException, InvalidOperation, localcontext
 from typing import Any
 
 from quant_platform_kit.common.broker_reconciliation import (
@@ -28,6 +28,7 @@ BINANCE_RECONCILIATION_EXPECTED_DIGESTS_ENV = "BINANCE_RECONCILIATION_EXPECTED_D
 _EXPECTED_DIGEST_KEYS = (
     "account_scope_sha256",
     "positions_sha256",
+
     "cash_sha256",
     "open_orders_sha256",
     "recent_executions_sha256",
@@ -48,6 +49,30 @@ class BinanceReconciliationReadError(RuntimeError):
 
 def _text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _reward_sum_prec(*values: Decimal) -> int:
+    """Significant digits so addition does not round away smaller finite addends."""
+    parts = [value for value in values if isinstance(value, Decimal) and value.is_finite()]
+    nonzero = [value for value in parts if value != 0]
+    if not nonzero:
+        return 50
+    max_msd = max(value.adjusted() for value in nonzero)
+    min_lsd = min(value.as_tuple().exponent for value in nonzero)
+    span = max_msd - min_lsd + 1
+    return max(50, min(span + 8, 1000))
+
+
+def _add_reward_quantity(left: Decimal, right: Decimal) -> Decimal:
+    with localcontext() as context:
+        context.prec = _reward_sum_prec(left, right)
+        return left + right
+
+
+def _format_reward_quantity(value: Decimal) -> str:
+    with localcontext() as context:
+        context.prec = _reward_sum_prec(value)
+        return format(value, "f")
 
 
 def _external_cash_flow_cursor(
@@ -812,6 +837,9 @@ def diagnose_balance_flows(
     client: Any, *, start: datetime, end: datetime, now: datetime | None = None,
     account: Mapping[str, object] | None = None, expected_digests: Mapping[str, str] | None = None,
     reward_quantity_changes: Mapping[str, Decimal] | None = None,
+    _seen_reward_identities: set[tuple[object, ...]] | None = None,
+    _reward_sum_sink: dict[str, dict[str, Decimal]] | None = None,
+    _approved_reward_products: frozenset[tuple[str, str]] | None = None,
 ) -> dict[str, object]:
     """Read a bounded activity summary, never an enrollment or reconciliation.
 
@@ -874,32 +902,111 @@ def diagnose_balance_flows(
         counts[name] = len(rows)
         if name == "earn_rewards":
             reward_rows = rows
-            if reward_quantity_changes is not None:
+            if (
+                reward_quantity_changes is not None
+                or _seen_reward_identities is not None
+                or _reward_sum_sink is not None
+                or _approved_reward_products is not None
+            ):
                 try:
-                    sums = {asset: {"BONUS": Decimal(0), "REALTIME": Decimal(0)} for asset in reward_quantity_changes}
-                    counts_by_asset = {asset: {"BONUS": 0, "REALTIME": 0} for asset in reward_quantity_changes}
                     seen = set()
+                    sums = (
+                        {asset: {"BONUS": Decimal(0), "REALTIME": Decimal(0)} for asset in reward_quantity_changes}
+                        if reward_quantity_changes is not None else None
+                    )
+                    counts_by_asset = (
+                        {asset: {"BONUS": 0, "REALTIME": 0} for asset in reward_quantity_changes}
+                        if reward_quantity_changes is not None else None
+                    )
+                    strict_rows = (
+                        _seen_reward_identities is not None
+                        or _reward_sum_sink is not None
+                        or _approved_reward_products is not None
+                    )
                     for row in rows:
                         asset, kind = row.get("asset"), row.get("type")
-                        if asset not in sums or kind not in {"BONUS", "REALTIME"}:
-                            continue
                         timestamp = row.get("time")
-                        quantity = Decimal(str(row.get("rewards")))
-                        identity = (asset, kind, row.get("projectId"), timestamp)
-                        if (type(timestamp) is not int or not bounds["startTime"] <= timestamp <= bounds["endTime"]
-                                or not quantity.is_finite() or quantity < 0 or identity in seen):
-                            raise ValueError("reward_row_invalid")
+                        project = row.get("projectId")
+                        identity = (asset, kind, project, timestamp)
+                        # Cross-chunk duplicates must be detected before window checks:
+                        # a later chunk may re-emit an earlier identity outside its bounds.
+                        if _seen_reward_identities is not None and identity in _seen_reward_identities:
+                            return {
+                                **result,
+                                "reason_code": "balance_history_duplicate_event",
+                                "failed_surface": name,
+                                "history_complete_for_requested_surfaces": False,
+                            }
+                        if (
+                            type(timestamp) is not int
+                            or not bounds["startTime"] <= timestamp <= bounds["endTime"]
+                        ):
+                            if reward_quantity_changes is not None or strict_rows:
+                                raise ValueError("reward_row_invalid")
+                            continue
+                        if kind not in {"BONUS", "REALTIME"}:
+                            if strict_rows:
+                                raise ValueError("reward_row_invalid")
+                            if reward_quantity_changes is not None:
+                                continue
+                            continue
+                        if _approved_reward_products is not None and (
+                            not isinstance(asset, str)
+                            or not isinstance(project, str)
+                            or (asset, project) not in _approved_reward_products
+                        ):
+                            raise ValueError("unapproved_reward_product")
+                        if identity in seen:
+                            if reward_quantity_changes is not None or strict_rows:
+                                raise ValueError("reward_row_invalid")
+                            return {
+                                **result,
+                                "reason_code": "balance_history_duplicate_event",
+                                "failed_surface": name,
+                                "history_complete_for_requested_surfaces": False,
+                            }
                         seen.add(identity)
-                        sums[asset][kind] += quantity
+                        if _seen_reward_identities is not None:
+                            _seen_reward_identities.add(identity)
+                        try:
+                            quantity = Decimal(str(row.get("rewards")))
+                        except (InvalidOperation, TypeError, ValueError):
+                            raise ValueError("reward_row_invalid") from None
+                        if not quantity.is_finite() or quantity < 0:
+                            raise ValueError("reward_row_invalid")
+                        if _reward_sum_sink is not None:
+                            if asset not in _reward_sum_sink:
+                                raise ValueError("reward_row_invalid")
+                            _reward_sum_sink[asset][kind] = _add_reward_quantity(
+                                _reward_sum_sink[asset][kind], quantity
+                            )
+                        if sums is None or asset not in sums:
+                            continue
+                        sums[asset][kind] = _add_reward_quantity(sums[asset][kind], quantity)
                         counts_by_asset[asset][kind] += 1
-                    result["reward_quantity_checks"] = {
-                        asset: {"delta_matches_bonus": delta == sums[asset]["BONUS"],
+                    if reward_quantity_changes is not None:
+                        result["reward_quantity_checks"] = {
+                            asset: {
+                                "delta_matches_bonus": delta == sums[asset]["BONUS"],
                                 "delta_matches_realtime": delta == sums[asset]["REALTIME"],
-                                "delta_matches_visible_total": delta == sum(sums[asset].values()),
-                                "reward_counts": counts_by_asset[asset], "causal_reconciliation": False}
-                        for asset, delta in reward_quantity_changes.items()
-                    }
-                except (ValueError, TypeError, DecimalException):
+                                "delta_matches_visible_total": delta == _add_reward_quantity(
+                                    sums[asset]["BONUS"], sums[asset]["REALTIME"]
+                                ),
+                                "reward_counts": counts_by_asset[asset],
+                                "causal_reconciliation": False,
+                            }
+                            for asset, delta in reward_quantity_changes.items()
+                        }
+                except ValueError as exc:
+                    if str(exc) == "unapproved_reward_product":
+                        return {
+                            **result,
+                            "reason_code": "balance_history_unapproved_reward_product",
+                            "failed_surface": name,
+                            "history_complete_for_requested_surfaces": False,
+                        }
+                    return {**result, "reason_code": "balance_history_reward_validation_failed", "failed_surface": name}
+                except (TypeError, DecimalException):
                     return {**result, "reason_code": "balance_history_reward_validation_failed", "failed_surface": name}
             if account is not None and expected_digests is not None:
                 result["spot_bonus_reconciliation"] = diagnose_bonus_reward_balance(
@@ -915,6 +1022,131 @@ def diagnose_balance_flows(
                 and row.get("sourceAccount") == "SPOT" for row in rows
             )
     result["history_complete_for_requested_surfaces"] = True
+    return result
+
+
+def diagnose_chunked_balance_flows(
+    client: Any,
+    *,
+    start: datetime,
+    end: datetime,
+    now: datetime | None = None,
+    account: Mapping[str, object] | None = None,
+    expected_digests: Mapping[str, str] | None = None,
+    max_chunk: timedelta = timedelta(days=7),
+    managed_reward_assets: Sequence[str] | None = None,
+    approved_reward_products: set[tuple[str, str]] | frozenset[tuple[str, str]] | None = None,
+) -> dict[str, object]:
+    """Aggregate abutting <=max_chunk windows; never enlarges a single-window call.
+
+    Explicit start/end required. Chunk boundaries advance by one millisecond so
+    inclusive API ranges do not overlap. When the remaining inclusive endpoint
+    would otherwise be skipped (span == N*max_chunk + 1ms), the final window
+    overlaps the prior boundary by 1ms and cross-chunk duplicates still fail
+    closed. Reward identities are deduplicated across chunks; a duplicate fails
+    closed. When managed_reward_assets is set, BONUS/REALTIME reward quantities
+    are summed from the first validated pass only — never by re-fetching the
+    rewards surface. When approved_reward_products is set, every reward
+    projectId must belong to that approved Earn product set.
+    """
+    now = now or datetime.now(timezone.utc)
+    if (
+        start.tzinfo is None
+        or end.tzinfo is None
+        or not start < end <= now
+        or max_chunk <= timedelta(0)
+        or max_chunk > timedelta(days=7)
+    ):
+        raise ValueError("balance_history_window_invalid")
+
+    counts: dict[str, int | None] = {}
+    chunk_count = 0
+    seen_rewards: set[tuple[object, ...]] = set()
+    reward_assets = tuple(
+        dict.fromkeys(str(asset).upper() for asset in (managed_reward_assets or ()) if str(asset).strip())
+    )
+    reward_sums = {
+        asset: {"BONUS": Decimal(0), "REALTIME": Decimal(0)} for asset in reward_assets
+    }
+    approved_products = (
+        frozenset(approved_reward_products) if approved_reward_products is not None else None
+    )
+    cursor = start
+    while cursor < end:
+        chunk_end = min(cursor + max_chunk, end)
+        chunk = diagnose_balance_flows(
+            client,
+            start=cursor,
+            end=chunk_end,
+            now=chunk_end,
+            account=account if chunk_count == 0 else None,
+            expected_digests=expected_digests if chunk_count == 0 else None,
+            _seen_reward_identities=seen_rewards,
+            _reward_sum_sink=reward_sums if reward_assets else None,
+            _approved_reward_products=approved_products,
+        )
+        chunk_count += 1
+        if chunk.get("history_complete_for_requested_surfaces") is not True:
+            return {
+                **chunk,
+                "chunk_count": chunk_count,
+                "history_complete_for_requested_surfaces": False,
+            }
+        chunk_counts = chunk.get("history_counts")
+        if not isinstance(chunk_counts, Mapping):
+            return {
+                "reason_code": "balance_history_incomplete",
+                "history_complete_for_requested_surfaces": False,
+                "history_counts": counts,
+                "chunk_count": chunk_count,
+                "complete_balance_reconciliation": False,
+                "baseline_rows_available": False,
+                "execution_authority_granted": False,
+            }
+        for name, value in chunk_counts.items():
+            if type(value) is not int or value < 0:
+                return {
+                    "reason_code": "balance_history_incomplete",
+                    "history_complete_for_requested_surfaces": False,
+                    "history_counts": counts,
+                    "chunk_count": chunk_count,
+                    "complete_balance_reconciliation": False,
+                    "baseline_rows_available": False,
+                    "execution_authority_granted": False,
+                }
+            counts[name] = int(counts.get(name) or 0) + value
+        if chunk_end == end:
+            break
+        next_cursor = chunk_end + timedelta(milliseconds=1)
+        if next_cursor < end:
+            cursor = next_cursor
+        elif next_cursor == end:
+            # Cover the inclusive final millisecond via a 1ms overlapping window.
+            cursor = chunk_end
+        else:
+            break
+
+    result = {
+        "reason_code": "balance_history_activity_summary",
+        "history_complete_for_requested_surfaces": True,
+        "history_counts": counts,
+        "chunk_count": chunk_count,
+        "automatic_spot_earn_subscriptions": None,
+        "complete_balance_reconciliation": False,
+        "baseline_rows_available": False,
+        "execution_authority_granted": False,
+    }
+    if reward_assets:
+        result["reward_quantity_totals"] = {
+            asset: {
+                "BONUS": _format_reward_quantity(values["BONUS"]),
+                "REALTIME": _format_reward_quantity(values["REALTIME"]),
+                "total": _format_reward_quantity(
+                    _add_reward_quantity(values["BONUS"], values["REALTIME"])
+                ),
+            }
+            for asset, values in reward_sums.items()
+        }
     return result
 
 

@@ -188,11 +188,13 @@ create完整旧账本、旧控制、原审批材料及新账本摘要；update�
 复用现有向前记账消费者，在内存核对两次 Spot/Earn 采样、收益计数和已核实资金流；
 两次采样之间也必须守恒，不能用余额差猜测本金。检查自新期初以来受管交易范围内的成交与全账户挂单，
 结束后读回账本、控制、归档保持不变且无 owner。历史未知差额继续保留。
-期初至观察时刻仍受 `MAX_HISTORY=7` 天约束；不得放大、删除或绕过该窗口。
-现有 archive/recovery control/ledger 中**没有**经 archive、运行与账户绑定的中间连续可信
-checkpoint 证据；当前账本内 `earn_accrual_checkpoint` 不能当作可信连续区段起点。
-因此超过七天或期初后合法演进导致整本 digest 变化时，现有路径继续 fail-closed；
-连续区段证明需另增受保护的证据产生路径，本轮不新增通用 writer。
+期初至观察时刻仍受 `MAX_HISTORY=7` 天**单窗**约束；不得放大、删除或绕过该单窗上限。
+超过七天时，`historical_continuity` 路径将期初→当前拆成相邻、毫秒衔接的 ≤7 天分块，
+要求每块分页完整、奖励身份跨块去重，并拒绝交易/入金/出金/划转/申赎等当前未支持事件。
+现有 archive 仍为不可变期初锚点；当前账本只作为被核对对象绑定 `current_ledger_sha256`，
+账本内 `earn_accrual_checkpoint` 不能当作可信连续区段起点。
+已 quiesce 的控制若仍保留旧 confirmation/transition_plan，须先完整验证该旧激活绑定，
+再采集新历史证据后 prepare 新候选；不得删除旧确认来绕过门控。
 
 `scope-preview` 按账本有效 `accounting_rebase.archive_document` 选择 legacy 或 prospective
 归档，仍只向私有 console 做一次需 ack 的 POST，不写 Firestore、不自动纳管资产。

@@ -25,6 +25,8 @@ from application.broker_reconciliation import (
     collect_read_only_reconciliation_observations,
     collect_spot_usdt_external_cash_flows,
     diagnose_balance_flows,
+    diagnose_chunked_balance_flows,
+    _add_reward_quantity,
 )
 from application.earn_accrual import (
     EarnCheckpointUnavailable,
@@ -44,6 +46,7 @@ from scripts.migrate_daily_accounting_state import (
 
 
 SOURCE_KIND = "post_rebase"
+HISTORICAL_CONTINUITY_KIND = "historical_continuity"
 APPROVED_PROPOSAL_RUN_ID = "34601984051"
 MIGRATION_RUN_ID = 34606795875
 MIGRATION_RUN_SHA = "ed7ee6e96cea0addb292f3f45338652095d0da58"
@@ -429,6 +432,526 @@ def collect_prospective_rebase_diagnosis(**kwargs) -> dict[str, object]:
         "write_performed": False,
         "execution_authority_granted": False,
     }
+
+
+def validate_historical_continuity_material(
+    ledger: Mapping[str, object],
+    archive: Mapping[str, object],
+) -> dict[str, object]:
+    """Validate immutable opening archive; current ledger is verification target only."""
+    if (
+        not isinstance(ledger, Mapping)
+        or not isinstance(archive, Mapping)
+        or digest(archive) != PROSPECTIVE_ARCHIVE_SHA256
+    ):
+        raise ValueError("historical_continuity_archive_invalid")
+    old_ledger = archive.get("ledger")
+    archived_control = archive.get("recovery_control")
+    approved = archive.get("approved_proposal")
+    proposed = approved.get("proposed_fields") if isinstance(approved, Mapping) else None
+    marker = ledger.get("accounting_rebase")
+    expected_marker = {
+        key: archive.get(key)
+        for key in (
+            "archive_document",
+            "started_at",
+            "opening_balance_observed_at",
+            "historical_difference_unresolved",
+            "approved_proposal_run_id",
+            "approved_proposal_sha256",
+        )
+    }
+    if (
+        not isinstance(old_ledger, Mapping)
+        or not isinstance(archived_control, Mapping)
+        or not isinstance(approved, Mapping)
+        or not isinstance(proposed, Mapping)
+        or not isinstance(marker, Mapping)
+        or digest(approved) != APPROVED_PROSPECTIVE_SHA256
+        or approved.get("historical_difference_unresolved") is not True
+        or approved.get("ledger_sha256") != digest(old_ledger)
+        or approved.get("control_sha256") != digest(archived_control)
+        or archive.get("archive_document") != PROSPECTIVE_ARCHIVE_DOCUMENT
+        or archive.get("approved_proposal_run_id") != PROSPECTIVE_APPROVED_PROPOSAL_RUN_ID
+        or archive.get("approved_proposal_sha256") != APPROVED_PROSPECTIVE_SHA256
+        or archive.get("historical_difference_unresolved") is not True
+        or dict(marker) != expected_marker
+        or ledger.get("order_submission", {}).get("state") not in {"RESERVED", "TERMINAL"}
+    ):
+        raise ValueError("historical_continuity_archive_invalid")
+    opening_checkpoint = proposed.get("earn_accrual_checkpoint")
+    opening_snapshot = proposed.get("last_balance_snapshot")
+    if not isinstance(opening_checkpoint, Mapping) or not isinstance(opening_snapshot, Mapping):
+        raise ValueError("historical_continuity_archive_invalid")
+    # Quantity-bearing ledger surfaces must still match the opening unless history explains them.
+    # The earn checkpoint inside the current ledger is never a continuity bridge by itself.
+    return {
+        "opening_at": _utc(marker["opening_balance_observed_at"]),
+        "opening_checkpoint": opening_checkpoint,
+        "opening_snapshot": opening_snapshot,
+        "opening_quantities": {
+            asset.upper(): _amount(value) for asset, value in opening_snapshot.items()
+        },
+        "managed_assets": tuple(opening_checkpoint["assets"]),
+        "current_ledger_sha256": digest(ledger),
+        "archive_sha256": digest(archive),
+        "archived_control": archived_control,
+    }
+
+
+def _collect_historical_continuity_private(
+    *,
+    client: object,
+    runtime_target: object,
+    legacy_expected: Mapping[str, str],
+    ledger: Mapping[str, object],
+    archive: Mapping[str, object],
+    symbols: Sequence[str],
+    source_run: Mapping[str, object],
+    migration_run: Mapping[str, object],
+    now: datetime | None = None,
+    clock=None,
+) -> dict[str, object]:
+    """Chunked Binance history from approved opening; ledger is verification target only."""
+    _validate_frozen_target(runtime_target)
+    material = validate_historical_continuity_material(ledger, archive)
+    observed_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    opening_at = material["opening_at"]
+    if not opening_at < observed_at:
+        raise ValueError("historical_continuity_window_invalid")
+    if not _valid_run(source_run):
+        raise ValueError("historical_continuity_source_run_invalid")
+    if not _valid_run(migration_run) or (
+        migration_run["id"] != PROSPECTIVE_MIGRATION_RUN_ID
+        or migration_run["head_sha"] != PROSPECTIVE_MIGRATION_RUN_SHA
+    ):
+        raise ValueError("historical_continuity_migration_run_invalid")
+
+    # Current ledger earn checkpoint cannot substitute for archive-bound history.
+    current_checkpoint = ledger.get("earn_accrual_checkpoint")
+    current_snapshot = ledger.get("last_balance_snapshot")
+    if (
+        not isinstance(current_checkpoint, Mapping)
+        or not isinstance(current_snapshot, Mapping)
+    ):
+        raise ValueError("historical_continuity_conservation_unverified")
+
+    final_at = (clock or (lambda: datetime.now(timezone.utc)))().astimezone(timezone.utc)
+    if not observed_at < final_at <= observed_at + timedelta(minutes=2):
+        raise ValueError("historical_continuity_observation_window_invalid")
+
+    try:
+        current_checkpoint_at = _utc(current_checkpoint.get("observed_at"))
+        opening_checkpoint_at = _utc(material["opening_checkpoint"].get("observed_at"))
+    except ValueError:
+        raise ValueError("historical_continuity_observation_timeline_invalid") from None
+    if not (
+        opening_at <= opening_checkpoint_at <= current_checkpoint_at <= final_at
+        and opening_at <= current_checkpoint_at
+    ):
+        raise ValueError("historical_continuity_observation_timeline_invalid")
+
+    approved_reward_products = frozenset(
+        (asset, product_id)
+        for asset, row in material["opening_checkpoint"].get("assets", {}).items()
+        if isinstance(row, Mapping)
+        for product_id in (row.get("products") or {})
+        if isinstance(product_id, str) and product_id
+    )
+
+    # History must cover through final_at before integrity / conservation checks.
+    history = diagnose_chunked_balance_flows(
+        client,
+        start=opening_at,
+        end=final_at,
+        now=final_at,
+        managed_reward_assets=material["managed_assets"],
+        approved_reward_products=approved_reward_products,
+    )
+    if history.get("history_complete_for_requested_surfaces") is not True:
+        reason = history.get("reason_code")
+        if reason == "balance_history_duplicate_event":
+            raise ValueError("historical_continuity_duplicate_event")
+        if reason == "balance_history_unapproved_reward_product":
+            raise ValueError("historical_continuity_unapproved_reward_product")
+        raise ValueError("historical_continuity_history_incomplete")
+    counts = history.get("history_counts")
+    if not isinstance(counts, Mapping):
+        raise ValueError("historical_continuity_history_incomplete")
+    unsupported = [
+        name for name, value in counts.items()
+        if name != "earn_rewards" and value not in (0, None)
+    ]
+    if unsupported:
+        raise ValueError("historical_continuity_unsupported_activity")
+    if counts.get("earn_rewards") not in (0, None) and type(counts.get("earn_rewards")) is not int:
+        raise ValueError("historical_continuity_history_incomplete")
+
+    earn_rewards = int(counts.get("earn_rewards") or 0)
+    managed = material["managed_assets"]
+    expected_scope = legacy_expected.get("account_scope_sha256")
+    proposed = archive["approved_proposal"]["proposed_fields"]
+    opening_checkpoint = material["opening_checkpoint"]
+    opening_snapshot = material["opening_snapshot"]
+    opening_cursor = proposed.get("external_cash_flow_cursor")
+    opening_nets = proposed.get("earn_accounted_net_changes")
+    opening_principal = proposed.get("daily_external_principal_usdt", 0)
+    current_principal = ledger.get("daily_external_principal_usdt", opening_principal)
+    current_cursor = ledger.get("external_cash_flow_cursor")
+    current_nets = ledger.get("earn_accounted_net_changes")
+
+    try:
+        account = client.get_account()
+        observations = collect_read_only_reconciliation_observations(
+            client,
+            strategy_symbols=symbols,
+            local_execution_ledger=ledger,
+            now=final_at,
+            lookback=final_at - opening_at,
+            account_snapshot=account,
+        )
+        after = client.get_account()
+    except Exception:
+        raise ValueError("historical_continuity_broker_read_failed") from None
+    if (
+        digest(observations.account_scope) != expected_scope
+        or digest({"account_uid": str(after.get("uid") or "")}) != expected_scope
+    ):
+        raise ValueError("historical_continuity_account_identity_mismatch")
+    if observations.open_orders:
+        raise ValueError("historical_continuity_open_orders_present")
+    if observations.recent_executions:
+        raise ValueError("historical_continuity_unsupported_activity")
+
+    first_spot = _historical_spot_digest(account, managed)
+    second_spot = _historical_spot_digest(after, managed)
+    if first_spot["digest"] != second_spot["digest"]:
+        raise ValueError("historical_continuity_quantity_changed_during_read")
+    observed_count = second_spot["observed_non_managed_asset_count"]
+
+    try:
+        broker_checkpoint = collect_earn_checkpoint(
+            client,
+            assets=managed,
+            observed_at=final_at,
+            expected_account_scope_sha256=expected_scope,
+        )
+    except EarnCheckpointUnavailable:
+        raise ValueError("historical_continuity_checkpoint_unavailable") from None
+    if broker_checkpoint["account_scope_sha256"] != expected_scope:
+        raise ValueError("historical_continuity_account_identity_mismatch")
+    try:
+        if _utc(broker_checkpoint.get("observed_at")) != final_at:
+            raise ValueError("historical_continuity_observation_timeline_invalid")
+    except ValueError as exc:
+        if str(exc) == "historical_continuity_observation_timeline_invalid":
+            raise
+        raise ValueError("historical_continuity_observation_timeline_invalid") from None
+    for asset, row in broker_checkpoint["assets"].items():
+        spot = second_spot["balances"].get(asset)
+        if spot is None or spot != (_amount(row["spot_free"]), _amount(row["spot_locked"])):
+            raise ValueError("historical_continuity_quantity_changed_during_read")
+
+    broker_quantities = {
+        asset: _amount(row["quantity"])
+        for asset, row in broker_checkpoint["assets"].items()
+    }
+    ledger_snapshot_quantities = {
+        str(asset).upper(): _amount(value)
+        for asset, value in current_snapshot.items()
+    }
+    try:
+        if _amount(current_principal) != _amount(opening_principal):
+            raise ValueError("principal")
+        if current_cursor != opening_cursor:
+            raise ValueError("cursor")
+        if current_nets != opening_nets:
+            raise ValueError("nets")
+        if set(current_snapshot) != set(opening_snapshot):
+            raise ValueError("scope")
+        if set(current_checkpoint.get("assets", ())) != set(opening_checkpoint["assets"]):
+            raise ValueError("scope")
+        if set(broker_checkpoint["assets"]) != set(opening_checkpoint["assets"]):
+            raise ValueError("scope")
+        if ledger_snapshot_quantities != broker_quantities:
+            raise ValueError("snapshot")
+        if current_checkpoint.get("assets") != broker_checkpoint["assets"]:
+            raise ValueError("checkpoint")
+        if earn_rewards == 0:
+            if (
+                current_checkpoint != opening_checkpoint
+                or current_snapshot != opening_snapshot
+                or broker_quantities != material["opening_quantities"]
+            ):
+                raise ValueError("unchanged")
+            compare_earn_checkpoints(
+                opening_checkpoint,
+                broker_checkpoint,
+                verified_net_changes={asset: "0" for asset in managed},
+            )
+        else:
+            totals = history.get("reward_quantity_totals")
+            if not isinstance(totals, Mapping):
+                raise ValueError("rewards")
+            expected_quantities = {}
+            for asset, opening_qty in material["opening_quantities"].items():
+                row = totals.get(asset)
+                if not isinstance(row, Mapping):
+                    raise ValueError("rewards")
+                expected_quantities[asset] = _add_reward_quantity(
+                    _amount(opening_qty), _amount(row.get("total"))
+                )
+            if broker_quantities != expected_quantities:
+                raise ValueError("rewards")
+            if ledger_snapshot_quantities != expected_quantities:
+                raise ValueError("snapshot")
+            # Counter delta explains earn accrual; external verified nets stay zero.
+            compare_earn_checkpoints(
+                opening_checkpoint,
+                current_checkpoint,
+                verified_net_changes={asset: "0" for asset in managed},
+            )
+            compare_earn_checkpoints(
+                opening_checkpoint,
+                broker_checkpoint,
+                verified_net_changes={asset: "0" for asset in managed},
+            )
+    except (KeyError, TypeError, ValueError, InvalidOperation):
+        raise ValueError("historical_continuity_conservation_unverified") from None
+
+    return {
+        "observed_at": final_at,
+        "observations": observations,
+        "current_ledger_sha256": material["current_ledger_sha256"],
+        "archive_sha256": material["archive_sha256"],
+        "proof": {
+            "history_complete_for_requested_surfaces": True,
+            "history_counts": dict(counts),
+            "chunk_count": history.get("chunk_count"),
+            "quantity_double_read_match": True,
+            "managed_asset_count": len(managed),
+            "non_managed_spot_policy": "observe_only",
+            "observed_non_managed_asset_count": observed_count,
+            "earn_rewards_observed": earn_rewards,
+            "earn_reward_conservation_verified": earn_rewards > 0,
+            "current_ledger_bound": True,
+            "opening_checkpoint_used_as_bridge": False,
+        },
+    }
+
+
+def _historical_spot_digest(
+    account: Mapping[str, object], managed_assets: Sequence[str]
+) -> dict[str, object]:
+    raw_rows = account.get("balances") if isinstance(account, Mapping) else None
+    if not isinstance(raw_rows, list) or any(not isinstance(row, Mapping) for row in raw_rows):
+        raise ValueError("historical_continuity_broker_read_failed")
+    managed = tuple(dict.fromkeys(str(asset).upper() for asset in managed_assets))
+    managed_set = set(managed)
+    balances: dict[str, tuple[Decimal, Decimal]] = {}
+    canonical = []
+    for row in raw_rows:
+        asset = str(row.get("asset") or "").strip().upper()
+        if not asset or asset in balances:
+            raise ValueError("historical_continuity_broker_read_failed")
+        free, locked = _amount(row.get("free")), _amount(row.get("locked"))
+        if locked != 0:
+            raise ValueError("historical_continuity_conservation_unverified")
+        balances[asset] = (free, locked)
+        canonical.append({"asset": asset, "free": str(free), "locked": str(locked)})
+    if any(asset not in balances for asset in managed):
+        raise ValueError("historical_continuity_conservation_unverified")
+    observed_count = sum(
+        asset not in managed_set and free != 0 for asset, (free, _locked) in balances.items()
+    )
+    return {
+        "digest": digest(sorted(canonical, key=lambda row: row["asset"])),
+        "balances": balances,
+        "observed_non_managed_asset_count": observed_count,
+    }
+
+
+def collect_historical_continuity_diagnosis(**kwargs) -> dict[str, object]:
+    """Sanitized read-only diagnosis for opening→now continuity via chunked history."""
+    private = _collect_historical_continuity_private(**kwargs)
+    return {
+        "status": "diagnosed",
+        "source_kind": HISTORICAL_CONTINUITY_KIND,
+        "current_ledger_sha256": private["current_ledger_sha256"],
+        "historical_difference_unresolved": True,
+        "chunk_count": private["proof"]["chunk_count"],
+        "no_order": True,
+        "write_performed": False,
+        "execution_authority_granted": False,
+    }
+
+
+def collect_historical_continuity_source(**kwargs) -> dict[str, object]:
+    """Enroll a candidate bound to the verified current ledger digest."""
+    private = _collect_historical_continuity_private(**kwargs)
+    runtime_target = kwargs["runtime_target"]
+    legacy_expected = kwargs["legacy_expected"]
+    ledger = kwargs["ledger"]
+    archive = kwargs["archive"]
+    symbols = kwargs["symbols"]
+    source_run = kwargs["source_run"]
+    migration_run = kwargs["migration_run"]
+    observed_at = private["observed_at"]
+    observations = private["observations"]
+    if digest(ledger) != private["current_ledger_sha256"]:
+        raise ValueError("historical_continuity_ledger_changed")
+    reconciled = _evidence(
+        runtime_target=runtime_target,
+        account_scope_sha256=legacy_expected["account_scope_sha256"],
+        observations=observations,
+        observed_at=observed_at,
+    )
+    source = {
+        "kind": HISTORICAL_CONTINUITY_KIND,
+        "run": dict(source_run),
+        "migration_run": dict(migration_run),
+        "archive_document": PROSPECTIVE_ARCHIVE_DOCUMENT,
+        "archive_sha256": private["archive_sha256"],
+        "current_ledger_sha256": private["current_ledger_sha256"],
+        "new_ledger_sha256": private["current_ledger_sha256"],
+        "frozen_expected_sha256": digest(legacy_expected),
+        "runtime_target_sha256": digest(runtime_target.to_dict()),
+        "symbols_sha256": digest(list(symbols)),
+        "historical_difference_unresolved": True,
+        "opening_balance_observed_at": validate_historical_continuity_material(
+            ledger, archive
+        )["opening_at"].isoformat(),
+        "reconciled_evidence": reconciled.to_dict(),
+        "proof": private["proof"],
+    }
+    evaluation = evaluate_broker_reconciliation_baseline_enrollment(
+        (reconciled,), source_receipts_sha256=digest(source), now=observed_at
+    )
+    if evaluation.candidate is None:
+        raise ValueError("historical_continuity_enrollment_blocked")
+    return {"candidate": evaluation.candidate.to_dict(), "source": source}
+
+
+def validate_historical_continuity_source(
+    package: Mapping[str, object],
+    *,
+    runtime_target: object,
+    legacy_expected: Mapping[str, str],
+    now: datetime | None = None,
+    require_fresh: bool = True,
+) -> BrokerReconciliationBaselineCandidate:
+    """Revalidate a stored historical-continuity package without private values."""
+    from quant_platform_kit.common.broker_reconciliation import (
+        calculate_broker_reconciliation_evidence_sha256,
+    )
+
+    _validate_frozen_target(runtime_target)
+    try:
+        source = package["source"]
+        proof = source["proof"]
+        candidate = BrokerReconciliationBaselineCandidate.from_dict(package["candidate"])
+        evidence = BrokerReconciliationEvidence.from_dict(source["reconciled_evidence"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("historical_continuity_source_binding_mismatch") from None
+    if not isinstance(source, Mapping) or not isinstance(proof, Mapping):
+        raise ValueError("historical_continuity_source_binding_mismatch")
+    expected_digests = {
+        "positions_sha256": evidence.positions_sha256,
+        "cash_sha256": evidence.cash_sha256,
+        "open_orders_sha256": evidence.open_orders_sha256,
+        "recent_executions_sha256": evidence.recent_executions_sha256,
+        "local_execution_ledger_sha256": evidence.local_execution_ledger_sha256,
+    }
+    observed = evidence.observed_at
+    if isinstance(observed, datetime):
+        observed_at = observed.astimezone(timezone.utc) if observed.tzinfo else observed.replace(tzinfo=timezone.utc)
+    else:
+        observed_at = _utc(observed)
+    candidate_first = candidate.first_observed_at
+    candidate_last = candidate.last_observed_at
+    if isinstance(candidate_first, datetime):
+        first_at = candidate_first.astimezone(timezone.utc) if candidate_first.tzinfo else candidate_first.replace(tzinfo=timezone.utc)
+    else:
+        first_at = _utc(candidate_first)
+    if isinstance(candidate_last, datetime):
+        last_at = candidate_last.astimezone(timezone.utc) if candidate_last.tzinfo else candidate_last.replace(tzinfo=timezone.utc)
+    else:
+        last_at = _utc(candidate_last)
+    evidence_body = dict(source["reconciled_evidence"])
+    try:
+        evidence_digest_ok = (
+            calculate_broker_reconciliation_evidence_sha256(evidence_body)
+            == evidence.evidence_sha256
+        )
+    except (TypeError, ValueError):
+        evidence_digest_ok = False
+    if (
+        source.get("kind") != HISTORICAL_CONTINUITY_KIND
+        or source.get("migration_run", {}).get("id") != PROSPECTIVE_MIGRATION_RUN_ID
+        or source.get("migration_run", {}).get("head_sha") != PROSPECTIVE_MIGRATION_RUN_SHA
+        or not _valid_run(source.get("migration_run"))
+        or not _valid_run(source.get("run"))
+        or source.get("archive_document") != PROSPECTIVE_ARCHIVE_DOCUMENT
+        or source.get("frozen_expected_sha256") != digest(legacy_expected)
+        or source.get("runtime_target_sha256") != digest(runtime_target.to_dict())
+        or source.get("historical_difference_unresolved") is not True
+        or not isinstance(source.get("current_ledger_sha256"), str)
+        or len(source["current_ledger_sha256"]) != 64
+        or source.get("new_ledger_sha256") != source["current_ledger_sha256"]
+        or proof.get("history_complete_for_requested_surfaces") is not True
+        or proof.get("opening_checkpoint_used_as_bridge") is not False
+        or proof.get("current_ledger_bound") is not True
+        or type(proof.get("chunk_count")) is not int
+        or proof["chunk_count"] < 1
+        or candidate.source_receipts_sha256 != digest(source)
+        or candidate.source_evidence_sha256 != (evidence.evidence_sha256,)
+        or candidate.expected_digests != expected_digests
+        or candidate.account_scope_sha256 != legacy_expected.get("account_scope_sha256")
+        or candidate.local_execution_ledger_sha256 != source.get("current_ledger_sha256")
+        or candidate.platform_id != runtime_target.platform_id
+        or candidate.strategy_profile != runtime_target.strategy_profile
+        or candidate.baseline_id != runtime_target.live_continuity.baseline_id
+        or candidate.baseline_target_sha256
+        != runtime_target.live_continuity.baseline_target_sha256
+        or evidence.account_scope_sha256 != legacy_expected.get("account_scope_sha256")
+        or evidence.platform_id != runtime_target.platform_id
+        or evidence.strategy_profile != runtime_target.strategy_profile
+        or evidence.baseline_id != runtime_target.live_continuity.baseline_id
+        or evidence.baseline_target_sha256
+        != runtime_target.live_continuity.baseline_target_sha256
+        or evidence.runtime_target_sha256
+        != runtime_target.live_continuity.baseline_target_sha256
+        or evidence.broker_connected is not True
+        or evidence.account_identity_match is not True
+        or evidence.positions_match is not True
+        or evidence.cash_match is not True
+        or evidence.open_orders_match is not True
+        or evidence.recent_executions_match is not True
+        or evidence.local_execution_ledger_match is not True
+        or first_at != observed_at
+        or last_at != observed_at
+        or not evidence_digest_ok
+    ):
+        raise ValueError("historical_continuity_source_binding_mismatch")
+    if require_fresh:
+        reference = now or datetime.now(timezone.utc)
+        if not (observed_at <= reference <= observed_at + timedelta(minutes=30)):
+            raise ValueError("historical_continuity_candidate_stale")
+        evaluation = evaluate_broker_reconciliation_baseline_enrollment(
+            (evidence,), source_receipts_sha256=digest(source), now=reference
+        )
+        if evaluation.candidate is None or evaluation.candidate.to_dict() != candidate.to_dict():
+            raise ValueError("historical_continuity_candidate_source_mismatch")
+    else:
+        if (
+            candidate.platform_id != evidence.platform_id
+            or candidate.strategy_profile != evidence.strategy_profile
+            or candidate.baseline_id != evidence.baseline_id
+            or candidate.baseline_target_sha256 != evidence.baseline_target_sha256
+            or candidate.account_scope_sha256 != evidence.account_scope_sha256
+        ):
+            raise ValueError("historical_continuity_candidate_source_mismatch")
+    return candidate
 
 
 def collect_prospective_rebase_source(**kwargs) -> dict[str, object]:
