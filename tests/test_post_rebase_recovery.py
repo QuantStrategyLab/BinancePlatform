@@ -816,6 +816,7 @@ def test_controller_prepare_routes_real_post_rebase_archive_and_returns_unresolv
 @pytest.mark.parametrize("error,expected", [
     (ValueError("post_rebase_quantity_mismatch"), "post_rebase_quantity_mismatch"),
     (ValueError("post_rebase_history_incomplete"), "post_rebase_history_incomplete"),
+    (ValueError("historical_continuity_unapproved_reward_product"), "historical_continuity_unapproved_reward_product"),
     (ValueError("post_rebase_quantity_mismatch private account payload"), "recovery_operation_failed"),
     (RuntimeError("private provider payload"), "recovery_operation_failed"),
 ])
