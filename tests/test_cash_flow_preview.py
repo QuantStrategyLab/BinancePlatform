@@ -10,6 +10,41 @@ from scripts import migrate_daily_accounting_state as m
 NOW = datetime(2026, 9, 12, 12, tzinfo=timezone.utc)
 
 
+def test_classify_activity_evidence_keeps_each_flow_type_separate():
+    result = m.classify_activity_evidence(
+        history_counts={
+            'deposits': 1,
+            'withdrawals': 1,
+            'transfer_main_funding': 2,
+            'earn_rewards': 3,
+        },
+        recent_execution_count=4,
+        flow_summary={
+            'new_confirmed_deposit_count': 1,
+            'new_unsupported_deposit_count': 0,
+            'new_or_changed_withdrawal_count': 1,
+        },
+    )
+    assert result == {
+        'trade': {'count': 4, 'status': 'observed', 'supported': False},
+        'deposit': {'count': 1, 'status': 'observed', 'supported': True},
+        'withdrawal': {'count': 1, 'status': 'observed', 'supported': False},
+        'internal_transfer': {'count': 2, 'status': 'observed', 'supported': False},
+        'earn': {'count': 3, 'status': 'observed', 'supported': False},
+        'all_supported': False,
+    }
+
+
+def test_classify_activity_evidence_marks_missing_surfaces_unverified():
+    result = m.classify_activity_evidence(
+        history_counts=None,
+        recent_execution_count=None,
+        flow_summary=None,
+    )
+    assert result['all_supported'] is False
+    assert all(value['status'] == 'unverified' for key, value in result.items() if key != 'all_supported')
+
+
 class ReadOnlyClient:
     def __init__(self, *, cash=600, deposits=None):
         self.cash = cash
@@ -76,7 +111,7 @@ def test_preview_reuses_real_collector_and_consumer_without_mutating_ledger(
     assert result['execution_authority_granted'] is False
     assert result['complete_balance_reconciliation'] is False
     assert result['cash_flow_history_read'] is True
-    assert len(client.history_calls) == 2
+    assert len(client.history_calls) == 4
     assert 'PRIVATE_SYNTHETIC' not in json.dumps(result)
     assert 'principal' not in json.dumps(result)
 
