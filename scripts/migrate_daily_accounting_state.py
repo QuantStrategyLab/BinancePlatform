@@ -2546,20 +2546,21 @@ def inspect_control(refs):
     ledger_digest_match = None
     marker_consistent = None
     order_state_safe = None
+    changed_top_level_fields = None
     if rebase_document is not None and hasattr(refs["ledger_ref"], "parent"):
         archive_snapshot = refs["ledger_ref"].parent.document(rebase_document).get(retry=None)
         archive_exists = archive_snapshot.exists
         if archive_exists and ledger.exists:
             ledger_value = ledger.to_dict()
+            archive_value = archive_snapshot.to_dict()
             order_state = ledger_value.get("order_submission", {}).get("state")
             order_state_safe = order_state in {"RESERVED", "TERMINAL"}
             if rebase_family == "prospective_rebase":
                 from application.rebased_recovery import PROSPECTIVE_LEDGER_SHA256
 
                 ledger_digest_match = digest(ledger_value) == PROSPECTIVE_LEDGER_SHA256
-                marker = ledger_value.get("accounting_rebase")
-                marker_consistent = isinstance(marker, Mapping) and marker == {
-                    key: archive_snapshot.to_dict().get(key)
+                expected_marker = {
+                    key: archive_value.get(key)
                     for key in (
                         "archive_document",
                         "started_at",
@@ -2569,6 +2570,17 @@ def inspect_control(refs):
                         "approved_proposal_sha256",
                     )
                 }
+                marker = ledger_value.get("accounting_rebase")
+                marker_consistent = isinstance(marker, Mapping) and marker == expected_marker
+                approved = archive_value.get("approved_proposal")
+                old_ledger = archive_value.get("ledger")
+                proposed = approved.get("proposed_fields") if isinstance(approved, Mapping) else None
+                if isinstance(old_ledger, Mapping) and isinstance(proposed, Mapping):
+                    expected_ledger = {**old_ledger, **proposed, "accounting_rebase": expected_marker}
+                    changed_top_level_fields = sorted(
+                        key for key in set(ledger_value) | set(expected_ledger)
+                        if ledger_value.get(key) != expected_ledger.get(key)
+                    )
             elif rebase_family == "post_rebase":
                 ledger_digest_match = digest(ledger_value) == archive_snapshot.to_dict().get("new_ledger_sha256")
                 marker = ledger_value.get("accounting_rebase")
@@ -2586,11 +2598,11 @@ def inspect_control(refs):
                 if rebase_family == "prospective_rebase":
                     from application.rebased_recovery import validate_prospective_rebase_material
 
-                    validate_prospective_rebase_material(ledger_value, archive_snapshot.to_dict())
+                    validate_prospective_rebase_material(ledger_value, archive_value)
                 elif rebase_family == "post_rebase":
                     from application.rebased_recovery import validate_post_rebase_material
 
-                    validate_post_rebase_material(ledger_value, archive_snapshot.to_dict())
+                    validate_post_rebase_material(ledger_value, archive_value)
                 material_status = "valid"
             except ValueError as exc:
                 material_status = str(exc) if str(exc) in {
@@ -2616,6 +2628,7 @@ def inspect_control(refs):
         "rebase_ledger_digest_match": ledger_digest_match,
         "rebase_marker_consistent": marker_consistent,
         "rebase_order_state_safe": order_state_safe,
+        "rebase_changed_top_level_fields": changed_top_level_fields,
         "no_order": True, "write_performed": False,
     }
 
