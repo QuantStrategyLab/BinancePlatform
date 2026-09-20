@@ -719,6 +719,9 @@ def test_inspect_control_reads_metadata_without_broker_or_mutation(monkeypatch, 
     assert result["rebase_family"] is None
     assert result["rebase_archive_exists"] is None
     assert result["rebase_material_status"] is None
+    assert result["rebase_ledger_digest_match"] is None
+    assert result["rebase_marker_consistent"] is None
+    assert result["rebase_order_state_safe"] is None
     assert result["no_order"] is True
     assert result["write_performed"] is False
     assert "sensitive" not in output

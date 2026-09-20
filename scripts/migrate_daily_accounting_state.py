@@ -2543,19 +2543,54 @@ def inspect_control(refs):
     )
     archive_exists = None
     material_status = None
+    ledger_digest_match = None
+    marker_consistent = None
+    order_state_safe = None
     if rebase_document is not None and hasattr(refs["ledger_ref"], "parent"):
         archive_snapshot = refs["ledger_ref"].parent.document(rebase_document).get(retry=None)
         archive_exists = archive_snapshot.exists
         if archive_exists and ledger.exists:
+            ledger_value = ledger.to_dict()
+            order_state = ledger_value.get("order_submission", {}).get("state")
+            order_state_safe = order_state in {"RESERVED", "TERMINAL"}
+            if rebase_family == "prospective_rebase":
+                from application.rebased_recovery import PROSPECTIVE_LEDGER_SHA256
+
+                ledger_digest_match = digest(ledger_value) == PROSPECTIVE_LEDGER_SHA256
+                marker = ledger_value.get("accounting_rebase")
+                marker_consistent = isinstance(marker, Mapping) and marker == {
+                    key: archive_snapshot.to_dict().get(key)
+                    for key in (
+                        "archive_document",
+                        "started_at",
+                        "opening_balance_observed_at",
+                        "historical_difference_unresolved",
+                        "approved_proposal_run_id",
+                        "approved_proposal_sha256",
+                    )
+                }
+            elif rebase_family == "post_rebase":
+                ledger_digest_match = digest(ledger_value) == archive_snapshot.to_dict().get("new_ledger_sha256")
+                marker = ledger_value.get("accounting_rebase")
+                marker_consistent = isinstance(marker, Mapping) and all(
+                    marker.get(key) == archive_snapshot.to_dict().get(key)
+                    for key in (
+                        "archive_document",
+                        "started_at",
+                        "opening_balance_observed_at",
+                        "historical_difference_unresolved",
+                        "approved_proposal_run_id",
+                    )
+                )
             try:
                 if rebase_family == "prospective_rebase":
                     from application.rebased_recovery import validate_prospective_rebase_material
 
-                    validate_prospective_rebase_material(ledger.to_dict(), archive_snapshot.to_dict())
+                    validate_prospective_rebase_material(ledger_value, archive_snapshot.to_dict())
                 elif rebase_family == "post_rebase":
                     from application.rebased_recovery import validate_post_rebase_material
 
-                    validate_post_rebase_material(ledger.to_dict(), archive_snapshot.to_dict())
+                    validate_post_rebase_material(ledger_value, archive_snapshot.to_dict())
                 material_status = "valid"
             except ValueError as exc:
                 material_status = str(exc) if str(exc) in {
@@ -2578,6 +2613,9 @@ def inspect_control(refs):
         "rebase_family": rebase_family,
         "rebase_archive_exists": archive_exists,
         "rebase_material_status": material_status,
+        "rebase_ledger_digest_match": ledger_digest_match,
+        "rebase_marker_consistent": marker_consistent,
+        "rebase_order_state_safe": order_state_safe,
         "no_order": True, "write_performed": False,
     }
 
