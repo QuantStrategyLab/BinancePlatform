@@ -2525,6 +2525,46 @@ def inspect_control(refs):
         source_run = None
     else:
         source_run = {key: source_run[key] for key in ("id", "head_sha")}
+    rebase_marker = ledger.to_dict().get("accounting_rebase") if ledger.exists else None
+    rebase_document = (
+        rebase_marker.get("archive_document")
+        if isinstance(rebase_marker, Mapping)
+        and isinstance(rebase_marker.get("archive_document"), str)
+        else None
+    )
+    rebase_family = (
+        "prospective_rebase"
+        if rebase_document == PROSPECTIVE_ARCHIVE_DOCUMENT
+        else "post_rebase"
+        if rebase_document == REBASE_ARCHIVE_DOCUMENT
+        else "unknown"
+        if rebase_document is not None
+        else None
+    )
+    archive_exists = None
+    material_status = None
+    if rebase_document is not None and hasattr(refs["ledger_ref"], "parent"):
+        archive_snapshot = refs["ledger_ref"].parent.document(rebase_document).get(retry=None)
+        archive_exists = archive_snapshot.exists
+        if archive_exists and ledger.exists:
+            try:
+                if rebase_family == "prospective_rebase":
+                    from application.rebased_recovery import validate_prospective_rebase_material
+
+                    validate_prospective_rebase_material(ledger.to_dict(), archive_snapshot.to_dict())
+                elif rebase_family == "post_rebase":
+                    from application.rebased_recovery import validate_post_rebase_material
+
+                    validate_post_rebase_material(ledger.to_dict(), archive_snapshot.to_dict())
+                material_status = "valid"
+            except ValueError as exc:
+                material_status = str(exc) if str(exc) in {
+                    "prospective_rebase_archive_invalid",
+                    "prospective_rebase_ledger_invalid",
+                    "post_rebase_archive_invalid",
+                    "post_rebase_ledger_invalid",
+                    "post_rebase_order_state_unsafe",
+                } else "rebase_material_invalid"
     return {
         "status": "inspected", "stage": "accounting_migration_control_inspection",
         "control_exists": snapshot.exists, "state": state,
@@ -2535,6 +2575,9 @@ def inspect_control(refs):
         "confirmation_present": isinstance(control.get("confirmation"), Mapping),
         "transition_plan_present": isinstance(control.get("transition_plan"), Mapping),
         "owner_exists": owner.exists, "ledger_exists": ledger.exists,
+        "rebase_family": rebase_family,
+        "rebase_archive_exists": archive_exists,
+        "rebase_material_status": material_status,
         "no_order": True, "write_performed": False,
     }
 
