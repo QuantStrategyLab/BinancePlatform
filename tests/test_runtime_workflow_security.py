@@ -83,6 +83,24 @@ def test_runtime_workflow_revision_pin_is_required_before_release_selection() ->
     assert "python3 scripts/select_runtime_release_sha.py --verify-workflow" in verify
 
 
+def test_runtime_workflow_keeps_trigger_sha_distinct_from_app_checkout() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+
+    assert "ref: ${{ github.sha }}" in broker_job
+    assert "ref: ${{ steps.runtime-release.outputs.sha }}" in broker_job
+    assert (
+        "workflow github.sha=${GITHUB_SHA:-unknown} is not used as the "
+        "application execution identity"
+    ) in broker_job
+    assert (
+        "distinct from workflow github.sha=${GITHUB_SHA:-unknown}"
+    ) in broker_job
+    assert broker_job.index("Checkout workflow revision for release selection") < (
+        broker_job.index("1. Checkout approved runtime release")
+    )
+
+
 def test_runtime_dependency_bootstrap_does_not_upgrade_pip_or_uv() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     broker_job = _job_block(workflow, "deploy", "publish-execution-log")

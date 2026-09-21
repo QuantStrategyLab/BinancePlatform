@@ -122,6 +122,48 @@ def test_workflow_pin_mismatch_is_rejected_for_execution_paths() -> None:
     )
 
 
+def test_distinct_workflow_and_release_pins_keep_app_identity() -> None:
+    """Trigger/workflow SHA may differ from the approved application release SHA."""
+
+    assert (
+        selection.verify_workflow_revision(
+            configured_workflow_sha=PIN_A,
+            configured_release_sha=PIN_B,
+            actual_sha=PIN_A,
+            runtime_enabled=True,
+        )
+        == PIN_A
+    )
+    selected = selection.select_release_sha(
+        configured_sha=PIN_B,
+        runtime_enabled=True,
+    )
+    assert selected == PIN_B
+    assert selected != PIN_A
+    assert selected != TIP
+
+
+def test_main_tip_past_workflow_pin_fails_closed_without_rewriting_release() -> None:
+    """Unrelated main tip movement must not rewrite the app pin or soften the gate."""
+
+    with pytest.raises(
+        selection.ReleaseSelectionError, match="BINANCE_RUNTIME_WORKFLOW_SHA"
+    ):
+        selection.verify_workflow_revision(
+            configured_workflow_sha=PIN_A,
+            configured_release_sha=PIN_B,
+            actual_sha=TIP,
+            runtime_enabled=True,
+        )
+    assert (
+        selection.select_release_sha(
+            configured_sha=PIN_B,
+            runtime_enabled=True,
+        )
+        == PIN_B
+    )
+
+
 def test_missing_workflow_pin_falls_back_to_release_pin_identity() -> None:
     assert (
         selection.verify_workflow_revision(
