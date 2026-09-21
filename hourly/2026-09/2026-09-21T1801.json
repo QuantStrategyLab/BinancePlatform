@@ -1,0 +1,208 @@
+{
+  "account_group": null,
+  "account_region": null,
+  "account_scope": null,
+  "artifacts": {
+    "runtime_report_cloud_uri": "gs://qsl-runtime-logs-shared/execution-reports/binance/crypto_live_pool_rotation/2026-09/20260921T180048Z.json",
+    "runtime_report_local_path": "reports/execution_report.json"
+  },
+  "btc_dca_intents": [],
+  "buy_sell_intents": [],
+  "circuit_breaker_triggered": false,
+  "degraded_mode_level": null,
+  "deploy_target": "vps",
+  "diagnostics": {
+    "combo": {
+      "base_btc_weight": 0.0,
+      "base_trend_weight": 0.0,
+      "effective_btc_weight": 0.0,
+      "effective_trend_weight": 0.0,
+      "gross_exposure": 0.0,
+      "regime_off": false
+    },
+    "earn_accrual": {
+      "status": "reconciled"
+    }
+  },
+  "dry_run": false,
+  "error_summary": {},
+  "errors": [],
+  "execution_receipt_observation": {
+    "broker_acknowledged_count": 0,
+    "failed_count": 0,
+    "filled_count": 0,
+    "partially_filled_count": 0,
+    "submission_attempted_count": 0,
+    "transport_uncertain_count": 0
+  },
+  "external_cash_flow_interval": {
+    "account_scope_sha256": "f2d87da8803b0331d4280ad9fd6442eb7997d4254ab569be9c5de0877598be87",
+    "currency": "USDT",
+    "end_at": "2026-09-21T18:00:58.609030+00:00",
+    "end_equity_usdt": "137.69731797985833",
+    "net_external_cash_flow": "0",
+    "start_at": "2026-09-21T17:00:51.952134+00:00",
+    "valuation_basis": "checkpoint_quantities_sampled_prices"
+  },
+  "finished_at": null,
+  "gating_events": [
+    {
+      "category": "trend",
+      "detail": {
+        "budget_usdt": 2.6948
+      },
+      "gate": "trend_buy_below_min_budget",
+      "symbol": "SOLUSDT"
+    },
+    {
+      "category": "trend",
+      "detail": {
+        "budget_usdt": 3.8402
+      },
+      "gate": "trend_buy_below_min_budget",
+      "symbol": "ETHUSDT"
+    },
+    {
+      "category": "btc_dca",
+      "detail": {
+        "ahr999": 1.2212
+      },
+      "gate": "btc_dca_buy_valuation_gate_off"
+    }
+  ],
+  "gating_summary": {
+    "btc_dca_buy_valuation_gate_off": 1,
+    "trend_buy_below_min_budget": 2
+  },
+  "instance_name": null,
+  "log_lines": [
+    "📡 趋势池来源: fresh_upstream | 模式=core_major | 版本=2026-09-01-core_major | 日期=2026-09-01 | 项目=crypto-live-pool-pipelines",
+    "   · 已从 firestore:strategy/CRYPTO_LEADER_ROTATION_LIVE_POOL 载入最新上游趋势池。",
+    "━━━━━━━━━ 📦 组合快照 ━━━━━━━━━",
+    "💰 总净值: $138 (+4.7%)",
+    "🎯 BTC 目标配比: 14% | $98",
+    "📈 趋势层持仓: 86% | $0 (+0.0%)",
+    "🚦 BTC 闸门: 开启 | AHR999=1.22 Z=2.2",
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    "🎯 TRXUSDT, SOLUSDT, ADAUSDT, ETHUSDT",
+    "💤空仓",
+    "🧭 BTC 累积雷达: AHR999=1.221 | Z-Score=2.25 (阈值:2.50)"
+  ],
+  "notifications": [],
+  "platform": "binance",
+  "project_id": null,
+  "redemption_subscription_intents": [],
+  "risk_assessment": {
+    "assessment_sha256": "3dcb54ae39b484197076aa40b8b5f5abdc887527b576ba36cc546430635c351d",
+    "candidate_identity_sha256": "82b3fe286347542b302b18dce6a2a8cb8ad86a2a7b663647b243c655f62a4be6",
+    "contract_version": "qsl.risk_gate_assessment.v2",
+    "decision_digest_sha256": "71b627d76b816f680e87e865312fcde6428dcdac849583369987736133815903",
+    "effective_exposure_cap": 1.0,
+    "evaluated_at": "2026-09-21T18:01:05Z",
+    "execution_authorized": false,
+    "mandate_authority_receipt_sha256": "0e4fc5b51e78d4100b9e12077765d78881de223cdeb721ae85e81210af38f517",
+    "mandate_id": "binance-crypto-combo-20260913",
+    "mandate_scope": "LIVE",
+    "mandate_version": "managed-funds-v1",
+    "observed_effective_exposure": 0.9525407303796876,
+    "outcome": "APPROVE",
+    "policy_id": "qpk.risk_gate",
+    "policy_version": "v2",
+    "portfolio_snapshot_digest_sha256": "c9a9d9cdd59ba413567de3ddd25ca51f1b9f8f17e7338fb75d065181c67d7634",
+    "proposed_effective_exposure": 1.0,
+    "qpk_source_revision": "8cb56617115fa45028e34d788e71884b6a303d77",
+    "scope": "MEMBER"
+  },
+  "risk_flags": [
+    "risk_gate:passed"
+  ],
+  "risk_outcome": "APPROVE",
+  "risk_reason_codes": [],
+  "run_id": "20260921T180048Z",
+  "run_source": "github_actions",
+  "runtime_release_receipt": {
+    "attestation_state": "legacy_unattested",
+    "loaded_at": "2026-09-21T18:00:48.440898Z",
+    "missing": [
+      "strategy_release"
+    ],
+    "schema_version": "runtime_loaded_receipt.v1"
+  },
+  "runtime_target": {
+    "account_scope": "crypto_combo",
+    "account_selector": [
+      "crypto_combo"
+    ],
+    "deployment_selector": "crypto_combo",
+    "dry_run_only": false,
+    "execution_environment": "live",
+    "execution_mode": "live",
+    "live_continuity": {
+      "baseline_id": "crypto-binance-lkg-20260830",
+      "baseline_kind": "legacy_authorized",
+      "baseline_target_sha256": "f24b854707c62e8b9266c49a25fba2756e3dd708043595206d8b93d281c51245",
+      "captured_at": "2026-08-30",
+      "state": "ACTIVE_LKG"
+    },
+    "market": "CRYPTO",
+    "market_calendar": "24/7",
+    "market_timezone": "UTC",
+    "platform_id": "binance",
+    "scheduler": {
+      "main_time": "0,30 * * * *",
+      "precheck_time": "55 5 * * *",
+      "probe_time": "0 6,18 * * *",
+      "timezone": "UTC"
+    },
+    "service_name": "binance-platform",
+    "strategy_profile": "crypto_live_pool_rotation"
+  },
+  "scheduler_state": "enabled",
+  "schema_version": "runtime_report.v1",
+  "selected_symbols": {
+    "active_trend_pool": [
+      "TRXUSDT",
+      "SOLUSDT",
+      "ADAUSDT",
+      "ETHUSDT"
+    ],
+    "selected_candidates": [
+      "SOLUSDT",
+      "ETHUSDT"
+    ]
+  },
+  "service_name": "binance-platform",
+  "side_effect_summary": {
+    "executed_call_count": 3,
+    "suppressed_call_count": 0
+  },
+  "standard_execution_permitted": true,
+  "started_at": "2026-09-21T18:00:48.440898Z",
+  "state_write_intents": [
+    {
+      "reason": "trend_pool_metadata_refresh"
+    },
+    {
+      "reason": "earn_forward_accounting"
+    },
+    {
+      "reason": "cycle_complete"
+    }
+  ],
+  "status": "ok",
+  "strategy_domain": "crypto",
+  "strategy_profile": "crypto_live_pool_rotation",
+  "summary": {
+    "strategy_display_name": "Crypto Live Pool Rotation",
+    "strategy_display_name_localized": "加密实时池轮动"
+  },
+  "total_equity_usdt": 137.69731797985833,
+  "trend_equity_usdt": 0.0,
+  "upstream_pool_symbols": [
+    "TRXUSDT",
+    "SOLUSDT",
+    "ADAUSDT",
+    "ZECUSDT",
+    "ETHUSDT"
+  ]
+}
