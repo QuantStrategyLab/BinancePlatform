@@ -97,6 +97,86 @@ class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
 
         self.assertIn("NOTIFY_LANG: ${{ vars.NOTIFY_LANG || 'zh' }}", workflow)
 
+    def test_runtime_heartbeat_workflow_defaults_branch_to_runtime_production(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github"
+            / "workflows"
+            / "runtime-heartbeat.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            "RUNTIME_HEARTBEAT_BRANCH: ${{ vars.RUNTIME_HEARTBEAT_BRANCH || 'runtime-production' }}",
+            workflow,
+        )
+
+    def test_main_defaults_branch_to_runtime_production_and_env_overrides(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_list_runtime_runs(**kwargs):
+            captured.update(kwargs)
+            return []
+
+        base_env = {
+            "GITHUB_TOKEN": "token-1",
+            "RUNTIME_TARGET_ENABLED": "true",
+            "RUNTIME_HEARTBEAT_FAIL_WORKFLOW_ON_ALERT": "false",
+        }
+        with patch.dict(os.environ, base_env, clear=True):
+            with patch.object(heartbeat, "_list_runtime_runs", side_effect=fake_list_runtime_runs):
+                with patch.object(heartbeat, "_send_telegram"):
+                    self.assertEqual(heartbeat.main(), 0)
+        self.assertEqual(captured.get("branch"), "runtime-production")
+
+        captured.clear()
+        with patch.dict(
+            os.environ,
+            {**base_env, "RUNTIME_HEARTBEAT_BRANCH": "custom-branch"},
+            clear=True,
+        ):
+            with patch.object(heartbeat, "_list_runtime_runs", side_effect=fake_list_runtime_runs):
+                with patch.object(heartbeat, "_send_telegram"):
+                    self.assertEqual(heartbeat.main(), 0)
+        self.assertEqual(captured.get("branch"), "custom-branch")
+
+    def test_runtime_production_strategy_success_is_recognized(self) -> None:
+        now = dt.datetime.now(dt.timezone.utc)
+        strategy = dict(
+            _runtime_run(created_at=now - dt.timedelta(minutes=20), run_number=42),
+            display_title="Runtime · strategy",
+            path=".github/workflows/main.yml",
+            head_branch="runtime-production",
+        )
+        noise = [
+            dict(_runtime_run(created_at=now - dt.timedelta(minutes=15), run_number=i), display_title=title, path=".github/workflows/main.yml")
+            for i, title in enumerate(
+                [
+                    "Runtime · heartbeat",
+                    "Runtime · reconciliation",
+                    "Runtime · validation",
+                    "Runtime · disabled",
+                ],
+                100,
+            )
+        ]
+        with patch.object(
+            heartbeat,
+            "_github_request",
+            return_value={"workflow_runs": [strategy, *noise]},
+        ) as request:
+            result = heartbeat._list_runtime_runs(
+                repository="org/repo",
+                workflow="main.yml",
+                token="test",
+                branch="runtime-production",
+                per_page=30,
+                since=now - dt.timedelta(hours=3),
+            )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["display_title"], "Runtime · strategy")
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(request.call_args.args[0]).query)
+        self.assertEqual(query["branch"], ["runtime-production"])
+
     def test_disabled_target_skips_github_api_lookup_and_writes_assessment(self) -> None:
         with patch.dict(
             os.environ,
@@ -295,6 +375,10 @@ class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
 
         self.assertTrue(any("/actions/workflows/main.yml/runs?" in url for url in requested_urls))
         self.assertTrue(any("/actions/runs?" in url for url in requested_urls))
+        self.assertTrue(
+            any("branch=runtime-production" in url for url in requested_urls),
+            requested_urls,
+        )
         send_telegram.assert_not_called()
 
     def test_send_telegram_rejects_api_ok_false(self) -> None:

@@ -445,7 +445,7 @@ def _send_telegram(message: str) -> bool:
 def main() -> int:
     repository = os.environ.get("GITHUB_REPOSITORY") or "QuantStrategyLab/BinancePlatform"
     workflow = os.environ.get("RUNTIME_HEARTBEAT_WORKFLOW") or "main.yml"
-    branch = os.environ.get("RUNTIME_HEARTBEAT_BRANCH") or "main"
+    branch = os.environ.get("RUNTIME_HEARTBEAT_BRANCH") or "runtime-production"
     name = os.environ.get("RUNTIME_HEARTBEAT_NAME") or "Binance Runtime"
     lookback_hours = _positive_float_from_env("RUNTIME_HEARTBEAT_LOOKBACK_HOURS", 2.5)
     expected_interval_hours = _positive_float_from_env("RUNTIME_HEARTBEAT_EXPECTED_INTERVAL_HOURS", 1.0)
