@@ -11,7 +11,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "watchdog.yml"
-RUNTIME_WORKFLOW = ROOT / ".github" / "workflows" / "main.yml"
+MONITOR_RUNTIME_WORKFLOW = ROOT / ".github" / "workflows" / "runtime-target-lifecycle.yml"
+PRODUCTION_RUNTIME_WORKFLOW = ROOT / ".github" / "workflows" / "main.yml"
 PYPROJECT = ROOT / "pyproject.toml"
 LOCK = ROOT / "uv.lock"
 QSL = ROOT / "qsl.toml"
@@ -28,8 +29,8 @@ def _identity_digest(values: dict[str, str]) -> str:
     return hashlib.sha256(canonical).hexdigest()
 
 
-def _preflight_script(workflow_text: str) -> str:
-    step = workflow_text.index("Validate deployment identity configuration")
+def _preflight_script(workflow_text: str, label: str = "Validate deployment identity configuration") -> str:
+    step = workflow_text.index(label)
     run_marker = "        run: |\n"
     start = workflow_text.index(run_marker, step) + len(run_marker)
     lines: list[str] = []
@@ -88,7 +89,8 @@ class WatchdogWorkflowTests(unittest.TestCase):
             "GCP_WORKLOAD_IDENTITY_PROVIDER",
             "GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT",
         ):
-            self.assertIn(f"{name}: ${{{{ vars.{name} }}}}", text)
+            variable_name = f"BINANCE_MONITOR_{name}"
+            self.assertIn(f"{name}: ${{{{ vars.{variable_name} }}}}", text)
         self.assertIn(
             "for name in GCP_PROJECT_ID GCP_WORKLOAD_IDENTITY_PROVIDER "
             "GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT; do",
@@ -116,15 +118,41 @@ class WatchdogWorkflowTests(unittest.TestCase):
         job = _job_block(text, "check")
 
         self.assertIn("RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED || 'false' }}", text)
-        self.assertIn("if: ${{ vars.RUNTIME_TARGET_ENABLED == 'true' }}", job)
+        self.assertIn(
+            "if: ${{ github.ref == 'refs/heads/main' && vars.RUNTIME_TARGET_ENABLED == 'true' }}",
+            job,
+        )
         self.assertLess(
-            job.index("if: ${{ vars.RUNTIME_TARGET_ENABLED == 'true' }}"),
+            job.index("if: ${{ github.ref == 'refs/heads/main'"),
             job.index("runs-on: ubuntu-latest"),
         )
 
+    def test_monitor_workflows_reject_dispatch_from_untrusted_refs(self) -> None:
+        workflows = (
+            (WORKFLOW, "check"),
+            (MONITOR_RUNTIME_WORKFLOW, "publish"),
+        )
+        for workflow, job_name in workflows:
+            text = workflow.read_text(encoding="utf-8")
+            job = _job_block(text, job_name)
+            self.assertIn("if: ${{ github.ref == 'refs/heads/main'", job)
+
+    def test_runtime_lifecycle_queries_protected_production_ref_explicitly(self) -> None:
+        text = MONITOR_RUNTIME_WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("RUNTIME_HEARTBEAT_BRANCH: runtime-production", text)
+        self.assertNotIn("RUNTIME_HEARTBEAT_BRANCH: ${{ vars.", text)
+
+    def test_runtime_lifecycle_does_not_claim_publishing_is_read_only(self) -> None:
+        text = MONITOR_RUNTIME_WORKFLOW.read_text(encoding="utf-8")
+        self.assertNotIn("(read-only)", text)
+        self.assertNotIn("Publish read-only runtime execution evidence", text)
+
     def test_oidc_identity_digest_is_fixed_and_shared(self) -> None:
         scripts = (
-            _preflight_script(RUNTIME_WORKFLOW.read_text(encoding="utf-8")),
+            _preflight_script(
+                MONITOR_RUNTIME_WORKFLOW.read_text(encoding="utf-8"),
+                "Validate monitor GCP identity configuration",
+            ),
             _preflight_script(self.workflow_text),
         )
         digests: list[str] = []
@@ -153,8 +181,11 @@ class WatchdogWorkflowTests(unittest.TestCase):
         }
         expected = _identity_digest(baseline)
 
-        for workflow in (RUNTIME_WORKFLOW, WORKFLOW):
-            script = _preflight_script(workflow.read_text(encoding="utf-8"))
+        for workflow, label in (
+            (MONITOR_RUNTIME_WORKFLOW, "Validate monitor GCP identity configuration"),
+            (WORKFLOW, "Validate deployment identity configuration"),
+        ):
+            script = _preflight_script(workflow.read_text(encoding="utf-8"), label)
             script, replacements = EXPECTED_DIGEST_PATTERN.subn(
                 f'EXPECTED_OIDC_IDENTITY_SHA256="{expected}"',
                 script,
@@ -201,6 +232,16 @@ class WatchdogWorkflowTests(unittest.TestCase):
                     if value:
                         self.assertNotIn(value, output)
 
+    def test_production_runtime_keeps_its_existing_identity_contract(self) -> None:
+        text = PRODUCTION_RUNTIME_WORKFLOW.read_text(encoding="utf-8")
+        for name in IDENTITY_NAMES:
+            self.assertIn(f"{name}: ${{{{ vars.{name} }}}}", text)
+        script = _preflight_script(text)
+        self.assertIn(
+            'readonly EXPECTED_OIDC_IDENTITY_SHA256="68e87a5dc1bbe2e41af33d526514034246c6487fb7b716596cc75fe1c739a6b9"',
+            script,
+        )
+
     def test_watchdog_installs_locked_internal_dependency(self) -> None:
         text = self.workflow_text
 
@@ -209,7 +250,7 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertIn("uv run --no-sync python - <<'PY'", text)
 
     def test_runtime_workflow_uses_cached_uv_environment(self) -> None:
-        text = RUNTIME_WORKFLOW.read_text(encoding="utf-8")
+        text = PRODUCTION_RUNTIME_WORKFLOW.read_text(encoding="utf-8")
 
         self.assertIn('LOCK_FILE="uv.lock"', text)
         self.assertIn('HASH_FILE="${CACHE_ROOT}/uv.lock.sha256"', text)
@@ -227,7 +268,7 @@ class WatchdogWorkflowTests(unittest.TestCase):
         self.assertIn('"$LOCK_FILE unchanged; reusing cached venv."', text)
 
     def test_runtime_workflow_exposes_strategy_artifact_variables(self) -> None:
-        text = RUNTIME_WORKFLOW.read_text(encoding="utf-8")
+        text = PRODUCTION_RUNTIME_WORKFLOW.read_text(encoding="utf-8")
 
         for name in (
             "STRATEGY_ARTIFACT_FILE",

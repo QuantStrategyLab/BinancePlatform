@@ -11,7 +11,8 @@ concurrency:
 
 jobs:
   publish:
-    name: Publish Binance target state (read-only)
+    name: Publish Binance monitor state (non-trading)
+    if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -19,9 +20,9 @@ jobs:
       contents: read
       id-token: write
     env:
-      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      GCP_PROJECT_ID: ${{ vars.BINANCE_MONITOR_GCP_PROJECT_ID }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.BINANCE_MONITOR_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.BINANCE_MONITOR_GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}
       RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED || 'false' }}
       EXECUTION_REPORT_GCS_URI: ${{ vars.EXECUTION_REPORT_GCS_URI }}
@@ -51,6 +52,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUNTIME_HEARTBEAT_NAME: BinancePlatform Runtime
           RUNTIME_HEARTBEAT_WORKFLOW: main.yml
+          RUNTIME_HEARTBEAT_BRANCH: runtime-production
           RUNTIME_HEARTBEAT_LOOKBACK_HOURS: ${{ vars.RUNTIME_HEARTBEAT_LOOKBACK_HOURS || '2.5' }}
           RUNTIME_HEARTBEAT_EXPECTED_INTERVAL_HOURS: ${{ vars.RUNTIME_HEARTBEAT_EXPECTED_INTERVAL_HOURS || '1' }}
           RUNTIME_HEARTBEAT_MAX_CONSECUTIVE_MISSES: ${{ vars.RUNTIME_HEARTBEAT_MAX_CONSECUTIVE_MISSES || '2' }}
@@ -62,7 +64,7 @@ jobs:
           test -s "$RUNTIME_HEARTBEAT_OUTPUT_PATH"
           echo "path=$RUNTIME_HEARTBEAT_OUTPUT_PATH" >> "$GITHUB_OUTPUT"
 
-      - name: Validate read-only GCP identity configuration
+      - name: Validate monitor GCP identity configuration
         if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
         shell: bash
         run: |
@@ -73,7 +75,7 @@ jobs:
               exit 1
             fi
           done
-          readonly EXPECTED_OIDC_IDENTITY_SHA256="68e87a5dc1bbe2e41af33d526514034246c6487fb7b716596cc75fe1c739a6b9"
+          readonly EXPECTED_OIDC_IDENTITY_SHA256="06c759f37689f6d9562607cc9deab70045b6b895d6aba0a42c3c963f984c2d4d"
           actual_oidc_identity_sha256="$(
             printf '%s\0%s\0%s' \
               "$GCP_PROJECT_ID" \
@@ -87,7 +89,7 @@ jobs:
             exit 1
           fi
 
-      - name: Authenticate read-only report monitor to Google Cloud
+      - name: Authenticate monitor to Google Cloud
         if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
@@ -115,7 +117,7 @@ jobs:
           test -s "$RUNTIME_HEARTBEAT_OUTPUT_PATH"
           echo "path=$RUNTIME_HEARTBEAT_OUTPUT_PATH" >> "$GITHUB_OUTPUT"
 
-      - name: Publish read-only runtime execution evidence
+      - name: Publish monitor execution evidence
         if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.execution-heartbeat.outcome == 'success' }}
         uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-execution-evidence@bbacba04baccbca91e4ba59c4dcaf460847e29f7
         with:
@@ -126,7 +128,7 @@ jobs:
         env:
           EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}
 
-      - name: Map read-only observations to shared lifecycle checks
+      - name: Map monitor observations to shared lifecycle checks
         id: monitoring
         env:
           CONFIGURED_STATE: ${{ steps.target.outputs.configured_state }}
