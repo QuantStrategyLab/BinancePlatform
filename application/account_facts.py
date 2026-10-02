@@ -167,7 +167,7 @@ def collect_account_facts(
     except Exception:
         raise _fail("spot_read_failed") from None
     if not isinstance(account, Mapping):
-        raise _fail("spot_response_invalid")
+        raise _fail("spot_response_not_object")
     uid = account.get("uid")
     if isinstance(uid, bool) or not isinstance(uid, (str, int)) or not str(uid):
         raise _fail("account_identity_missing")
@@ -178,19 +178,23 @@ def collect_account_facts(
         raise _fail("account_identity_mismatch")
 
     balances = account.get("balances")
-    if not isinstance(balances, list) or len(balances) > 5000:
-        raise _fail("spot_response_invalid")
+    if not isinstance(balances, list):
+        raise _fail("spot_balances_invalid")
+    if len(balances) > 5000:
+        raise _fail("spot_balances_limit_exceeded")
     assets: dict[str, dict[str, Decimal]] = {}
     for row in balances:
         if not isinstance(row, Mapping):
-            raise _fail("spot_response_invalid")
+            raise _fail("spot_balance_row_invalid")
         asset = row.get("asset")
-        if (
-            not isinstance(asset, str)
-            or not _ASSET.fullmatch(asset)
-            or asset in assets
-        ):
-            raise _fail("spot_response_invalid")
+        if not isinstance(asset, str):
+            raise _fail("spot_asset_type_invalid")
+        if not asset.isascii():
+            raise _fail("spot_asset_non_ascii")
+        if not _ASSET.fullmatch(asset):
+            raise _fail("spot_asset_format_invalid")
+        if asset in assets:
+            raise _fail("spot_asset_duplicate")
         assets[asset] = {
             "spot_free": _decimal(row.get("free")),
             "spot_locked": _decimal(row.get("locked")),

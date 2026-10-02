@@ -439,6 +439,32 @@ def test_rejects_wrong_account_uid_before_earn_read():
     assert client.calls == [("spot",)]
 
 
+@pytest.mark.parametrize(("account", "reason"), [
+    (None, "spot_response_not_object"),
+    ({"uid": "123456", "balances": None}, "spot_balances_invalid"),
+    ({"uid": "123456", "balances": [{}] * 5001}, "spot_balances_limit_exceeded"),
+    ({"uid": "123456", "balances": ["synthetic-private-row"]}, "spot_balance_row_invalid"),
+    ({"uid": "123456", "balances": [{"asset": 17}]}, "spot_asset_type_invalid"),
+    ({"uid": "123456", "balances": [{"asset": "synthetic-bad-symbol"}]}, "spot_asset_format_invalid"),
+    ({"uid": "123456", "balances": [{"asset": "币"}]}, "spot_asset_non_ascii"),
+    ({"uid": "123456", "balances": [
+        {"asset": "SYNTHETIC", "free": "0", "locked": "0"},
+        {"asset": "SYNTHETIC", "free": "0", "locked": "0"},
+    ]}, "spot_asset_duplicate"),
+])
+def test_spot_validation_uses_fixed_reason_without_echoing_response_values(account, reason):
+    class InvalidSpot(FakeBinance):
+        def get_account(self):
+            self.calls.append(("spot",))
+            return account
+
+    client = InvalidSpot()
+    with pytest.raises(AccountFactsUnavailable) as raised:
+        _collect(client)
+    assert str(raised.value) == f"binance_account_facts_{reason}"
+    assert client.calls == [("spot",)]
+
+
 def test_rejects_earn_asset_without_an_explicit_spot_balance_row():
     class SpotWithoutEarnAsset(FakeBinance):
         def get_account(self):
