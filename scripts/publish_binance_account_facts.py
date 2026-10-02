@@ -17,6 +17,7 @@ from application.account_facts import AccountFactsUnavailable, validate_account_
 
 
 QRS_ENDPOINT = "https://qsl-strategy-switch-console.pigbibi.workers.dev/api/internal/binance-account-facts"
+_USER_AGENT = "QSL-AccountFacts-Readiness/1.0"
 _HTTP_ERROR_LABELS = {
     (400, "invalid_binance_account_facts"): "http_400_report_invalid",
     (400, "invalid_binance_account_facts_time"): "http_400_report_time_invalid",
@@ -95,6 +96,7 @@ def publish_account_facts(*, facts_path: Path, env) -> str:
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "User-Agent": _USER_AGENT,
         },
         method="POST",
     )
