@@ -783,7 +783,7 @@ jobs:
     permissions:
       actions: read
       contents: read
-    uses: QuantStrategyLab/BinancePlatform/.github/workflows/binance-account-facts.yml@a7bf700c6b85bd20dbc6fb0b2962adc51006c859
+    uses: QuantStrategyLab/BinancePlatform/.github/workflows/binance-account-facts.yml@e46bda23661a4851df7ad84edd010546ab104b3c
     with:
       enabled: true
       source_mode: same_parent
