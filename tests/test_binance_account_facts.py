@@ -108,6 +108,18 @@ def test_source_binding_hash_uses_canonical_json():
 
 def test_workflow_uses_fixed_protected_reader_revision_not_trigger_sha():
     workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "binance-account-facts.yml").read_text()
+    checkout = workflow.index("      - name: Checkout trusted default-branch reader source")
+    setup_uv = workflow.index("      - name: Set up uv")
+    preflight = workflow.index("      - name: Verify trusted checkout and exact Runtime source")
+    install = workflow.index("uv sync --frozen --no-dev")
+
+    assert checkout < setup_uv < preflight < install
+    setup_uv_step = workflow[setup_uv:preflight]
+    assert "uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9" in setup_uv_step
+    assert "with:" not in setup_uv_step
+    assert "secrets." not in setup_uv_step
+    assert workflow.count("astral-sh/setup-uv@") == 1
+
     assert "ref: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION }}" in workflow
     assert 'BINANCE_ACCOUNT_FACTS_READER_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || \'\' }}' in workflow
     assert "READER_PUBLIC_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || '' }}" in workflow

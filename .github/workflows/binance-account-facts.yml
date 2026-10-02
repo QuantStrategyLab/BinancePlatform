@@ -59,6 +59,9 @@ jobs:
           ref: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION }}
           persist-credentials: false
 
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
+
       - name: Verify trusted checkout and exact Runtime source
         id: preflight
         shell: bash
