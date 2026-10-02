@@ -17,6 +17,7 @@ from application.account_facts import (
 
 
 APP_SHA = "8cb56617115fa45028e34d788e71884b6a303d77"
+PROTECTED_RUNTIME_SHA = "d" * 40
 READER_SHA = "a" * 40
 UID_DIGEST = "b" * 64
 START = datetime(2026, 10, 2, 10, 0, tzinfo=timezone.utc)
@@ -166,6 +167,114 @@ def _install_parent_release_log(monkeypatch, reader, selected_sha=APP_SHA):
         f"(workflow github.sha={'d' * 40} is not used as the application execution identity)."
     )
     monkeypatch.setattr(reader, "_read_job_log_text", lambda *_args: log_text.encode())
+
+
+def _current_terminal_run_api(url, _token, mutation=None):
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    source_sha = "9cfcf0531d1ea176e6f26590cf15edbd31bd6567" if mutation == "legacy_old" else PROTECTED_RUNTIME_SHA
+    if "/actions/workflows/main.yml/runs?status=" in url:
+        return {"total_count": 0, "workflow_runs": []}
+    if parsed.path.endswith("/actions/workflows/main.yml/runs"):
+        run_id = 602 if mutation == "newer_terminal" else 601
+        return {"total_count": 2, "workflow_runs": [{
+            "id": run_id, "name": "Runtime",
+            "path": ".github/workflows/main.yml@refs/heads/runtime-production",
+            "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
+            "head_branch": "runtime-production", "head_sha": source_sha,
+            "run_attempt": 1, "repository": {"full_name": "QuantStrategyLab/BinancePlatform"},
+        }]}
+    if parsed.path.endswith("/actions/runs/601"):
+        attempt = 2 if mutation == "attempt_two" else 1
+        return {
+            "id": 601, "run_attempt": attempt, "name": "Runtime",
+            "path": ".github/workflows/main.yml@refs/heads/runtime-production",
+            "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
+            "head_branch": "runtime-production", "head_sha": source_sha,
+            "repository": {"full_name": "QuantStrategyLab/BinancePlatform"},
+            "head_repository": {"full_name": "QuantStrategyLab/BinancePlatform"},
+        }
+    if parsed.path.endswith("/actions/runs/601/jobs"):
+        upload_conclusion = "failure" if mutation == "failed_report" else "success"
+        return {"total_count": 1, "jobs": [{
+            "id": 701, "name": "deploy", "status": "completed", "conclusion": "success",
+            "started_at": "2026-10-02T11:00:00Z",
+            "steps": [
+                {"name": "Resolve approved runtime release SHA", "status": "completed", "conclusion": "success"},
+                {"name": "4. Run trading strategy", "status": "completed", "conclusion": "success", "started_at": "2026-10-02T11:01:00Z", "completed_at": "2026-10-02T11:05:00Z"},
+                {"name": "5. Stage execution report for isolated log publisher", "status": "completed", "conclusion": upload_conclusion, "started_at": "2026-10-02T11:05:01Z", "completed_at": "2026-10-02T11:06:00Z"},
+            ],
+        }]}
+    if parsed.path.endswith("/actions/runs/601/artifacts"):
+        created_at = "2026-10-02T11:04:59Z" if mutation == "early_artifact" else "2026-10-02T11:05:10Z"
+        return {"artifacts": [{
+            "name": "binance-execution-report-601", "expired": False,
+            "size_in_bytes": 123, "created_at": created_at,
+        }]}
+    raise AssertionError("unexpected synthetic GitHub API path")
+
+
+@pytest.mark.parametrize(
+    "mutation,reason",
+    [
+        ("wrong_application", "trigger_release_mismatch"),
+        ("attempt_two", "trigger_identity_mismatch"),
+        ("failed_report", "parent_strategy_or_report_unverified"),
+        ("early_artifact", "trigger_report_artifact_missing"),
+        ("newer_terminal", "runtime_run_not_latest_success"),
+    ],
+)
+def test_manual_terminal_accepts_only_current_pinned_runtime_and_8cb_app(monkeypatch, mutation, reason):
+    from scripts import read_binance_account_facts as reader
+
+    monkeypatch.setattr(reader, "_api_json", lambda url, token: _current_terminal_run_api(url, token, mutation))
+    _install_parent_release_log(
+        monkeypatch, reader, selected_sha="e" * 40 if mutation == "wrong_application" else APP_SHA
+    )
+    env = {
+        "SOURCE_RUN_ID": "601",
+        "GITHUB_REPOSITORY": "QuantStrategyLab/BinancePlatform",
+        "GITHUB_REF": "refs/heads/runtime-production",
+        "BINANCE_RUNTIME_WORKFLOW_SHA": PROTECTED_RUNTIME_SHA,
+        "GITHUB_TOKEN": "synthetic-token",
+        "GITHUB_API_URL": "https://api.example",
+    }
+    if reason:
+        with pytest.raises(reader.ReaderError, match=reason):
+            reader.verify_terminal_source_from_env(env)
+
+
+def test_manual_terminal_accepts_protected_sha_when_runtime_selected_8cb(monkeypatch):
+    from scripts import read_binance_account_facts as reader
+
+    monkeypatch.setattr(reader, "_api_json", _current_terminal_run_api)
+    _install_parent_release_log(monkeypatch, reader)
+    result = reader.verify_terminal_source_from_env({
+        "SOURCE_RUN_ID": "601",
+        "GITHUB_REPOSITORY": "QuantStrategyLab/BinancePlatform",
+        "GITHUB_REF": "refs/heads/runtime-production",
+        "BINANCE_RUNTIME_WORKFLOW_SHA": PROTECTED_RUNTIME_SHA,
+        "GITHUB_TOKEN": "synthetic-token",
+        "GITHUB_API_URL": "https://api.example",
+    })
+    assert result == {"run_id": "601", "report_artifact": "binance-execution-report-601"}
+
+
+def test_manual_terminal_keeps_fixed_legacy_9cfc_path(monkeypatch):
+    from scripts import read_binance_account_facts as reader
+
+    monkeypatch.setattr(reader, "_api_json", lambda url, token: _current_terminal_run_api(url, token, "legacy_old"))
+    _install_parent_release_log(monkeypatch, reader)
+    result = reader.verify_terminal_source_from_env({
+        "SOURCE_RUN_ID": "601",
+        "GITHUB_REPOSITORY": "QuantStrategyLab/BinancePlatform",
+        "GITHUB_REF": "refs/heads/runtime-production",
+        "BINANCE_RUNTIME_WORKFLOW_SHA": PROTECTED_RUNTIME_SHA,
+        "GITHUB_TOKEN": "synthetic-token",
+        "GITHUB_API_URL": "https://api.example",
+    })
+    assert result == {"run_id": "601", "report_artifact": "binance-execution-report-601"}
 
 
 def test_same_parent_runtime_read_is_allowed_only_for_exact_in_progress_run(monkeypatch):
