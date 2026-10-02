@@ -886,7 +886,7 @@ def read_account_facts(*, report_path: Path, output_path: Path, env: Mapping[str
     verify_current_source_from_env(env)
 
     # Client construction is network-silent: python-binance ping is disabled.
-    # The capability wrapper exposes only the two signed wallet GET endpoints.
+    # The capability wrapper exposes only the required signed read-only GETs.
     try:
         from binance.client import Client
         raw_client = Client(
