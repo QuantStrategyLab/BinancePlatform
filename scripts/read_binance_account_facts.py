@@ -35,7 +35,6 @@ from application.account_facts import (  # noqa: E402
 REPOSITORY = "QuantStrategyLab/BinancePlatform"
 LEGACY_RUNTIME_WORKFLOW_SHA = "9cfcf0531d1ea176e6f26590cf15edbd31bd6567"
 APPROVED_APPLICATION_SHA = "8cb56617115fa45028e34d788e71884b6a303d77"
-RUNTIME_WORKFLOW_NAME = "Runtime"
 RUNTIME_BRANCH = "runtime-production"
 EXPECTED_REPORT_ARTIFACT_PREFIX = "binance-execution-report-"
 _GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
@@ -225,7 +224,6 @@ def _ensure_latest_runtime_run(
     row = rows[0]
     if (
         str(row.get("id")) != str(run_id)
-        or row.get("name") != RUNTIME_WORKFLOW_NAME
         or str(row.get("path") or "").split("@", 1)[0] != ".github/workflows/main.yml"
         or row.get("event") != "workflow_dispatch"
         or row.get("status") != "completed"
@@ -354,7 +352,6 @@ def _ensure_latest_parent_run(*, run_id: str, token: str, api_url: str) -> None:
     row = rows[0]
     if (
         str(row.get("id")) != str(run_id)
-        or row.get("name") != RUNTIME_WORKFLOW_NAME
         or str(row.get("path") or "").split("@", 1)[0] != ".github/workflows/main.yml"
         or row.get("head_branch") != RUNTIME_BRANCH
         or row.get("status") != "in_progress"
@@ -386,7 +383,6 @@ def verify_parent_run(
         not isinstance(run, Mapping)
         or type(run.get("id")) is not int or run.get("id") != int(run_id)
         or type(run.get("run_attempt")) is not int or run.get("run_attempt") != 1
-        or run.get("name") != RUNTIME_WORKFLOW_NAME
         or str(run.get("path") or "").split("@", 1)[0] != ".github/workflows/main.yml"
         or run.get("event") != "workflow_dispatch"
         or run.get("status") != "in_progress"
@@ -478,9 +474,9 @@ def verify_trigger_run(
     run = _api_json(url, token)
     head_repo = run.get("head_repository") if isinstance(run, dict) else None
     base_repo = run.get("repository") if isinstance(run, dict) else None
+    # GitHub's API name is the dynamic run-name display title, not workflow identity.
     if (
         type(run.get("id")) is not int or run.get("id") != int(run_id)
-        or run.get("name") != RUNTIME_WORKFLOW_NAME
         or str(run.get("path") or "").split("@", 1)[0] != ".github/workflows/main.yml"
         or run.get("event") != "workflow_dispatch"
         or run.get("status") != "completed"
