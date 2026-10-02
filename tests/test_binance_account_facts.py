@@ -142,13 +142,13 @@ def _parent_run_api(url, _token):
         return {"total_count": len(rows), "workflow_runs": rows}
     if parsed.path.endswith("/actions/workflows/main.yml/runs"):
         return {"total_count": 1, "workflow_runs": [{
-            "id": 501, "name": "Runtime",
+            "id": 501, "name": "Runtime · strategy",
             "path": ".github/workflows/main.yml@refs/heads/runtime-production",
             "head_branch": "runtime-production", "status": "in_progress",
         }]}
     if parsed.path.endswith("/actions/runs/501"):
         return {
-            "id": 501, "run_attempt": 1, "name": "Runtime",
+            "id": 501, "run_attempt": 1, "name": "Runtime · strategy",
             "path": ".github/workflows/main.yml@refs/heads/runtime-production",
             "event": "workflow_dispatch", "status": "in_progress",
             "head_branch": "runtime-production", "head_sha": "d" * 40,
@@ -185,27 +185,39 @@ def _current_terminal_run_api(url, _token, mutation=None):
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
-    source_sha = "9cfcf0531d1ea176e6f26590cf15edbd31bd6567" if mutation == "legacy_old" else PROTECTED_RUNTIME_SHA
+    source_sha = (
+        "9cfcf0531d1ea176e6f26590cf15edbd31bd6567"
+        if mutation == "legacy_old"
+        else "e" * 40 if mutation == "wrong_workflow_sha" else PROTECTED_RUNTIME_SHA
+    )
+    source_path = (
+        ".github/workflows/other.yml@refs/heads/runtime-production"
+        if mutation == "wrong_path"
+        else ".github/workflows/main.yml@refs/heads/runtime-production"
+    )
+    source_repository = (
+        "other/repository" if mutation == "wrong_repository" else "QuantStrategyLab/BinancePlatform"
+    )
     if "/actions/workflows/main.yml/runs?status=" in url:
         return {"total_count": 0, "workflow_runs": []}
     if parsed.path.endswith("/actions/workflows/main.yml/runs"):
         run_id = 602 if mutation == "newer_terminal" else 601
         return {"total_count": 2, "workflow_runs": [{
-            "id": run_id, "name": "Runtime",
-            "path": ".github/workflows/main.yml@refs/heads/runtime-production",
+            "id": run_id, "name": "Runtime · strategy",
+            "path": source_path,
             "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
             "head_branch": "runtime-production", "head_sha": source_sha,
-            "run_attempt": 1, "repository": {"full_name": "QuantStrategyLab/BinancePlatform"},
+            "run_attempt": 1, "repository": {"full_name": source_repository},
         }]}
     if parsed.path.endswith("/actions/runs/601"):
         attempt = 2 if mutation == "attempt_two" else 1
         return {
-            "id": 601, "run_attempt": attempt, "name": "Runtime",
-            "path": ".github/workflows/main.yml@refs/heads/runtime-production",
+            "id": 601, "run_attempt": attempt, "name": "Runtime · strategy",
+            "path": source_path,
             "event": "workflow_dispatch", "status": "completed", "conclusion": "success",
             "head_branch": "runtime-production", "head_sha": source_sha,
-            "repository": {"full_name": "QuantStrategyLab/BinancePlatform"},
-            "head_repository": {"full_name": "QuantStrategyLab/BinancePlatform"},
+            "repository": {"full_name": source_repository},
+            "head_repository": {"full_name": source_repository},
         }
     if parsed.path.endswith("/actions/runs/601/jobs"):
         upload_conclusion = "failure" if mutation == "failed_report" else "success"
@@ -232,6 +244,9 @@ def _current_terminal_run_api(url, _token, mutation=None):
     [
         ("wrong_application", "trigger_release_mismatch"),
         ("attempt_two", "trigger_identity_mismatch"),
+        ("wrong_path", "trigger_identity_mismatch"),
+        ("wrong_repository", "trigger_identity_mismatch"),
+        ("wrong_workflow_sha", "trigger_identity_mismatch"),
         ("failed_report", "parent_strategy_or_report_unverified"),
         ("early_artifact", "trigger_report_artifact_missing"),
         ("newer_terminal", "runtime_run_not_latest_success"),
@@ -593,7 +608,7 @@ def test_manual_run_must_still_be_the_latest_qualifying_runtime(monkeypatch):
         lambda _url, _token: {
             "workflow_runs": [{
                 "id": 200,
-                "name": "Runtime",
+                "name": "Runtime · strategy",
                 "path": ".github/workflows/main.yml@refs/heads/runtime-production",
                 "event": "workflow_dispatch",
                 "status": "completed",
