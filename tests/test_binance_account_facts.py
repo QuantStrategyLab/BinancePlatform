@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.error import URLError
 
 import pytest
 
@@ -1095,3 +1096,181 @@ def test_publisher_rejects_legacy_recorded_ack(tmp_path, monkeypatch):
                 "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-token",
             },
         )
+
+
+@pytest.mark.parametrize(("status", "receiver_code", "safe_label"), [
+    (400, "invalid_binance_account_facts_assets", "http_400_report_assets_invalid"),
+    (401, "binance_account_facts_token_invalid", "http_401_token_invalid"),
+    (409, "binance_account_facts_observation_conflict", "http_409_observation_conflict"),
+    (413, "binance_account_facts_payload_too_large", "http_413_payload_too_large"),
+    (503, "binance_account_facts_binding_missing", "http_503_receiver_unavailable"),
+])
+def test_publisher_classifies_only_known_http_error_pairs_without_leaking_body(
+    tmp_path, monkeypatch, status, receiver_code, safe_label
+):
+    from io import BytesIO
+    from urllib.error import HTTPError
+    from scripts import publish_binance_account_facts as publisher
+
+    facts_path = tmp_path / "facts.json"
+    facts_path.write_text(json.dumps(_collect()), encoding="utf-8")
+    secret = "synthetic-sensitive-placeholder"
+    private_url = f"https://private.example/path?token={secret}"
+    reads = []
+
+    class Opener:
+        def open(self, _request, timeout):
+            assert timeout == 20
+            error = HTTPError(
+                private_url,
+                status,
+                "private exception detail",
+                hdrs=None,
+                fp=BytesIO(json.dumps({"ok": False, "error": receiver_code}).encode()),
+            )
+            original_read = error.read
+
+            def tracked_read(amount=None):
+                reads.append(amount)
+                return original_read(amount)
+
+            error.read = tracked_read
+            raise error
+
+    monkeypatch.setattr(publisher, "build_opener", lambda _handler: Opener())
+    with pytest.raises(publisher.PublishError) as raised:
+        publisher.publish_account_facts(
+            facts_path=facts_path,
+            env={
+                "BINANCE_ACCOUNT_FACTS_ENABLED": "true",
+                "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-token",
+            },
+        )
+    assert str(raised.value) == f"account_facts_publish_{safe_label}"
+    assert receiver_code not in str(raised.value)
+    assert secret not in str(raised.value)
+    assert "private.example" not in str(raised.value)
+    assert reads == [4097]
+
+
+@pytest.mark.parametrize(("status", "body"), [
+    (400, b"{\"ok\":false,\"error\":\"unknown-private-code\",\"private\":\"SENSITIVE\"}"),
+    (418, b"SENSITIVE private body"),
+    (409, b"x" * 4097),
+])
+def test_publisher_rejects_unknown_or_oversized_http_error_body_closed(
+    tmp_path, monkeypatch, status, body
+):
+    from io import BytesIO
+    from urllib.error import HTTPError
+    from scripts import publish_binance_account_facts as publisher
+
+    facts_path = tmp_path / "facts.json"
+    facts_path.write_text(json.dumps(_collect()), encoding="utf-8")
+    reads = []
+
+    class Opener:
+        def open(self, _request, timeout):
+            error = HTTPError(
+                "https://private.example/sensitive-path",
+                status,
+                "private exception detail",
+                hdrs=None,
+                fp=BytesIO(body),
+            )
+            original_read = error.read
+
+            def tracked_read(amount=None):
+                reads.append(amount)
+                return original_read(amount)
+
+            error.read = tracked_read
+            raise error
+
+    monkeypatch.setattr(publisher, "build_opener", lambda _handler: Opener())
+    with pytest.raises(publisher.PublishError) as raised:
+        publisher.publish_account_facts(
+            facts_path=facts_path,
+            env={
+                "BINANCE_ACCOUNT_FACTS_ENABLED": "true",
+                "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-token",
+            },
+        )
+    assert str(raised.value) == "account_facts_publish_http_rejected"
+    assert "SENSITIVE" not in str(raised.value)
+    assert "private.example" not in str(raised.value)
+    assert reads == [4097]
+
+
+@pytest.mark.parametrize(("failure", "reason"), [
+    (lambda: URLError("private network detail"), "account_facts_publish_network_failed"),
+    (lambda: OSError("private socket detail"), "account_facts_publish_network_failed"),
+    (lambda: TimeoutError("private timeout detail"), "account_facts_publish_timeout"),
+])
+def test_publisher_classifies_transport_failures_without_retry_or_leak(
+    tmp_path, monkeypatch, failure, reason
+):
+    from scripts import publish_binance_account_facts as publisher
+
+    facts_path = tmp_path / "facts.json"
+    facts_path.write_text(json.dumps(_collect()), encoding="utf-8")
+    calls = []
+
+    class Opener:
+        def open(self, _request, timeout):
+            calls.append(timeout)
+            raise failure()
+
+    monkeypatch.setattr(publisher, "build_opener", lambda _handler: Opener())
+    with pytest.raises(publisher.PublishError) as raised:
+        publisher.publish_account_facts(
+            facts_path=facts_path,
+            env={
+                "BINANCE_ACCOUNT_FACTS_ENABLED": "true",
+                "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-secret",
+            },
+        )
+    assert str(raised.value) == reason
+    assert "private" not in str(raised.value)
+    assert "synthetic-secret" not in str(raised.value)
+    assert calls == [20]
+
+
+@pytest.mark.parametrize("ack", [b"not-json", b"\xff\xfe"])
+def test_publisher_classifies_invalid_ack_without_leaking_or_retrying(tmp_path, monkeypatch, ack):
+    from scripts import publish_binance_account_facts as publisher
+
+    facts_path = tmp_path / "facts.json"
+    facts_path.write_text(json.dumps(_collect()), encoding="utf-8")
+    calls = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, limit):
+            assert limit == 4097
+            return ack
+
+    class Opener:
+        def open(self, _request, timeout):
+            calls.append(timeout)
+            return Response()
+
+    monkeypatch.setattr(publisher, "build_opener", lambda _handler: Opener())
+    with pytest.raises(publisher.PublishError) as raised:
+        publisher.publish_account_facts(
+            facts_path=facts_path,
+            env={
+                "BINANCE_ACCOUNT_FACTS_ENABLED": "true",
+                "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-secret",
+            },
+        )
+    assert str(raised.value) == "account_facts_publish_ack_invalid"
+    assert "synthetic-secret" not in str(raised.value)
+    assert calls == [20]

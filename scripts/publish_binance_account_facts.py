@@ -17,6 +17,24 @@ from application.account_facts import AccountFactsUnavailable, validate_account_
 
 
 QRS_ENDPOINT = "https://qsl-strategy-switch-console.pigbibi.workers.dev/api/internal/binance-account-facts"
+_HTTP_ERROR_LABELS = {
+    (400, "invalid_binance_account_facts"): "http_400_report_invalid",
+    (400, "invalid_binance_account_facts_time"): "http_400_report_time_invalid",
+    (400, "invalid_binance_account_facts_quantity"): "http_400_report_quantity_invalid",
+    (400, "invalid_binance_account_facts_assets"): "http_400_report_assets_invalid",
+    (401, "binance_account_facts_token_invalid"): "http_401_token_invalid",
+    (409, "binance_account_facts_binding_unmatched"): "http_409_binding_unmatched",
+    (409, "binance_account_facts_identity_mismatch"): "http_409_identity_mismatch",
+    (409, "binance_account_facts_observation_invalid"): "http_409_observation_invalid",
+    (409, "binance_account_facts_observation_conflict"): "http_409_observation_conflict",
+    (413, "binance_account_facts_payload_too_large"): "http_413_payload_too_large",
+    (503, "binance_account_facts_token_unavailable"): "http_503_receiver_unavailable",
+    (503, "binance_account_facts_binding_missing"): "http_503_receiver_unavailable",
+    (503, "binance_account_facts_binding_invalid"): "http_503_receiver_unavailable",
+    (503, "binance_account_facts_storage_unavailable"): "http_503_receiver_unavailable",
+    (503, "binance_account_facts_unavailable"): "http_503_receiver_unavailable",
+}
+_HTTP_REJECTED = "account_facts_publish_http_rejected"
 
 
 class PublishError(ValueError):
@@ -26,6 +44,23 @@ class PublishError(ValueError):
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, request, response, code, message, headers, new_url):
         return None
+
+
+def _http_failure_code(error: HTTPError) -> str:
+    try:
+        raw = error.read(4097)
+        if not isinstance(raw, bytes) or len(raw) > 4096:
+            return _HTTP_REJECTED
+        body = json.loads(raw.decode("utf-8"))
+        if (not isinstance(body, dict) or set(body) != {"ok", "error"}
+                or body.get("ok") is not False or not isinstance(body.get("error"), str)):
+            return _HTTP_REJECTED
+        label = _HTTP_ERROR_LABELS.get((error.code, body["error"]))
+        if label is None:
+            return _HTTP_REJECTED
+        return f"account_facts_publish_{label}"
+    except (UnicodeError, ValueError, TypeError, RecursionError):
+        return _HTTP_REJECTED
 
 
 def publish_account_facts(*, facts_path: Path, env) -> str:
@@ -60,12 +95,24 @@ def publish_account_facts(*, facts_path: Path, env) -> str:
                 raise PublishError("account_facts_publish_rejected")
             raw_ack = response.read(4097)
             if len(raw_ack) > 4096:
-                raise PublishError("account_facts_publish_rejected")
+                raise PublishError("account_facts_publish_ack_invalid")
             ack = json.loads(raw_ack.decode("utf-8"))
     except PublishError:
         raise
-    except (HTTPError, URLError, OSError, TimeoutError, UnicodeError, json.JSONDecodeError):
-        raise PublishError("account_facts_publish_failed") from None
+    except HTTPError as error:
+        try:
+            failure_code = _http_failure_code(error)
+        except TimeoutError:
+            raise PublishError("account_facts_publish_timeout") from None
+        except (URLError, OSError):
+            raise PublishError("account_facts_publish_network_failed") from None
+        raise PublishError(failure_code) from None
+    except TimeoutError:
+        raise PublishError("account_facts_publish_timeout") from None
+    except (URLError, OSError):
+        raise PublishError("account_facts_publish_network_failed") from None
+    except (UnicodeError, ValueError, TypeError, AttributeError, RecursionError):
+        raise PublishError("account_facts_publish_ack_invalid") from None
     if not isinstance(ack, dict) or ack.get("status") not in {"published", "unchanged"}:
         raise PublishError("account_facts_publish_rejected")
     return ack["status"]
