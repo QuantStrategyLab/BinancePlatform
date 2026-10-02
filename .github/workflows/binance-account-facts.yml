@@ -1,0 +1,169 @@
+name: Binance Account Facts
+
+"on":
+  workflow_call:
+    inputs:
+      enabled:
+        description: "Run the isolated read-only account-facts companion job."
+        type: boolean
+        required: false
+        default: false
+      source_mode:
+        description: "The reusable caller uses same_parent; legacy_terminal is reserved for the existing report read."
+        type: string
+        required: false
+        default: same_parent
+  workflow_dispatch:
+    inputs:
+      enabled:
+        description: "Run the existing terminal-report read; repository gate must also be true."
+        required: false
+        type: boolean
+        default: false
+      source_run_id:
+        description: "Exact existing Runtime run ID to validate and read."
+        required: false
+        type: string
+      source_mode:
+        description: "Keep this workflow_dispatch on the single legacy terminal-report path."
+        required: true
+        type: choice
+        options: [legacy_terminal]
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  # Do not share Runtime's concurrency group; fail-closed source-window checks
+  # reject intervening Runtime attempts without changing the live workflow.
+  group: binance-account-facts-readonly
+  cancel-in-progress: false
+
+jobs:
+  read-and-publish:
+    if: >-
+      vars.BINANCE_ACCOUNT_FACTS_ENABLED == 'true' &&
+      github.ref == 'refs/heads/runtime-production' &&
+      ((inputs.enabled == true && inputs.source_mode == 'same_parent') ||
+       (github.workflow == 'Binance Account Facts' && github.event_name == 'workflow_dispatch' &&
+        inputs.enabled == true && inputs.source_mode == 'legacy_terminal'))
+    runs-on: self-hosted
+    timeout-minutes: 5
+    continue-on-error: true
+    environment: binance-runtime
+    steps:
+      - name: Checkout trusted default-branch reader source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION }}
+          persist-credentials: false
+
+      - name: Verify trusted checkout and exact Runtime source
+        id: preflight
+        shell: bash
+        env:
+          BINANCE_ACCOUNT_FACTS_ENABLED: ${{ vars.BINANCE_ACCOUNT_FACTS_ENABLED || 'false' }}
+          BINANCE_ACCOUNT_FACTS_READER_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || '' }}
+          BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA || '' }}
+          SOURCE_MODE: ${{ inputs.source_mode || 'legacy_terminal' }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id || '' }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$BINANCE_ACCOUNT_FACTS_READER_REVISION" =~ ^[0-9a-f]{40}$ ]] || \
+            [ "$(git rev-parse HEAD)" != "$BINANCE_ACCOUNT_FACTS_READER_REVISION" ] || \
+            [ "$GITHUB_REF" != "refs/heads/runtime-production" ]; then
+            echo "account_facts_trusted_checkout_invalid" >&2
+            exit 1
+          fi
+          uv sync --frozen --no-dev
+          uv run --no-sync python scripts/read_binance_account_facts.py --preflight
+
+      - name: Create a private same-runner handoff directory
+        id: private-dir
+        shell: bash
+        run: |
+          set -euo pipefail
+          private_dir="$(mktemp -d "$RUNNER_TEMP/binance-account-facts.XXXXXX")"
+          printf 'facts_dir=%s\n' "$private_dir" >> "$GITHUB_OUTPUT"
+          chmod 700 "$private_dir"
+
+      - name: Download only the exact successful Runtime report artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: binance-execution-report-${{ steps.preflight.outputs.source_run_id }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ steps.preflight.outputs.source_run_id }}
+          path: ${{ steps.private-dir.outputs.facts_dir }}/source
+
+      - name: Read the bound Spot and Flexible Earn account quantities
+        id: read-account-facts
+        shell: bash
+        env:
+          FACTS_DIR: ${{ steps.private-dir.outputs.facts_dir }}
+          SOURCE_RUN_ID: ${{ steps.preflight.outputs.source_run_id }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          SOURCE_MODE: ${{ inputs.source_mode || 'legacy_terminal' }}
+          BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA || '' }}
+          BINANCE_ACCOUNT_FACTS_ENABLED: ${{ vars.BINANCE_ACCOUNT_FACTS_ENABLED || 'false' }}
+          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+          BINANCE_RISK_AUTHORITY_JSON: ${{ secrets.BINANCE_RISK_AUTHORITY_JSON }}
+          BINANCE_RISK_AUTHORITY_FILE: ${{ vars.BINANCE_RISK_AUTHORITY_FILE }}
+          BINANCE_RISK_AUTHORITY_SHA256: ${{ vars.BINANCE_RISK_AUTHORITY_SHA256 }}
+          BINANCE_RISK_AUTHORITY_SOURCE_REVISION: ${{ vars.BINANCE_RISK_AUTHORITY_SOURCE_REVISION }}
+          BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON: ${{ vars.BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON }}
+          BINANCE_RUNTIME_RELEASE_SHA: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA }}
+          BINANCE_ACCOUNT_FACTS_BINDING_JSON: ${{ secrets.BINANCE_ACCOUNT_FACTS_BINDING_JSON }}
+          BINANCE_DRY_RUN: ${{ vars.BINANCE_DRY_RUN || 'true' }}
+          RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED || 'false' }}
+          RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}
+          BINANCE_ACCOUNT_FACTS_READER_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || '' }}
+          READER_PUBLIC_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || '' }}
+        run: |
+          set -euo pipefail
+          uv run --no-sync python scripts/read_binance_account_facts.py \
+            --report "$FACTS_DIR/source/execution_report.json" \
+            --output "$FACTS_DIR/account_facts.json"
+
+      - name: Recheck Runtime source before publishing
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ steps.preflight.outputs.source_run_id }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_API_URL: ${{ github.api_url }}
+          SOURCE_MODE: ${{ inputs.source_mode || 'legacy_terminal' }}
+          BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA || '' }}
+        run: |
+          set -euo pipefail
+          uv run --no-sync python scripts/read_binance_account_facts.py --verify-current-source
+
+      - name: Publish with the isolated account-facts token
+        shell: bash
+        env:
+          FACTS_DIR: ${{ steps.private-dir.outputs.facts_dir }}
+          BINANCE_ACCOUNT_FACTS_ENABLED: ${{ vars.BINANCE_ACCOUNT_FACTS_ENABLED || 'false' }}
+          BINANCE_ACCOUNT_FACTS_SYNC_TOKEN: ${{ secrets.BINANCE_ACCOUNT_FACTS_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          uv run --no-sync python scripts/publish_binance_account_facts.py \
+            "$FACTS_DIR/account_facts.json"
+
+      - name: Remove this run's private report and account-facts files
+        if: always()
+        shell: bash
+        env:
+          FACTS_DIR: ${{ steps.private-dir.outputs.facts_dir }}
+        run: |
+          set -euo pipefail
+          if [ -n "${FACTS_DIR:-}" ] && [ -d "$FACTS_DIR" ] && [ ! -L "$FACTS_DIR" ]; then
+            rm -f -- "$FACTS_DIR/account_facts.json" "$FACTS_DIR/source/execution_report.json"
+            if [ -d "$FACTS_DIR/source" ]; then
+              rmdir -- "$FACTS_DIR/source"
+            fi
+            rmdir -- "$FACTS_DIR"
+          fi
