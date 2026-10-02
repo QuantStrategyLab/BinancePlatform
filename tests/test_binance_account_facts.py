@@ -662,6 +662,35 @@ def test_runtime_target_and_protected_binding_match_canonical_selector_shape():
     assert reader._binding(json.dumps(binding), target, UID_DIGEST, READER_SHA) == binding
 
 
+def test_runtime_target_accepts_reconcile_only_with_valid_continuity_fingerprint():
+    from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
+    from scripts import read_binance_account_facts as reader
+
+    target = {
+        "platform_id": "binance",
+        "strategy_profile": "synthetic-profile",
+        "dry_run_only": False,
+        "deployment_selector": "synthetic-deployment",
+        "account_selector": ["synthetic-account"],
+        "account_scope": "synthetic-scope",
+        "service_name": "synthetic-service",
+    }
+    continuity = {
+        "state": "RECONCILE_ONLY",
+        "baseline_kind": "legacy_authorized",
+        "baseline_id": "synthetic-baseline",
+        "baseline_target_sha256": runtime_target_fingerprint(target),
+        "captured_at": "2026-10-02",
+    }
+    target["live_continuity"] = continuity
+    resolved = reader._target_identity(json.dumps(target))
+    assert resolved["live_continuity"]["state"] == "RECONCILE_ONLY"
+
+    target["live_continuity"] = {**continuity, "baseline_target_sha256": "0" * 64}
+    with pytest.raises(reader.ReaderError, match="runtime_target_invalid"):
+        reader._target_identity(json.dumps(target))
+
+
 def _eligible_strategy_report(*, receipt_outcome="no_action", confirmation=None, observation=None):
     from quant_platform_kit.common.execution_receipts import build_execution_receipt
 
@@ -715,6 +744,40 @@ def test_strategy_report_accepts_closed_execution_receipt():
 
     report, target = _eligible_strategy_report()
     reader.validate_strategy_report(report, target)
+
+
+@pytest.mark.parametrize("error_summary", [{}, {"errors": []}])
+def test_strategy_report_accepts_only_exact_empty_error_summary_shapes(error_summary):
+    from scripts import read_binance_account_facts as reader
+
+    report, target = _eligible_strategy_report()
+    report["error_summary"] = error_summary
+    reader.validate_strategy_report(report, target)
+
+
+@pytest.mark.parametrize("error_summary", [
+    None,
+    [],
+    {"errors": None},
+    {"errors": ["synthetic-error"]},
+    {"errors": [], "extra": "synthetic"},
+])
+def test_strategy_report_rejects_invalid_or_open_error_summary_shapes(error_summary):
+    from scripts import read_binance_account_facts as reader
+
+    report, target = _eligible_strategy_report()
+    report["error_summary"] = error_summary
+    with pytest.raises(reader.ReaderError, match="strategy_report_not_eligible"):
+        reader.validate_strategy_report(report, target)
+
+
+def test_strategy_report_rejects_missing_error_summary():
+    from scripts import read_binance_account_facts as reader
+
+    report, target = _eligible_strategy_report()
+    del report["error_summary"]
+    with pytest.raises(reader.ReaderError, match="strategy_report_not_eligible"):
+        reader.validate_strategy_report(report, target)
 
 
 def test_strategy_report_accepts_missing_receipt_only_for_explicit_zero_counters():
