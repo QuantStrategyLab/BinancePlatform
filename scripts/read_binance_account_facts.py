@@ -33,7 +33,7 @@ from application.account_facts import (  # noqa: E402
 
 
 REPOSITORY = "QuantStrategyLab/BinancePlatform"
-APPROVED_RUNTIME_WORKFLOW_SHA = "9cfcf0531d1ea176e6f26590cf15edbd31bd6567"
+LEGACY_RUNTIME_WORKFLOW_SHA = "9cfcf0531d1ea176e6f26590cf15edbd31bd6567"
 APPROVED_APPLICATION_SHA = "8cb56617115fa45028e34d788e71884b6a303d77"
 RUNTIME_WORKFLOW_NAME = "Runtime"
 RUNTIME_BRANCH = "runtime-production"
@@ -227,7 +227,7 @@ def _ensure_latest_runtime_run(*, run_id: str, token: str, api_url: str) -> None
         or row.get("status") != "completed"
         or row.get("conclusion") != "success"
         or row.get("head_branch") != RUNTIME_BRANCH
-        or row.get("head_sha") != APPROVED_RUNTIME_WORKFLOW_SHA
+        or row.get("head_sha") != LEGACY_RUNTIME_WORKFLOW_SHA
         or not isinstance(row.get("repository"), Mapping)
         or row["repository"].get("full_name") != REPOSITORY
     ):
@@ -238,6 +238,204 @@ def verify_source_is_current(*, run_id: str, token: str, api_url: str) -> None:
     """Fail closed if any newer or active Runtime run surrounds this read."""
     _ensure_no_active_runtime_run(token=token, api_url=api_url)
     _ensure_latest_runtime_run(run_id=run_id, token=token, api_url=api_url)
+
+
+def _parse_github_time(value: Any) -> datetime:
+    if not isinstance(value, str) or not value:
+        raise _stop("parent_run_unverified")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        raise _stop("parent_run_unverified") from None
+    if parsed.tzinfo is None:
+        raise _stop("parent_run_unverified")
+    return parsed.astimezone(timezone.utc)
+
+
+def _ensure_no_other_active_parent_run(
+    *, run_id: str, token: str, api_url: str
+) -> None:
+    active_statuses = ("queued", "in_progress", "requested", "waiting", "pending")
+    own_in_progress_seen = False
+    for status in active_statuses:
+        result = _api_json(
+            f"{api_url}/repos/{REPOSITORY}/actions/workflows/main.yml/runs"
+            f"?status={status}&per_page=100",
+            token,
+        )
+        rows = result.get("workflow_runs") if isinstance(result, Mapping) else None
+        if (
+            not isinstance(rows, list)
+            or type(result.get("total_count")) is not int
+            or result["total_count"] > 100
+        ):
+            raise _stop("runtime_activity_unverified")
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise _stop("runtime_activity_unverified")
+            if str(row.get("path") or "").split("@", 1)[0] != ".github/workflows/main.yml":
+                raise _stop("runtime_activity_unverified")
+            if str(row.get("id")) == str(run_id):
+                if status != "in_progress" or row.get("status") != "in_progress":
+                    raise _stop("runtime_parent_attempt_mismatch")
+                own_in_progress_seen = True
+                continue
+            raise _stop("runtime_activity_present")
+    if not own_in_progress_seen:
+        raise _stop("runtime_parent_attempt_mismatch")
+
+
+def _ensure_latest_parent_run(*, run_id: str, token: str, api_url: str) -> None:
+    result = _api_json(
+        f"{api_url}/repos/{REPOSITORY}/actions/workflows/main.yml/runs?per_page=1",
+        token,
+    )
+    rows = result.get("workflow_runs") if isinstance(result, Mapping) else None
+    if (
+        not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], Mapping)
+        or type(result.get("total_count")) is not int or result["total_count"] < 1
+    ):
+        raise _stop("runtime_latest_unverified")
+    row = rows[0]
+    if (
+        str(row.get("id")) != str(run_id)
+        or row.get("name") != RUNTIME_WORKFLOW_NAME
+        or str(row.get("path") or "").split("@", 1)[0] != ".github/workflows/main.yml"
+        or row.get("head_branch") != RUNTIME_BRANCH
+        or row.get("status") != "in_progress"
+    ):
+        raise _stop("runtime_parent_not_latest")
+
+
+def verify_parent_run(
+    *, run_id: str, run_attempt: int, repository: str, ref: str, github_sha: str,
+    runtime_workflow_sha: str, token: str, api_url: str,
+) -> dict[str, str]:
+    """Verify the exact in-progress Runtime parent and its completed read inputs."""
+    if (
+        repository != REPOSITORY
+        or not re.fullmatch(r"[1-9][0-9]{0,19}", str(run_id))
+        or type(run_attempt) is not int or run_attempt != 1
+        or ref != f"refs/heads/{RUNTIME_BRANCH}"
+        or not _GIT_SHA.fullmatch(runtime_workflow_sha)
+        or github_sha != runtime_workflow_sha
+    ):
+        raise _stop("parent_run_identity_mismatch")
+
+    _ensure_no_other_active_parent_run(run_id=run_id, token=token, api_url=api_url)
+    _ensure_latest_parent_run(run_id=run_id, token=token, api_url=api_url)
+    run = _api_json(
+        f"{api_url}/repos/{REPOSITORY}/actions/runs/{quote(str(run_id))}", token
+    )
+    if (
+        not isinstance(run, Mapping)
+        or type(run.get("id")) is not int or run.get("id") != int(run_id)
+        or type(run.get("run_attempt")) is not int or run.get("run_attempt") != 1
+        or run.get("name") != RUNTIME_WORKFLOW_NAME
+        or str(run.get("path") or "").split("@", 1)[0] != ".github/workflows/main.yml"
+        or run.get("event") != "workflow_dispatch"
+        or run.get("status") != "in_progress"
+        or run.get("head_branch") != RUNTIME_BRANCH
+        or run.get("head_sha") != runtime_workflow_sha
+        or not isinstance(run.get("repository"), Mapping)
+        or run["repository"].get("full_name") != REPOSITORY
+        or not isinstance(run.get("head_repository"), Mapping)
+        or run["head_repository"].get("full_name") != REPOSITORY
+    ):
+        raise _stop("parent_run_identity_mismatch")
+
+    jobs_result = _api_json(
+        f"{api_url}/repos/{REPOSITORY}/actions/runs/{quote(str(run_id))}/jobs?per_page=100",
+        token,
+    )
+    jobs = jobs_result.get("jobs") if isinstance(jobs_result, Mapping) else None
+    if not isinstance(jobs, list) or type(jobs_result.get("total_count")) is not int or jobs_result["total_count"] > 100:
+        raise _stop("parent_run_jobs_unverified")
+    deploy_jobs = [job for job in jobs if isinstance(job, Mapping) and job.get("name") == "deploy"]
+    if len(deploy_jobs) != 1:
+        raise _stop("parent_deploy_unverified")
+    deploy = deploy_jobs[0]
+    steps = deploy.get("steps")
+    if (
+        deploy.get("status") != "completed" or deploy.get("conclusion") != "success"
+        or not isinstance(steps, list)
+    ):
+        raise _stop("parent_deploy_unverified")
+    strategy_steps = [step for step in steps if isinstance(step, Mapping) and step.get("name") == "4. Run trading strategy"]
+    report_steps = [step for step in steps if isinstance(step, Mapping) and step.get("name") == "5. Stage execution report for isolated log publisher"]
+    if (
+        len(strategy_steps) != 1 or strategy_steps[0].get("status") != "completed"
+        or strategy_steps[0].get("conclusion") != "success"
+        or len(report_steps) != 1 or report_steps[0].get("status") != "completed"
+        or report_steps[0].get("conclusion") != "success"
+    ):
+        raise _stop("parent_strategy_or_report_unverified")
+    deploy_started = _parse_github_time(deploy.get("started_at"))
+    strategy_started = _parse_github_time(strategy_steps[0].get("started_at"))
+    strategy_finished = _parse_github_time(strategy_steps[0].get("completed_at"))
+    report_started = _parse_github_time(report_steps[0].get("started_at"))
+    report_finished = _parse_github_time(report_steps[0].get("completed_at"))
+    if (
+        strategy_started < deploy_started or strategy_finished < strategy_started
+        or report_started < strategy_finished or report_finished < report_started
+    ):
+        raise _stop("parent_run_jobs_unverified")
+
+    # The protected setting and report binding identify the intended app, but
+    # only the Runtime release-selection log proves what this parent ran.
+    _validate_release_log(str(run_id), token, api_url)
+
+    artifacts_result = _api_json(
+        f"{api_url}/repos/{REPOSITORY}/actions/runs/{quote(str(run_id))}/artifacts?per_page=100",
+        token,
+    )
+    artifacts = artifacts_result.get("artifacts") if isinstance(artifacts_result, Mapping) else None
+    if (
+        not isinstance(artifacts, list)
+        or type(artifacts_result.get("total_count")) is not int
+        or artifacts_result["total_count"] > 100
+    ):
+        raise _stop("trigger_report_artifact_missing")
+    artifact_name = f"{EXPECTED_REPORT_ARTIFACT_PREFIX}{run_id}"
+    matches = [item for item in artifacts if isinstance(item, Mapping) and item.get("name") == artifact_name]
+    if len(matches) != 1:
+        raise _stop("trigger_report_artifact_missing")
+    artifact = matches[0]
+    if (
+        artifact.get("expired") is not False
+        or type(artifact.get("size_in_bytes")) is not int or artifact["size_in_bytes"] <= 0
+        or _parse_github_time(artifact.get("created_at")) < strategy_finished
+        or _parse_github_time(artifact.get("created_at")) < deploy_started
+    ):
+        raise _stop("trigger_report_artifact_missing")
+    return {"run_id": str(run_id), "report_artifact": artifact_name}
+
+
+def verify_current_source_from_env(env: Mapping[str, str]) -> None:
+    mode = env.get("SOURCE_MODE", "legacy_terminal")
+    if mode == "same_parent":
+        try:
+            attempt = int(env.get("GITHUB_RUN_ATTEMPT", ""))
+        except ValueError:
+            raise _stop("parent_run_attempt_mismatch") from None
+        verify_parent_run(
+            run_id=str(env.get("GITHUB_RUN_ID") or ""),
+            run_attempt=attempt,
+            repository=str(env.get("GITHUB_REPOSITORY") or ""),
+            ref=str(env.get("GITHUB_REF") or ""),
+            github_sha=str(env.get("GITHUB_SHA") or ""),
+            runtime_workflow_sha=str(env.get("BINANCE_RUNTIME_WORKFLOW_SHA") or ""),
+            token=str(env.get("GITHUB_TOKEN") or ""),
+            api_url=str(env.get("GITHUB_API_URL") or "https://api.github.com"),
+        )
+    elif mode == "legacy_terminal":
+        verify_source_is_current(
+            run_id=str(env.get("SOURCE_RUN_ID") or ""),
+            token=str(env.get("GITHUB_TOKEN") or ""),
+            api_url=str(env.get("GITHUB_API_URL") or "https://api.github.com"),
+        )
+    else:
+        raise _stop("source_mode_invalid")
 
 
 def verify_trigger_run(*, run_id: str, repository: str, token: str, api_url: str) -> dict[str, str]:
@@ -256,7 +454,7 @@ def verify_trigger_run(*, run_id: str, repository: str, token: str, api_url: str
         or run.get("status") != "completed"
         or run.get("conclusion") != "success"
         or run.get("head_branch") != RUNTIME_BRANCH
-        or run.get("head_sha") != APPROVED_RUNTIME_WORKFLOW_SHA
+        or run.get("head_sha") != LEGACY_RUNTIME_WORKFLOW_SHA
         or not isinstance(head_repo, Mapping)
         or head_repo.get("full_name") != REPOSITORY
         or not isinstance(base_repo, Mapping)
@@ -607,12 +805,7 @@ def read_account_facts(*, report_path: Path, output_path: Path, env: Mapping[str
     _validate_authority_target(authority, target)
     report = _report_json(report_path)
     validate_strategy_report(report, target)
-    source_run_id = str(env.get("SOURCE_RUN_ID") or "")
-    github_token = str(env.get("GITHUB_TOKEN") or "")
-    github_api_url = str(env.get("GITHUB_API_URL") or "https://api.github.com")
-    verify_source_is_current(
-        run_id=source_run_id, token=github_token, api_url=github_api_url
-    )
+    verify_current_source_from_env(env)
 
     # Client construction is network-silent: python-binance ping is disabled.
     # The capability wrapper exposes only the two signed wallet GET endpoints.
@@ -635,14 +828,36 @@ def read_account_facts(*, report_path: Path, output_path: Path, env: Mapping[str
         observed_started_at=started_at,
         clock=lambda: datetime.now(timezone.utc),
     )
-    verify_source_is_current(
-        run_id=source_run_id, token=github_token, api_url=github_api_url
-    )
+    verify_current_source_from_env(env)
     _write_private_json(output_path, validate_account_facts_payload(payload))
 
 
-def preflight(*, run_id: str, repository: str, token: str, api_url: str, output: Path) -> None:
-    result = verify_trigger_run(run_id=run_id, repository=repository, token=token, api_url=api_url)
+def preflight(*, env: Mapping[str, str], output: Path) -> None:
+    mode = env.get("SOURCE_MODE", "legacy_terminal")
+    if mode == "same_parent":
+        try:
+            attempt = int(env.get("GITHUB_RUN_ATTEMPT", ""))
+        except ValueError:
+            raise _stop("parent_run_attempt_mismatch") from None
+        result = verify_parent_run(
+            run_id=str(env.get("GITHUB_RUN_ID") or ""),
+            run_attempt=attempt,
+            repository=str(env.get("GITHUB_REPOSITORY") or ""),
+            ref=str(env.get("GITHUB_REF") or ""),
+            github_sha=str(env.get("GITHUB_SHA") or ""),
+            runtime_workflow_sha=str(env.get("BINANCE_RUNTIME_WORKFLOW_SHA") or ""),
+            token=str(env.get("GITHUB_TOKEN") or ""),
+            api_url=str(env.get("GITHUB_API_URL") or "https://api.github.com"),
+        )
+    elif mode == "legacy_terminal":
+        result = verify_trigger_run(
+            run_id=str(env.get("SOURCE_RUN_ID") or ""),
+            repository=str(env.get("GITHUB_REPOSITORY") or ""),
+            token=str(env.get("GITHUB_TOKEN") or ""),
+            api_url=str(env.get("GITHUB_API_URL") or "https://api.github.com"),
+        )
+    else:
+        raise _stop("source_mode_invalid")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
         f"source_run_id={result['run_id']}\nreport_artifact={result['report_artifact']}\n",
@@ -661,22 +876,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.preflight:
-            run_id = str(os.getenv("SOURCE_RUN_ID") or "")
-            preflight(
-                run_id=run_id,
-                repository=str(os.getenv("GITHUB_REPOSITORY") or ""),
-                token=str(os.getenv("GITHUB_TOKEN") or ""),
-                api_url=str(os.getenv("GITHUB_API_URL") or "https://api.github.com"),
-                output=Path(os.getenv("GITHUB_OUTPUT") or "account-facts-preflight.json"),
-            )
+            preflight(env=os.environ, output=Path(os.getenv("GITHUB_OUTPUT") or "account-facts-preflight.json"))
             print("account_facts_preflight=ready")
             return 0
         if args.verify_current_source:
-            verify_source_is_current(
-                run_id=str(os.getenv("SOURCE_RUN_ID") or ""),
-                token=str(os.getenv("GITHUB_TOKEN") or ""),
-                api_url=str(os.getenv("GITHUB_API_URL") or "https://api.github.com"),
-            )
+            verify_current_source_from_env(os.environ)
             print("account_facts_source_current=true")
             return 0
         if args.report is None or args.output is None:
