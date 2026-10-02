@@ -47,20 +47,29 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def _http_failure_code(error: HTTPError) -> str:
+    status = error.code
+    if type(status) is not int or not 100 <= status <= 599:
+        return _HTTP_REJECTED
     try:
         raw = error.read(4097)
-        if not isinstance(raw, bytes) or len(raw) > 4096:
-            return _HTTP_REJECTED
-        body = json.loads(raw.decode("utf-8"))
-        if (not isinstance(body, dict) or set(body) != {"ok", "error"}
-                or body.get("ok") is not False or not isinstance(body.get("error"), str)):
-            return _HTTP_REJECTED
-        label = _HTTP_ERROR_LABELS.get((error.code, body["error"]))
-        if label is None:
-            return _HTTP_REJECTED
-        return f"account_facts_publish_{label}"
+        if not isinstance(raw, bytes):
+            shape = "invalid_body"
+        elif len(raw) > 4096:
+            shape = "body_oversized"
+        else:
+            shape = "body_invalid_json"
+            body = json.loads(raw.decode("utf-8"))
+            if isinstance(body, dict):
+                shape = "body_unrecognized_json"
+                if (set(body) == {"ok", "error"} and body.get("ok") is False
+                        and isinstance(body.get("error"), str)):
+                    shape = "body_unknown_error_code"
+                    label = _HTTP_ERROR_LABELS.get((status, body["error"]))
+                    if label is not None:
+                        return f"account_facts_publish_{label}"
+        return f"account_facts_publish_http_{status}_{shape}"
     except (UnicodeError, ValueError, TypeError, RecursionError):
-        return _HTTP_REJECTED
+        return f"account_facts_publish_http_{status}_body_invalid_json"
 
 
 def publish_account_facts(*, facts_path: Path, env) -> str:
