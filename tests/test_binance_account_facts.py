@@ -112,6 +112,162 @@ def test_workflow_uses_fixed_protected_reader_revision_not_trigger_sha():
     assert "READER_PUBLIC_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || '' }}" in workflow
     assert "ref: ${{ github.sha }}" not in workflow
     assert "git rev-parse HEAD" in workflow
+    assert "workflow_call:" in workflow
+    assert "workflow_run:" not in workflow
+    assert "github.ref == 'refs/heads/runtime-production'" in workflow
+    assert "timeout-minutes: 5" in workflow
+    assert "continue-on-error: true" in workflow
+
+
+def _parent_run_api(url, _token):
+    from urllib.parse import parse_qs, urlparse
+
+    parsed = urlparse(url)
+    if "/actions/workflows/main.yml/runs?status=" in url:
+        status = parse_qs(parsed.query)["status"][0]
+        rows = [{"id": 501, "path": ".github/workflows/main.yml@refs/heads/runtime-production", "status": "in_progress"}] if status == "in_progress" else []
+        return {"total_count": len(rows), "workflow_runs": rows}
+    if parsed.path.endswith("/actions/workflows/main.yml/runs"):
+        return {"total_count": 1, "workflow_runs": [{
+            "id": 501, "name": "Runtime",
+            "path": ".github/workflows/main.yml@refs/heads/runtime-production",
+            "head_branch": "runtime-production", "status": "in_progress",
+        }]}
+    if parsed.path.endswith("/actions/runs/501"):
+        return {
+            "id": 501, "run_attempt": 1, "name": "Runtime",
+            "path": ".github/workflows/main.yml@refs/heads/runtime-production",
+            "event": "workflow_dispatch", "status": "in_progress",
+            "head_branch": "runtime-production", "head_sha": "d" * 40,
+            "repository": {"full_name": "QuantStrategyLab/BinancePlatform"},
+            "head_repository": {"full_name": "QuantStrategyLab/BinancePlatform"},
+        }
+    if parsed.path.endswith("/actions/runs/501/jobs"):
+        return {"total_count": 1, "jobs": [{
+            "id": 701, "name": "deploy", "status": "completed", "conclusion": "success",
+            "started_at": "2026-10-02T10:00:00Z",
+            "steps": [
+                {"name": "Resolve approved runtime release SHA", "status": "completed", "conclusion": "success"},
+                {"name": "4. Run trading strategy", "status": "completed", "conclusion": "success", "started_at": "2026-10-02T10:01:00Z", "completed_at": "2026-10-02T10:05:00Z"},
+                {"name": "5. Stage execution report for isolated log publisher", "status": "completed", "conclusion": "success", "started_at": "2026-10-02T10:05:01Z", "completed_at": "2026-10-02T10:06:00Z"},
+            ],
+        }]}
+    if parsed.path.endswith("/actions/runs/501/artifacts"):
+        return {"total_count": 1, "artifacts": [{
+            "name": "binance-execution-report-501", "expired": False,
+            "size_in_bytes": 123, "created_at": "2026-10-02T10:05:10Z",
+        }]}
+    raise AssertionError("unexpected synthetic GitHub API path")
+
+
+def _install_parent_release_log(monkeypatch, reader, selected_sha=APP_SHA):
+    log_text = (
+        f"Selected runtime release SHA {selected_sha} "
+        f"(workflow github.sha={'d' * 40} is not used as the application execution identity)."
+    )
+    monkeypatch.setattr(reader, "_read_job_log_text", lambda *_args: log_text.encode())
+
+
+def test_same_parent_runtime_read_is_allowed_only_for_exact_in_progress_run(monkeypatch):
+    from scripts import read_binance_account_facts as reader
+
+    monkeypatch.setattr(reader, "_api_json", _parent_run_api)
+    _install_parent_release_log(monkeypatch, reader)
+    result = reader.verify_parent_run(
+        run_id="501", run_attempt=1, repository="QuantStrategyLab/BinancePlatform",
+        ref="refs/heads/runtime-production", github_sha="d" * 40,
+        runtime_workflow_sha="d" * 40, token="synthetic", api_url="https://api.example",
+    )
+    assert result == {"run_id": "501", "report_artifact": "binance-execution-report-501"}
+
+
+@pytest.mark.parametrize(
+    "changes,reason",
+    [
+        ({"run_attempt": 2}, "parent_run_identity_mismatch"),
+        ({"repository": "other/repository"}, "parent_run_identity_mismatch"),
+        ({"ref": "refs/heads/main"}, "parent_run_identity_mismatch"),
+        ({"github_sha": "e" * 40}, "parent_run_identity_mismatch"),
+        ({"runtime_workflow_sha": "bad"}, "parent_run_identity_mismatch"),
+    ],
+)
+def test_same_parent_runtime_rejects_identity_or_retry_mismatch(monkeypatch, changes, reason):
+    from scripts import read_binance_account_facts as reader
+
+    monkeypatch.setattr(reader, "_api_json", lambda *_args: pytest.fail("invalid caller must stop before API"))
+    args = {
+        "run_id": "501", "run_attempt": 1,
+        "repository": "QuantStrategyLab/BinancePlatform",
+        "ref": "refs/heads/runtime-production", "github_sha": "d" * 40,
+        "runtime_workflow_sha": "d" * 40, "token": "synthetic",
+        "api_url": "https://api.example",
+    }
+    args.update(changes)
+    with pytest.raises(reader.ReaderError, match=reason):
+        reader.verify_parent_run(**args)
+
+
+@pytest.mark.parametrize(
+    "mutation,reason",
+    [
+        ("other_active", "runtime_activity_present"),
+        ("newer_run", "runtime_parent_not_latest"),
+        ("failed_strategy", "parent_strategy_or_report_unverified"),
+        ("failed_report_upload", "parent_strategy_or_report_unverified"),
+        ("early_artifact", "trigger_report_artifact_missing"),
+        ("duplicate_artifact", "trigger_report_artifact_missing"),
+    ],
+)
+def test_same_parent_runtime_requires_unique_completed_strategy_inputs(monkeypatch, mutation, reason):
+    from scripts import read_binance_account_facts as reader
+
+    _install_parent_release_log(monkeypatch, reader)
+
+    def api(url, token):
+        result = _parent_run_api(url, token)
+        def fail_step(step_name):
+            steps = result["jobs"][0]["steps"]
+            matches = [step for step in steps if step.get("name") == step_name]
+            assert len(matches) == 1
+            matches[0]["conclusion"] = "skipped" if mutation == "failed_strategy" else "failure"
+
+        if mutation == "other_active" and "status=in_progress" in url:
+            result["workflow_runs"].append({
+                "id": 502, "path": ".github/workflows/main.yml", "status": "in_progress",
+            })
+            result["total_count"] = 2
+        elif mutation == "newer_run" and "/actions/workflows/main.yml/runs?per_page=1" in url:
+            result["workflow_runs"][0]["id"] = 502
+        elif mutation == "failed_strategy" and url.endswith("/jobs?per_page=100"):
+            fail_step("4. Run trading strategy")
+        elif mutation == "failed_report_upload" and url.endswith("/jobs?per_page=100"):
+            fail_step("5. Stage execution report for isolated log publisher")
+        elif mutation in {"early_artifact", "duplicate_artifact"} and url.endswith("/artifacts?per_page=100"):
+            result["artifacts"][0]["created_at"] = "2026-10-02T10:04:59Z"
+            if mutation == "duplicate_artifact":
+                result["artifacts"].append(dict(result["artifacts"][0]))
+        return result
+
+    monkeypatch.setattr(reader, "_api_json", api)
+    with pytest.raises(reader.ReaderError, match=reason):
+        reader.verify_parent_run(
+            run_id="501", run_attempt=1, repository="QuantStrategyLab/BinancePlatform",
+            ref="refs/heads/runtime-production", github_sha="d" * 40,
+            runtime_workflow_sha="d" * 40, token="synthetic", api_url="https://api.example",
+        )
+
+
+def test_same_parent_rejects_actual_app_release_mismatch_even_when_protected_sha_matches(monkeypatch):
+    from scripts import read_binance_account_facts as reader
+
+    monkeypatch.setattr(reader, "_api_json", _parent_run_api)
+    _install_parent_release_log(monkeypatch, reader, selected_sha="e" * 40)
+    with pytest.raises(reader.ReaderError, match="trigger_release_mismatch"):
+        reader.verify_parent_run(
+            run_id="501", run_attempt=1, repository="QuantStrategyLab/BinancePlatform",
+            ref="refs/heads/runtime-production", github_sha="d" * 40,
+            runtime_workflow_sha="d" * 40, token="synthetic", api_url="https://api.example",
+        )
 
 
 def test_rejects_incomplete_flexible_earn_page():
