@@ -45,6 +45,13 @@ class FakeBinance:
         self.calls.append(("earn", current, size))
         return self.earn_pages[current - 1]
 
+    def _request_margin_api(self, method, path, **kwargs):
+        self.calls.append(("wallet", method, path, kwargs))
+        return [
+            {"activate": True, "balance": "12.25", "walletName": "SPOT"},
+            {"activate": True, "balance": "2.75", "walletName": "FUNDING"},
+        ]
+
 
 def _uid_hash() -> str:
     from quant_platform_kit.common.broker_reconciliation import calculate_broker_observation_sha256
@@ -54,7 +61,7 @@ def _uid_hash() -> str:
 
 def _collect(client=None, times=None):
     raw = client or FakeBinance()
-    clock_values = iter(times or [START + timedelta(seconds=i) for i in (1, 2, 3)])
+    clock_values = iter(times or [START + timedelta(seconds=i) for i in (1, 2, 3, 4)])
     return collect_account_facts(
         ReadOnlyBinanceClient(raw),
         expected_account_scope_sha256=_uid_hash(),
@@ -83,9 +90,156 @@ def test_collects_spot_and_all_flexible_earn_as_native_quantities():
     validate_account_facts_payload(payload)
 
 
+def test_wallet_valuation_is_separate_usdt_provider_total():
+    fake = FakeBinance()
+    payload = _collect(fake)
+    assert payload["assets"][0]["quantity"] == "0.85"
+    assert payload["wallet_valuation"] == {
+        "status": "available",
+        "amount": "15",
+        "currency": "USDT",
+        "source": "GET /sapi/v1/asset/wallet/balance",
+        "scope": "provider_returned_wallet_rows",
+        "observed_at": "2026-10-02T10:00:03Z",
+        "wallet_count": 2,
+    }
+    assert [call[0] for call in fake.calls] == ["spot", "earn", "wallet"]
+    validate_account_facts_payload(payload)
+
+
+@pytest.mark.parametrize(
+    ("rows", "reason"),
+    [
+        (None, "wallet_response_invalid"),
+        ([], "wallet_response_invalid"),
+        ([{"activate": True, "balance": "1", "walletName": "SPOT", "unexpected": 1}], "wallet_row_invalid"),
+        ([{"activate": True, "balance": "1", "walletName": "SPOT"}] * 2, "wallet_duplicate_name"),
+        ([{"activate": False, "balance": "1", "walletName": "SPOT"}], "wallet_inactive_nonzero"),
+        ([{"activate": True, "balance": "-1", "walletName": "SPOT"}], "wallet_balance_invalid"),
+        ([{"activate": True, "balance": "NaN", "walletName": "SPOT"}], "wallet_balance_invalid"),
+        ([{"activate": True, "balance": "1e2", "walletName": "SPOT"}], "wallet_balance_invalid"),
+        ([{"activate": 1, "balance": "1", "walletName": "SPOT"}], "wallet_row_invalid"),
+    ],
+)
+def test_invalid_wallet_valuation_stays_unavailable_without_losing_quantities(rows, reason):
+    class WalletResponseBinance(FakeBinance):
+        def _request_margin_api(self, method, path, **kwargs):
+            self.calls.append(("wallet", method, path, kwargs))
+            return rows
+
+    payload = _collect(WalletResponseBinance())
+    assert payload["assets"]
+    assert payload["wallet_valuation"] == {
+        "status": "unavailable",
+        "amount": None,
+        "currency": None,
+        "source": "GET /sapi/v1/asset/wallet/balance",
+        "scope": "provider_returned_wallet_rows",
+        "observed_at": None,
+        "wallet_count": None,
+        "reason_code": reason,
+    }
+    validate_account_facts_payload(payload)
+
+
+def test_wallet_read_failure_does_not_discard_native_quantities():
+    class WalletUnavailable(FakeBinance):
+        def _request_margin_api(self, method, path, **kwargs):
+            raise RuntimeError("synthetic-private-error")
+
+    payload = _collect(WalletUnavailable())
+    assert payload["assets"]
+    assert payload["wallet_valuation"]["reason_code"] == "wallet_read_failed"
+    assert "synthetic-private-error" not in json.dumps(payload)
+    validate_account_facts_payload(payload)
+
+
+def test_inactive_zero_wallet_is_valid_and_zero_total_is_not_missing():
+    class ZeroWallet(FakeBinance):
+        def _request_margin_api(self, method, path, **kwargs):
+            return [{"activate": False, "balance": "0.00000000", "walletName": "SPOT"}]
+
+    payload = _collect(ZeroWallet())
+    assert payload["wallet_valuation"]["status"] == "available"
+    assert payload["wallet_valuation"]["amount"] == "0"
+    assert payload["wallet_valuation"]["wallet_count"] == 1
+    validate_account_facts_payload(payload)
+
+
+def test_wallet_decimal_sum_preserves_precision_and_rejects_excessive_rows():
+    class PreciseWallet(FakeBinance):
+        def _request_margin_api(self, method, path, **kwargs):
+            return [
+                {"activate": True, "balance": "0.123456789012345678901234567890", "walletName": "A"},
+                {"activate": True, "balance": "0.000000000000000000000000000001", "walletName": "B"},
+            ]
+
+    payload = _collect(PreciseWallet())
+    assert payload["wallet_valuation"]["amount"] == "0.123456789012345678901234567891"
+
+    class TooManyWallets(FakeBinance):
+        def _request_margin_api(self, method, path, **kwargs):
+            return [
+                {"activate": True, "balance": "0", "walletName": f"WALLET-{index}"}
+                for index in range(33)
+            ]
+
+    overflow = _collect(TooManyWallets())
+    assert overflow["wallet_valuation"]["status"] == "unavailable"
+    assert overflow["wallet_valuation"]["reason_code"] == "wallet_response_invalid"
+
+
+def test_wallet_valuation_payload_rejects_unrecognized_failure_reason():
+    payload = _collect()
+    payload["wallet_valuation"] = {
+        "status": "unavailable",
+        "amount": None,
+        "currency": None,
+        "source": "GET /sapi/v1/asset/wallet/balance",
+        "scope": "provider_returned_wallet_rows",
+        "observed_at": None,
+        "wallet_count": None,
+        "reason_code": "synthetic-unrecognized",
+    }
+    with pytest.raises(AccountFactsUnavailable, match="payload_invalid"):
+        validate_account_facts_payload(payload)
+
+
+def test_wallet_request_uses_locked_sdk_signed_get_once_without_redirect(monkeypatch):
+    import requests
+    from binance.client import Client
+
+    raw_client = Client("synthetic-key", "synthetic-secret", requests_params={"timeout": 15}, ping=False)
+    captured = []
+
+    def fake_get(uri, **kwargs):
+        captured.append((uri, kwargs))
+        response = requests.Response()
+        response.status_code = 200
+        response.url = uri
+        response.encoding = "utf-8"
+        response._content = b'[{"activate":true,"balance":"1.25","walletName":"SPOT"}]'
+        return response
+
+    monkeypatch.setattr(raw_client.session, "get", fake_get)
+    response = ReadOnlyBinanceClient(raw_client).get_wallet_valuation_usdt()
+    assert response == [{"activate": True, "balance": "1.25", "walletName": "SPOT"}]
+    assert len(captured) == 1
+    uri, kwargs = captured[0]
+    assert uri == "https://api.binance.com/sapi/v1/asset/wallet/balance"
+    assert kwargs["timeout"] == 15
+    assert kwargs["allow_redirects"] is False
+    params = kwargs["params"]
+    assert "quoteAsset=USDT" in params
+    assert "needBalanceDetail=false" in params
+    assert "timestamp=" in params and "signature=" in params
+
+
 def test_synthetic_contract_fixture_matches_exact_producer_json():
     fixture_path = Path(__file__).parent / "fixtures" / "binance_account_facts.v1.synthetic.json"
-    payload = _collect(times=[START + timedelta(seconds=i) for i in (1, 2, 3)])
+    payload = _collect(times=[START + timedelta(seconds=i) for i in (1, 2, 3, 4)])
+    payload.pop("wallet_valuation")
+    payload["observed_finished_at"] = "2026-10-02T10:00:03Z"
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n"
     assert encoded == fixture_path.read_text(encoding="utf-8")
 
@@ -607,7 +761,8 @@ def test_payload_validator_rejects_reordered_observations():
 def test_zero_earn_positions_is_a_complete_empty_page():
     client = FakeBinance(earn_pages=[{"rows": [], "total": 0}])
     payload = _collect(client)
-    assert client.calls == [("spot",), ("earn", 1, 100)]
+    assert [call[0] for call in client.calls] == ["spot", "earn", "wallet"]
+    assert payload["wallet_valuation"]["status"] == "available"
     assert all(row["flexible_earn"] == "0" for row in payload["assets"])
 
 

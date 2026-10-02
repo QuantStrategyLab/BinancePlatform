@@ -27,8 +27,21 @@ SOURCE_BINDING_KIND = "binance_readonly_scope_revision"
 UNCOVERED_SCOPES = ["funding", "margin", "futures", "locked_earn"]
 PAGE_SIZE = 100
 MAX_EARN_POSITIONS = 10_000
+MAX_WALLET_ROWS = 32
+WALLET_VALUATION_CURRENCY = "USDT"
+WALLET_VALUATION_SOURCE = "GET /sapi/v1/asset/wallet/balance"
+WALLET_VALUATION_SCOPE = "provider_returned_wallet_rows"
+WALLET_VALUATION_FAILURES = frozenset({
+    "wallet_read_failed",
+    "wallet_response_invalid",
+    "wallet_row_invalid",
+    "wallet_duplicate_name",
+    "wallet_inactive_nonzero",
+    "wallet_balance_invalid",
+})
 _HEX_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
+_WALLET_DECIMAL = re.compile(r"(?:0|[1-9]\d{0,29})(?:\.\d{1,30})?\Z")
 _HANGUL_FILLERS = frozenset("\u115f\u1160\u3164\uffa0")
 
 
@@ -64,6 +77,17 @@ class ReadOnlyBinanceClient:
     ) -> Any:
         return self.__client.get_simple_earn_flexible_product_position(
             current=current, size=size
+        )
+
+    def get_wallet_valuation_usdt(self) -> Any:
+        """Read quote-valued wallet rows using the locked SDK's signed SAPI path."""
+        return self.__client._request_margin_api(
+            "get",
+            "asset/wallet/balance",
+            signed=True,
+            version=1,
+            data={"quoteAsset": WALLET_VALUATION_CURRENCY, "needBalanceDetail": "false"},
+            allow_redirects=False,
         )
 
 
@@ -124,6 +148,91 @@ def _decimal_text(value: Decimal) -> str:
         raise _fail("amount_invalid") from None
 
 
+def _wallet_valuation_unavailable(reason_code: str) -> dict[str, Any]:
+    if reason_code not in WALLET_VALUATION_FAILURES:
+        reason_code = "wallet_response_invalid"
+    return {
+        "status": "unavailable",
+        "amount": None,
+        "currency": None,
+        "source": WALLET_VALUATION_SOURCE,
+        "scope": WALLET_VALUATION_SCOPE,
+        "observed_at": None,
+        "wallet_count": None,
+        "reason_code": reason_code,
+    }
+
+
+def _wallet_valuation(response: Any, observed_at: datetime) -> dict[str, Any]:
+    if not isinstance(response, list) or not 1 <= len(response) <= MAX_WALLET_ROWS:
+        return _wallet_valuation_unavailable("wallet_response_invalid")
+    names: set[str] = set()
+    total = Decimal(0)
+    try:
+        with localcontext() as context:
+            context.prec = 100
+            for row in response:
+                if not isinstance(row, Mapping) or set(row) != {"activate", "balance", "walletName"}:
+                    return _wallet_valuation_unavailable("wallet_row_invalid")
+                name, active, balance_text = row["walletName"], row["activate"], row["balance"]
+                if not isinstance(name, str) or not name.strip() or len(name) > 128 or type(active) is not bool:
+                    return _wallet_valuation_unavailable("wallet_row_invalid")
+                if name in names:
+                    return _wallet_valuation_unavailable("wallet_duplicate_name")
+                names.add(name)
+                if not isinstance(balance_text, str) or not _WALLET_DECIMAL.fullmatch(balance_text):
+                    return _wallet_valuation_unavailable("wallet_balance_invalid")
+                amount = _decimal(balance_text)
+                if amount and not active:
+                    return _wallet_valuation_unavailable("wallet_inactive_nonzero")
+                total += amount
+    except AccountFactsUnavailable:
+        return _wallet_valuation_unavailable("wallet_balance_invalid")
+    except Exception:
+        return _wallet_valuation_unavailable("wallet_response_invalid")
+    try:
+        amount_text = _decimal_text(total)
+        observed_text = _utc_timestamp(observed_at)
+    except AccountFactsUnavailable:
+        return _wallet_valuation_unavailable("wallet_response_invalid")
+    return {
+        "status": "available",
+        "amount": amount_text,
+        "currency": WALLET_VALUATION_CURRENCY,
+        "source": WALLET_VALUATION_SOURCE,
+        "scope": WALLET_VALUATION_SCOPE,
+        "observed_at": observed_text,
+        "wallet_count": len(response),
+    }
+
+
+def _validate_wallet_valuation(summary: Any) -> None:
+    common = {"status", "amount", "currency", "source", "scope", "observed_at", "wallet_count"}
+    if not isinstance(summary, Mapping):
+        raise _fail("payload_invalid")
+    if summary.get("source") != WALLET_VALUATION_SOURCE or summary.get("scope") != WALLET_VALUATION_SCOPE:
+        raise _fail("payload_invalid")
+    if summary.get("status") == "available":
+        if set(summary) != common or summary.get("currency") != WALLET_VALUATION_CURRENCY:
+            raise _fail("payload_invalid")
+        amount, count = summary.get("amount"), summary.get("wallet_count")
+        if not isinstance(amount, str) or type(count) is not int or not 1 <= count <= MAX_WALLET_ROWS:
+            raise _fail("payload_invalid")
+        if not _WALLET_DECIMAL.fullmatch(amount):
+            raise _fail("payload_invalid")
+        parsed = _decimal(amount)
+        if _decimal_text(parsed) != amount or not isinstance(summary.get("observed_at"), str):
+            raise _fail("payload_invalid")
+        _parsed_timestamp(summary["observed_at"])
+    elif summary.get("status") == "unavailable":
+        if set(summary) != common | {"reason_code"} or any(
+            summary.get(key) is not None for key in ("amount", "currency", "observed_at", "wallet_count")
+        ) or summary.get("reason_code") not in WALLET_VALUATION_FAILURES:
+            raise _fail("payload_invalid")
+    else:
+        raise _fail("payload_invalid")
+
+
 def build_source_binding_id(
     *, account_scope_sha256: str, reader_public_revision: str,
     approved_application_revision: str,
@@ -161,7 +270,7 @@ def collect_account_facts(
     observed_started_at: datetime,
     clock,
 ) -> dict[str, Any]:
-    """Collect complete Spot plus Flexible Earn quantities, without valuation."""
+    """Collect Spot + Flexible Earn quantities and independent wallet valuation."""
     if not isinstance(client, ReadOnlyBinanceClient):
         raise _fail("readonly_client_required")
     if not isinstance(target_id, str) or not target_id.strip():
@@ -272,11 +381,27 @@ def collect_account_facts(
             raise _fail("flexible_earn_page_incomplete")
     earn_finished_at = clock()
     earn_finished = _utc_timestamp(earn_finished_at)
+    try:
+        wallet_response = client.get_wallet_valuation_usdt()
+    except Exception:
+        wallet_response = None
+        wallet_valuation = _wallet_valuation_unavailable("wallet_read_failed")
+        wallet_observed_at = None
+    else:
+        wallet_observed_at = clock()
+        wallet_valuation = _wallet_valuation(wallet_response, wallet_observed_at)
     finished_at = clock()
     finished = _utc_timestamp(finished_at)
     if (
         earn_finished_at.astimezone(timezone.utc) < spot_finished_at.astimezone(timezone.utc)
         or finished_at.astimezone(timezone.utc) < earn_finished_at.astimezone(timezone.utc)
+        or (
+            wallet_observed_at is not None
+            and (
+                wallet_observed_at.astimezone(timezone.utc) < earn_finished_at.astimezone(timezone.utc)
+                or finished_at.astimezone(timezone.utc) < wallet_observed_at.astimezone(timezone.utc)
+            )
+        )
     ):
         raise _fail("observation_time_invalid")
 
@@ -325,6 +450,7 @@ def collect_account_facts(
         "scope": SCOPE,
         "completeness": "complete_for_scope",
         "assets": asset_rows,
+        "wallet_valuation": wallet_valuation,
         "uncovered_scopes": list(UNCOVERED_SCOPES),
         "no_order": True,
         "execution_authority_granted": False,
@@ -340,7 +466,11 @@ def validate_account_facts_payload(payload: Any) -> dict[str, Any]:
         "earn_observed_at", "snapshot_atomic", "scope", "completeness",
         "assets", "uncovered_scopes", "no_order", "execution_authority_granted",
     }
-    if not isinstance(payload, Mapping) or set(payload) != required:
+    if (
+        not isinstance(payload, Mapping)
+        or not required.issubset(payload)
+        or set(payload) - required - {"wallet_valuation"}
+    ):
         raise _fail("payload_invalid")
     if (
         payload.get("schema_version") != SCHEMA_VERSION
@@ -408,5 +538,16 @@ def validate_account_facts_payload(payload: Any) -> dict[str, Any]:
         with localcontext() as context:
             context.prec = 100
             if quantity != spot_free + spot_locked + flexible_earn:
+                raise _fail("payload_invalid")
+    if "wallet_valuation" in payload:
+        _validate_wallet_valuation(payload["wallet_valuation"])
+        wallet_valuation = payload["wallet_valuation"]
+        if wallet_valuation["status"] == "available":
+            wallet_observed_at = _parsed_timestamp(wallet_valuation["observed_at"])
+            if not (
+                observation_times["earn_observed_at"]
+                <= wallet_observed_at
+                <= observation_times["observed_finished_at"]
+            ):
                 raise _fail("payload_invalid")
     return dict(payload)
