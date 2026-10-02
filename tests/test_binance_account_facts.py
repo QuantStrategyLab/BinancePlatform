@@ -1153,13 +1153,16 @@ def test_publisher_classifies_only_known_http_error_pairs_without_leaking_body(
     assert reads == [4097]
 
 
-@pytest.mark.parametrize(("status", "body"), [
-    (400, b"{\"ok\":false,\"error\":\"unknown-private-code\",\"private\":\"SENSITIVE\"}"),
-    (418, b"SENSITIVE private body"),
-    (409, b"x" * 4097),
+@pytest.mark.parametrize(("status", "body", "reason"), [
+    (400, b"{\"ok\":false,\"error\":\"unknown-private-code\",\"private\":\"SENSITIVE\"}",
+     "account_facts_publish_http_400_body_unrecognized_json"),
+    (400, b"{\"ok\":false,\"error\":\"unknown-private-code\"}",
+     "account_facts_publish_http_400_body_unknown_error_code"),
+    (418, b"SENSITIVE private body", "account_facts_publish_http_418_body_invalid_json"),
+    (409, b"x" * 4097, "account_facts_publish_http_409_body_oversized"),
 ])
 def test_publisher_rejects_unknown_or_oversized_http_error_body_closed(
-    tmp_path, monkeypatch, status, body
+    tmp_path, monkeypatch, status, body, reason
 ):
     from io import BytesIO
     from urllib.error import HTTPError
@@ -1196,7 +1199,8 @@ def test_publisher_rejects_unknown_or_oversized_http_error_body_closed(
                 "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-token",
             },
         )
-    assert str(raised.value) == "account_facts_publish_http_rejected"
+    assert str(raised.value) == reason
+    assert str(status) in str(raised.value)
     assert "SENSITIVE" not in str(raised.value)
     assert "private.example" not in str(raised.value)
     assert reads == [4097]
@@ -1274,3 +1278,148 @@ def test_publisher_classifies_invalid_ack_without_leaking_or_retrying(tmp_path, 
     assert str(raised.value) == "account_facts_publish_ack_invalid"
     assert "synthetic-secret" not in str(raised.value)
     assert calls == [20]
+
+
+def test_receiver_diagnosis_is_one_authenticated_get_with_closed_success():
+    from scripts import diagnose_binance_account_facts_receiver as diagnosis
+    from scripts import publish_binance_account_facts as publisher
+
+    assert diagnosis.QRS_ENDPOINT == publisher.QRS_ENDPOINT
+    calls = []
+
+    class Response:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, limit):
+            assert limit == 4097
+            return json.dumps({
+                "ok": True, "ready": True, "binding_valid": True,
+                "account_options_readable": True, "unique_match": True,
+            }).encode()
+
+    class Opener:
+        def open(self, request, timeout):
+            calls.append(request)
+            assert timeout == 15
+            return Response()
+
+    result = diagnosis.diagnose_receiver(token="synthetic-secret", opener_factory=lambda _handler: Opener())
+    assert result.category == "ready"
+    assert result.http_status == 200
+    assert result.body_shape == "readiness"
+    assert len(calls) == 1
+    assert calls[0].method == "GET"
+    assert calls[0].data is None
+    assert calls[0].get_header("Authorization") == "Bearer synthetic-secret"
+    assert "synthetic-secret" not in repr(result)
+
+
+@pytest.mark.parametrize(
+    "status,body,headers,category,shape,receiver_code,cf_code",
+    [
+        (403, {"success": False, "errors": [{"code": 1020, "message": "private edge detail"}],
+               "messages": [], "result": None}, {"Server": "cloudflare"},
+         "cloudflare_rejected", "cloudflare_error", None, 1020),
+        (403, {"private": "sensitive response"}, {"Server": "cloudflare"},
+         "http_rejected", "json_object_other", None, None),
+        (401, {"ok": False, "error": []}, {},
+         "http_rejected", "json_object_other", None, None),
+        (401, {"ok": False, "error": {}}, {},
+         "http_rejected", "json_object_other", None, None),
+        (401, {"ok": False, "error": "binance_account_facts_token_invalid"}, {},
+         "token_invalid", "token_error", "token_invalid", None),
+        (503, {"ok": False, "ready": False, "binding_valid": False,
+               "account_options_readable": False, "unique_match": False,
+               "error": "binance_account_facts_account_options_unavailable"}, {},
+         "account_options_unavailable", "receiver_error", "account_options_unavailable", None),
+    ],
+)
+def test_receiver_diagnosis_emits_only_closed_status_and_body_metadata(
+    status, body, headers, category, shape, receiver_code, cf_code
+):
+    from io import BytesIO
+    from urllib.error import HTTPError
+    from scripts import diagnose_binance_account_facts_receiver as diagnosis
+
+    calls = []
+
+    class Opener:
+        def open(self, request, timeout):
+            calls.append(request)
+            assert timeout == 15
+            error = HTTPError(
+                "https://private.example/private-path", status, "sensitive exception",
+                headers, BytesIO(json.dumps(body).encode()),
+            )
+            raise error
+
+    result = diagnosis.diagnose_receiver(token="synthetic-token", opener_factory=lambda _handler: Opener())
+    assert result.category == category
+    assert result.http_status == status
+    assert result.body_shape == shape
+    assert result.receiver_error == receiver_code
+    assert result.cloudflare_code == cf_code
+    assert len(calls) == 1 and calls[0].method == "GET" and calls[0].data is None
+    assert "private edge detail" not in repr(result)
+    assert "private.example" not in repr(result)
+    assert "sensitive exception" not in repr(result)
+
+
+def test_receiver_diagnosis_missing_token_and_transport_failure_never_retry():
+    from scripts import diagnose_binance_account_facts_receiver as diagnosis
+
+    calls = []
+    missing = diagnosis.diagnose_receiver(token="", opener_factory=lambda *_: calls.append("unexpected"))
+    assert missing.category == "token_missing"
+    assert calls == []
+
+    class Opener:
+        def open(self, request, timeout):
+            calls.append((request.method, timeout))
+            raise OSError("private transport detail")
+
+    failed = diagnosis.diagnose_receiver(token="synthetic-token", opener_factory=lambda _handler: Opener())
+    assert failed.category == "transport"
+    assert len(calls) == 1 and calls[0] == ("GET", 15)
+
+
+def test_receiver_diagnosis_rejects_ambiguous_json_and_unverified_cloudflare_code():
+    from scripts import diagnose_binance_account_facts_receiver as diagnosis
+
+    shape, code, cf_code = diagnosis._json_body_shape(
+        b'{"ok":true,"ok":false}', {"Server": "cloudflare"}
+    )
+    assert (shape, code, cf_code) == ("invalid_json", None, None)
+    envelope = json.dumps({
+        "success": False,
+        "errors": [{"code": 1020, "message": "private"}],
+        "messages": [], "result": None,
+    }).encode()
+    shape, code, cf_code = diagnosis._json_body_shape(envelope, {"Server": "other"})
+    assert (shape, code, cf_code) == ("json_object_other", None, None)
+
+
+def test_receiver_diagnosis_workflow_is_manual_main_only_and_get_only():
+    workflow = (Path(__file__).parents[1] / ".github" / "workflows"
+                / "diagnose-account-facts-receiver.yml").read_text(encoding="utf-8")
+    assert '"on":\n  workflow_dispatch:' in workflow
+    assert "refs/heads/main" in workflow
+    assert "git ls-remote https://github.com/QuantStrategyLab/BinancePlatform.git refs/heads/main" in workflow
+    assert 'ref: ${{ github.sha }}' in workflow
+    assert "git rev-parse HEAD" in workflow
+    assert "group: binance-account-facts-readonly" in workflow
+    assert "environment: binance-runtime" in workflow
+    assert "runs-on: self-hosted" in workflow
+    assert "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN: ${{ secrets.BINANCE_ACCOUNT_FACTS_SYNC_TOKEN }}" in workflow
+    assert "python3 scripts/diagnose_binance_account_facts_receiver.py" in workflow
+    assert "account_facts_publish" not in workflow
+    assert "read_binance_account_facts.py" not in workflow
+    assert "workflow_run:" not in workflow and "schedule:" not in workflow and "push:" not in workflow
+    assert "RUNTIME_TARGET_ENABLED" not in workflow and "BINANCE_ACCOUNT_FACTS_ENABLED" not in workflow
