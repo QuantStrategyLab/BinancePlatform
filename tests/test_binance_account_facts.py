@@ -446,7 +446,7 @@ def test_rejects_wrong_account_uid_before_earn_read():
     ({"uid": "123456", "balances": ["synthetic-private-row"]}, "spot_balance_row_invalid"),
     ({"uid": "123456", "balances": [{"asset": 17}]}, "spot_asset_type_invalid"),
     ({"uid": "123456", "balances": [{"asset": "synthetic-bad-symbol"}]}, "spot_asset_format_invalid"),
-    ({"uid": "123456", "balances": [{"asset": "币"}]}, "spot_asset_non_ascii"),
+    ({"uid": "123456", "balances": [{"asset": "A\u200b"}]}, "spot_asset_format_invalid"),
     ({"uid": "123456", "balances": [
         {"asset": "SYNTHETIC", "free": "0", "locked": "0"},
         {"asset": "SYNTHETIC", "free": "0", "locked": "0"},
@@ -463,6 +463,90 @@ def test_spot_validation_uses_fixed_reason_without_echoing_response_values(accou
         _collect(client)
     assert str(raised.value) == f"binance_account_facts_{reason}"
     assert client.calls == [("spot",)]
+
+
+@pytest.mark.parametrize("asset", ["币", "１２", "𐐀", "A" * 128, "汉" * 128])
+def test_unicode_asset_rules_preserve_spot_earn_and_payload_values(asset):
+    class UnicodeAsset(FakeBinance):
+        def get_account(self):
+            self.calls.append(("spot",))
+            return {
+                "uid": "123456",
+                "balances": [{"asset": asset, "free": "0.5", "locked": "0"}],
+            }
+
+        def get_simple_earn_flexible_product_position(self, *, current, size):
+            self.calls.append(("earn", current, size))
+            return {
+                "rows": [{"asset": asset, "productId": "synthetic-product", "totalAmount": "0.25"}],
+                "total": 1,
+            }
+
+    client = UnicodeAsset()
+    payload = _collect(client)
+    assert payload["assets"] == [{
+        "asset": asset,
+        "quantity": "0.75",
+        "spot_free": "0.5",
+        "spot_locked": "0",
+        "flexible_earn": "0.25",
+    }]
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    round_tripped = json.loads(encoded)
+    assert round_tripped["assets"][0]["asset"] == asset
+    validate_account_facts_payload(round_tripped)
+
+
+@pytest.mark.parametrize("asset", [
+    "", " ", "btc", "A-B", "A\u0301", "A\u200b", "A\u202e", "A\ud800", "😀", "A" * 129,
+    "A\u115f", "A\u1160", "A\u3164", "A\uffa0",
+])
+def test_unicode_asset_rules_reject_unsafe_or_out_of_contract_values(asset):
+    class InvalidAsset(FakeBinance):
+        def get_account(self):
+            self.calls.append(("spot",))
+            return {
+                "uid": "123456",
+                "balances": [{"asset": asset, "free": "0.5", "locked": "0"}],
+            }
+
+    with pytest.raises(AccountFactsUnavailable, match="spot_asset_format_invalid"):
+        _collect(InvalidAsset())
+
+
+@pytest.mark.parametrize("asset", ["A\u115f", "A\u1160", "A\u3164", "A\uffa0"])
+def test_unicode_earn_asset_rejects_invisible_hangul_fillers(asset):
+    client = FakeBinance(earn_pages=[{
+        "rows": [{"asset": asset, "productId": "synthetic-product", "totalAmount": "0.25"}],
+        "total": 1,
+    }])
+    with pytest.raises(AccountFactsUnavailable, match="flexible_earn_page_invalid"):
+        _collect(client)
+    assert client.calls == [("spot",), ("earn", 1, 100)]
+
+
+@pytest.mark.parametrize("asset", ["A\u115f", "A\u1160", "A\u3164", "A\uffa0"])
+def test_payload_validator_rejects_invisible_hangul_fillers(asset):
+    payload = _collect()
+    payload["assets"][0]["asset"] = asset
+    with pytest.raises(AccountFactsUnavailable, match="payload_invalid"):
+        validate_account_facts_payload(payload)
+
+
+def test_exact_duplicate_unicode_asset_is_rejected_without_normalization():
+    class DuplicateUnicodeAsset(FakeBinance):
+        def get_account(self):
+            self.calls.append(("spot",))
+            return {
+                "uid": "123456",
+                "balances": [
+                    {"asset": "币", "free": "0.5", "locked": "0"},
+                    {"asset": "币", "free": "0.5", "locked": "0"},
+                ],
+            }
+
+    with pytest.raises(AccountFactsUnavailable, match="spot_asset_duplicate"):
+        _collect(DuplicateUnicodeAsset())
 
 
 def test_rejects_earn_asset_without_an_explicit_spot_balance_row():

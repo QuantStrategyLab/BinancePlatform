@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
@@ -28,7 +29,19 @@ PAGE_SIZE = 100
 MAX_EARN_POSITIONS = 10_000
 _HEX_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
-_ASSET = re.compile(r"[A-Z0-9]{1,128}\Z")
+_HANGUL_FILLERS = frozenset("\u115f\u1160\u3164\uffa0")
+
+
+def _valid_asset(value: Any) -> bool:
+    if not isinstance(value, str) or not 1 <= len(value) <= 128:
+        return False
+    for character in value:
+        if character.isascii():
+            if not ("A" <= character <= "Z" or "0" <= character <= "9"):
+                return False
+        elif character in _HANGUL_FILLERS or unicodedata.category(character)[0] not in {"L", "N"}:
+            return False
+    return True
 
 
 class AccountFactsUnavailable(ValueError):
@@ -189,9 +202,7 @@ def collect_account_facts(
         asset = row.get("asset")
         if not isinstance(asset, str):
             raise _fail("spot_asset_type_invalid")
-        if not asset.isascii():
-            raise _fail("spot_asset_non_ascii")
-        if not _ASSET.fullmatch(asset):
+        if not _valid_asset(asset):
             raise _fail("spot_asset_format_invalid")
         if asset in assets:
             raise _fail("spot_asset_duplicate")
@@ -237,8 +248,7 @@ def collect_account_facts(
             asset = row.get("asset")
             product_id = row.get("productId")
             if (
-                not isinstance(asset, str)
-                or not _ASSET.fullmatch(asset)
+                not _valid_asset(asset)
                 or not isinstance(product_id, str)
                 or not product_id
                 or product_id in seen_products
@@ -383,7 +393,7 @@ def validate_account_facts_payload(payload: Any) -> dict[str, Any]:
         }:
             raise _fail("payload_invalid")
         asset = row.get("asset")
-        if not isinstance(asset, str) or not _ASSET.fullmatch(asset) or asset in seen_assets:
+        if not _valid_asset(asset) or asset in seen_assets:
             raise _fail("payload_invalid")
         seen_assets.add(asset)
         amount_texts = [row.get(name) for name in ("spot_free", "spot_locked", "flexible_earn", "quantity")]
