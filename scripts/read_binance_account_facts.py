@@ -614,8 +614,7 @@ def validate_strategy_report(report: Mapping[str, Any], runtime_target: Mapping[
         or not isinstance(report.get("run_id"), str)
         or not report["run_id"].strip()
         or report.get("execution_blocked_reason")
-        or not isinstance(errors, Mapping)
-        or errors.get("errors") != []
+        or errors not in ({}, {"errors": []})
         or not isinstance(side_effects, Mapping)
         or type(side_effects.get("executed_call_count")) is not int
         or side_effects.get("executed_call_count") < 0
@@ -700,7 +699,6 @@ def _target_identity(raw: str) -> dict[str, Any]:
         raise _stop("runtime_target_invalid")
     try:
         from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
-        from quant_platform_kit.common.live_continuity import runtime_target_permits_standard_execution
 
         target = resolve_runtime_target_from_env(
             env={"RUNTIME_TARGET_JSON": raw}, expected_platform_id="binance"
@@ -710,7 +708,6 @@ def _target_identity(raw: str) -> dict[str, Any]:
     value = target.to_dict()
     if (
         target.dry_run_only
-        or not runtime_target_permits_standard_execution(target)
         or not isinstance(value.get("account_scope"), str)
         or not value["account_scope"]
         or value["account_scope"] == "default"
