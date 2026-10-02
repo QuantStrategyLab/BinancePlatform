@@ -1048,14 +1048,24 @@ def test_publisher_accepts_only_qrs_idempotent_acknowledgements(tmp_path, monkey
         def read(self, _limit):
             return json.dumps({"status": ack_status}).encode()
 
+    calls = []
+
     class Opener:
         def open(self, request, timeout):
+            calls.append((request, timeout))
             assert request.method == "POST"
             assert request.full_url == publisher.QRS_ENDPOINT
+            assert request.get_header("User-agent") == "QSL-AccountFacts-Readiness/1.0"
             assert timeout == 20
             return Response()
 
-    monkeypatch.setattr(publisher, "build_opener", lambda _handler: Opener())
+    handlers = []
+
+    def build_opener(*received_handlers):
+        handlers.extend(received_handlers)
+        return Opener()
+
+    monkeypatch.setattr(publisher, "build_opener", build_opener)
     assert publisher.publish_account_facts(
         facts_path=facts_path,
         env={
@@ -1063,6 +1073,8 @@ def test_publisher_accepts_only_qrs_idempotent_acknowledgements(tmp_path, monkey
             "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-token",
         },
     ) == ack_status
+    assert len(calls) == 1
+    assert handlers == [publisher._NoRedirect]
 
 
 def test_publisher_rejects_legacy_recorded_ack(tmp_path, monkeypatch):
@@ -1310,14 +1322,23 @@ def test_receiver_diagnosis_is_one_authenticated_get_with_closed_success():
             assert timeout == 15
             return Response()
 
-    result = diagnosis.diagnose_receiver(token="synthetic-secret", opener_factory=lambda _handler: Opener())
+    handlers = []
+
+    def opener_factory(*received_handlers):
+        handlers.extend(received_handlers)
+        return Opener()
+
+    result = diagnosis.diagnose_receiver(token="synthetic-secret", opener_factory=opener_factory)
     assert result.category == "ready"
     assert result.http_status == 200
     assert result.body_shape == "readiness"
     assert len(calls) == 1
+    assert calls[0].full_url == diagnosis.QRS_ENDPOINT
     assert calls[0].method == "GET"
     assert calls[0].data is None
     assert calls[0].get_header("Authorization") == "Bearer synthetic-secret"
+    assert calls[0].get_header("User-agent") == "QSL-AccountFacts-Readiness/1.0"
+    assert handlers == [diagnosis._NoRedirect]
     assert "synthetic-secret" not in repr(result)
 
 

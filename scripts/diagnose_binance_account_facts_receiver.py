@@ -9,6 +9,7 @@ from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 QRS_ENDPOINT = "https://qsl-strategy-switch-console.pigbibi.workers.dev/api/internal/binance-account-facts"
+_USER_AGENT = "QSL-AccountFacts-Readiness/1.0"
 
 _READINESS_FIELDS = {"ok", "ready", "binding_valid", "account_options_readable", "unique_match"}
 _READINESS_ERROR_FIELDS = _READINESS_FIELDS | {"error"}
@@ -131,7 +132,11 @@ def diagnose_receiver(*, token: str, opener_factory=build_opener) -> ReceiverDia
         return ReceiverDiagnosis("token_missing")
     request = Request(
         QRS_ENDPOINT,
-        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            "User-Agent": _USER_AGENT,
+        },
         method="GET",
     )
     try:
