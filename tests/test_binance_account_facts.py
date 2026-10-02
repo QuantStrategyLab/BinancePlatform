@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
+import textwrap
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import URLError
@@ -205,34 +208,51 @@ def test_wallet_valuation_payload_rejects_unrecognized_failure_reason():
         validate_account_facts_payload(payload)
 
 
-def test_wallet_request_uses_locked_sdk_signed_get_once_without_redirect(monkeypatch):
-    import requests
-    from binance.client import Client
+def test_wallet_request_uses_locked_sdk_signed_get_once_without_redirect():
+    probe = textwrap.dedent(
+        """
+        import requests
+        from binance.client import Client
+        from application.account_facts import ReadOnlyBinanceClient
 
-    raw_client = Client("synthetic-key", "synthetic-secret", requests_params={"timeout": 15}, ping=False)
-    captured = []
+        raw_client = Client(
+            "synthetic-key", "synthetic-secret", requests_params={"timeout": 15}, ping=False
+        )
+        captured = []
 
-    def fake_get(uri, **kwargs):
-        captured.append((uri, kwargs))
-        response = requests.Response()
-        response.status_code = 200
-        response.url = uri
-        response.encoding = "utf-8"
-        response._content = b'[{"activate":true,"balance":"1.25","walletName":"SPOT"}]'
-        return response
+        def fake_get(uri, **kwargs):
+            captured.append((uri, kwargs))
+            response = requests.Response()
+            response.status_code = 200
+            response.url = uri
+            response.encoding = "utf-8"
+            response._content = b'[{"activate":true,"balance":"1.25","walletName":"SPOT"}]'
+            return response
 
-    monkeypatch.setattr(raw_client.session, "get", fake_get)
-    response = ReadOnlyBinanceClient(raw_client).get_wallet_valuation_usdt()
-    assert response == [{"activate": True, "balance": "1.25", "walletName": "SPOT"}]
-    assert len(captured) == 1
-    uri, kwargs = captured[0]
-    assert uri == "https://api.binance.com/sapi/v1/asset/wallet/balance"
-    assert kwargs["timeout"] == 15
-    assert kwargs["allow_redirects"] is False
-    params = kwargs["params"]
-    assert "quoteAsset=USDT" in params
-    assert "needBalanceDetail=false" in params
-    assert "timestamp=" in params and "signature=" in params
+        raw_client.session.get = fake_get
+        response = ReadOnlyBinanceClient(raw_client).get_wallet_valuation_usdt()
+        assert response == [{"activate": True, "balance": "1.25", "walletName": "SPOT"}]
+        assert len(captured) == 1
+        uri, kwargs = captured[0]
+        assert uri == "https://api.binance.com/sapi/v1/asset/wallet/balance"
+        assert kwargs["timeout"] == 15
+        assert kwargs["allow_redirects"] is False
+        params = kwargs["params"]
+        assert "quoteAsset=USDT" in params
+        assert "needBalanceDetail=false" in params
+        assert "timestamp=" in params and "signature=" in params
+        print("wallet-wire-ok")
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, "isolated locked-SDK wallet wire probe failed"
+    assert result.stdout.strip() == "wallet-wire-ok"
 
 
 def test_synthetic_contract_fixture_matches_exact_producer_json():
