@@ -39,6 +39,7 @@ WALLET_VALUATION_FAILURES = frozenset({
     "wallet_inactive_nonzero",
     "wallet_balance_invalid",
 })
+PROVIDER_PRODUCT_TYPE_SOURCE = "GET /api/v3/account.accountType"
 _HEX_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 _WALLET_DECIMAL = re.compile(r"(?:0|[1-9]\d{0,29})(?:\.\d{1,30})?\Z")
@@ -298,6 +299,10 @@ def collect_account_facts(
     )
     if account_scope_sha256 != expected_account_scope_sha256:
         raise _fail("account_identity_mismatch")
+    raw_account_type = account.get("accountType")
+    provider_product_value = (
+        "SPOT" if type(raw_account_type) is str and raw_account_type == "SPOT" else "unknown"
+    )
 
     balances = account.get("balances")
     if not isinstance(balances, list):
@@ -445,6 +450,11 @@ def collect_account_facts(
         "observed_started_at": started,
         "observed_finished_at": finished,
         "spot_observed_at": spot_finished,
+        "provider_product_type": {
+            "value": provider_product_value,
+            "source": PROVIDER_PRODUCT_TYPE_SOURCE,
+            "observed_at": spot_finished,
+        },
         "earn_observed_at": earn_finished,
         "snapshot_atomic": False,
         "scope": SCOPE,
@@ -469,7 +479,7 @@ def validate_account_facts_payload(payload: Any) -> dict[str, Any]:
     if (
         not isinstance(payload, Mapping)
         or not required.issubset(payload)
-        or set(payload) - required - {"wallet_valuation"}
+        or set(payload) - required - {"wallet_valuation", "provider_product_type"}
     ):
         raise _fail("payload_invalid")
     if (
@@ -513,6 +523,21 @@ def validate_account_facts_payload(payload: Any) -> dict[str, Any]:
         <= observation_times["observed_finished_at"]
     ):
         raise _fail("payload_invalid")
+    if "provider_product_type" in payload:
+        provider_product_type = payload["provider_product_type"]
+        if (
+            not isinstance(provider_product_type, Mapping)
+            or set(provider_product_type) != {"value", "source", "observed_at"}
+            or not isinstance(provider_product_type.get("value"), str)
+            or provider_product_type.get("value") not in ("SPOT", "unknown")
+            or provider_product_type.get("source") != PROVIDER_PRODUCT_TYPE_SOURCE
+            or not isinstance(provider_product_type.get("observed_at"), str)
+            or provider_product_type["observed_at"] != payload.get("spot_observed_at")
+        ):
+            raise _fail("payload_invalid")
+        product_type_time = _parsed_timestamp(provider_product_type["observed_at"])
+        if _utc_timestamp(product_type_time) != provider_product_type["observed_at"]:
+            raise _fail("payload_invalid")
     assets = payload.get("assets")
     if not isinstance(assets, list):
         raise _fail("payload_invalid")

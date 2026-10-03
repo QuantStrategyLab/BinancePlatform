@@ -38,6 +38,7 @@ class FakeBinance:
         self.calls.append(("spot",))
         return {
             "uid": "123456",
+            "accountType": "SPOT",
             "balances": [
                 {"asset": "BTC", "free": "0.5", "locked": "0.1"},
                 {"asset": "USDT", "free": "10", "locked": "0"},
@@ -78,6 +79,11 @@ def _collect(client=None, times=None):
 
 def test_collects_spot_and_all_flexible_earn_as_native_quantities():
     payload = _collect()
+    assert payload["provider_product_type"] == {
+        "value": "SPOT",
+        "source": "GET /api/v3/account.accountType",
+        "observed_at": payload["spot_observed_at"],
+    }
     assert payload["scope"] == "spot+flexible_earn"
     assert payload["snapshot_atomic"] is False
     assert payload["uncovered_scopes"] == ["funding", "margin", "futures", "locked_earn"]
@@ -91,6 +97,79 @@ def test_collects_spot_and_all_flexible_earn_as_native_quantities():
         approved_application_revision=APP_SHA,
     )
     validate_account_facts_payload(payload)
+
+
+@pytest.mark.parametrize(
+    ("account_type", "expected"),
+    [
+        ("SPOT", "SPOT"),
+        ("MARGIN", "unknown"),
+        ("", "unknown"),
+        ("__missing__", "unknown"),
+        (None, "unknown"),
+        ({"injected": "private"}, "unknown"),
+        ("private-injected-value", "unknown"),
+    ],
+)
+def test_provider_product_type_normalizes_once_from_spot_response(account_type, expected):
+    class ProductTypeBinance(FakeBinance):
+        def get_account(self):
+            result = super().get_account()
+            if account_type == "__missing__":
+                result.pop("accountType")
+            else:
+                result["accountType"] = account_type
+            return result
+
+    fake = ProductTypeBinance()
+    payload = _collect(fake)
+    assert payload["provider_product_type"] == {
+        "value": expected,
+        "source": "GET /api/v3/account.accountType",
+        "observed_at": payload["spot_observed_at"],
+    }
+    assert [call[0] for call in fake.calls].count("spot") == 1
+    assert "private-injected-value" not in json.dumps(payload)
+    validate_account_facts_payload(payload)
+
+
+def test_provider_product_type_timestamp_is_exact_spot_observation():
+    payload = _collect()
+    assert payload["provider_product_type"]["observed_at"] == payload["spot_observed_at"]
+    for invalid in ("2026-10-02T10:00:02", "not-a-time", "2026-10-02T10:00:03+08:00"):
+        malformed = dict(payload)
+        malformed["provider_product_type"] = {
+            **payload["provider_product_type"],
+            "observed_at": invalid,
+        }
+        with pytest.raises(AccountFactsUnavailable, match="payload_invalid"):
+            validate_account_facts_payload(malformed)
+
+
+def test_provider_product_type_optional_validator_preserves_legacy_and_binding():
+    payload = _collect()
+    binding = payload["source_binding"]["id"]
+    legacy = dict(payload)
+    legacy.pop("provider_product_type")
+    assert validate_account_facts_payload(legacy) == legacy
+    assert payload["source_binding"]["id"] == binding
+    assert payload["assets"] == legacy["assets"]
+
+
+@pytest.mark.parametrize(
+    "product_type",
+    [
+        {"value": "SPOT", "source": "wrong", "observed_at": "2026-10-02T10:00:01Z"},
+        {"value": "MARGIN", "source": "GET /api/v3/account.accountType", "observed_at": "2026-10-02T10:00:01Z"},
+        {"value": "SPOT", "source": "GET /api/v3/account.accountType", "observed_at": "2026-10-02T10:00:01Z", "extra": "x"},
+        {"value": "SPOT", "source": "GET /api/v3/account.accountType", "observed_at": "2026-10-02T10:00:01+00:00"},
+    ],
+)
+def test_provider_product_type_rejects_malformed_optional_field(product_type):
+    payload = _collect()
+    payload["provider_product_type"] = product_type
+    with pytest.raises(AccountFactsUnavailable, match="payload_invalid"):
+        validate_account_facts_payload(payload)
 
 
 def test_wallet_valuation_is_separate_usdt_provider_total():
