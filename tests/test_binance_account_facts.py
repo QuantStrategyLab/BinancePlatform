@@ -914,6 +914,55 @@ def test_active_runtime_blocks_read_before_account_client_creation(monkeypatch):
         reader._ensure_no_active_runtime_run(token="synthetic", api_url="https://api.example")
 
 
+@pytest.mark.parametrize(
+    ("product_type", "expected"),
+    [
+        ("SPOT", "SPOT"),
+        ("unknown", "unknown"),
+        (None, "unknown"),
+        ("MARGIN", "unknown"),
+        ({"value": "SPOT", "account_uid": "synthetic-private-id"}, "unknown"),
+        ("SPOT synthetic-secret 123456 0.5 " + "a" * 64, "unknown"),
+    ],
+)
+def test_account_facts_cli_emits_only_closed_product_type(
+    monkeypatch, capsys, tmp_path, product_type, expected
+):
+    from scripts import read_binance_account_facts as reader
+
+    monkeypatch.setattr(reader, "read_account_facts", lambda **_kwargs: product_type)
+    assert reader.main(["--report", str(tmp_path / "report.json"), "--output", str(tmp_path / "facts.json")]) == 0
+    output = capsys.readouterr().out
+    assert "account_facts_read=complete_for_scope" in output
+    assert f"account_facts_provider_product_type={expected}" in output
+    for private_value in ("synthetic-private-id", "synthetic-secret", "123456", "0.5", "a" * 64):
+        assert private_value not in output
+
+
+def test_account_facts_cli_failure_never_prints_product_type(monkeypatch, capsys, tmp_path):
+    from scripts import read_binance_account_facts as reader
+
+    def fail(**_kwargs):
+        raise reader.ReaderError("account_facts_spot_read_failed")
+
+    monkeypatch.setattr(reader, "read_account_facts", fail)
+    assert reader.main(["--report", str(tmp_path / "report.json"), "--output", str(tmp_path / "facts.json")]) == 1
+    output = capsys.readouterr()
+    assert "account_facts_provider_product_type=" not in output.out
+    assert "account_facts_spot_read_failed" in output.err
+
+
+def test_reader_log_category_uses_validated_optional_field_only():
+    from scripts import read_binance_account_facts as reader
+
+    payload = validate_account_facts_payload(_collect())
+    assert reader._provider_product_type_for_log(payload) == "SPOT"
+    legacy = dict(payload)
+    legacy.pop("provider_product_type")
+    assert reader._provider_product_type_for_log(validate_account_facts_payload(legacy)) == "unknown"
+    assert reader._provider_product_type_for_log({"provider_product_type": "MARGIN"}) == "unknown"
+
+
 def test_release_log_plain_text_requires_one_exact_approved_line(monkeypatch):
     from scripts import read_binance_account_facts as reader
 

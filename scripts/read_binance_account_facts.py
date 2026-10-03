@@ -862,7 +862,13 @@ def _write_private_json(path: Path, payload: Mapping[str, Any]) -> None:
         raise _stop("output_write_failed") from None
 
 
-def read_account_facts(*, report_path: Path, output_path: Path, env: Mapping[str, str]) -> None:
+def _provider_product_type_for_log(payload: Mapping[str, Any]) -> str:
+    product_type = payload.get("provider_product_type")
+    value = product_type.get("value") if isinstance(product_type, Mapping) else None
+    return value if type(value) is str and value in ("SPOT", "unknown") else "unknown"
+
+
+def read_account_facts(*, report_path: Path, output_path: Path, env: Mapping[str, str]) -> str:
     if env.get("BINANCE_ACCOUNT_FACTS_ENABLED") != "true":
         raise _stop("disabled")
     if env.get("RUNTIME_TARGET_ENABLED") != "true" or env.get("BINANCE_DRY_RUN") != "false":
@@ -907,7 +913,9 @@ def read_account_facts(*, report_path: Path, output_path: Path, env: Mapping[str
         clock=lambda: datetime.now(timezone.utc),
     )
     verify_current_source_from_env(env)
-    _write_private_json(output_path, validate_account_facts_payload(payload))
+    validated_payload = validate_account_facts_payload(payload)
+    _write_private_json(output_path, validated_payload)
+    return _provider_product_type_for_log(validated_payload)
 
 
 def preflight(*, env: Mapping[str, str], output: Path) -> None:
@@ -958,8 +966,13 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.report is None or args.output is None:
             raise _stop("arguments_invalid")
-        read_account_facts(report_path=args.report, output_path=args.output, env=os.environ)
+        provider_product_type = read_account_facts(
+            report_path=args.report, output_path=args.output, env=os.environ
+        )
+        if type(provider_product_type) is not str or provider_product_type not in ("SPOT", "unknown"):
+            provider_product_type = "unknown"
         print("account_facts_read=complete_for_scope")
+        print(f"account_facts_provider_product_type={provider_product_type}")
         return 0
     except (ReaderError, AccountFactsUnavailable) as exc:
         print(str(exc), file=sys.stderr)
