@@ -1358,9 +1358,21 @@ def test_production_native_mutation_inventory_has_no_blind_saver_bypass():
         node = next(n for n in support.body if isinstance(n, ast.FunctionDef) and n.name == name)
         assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                    and n.func.id == '_persist_runtime_state' for n in ast.walk(node))
+    assert set(path for path, _, _ in _owned_native_mutation_calls(root)) <= {
+        'live_services.py', 'application/interval_source_receipt_candidate.py'}
+
+
+def _owned_native_mutation_calls(root):
+    import ast
     source_calls = []
-    for file in root.rglob('*.py'):
-        if 'tests' in file.parts or 'scripts' in file.parts:
+    # These are this repository's verified production roots. CI's external/
+    # checkouts and .venv/ packages are separate dependencies, not owned writers.
+    files = list(root.glob('*.py'))
+    for directory in ('application', 'entrypoints', 'infra', 'reporting', 'research', 'strategy'):
+        files.extend((root / directory).rglob('*.py'))
+    caches = {'__pycache__', '.pytest_cache', '.ruff_cache', '.mypy_cache', '.cache', '.venv'}
+    for file in sorted(files):
+        if any(part in caches for part in file.relative_to(root).parts[:-1]):
             continue
         tree = ast.parse(file.read_text())
         for n in ast.walk(tree):
@@ -1368,5 +1380,16 @@ def test_production_native_mutation_inventory_has_no_blind_saver_bypass():
                 receiver = ast.unparse(n.func.value)
                 if 'transaction' in receiver or receiver in {'store', 'bound_access._store'}:
                     source_calls.append((str(file.relative_to(root)), receiver, n.func.attr))
-    assert set(path for path, _, _ in source_calls) <= {
-        'live_services.py', 'application/interval_source_receipt_candidate.py'}
+    return source_calls
+
+
+def test_owned_writer_inventory_excludes_ci_dependencies_but_detects_nested_owned_writer(tmp_path):
+    owned = tmp_path / 'application' / 'nested' / 'writer.py'
+    owned.parent.mkdir(parents=True)
+    owned.write_text('store.set(data)\n')
+    for relative in ['external/QuantPlatformKit/provider.py', '.venv/lib/site-packages/provider.py',
+                     'application/__pycache__/cache.py', '.pytest_cache/cache.py', '.ruff_cache/cache.py']:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('transaction.update(ref, data)\n')
+    assert _owned_native_mutation_calls(tmp_path) == [('application/nested/writer.py', 'store', 'set')]
