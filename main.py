@@ -526,10 +526,11 @@ def get_trade_state(normalize=True):
     )
 
 
-def set_trade_state(data):
+def set_trade_state(data, *, bound_access=None):
     return infra_save_runtime_trade_state(
         data,
         normalize_fn=normalize_trade_state,
+        bound_access=bound_access,
     )
 
 
@@ -833,7 +834,9 @@ def get_tradable_qty(symbol, total_qty, prices, min_bnb_value):
 # ==========================================
 # 3. Core strategy
 # ==========================================
-def build_live_runtime(now_utc=None):
+def build_live_runtime(now_utc=None, *, retain_interval_receipts=False):
+    if type(retain_interval_receipts) is not bool:
+        raise ValueError("state_session_receipt_flag_invalid")
     runtime = rc_build_live_runtime(
         now_utc=now_utc,
         state_loader=get_trade_state,
@@ -842,9 +845,11 @@ def build_live_runtime(now_utc=None):
     )
     _activate_execution_strategy_runtime(runtime.strategy_profile, runtime_target=runtime.runtime_target)
     if not runtime.dry_run and runtime.standard_execution_permitted:
-        runtime.state_loader, runtime.state_writer, runtime.state_owner_claim, runtime.state_owner_release = bind_trade_state_access(
+        runtime.bound_state_access = bind_trade_state_access(
             normalize_fn=normalize_trade_state, default_state_factory=build_default_state,
+            receipt_enabled=retain_interval_receipts,
         )
+        runtime.state_loader, runtime.state_writer, runtime.state_owner_claim, runtime.state_owner_release = runtime.bound_state_access
         runtime.fuel_symbol = BNB_FUEL_SYMBOL
         runtime.fuel_asset = BNB_FUEL_ASSET
     return runtime

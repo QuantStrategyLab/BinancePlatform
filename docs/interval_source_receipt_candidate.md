@@ -6,8 +6,9 @@ The simpler source-retention seam is feasible in the existing Firestore-native
 transaction API: create one per-interval receipt and patch the five existing
 forward-accounting fields in the same transaction. A separate pending queue,
 PerformanceStore delivery ACK and queue-clear write are unnecessary for that
-bounded source-retention property. This is an isolated helper/fake-test candidate,
-not runtime integration, provider verification or consumer qualification.
+bounded source-retention property. The candidate now integrates that helper
+through one owned/versioned bound runtime port. This is a local source candidate,
+not an activated runtime, provider verification or consumer qualification.
 
 Receipts are **create-once under this candidate API**, not storage-level immutable
 or WORM. IAM, other writers, retention/PITR and physical production identity remain
@@ -94,17 +95,15 @@ coverage, corruption/conflict handling, access and cost limits, and consumer
 adoption tests. Neither this proposal nor existing QPK parsing proves coverage.
 No current recorder/monitor starts reading these candidate receipts automatically.
 
-Future integration needs a reviewed opt-in writer/version seam in the same bound
-state backend before the current checkpoint write. Existing ordinary saves remain
-blind `set`: enabling this helper alone does not fence concurrent/legacy writers
-or prevent a later stale ledger overwrite. Mixed-writer rollout, owner lifecycle,
-and bounded native RPC timeout/attempt configuration require integration review
-before adoption. Existing post-owner-release best-effort recording must not become
+The bound-port candidate below closes the ordinary/submission/forward writer
+seam in this source version. Other old binaries, direct native maintenance or
+external writers remain outside its fence. Mixed-writer quiescence and the
+actual native backend still require qualification before adoption. Existing post-owner-release best-effort recording must not become
 the source ACK. Backend identity, IAM,
 retention, storage size/cost and historical completeness remain open decisions.
 No queue-capacity/trading-stop policy or archival retention policy was selected.
 
-## Local verification
+## Original helper prerequisite verification
 
 - 37 dependency-free fake-store tests passed; focused Ruff and py_compile passed
 - Tests cover atomic rollback including second-write failure, owner/version races,
@@ -122,3 +121,141 @@ No queue-capacity/trading-stop policy or archival retention policy was selected.
   qualification. Read-only source retrieval is separate from fake execution
 
 Run: `python3 -m unittest discover -s tests -p test_interval_source_receipt_candidate.py -v`
+
+## Bound runtime source candidate (local, not activated)
+
+`live_services.bind_trade_state_access` now returns one `BoundTradeStateAccess`,
+still iterable as the existing four `load, save, claim, release` callables. It
+owns the one already-selected store/client, native ledger/owner references,
+claimed owner ID, detached raw ledger and exact seconds+nanos update time. The
+working state is a separate copy; mutating it cannot change the source CAS token.
+Normal saves merge only the configured normalizer's output onto that detached
+raw source, preserving source-only future fields under the same exact CAS. No
+unknown caller input bypasses the normalizer.
+
+All candidate normal and order/Earn submission-state writes converge on
+`runtime_support._persist_runtime_state`. The native session transaction reads
+actual owner and ledger before staging a write, compares the complete raw source
+and full version, and verifies the intended body/owner/full version in readback. Changed bodies
+require a later version; an exactly unchanged body may retain the prior version,
+as documented by native 2.28 `WriteResult`.
+Cached runtime owner flags are only a preliminary gate. A revoked/replaced owner
+fails even when the local flag remains true. Release checks actual owner and,
+when loaded, the same ledger source; it cannot release another owner or a changed
+source. No setter calls `DocumentStore.set` or refreshes a stale version.
+
+Public native saver admission deliberately changes: `main.set_trade_state`,
+`infra.state_store.save_runtime_trade_state` and `live_services.save_trade_state`
+require an explicit matching `bound_access`. A bare store, different ledger,
+normalizer or fabricated capability is insufficient; an unbound native saver
+returns false without selecting a provider or requesting a write. The bound
+session itself raises fixed sanitized failures. Explicit custom memory savers
+retain their previous infra keyword contract and cannot also supply native
+capability. Startup/ForbiddenWrite, replay/memory, imports, ordinary state reads,
+maintenance tools and Telegram/telemetry read paths retain their separate APIs.
+Arbitrary external custom writer code cannot be fenced by this Python port.
+
+Receipt retention is a read-only construction option, default false:
+`main.build_live_runtime(retain_interval_receipts=True)` selects it explicitly
+for a permitted non-dry candidate runtime. No environment variable, source pin,
+workflow or deployed switch was added/changed. Dry-run or execution-disabled
+builders do not bind this mutation port. Invalid flag types fail before the live
+builder. With receipt retention enabled, loading a checkpointless ledger fails
+closed, and ordinary saves cannot alter/remove checkpoint or cash-flow cursor.
+Forward accounting alone supplies the verified unchanged seven-field interval.
+The existing helper creates the receipt and applies its exact five-field patch
+before working-state replacement or report interval publication. Later metadata,
+daily-reset, action, submission and final saves preserve the advanced checkpoint.
+No strategy-loss reader adoption or native archive enumeration is included.
+
+### Exact Firestore 2.28 transport seam
+
+Every BeginTransaction, document BatchGet, Commit and Rollback RPC uses
+`retry=None`, `timeout=10`, and the existing client's RPC metadata. Owner
+create uses the original native reference with those same retry/timeout bounds.
+Each operation has a finite, fixed transaction/read count; there is no pagination
+or unbounded retry loop. Transaction callbacks have `max_attempts=1`, but this is
+not the transport retry control.
+
+Installed 2.28 `Transaction._begin`, `_commit` and `_rollback` do not accept retry
+or timeout controls. The decorator calls them with default GAPIC retries.
+Inherited `WriteBatch.commit(retry=None, timeout=10)` also omits the native
+transaction ID, so it is not used. The port calls the exact existing bound
+client's GAPIC Begin/Commit/Rollback directly, retaining the original native
+transaction ID, write protos and clean-up semantics. Native-shaped reference
+views inject the bounds into the existing helper's `get` calls; their `parent`
+returns another bounded view for receipt reads. Native 2.28 create/update use
+`_document_path` by duck typing; reads delegate to the original reference with
+the original native transaction. No `transaction.get(view)` is used.
+
+Loads and all readbacks begin actual read-only transactions. A fresh two-call
+runner per receipt invocation performs read-write staging then read-only
+receipt/poststate readback, rejecting reuse; the port additionally reads the
+verified ledger version for its next operation. Read-only/empty transactions
+close via one bounded Rollback. Cleanup rollback after a failed Commit never
+proves rollback, and is attempted at most once. There is no automatic native
+Commit, callback, reload or receipt retry after uncertainty.
+
+Public claim/load/save/release admission and completion are serialized by one
+short-held per-session lock. The lock is never held across an RPC. A concurrent
+or reentrant public call fails busy immediately and terminally invalidates the
+session; it cannot refresh another operation's detached source. `active` is false
+while an operation is in flight. External `invalidate()` latches immediately,
+and the latch is never reset after construction. Checks before Begin/Commit,
+after RPC completion and atomic source/owner publication prevent an in-flight
+operation from rearming or reporting success after mid-RPC invalidation. A Commit
+already in flight may still take effect; it is not cancelled or rolled back by
+local invalidation. Normal operation completion and release closure clear busy
+atomically under that same lock, without an invalidation/rearm window.
+
+A failed operation invalidates the source session. Native persistence uncertainty
+also clears the runtime's local owner-held flag, so subsequent broker mutation
+calls cannot continue even if the caller catches the initial error. A lost
+response may leave an atomic receipt/poststate or submission marker committed;
+the in-memory checkpoint/report is not advanced and the owner is not released.
+Recovery requires a separately qualified decision/readback. The existing pure
+helper's explicit original-plan replay contract remains unchanged; it is not
+silently exposed as a runtime continuation after uncertainty.
+
+### Source consumers and rollout limits
+
+The actual application pin remains `8cb56617115fa45028e34d788e71884b6a303d77`.
+The verified workflow selector is `66d705fd756f5648f603bfd745235b5ef389f668`;
+its application/startup/migration/recovery commands check out the selected
+application release before running. The account-facts reader independently uses
+`ab7daec02c3bf2e58ee5fa363c26c2124f7e497f`. Both selector/reader refs are configured
+at repository scope; name-only environment lookup confirms no `binance-runtime`
+overrides for these two refs. This is source readback, not runtime qualification.
+
+CI, shadow/replay, heartbeat/target/watchdog and other manual workflows may use
+their event/default-branch checkout rather than the application pin. In-repo
+shadow/replay uses explicit memory writers, monitors do not call the native
+ledger setter, PAPER preview imports only Telegram, and maintenance scripts use
+separate owner-absent native transactions. The complete existing compatibility
+suites are required for this deliberate public saver API change. External users
+of the old native setter must migrate to explicit bound-session admission.
+
+At real cutover, establish source/database/ledger/account/stream identity and
+coverage start, quiesce every old binary and maintenance/external writer, and
+qualify native identity/rights, retention/PITR, read completeness and costs.
+Python fencing cannot revoke another actor's direct Firestore rights. The
+maintenance timestamp precision contract remains separately unqualified; do not
+claim it is equivalent to this full-nanosecond runtime CAS. Receipt creation off
+ends canonical coverage; it cannot synthesize history or undo the checkpoint.
+Rolling back to the old unfenced binary is not a qualified source rollback.
+A retained source receipt can feed the existing calculator directly; a second
+PerformanceStore sink/ACK is unnecessary. No backend, broker, Runtime dispatch,
+deployment or credentials were exercised to establish these source properties.
+
+### Verification distinction
+
+The candidate tests exercise the real installed Firestore 2.28 reference,
+transaction, protobuf serialization and SDK timestamp objects using an anonymous
+synthetic client with all RPCs stubbed, credential lookup and network forbidden.
+That establishes local SDK compatibility and request bounds, not native backend
+durability, IAM, server transaction semantics or production identity. Independent
+native-shaped offline fakes exercise atomicity/races/uncertainty, and full-cycle
+synthetic tests establish forward-before-reset/submission ordering. Full suite,
+Ruff, compile, exact dependency source provenance and the final frozen write-set
+checks must pass before review/publication. The actual runtime is not changed by
+this isolated candidate.

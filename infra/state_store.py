@@ -34,9 +34,15 @@ def save_runtime_trade_state(
     *,
     normalize_fn,
     saver_fn=live_save_trade_state,
+    bound_access=None,
     collection=DEFAULT_STATE_COLLECTION,
     document=DEFAULT_STATE_DOCUMENT,
 ):
+    if saver_fn is live_save_trade_state:
+        return live_save_trade_state(data, normalize_fn=normalize_fn, collection=collection,
+                                     document=document, bound_access=bound_access)
+    if bound_access is not None:
+        raise ValueError("state_session_custom_saver_mismatch")
     return saver_fn(
         data,
         normalize_fn=normalize_fn,

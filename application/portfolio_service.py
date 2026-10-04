@@ -84,6 +84,10 @@ def maybe_rebase_daily_state_for_balance_change(
     append_log_fn,
     translate_fn,
 ):
+    access = getattr(runtime, "bound_state_access", None)
+    receipt_enabled = bool(access is not None and access.receipt_enabled)
+    if receipt_enabled and "earn_accrual_checkpoint" not in state:
+        raise ExecutionIntegrityError("earn_checkpoint_required_for_receipt")
     if "earn_accrual_checkpoint" in state:
         from application.earn_accrual import prepare_forward_earn_state, _time
         try:
@@ -156,7 +160,10 @@ def maybe_rebase_daily_state_for_balance_change(
             "currency": "USDT",
             "valuation_basis": "checkpoint_quantities_sampled_prices",
         }
-        runtime_set_trade_state_fn(runtime, report, updated, reason="earn_forward_accounting")
+        if receipt_enabled:
+            runtime_set_trade_state_fn(runtime, report, updated, reason="earn_forward_accounting", interval=interval)
+        else:
+            runtime_set_trade_state_fn(runtime, report, updated, reason="earn_forward_accounting")
         state.clear()
         state.update(updated)
         runtime.trade_state = state

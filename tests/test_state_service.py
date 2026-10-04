@@ -428,3 +428,82 @@ def test_legacy_rebase_snapshot_scope_is_preserved_by_effective_universe():
     balances.update({"BTCUSDT": 0.0, "BNBUSDT": 0.0})
     snapshot = build_balance_snapshot(result[2], balances, 100.0)
     assert set(snapshot) == set(raw["last_balance_snapshot"])
+
+
+def test_public_and_infra_native_savers_require_exact_bound_capability_without_provider_lookup():
+    from unittest.mock import patch
+    import main
+    from live_services import save_trade_state
+    from test_live_services import session_fixture
+    access, client, _ = session_fixture({'value': 1}, normalize_fn=main.normalize_trade_state)
+    access.claim('owner-one')
+    access.load(normalize=False)
+    calls = len(client.events)
+    with patch('live_services._get_document_store', side_effect=AssertionError('no provider lookup')) as factory:
+        assert main.set_trade_state({'value': 2}) is False
+        assert save_runtime_trade_state({'value': 2}, normalize_fn=main.normalize_trade_state) is False
+        assert save_trade_state({'value': 2}, normalize_fn=main.normalize_trade_state,
+                                store=object(), bound_access=access) is False
+        assert save_trade_state({'value': 2}, normalize_fn=main.normalize_trade_state,
+                                document='OTHER', bound_access=access) is False
+        assert save_trade_state({'value': 2}, normalize_fn=lambda x: x, bound_access=access) is False
+        factory.assert_not_called()
+    assert len(client.events) == calls
+    assert main.set_trade_state({'value': 2}, bound_access=access) is True
+    assert client.data[client.ledger]['value'] == 1  # Source-only unknown retained; normalizer filters new input.
+
+
+def test_memory_saver_keeps_existing_keyword_contract_but_cannot_impersonate_bound_native_access():
+    from unittest.mock import Mock
+    saver = Mock(return_value=True)
+    def normalize(value):
+        return value
+    assert save_runtime_trade_state({'value': 1}, normalize_fn=normalize, saver_fn=saver) is True
+    saver.assert_called_once_with({'value': 1}, normalize_fn=normalize, collection='strategy', document='MULTI_ASSET_STATE')
+    with pytest.raises(ValueError, match='state_session_custom_saver_mismatch'):
+        save_runtime_trade_state({'value': 2}, normalize_fn=normalize, saver_fn=saver, bound_access=object())
+    assert saver.call_count == 1
+
+
+def test_live_builder_binds_one_default_off_port_only_for_permitted_non_dry_runtime():
+    from unittest.mock import Mock, patch
+    import main
+    from runtime_support import ExecutionRuntime
+    for dry_run, permitted in [(True, True), (False, False), (False, True)]:
+        rt = ExecutionRuntime(dry_run=dry_run, standard_execution_permitted=permitted)
+        bound = Mock()
+        bound.__iter__ = Mock(return_value=iter((Mock(), Mock(), Mock(), Mock())))
+        with patch.object(main, 'rc_build_live_runtime', return_value=rt), \
+             patch.object(main, '_activate_execution_strategy_runtime'), \
+             patch.object(main, 'bind_trade_state_access', return_value=bound) as bind:
+            assert main.build_live_runtime() is rt
+        if not dry_run and permitted:
+            bind.assert_called_once_with(normalize_fn=main.normalize_trade_state,
+                                         default_state_factory=main.build_default_state, receipt_enabled=False)
+            assert rt.bound_state_access is bound
+        else:
+            bind.assert_not_called()
+            assert rt.bound_state_access is None
+
+
+def test_candidate_receipt_flag_is_explicit_and_not_environment_selected():
+    from unittest.mock import Mock, patch
+    import main
+    from runtime_support import ExecutionRuntime
+    rt = ExecutionRuntime()
+    port = Mock()
+    port.__iter__ = Mock(return_value=iter((Mock(), Mock(), Mock(), Mock())))
+    with patch.object(main, 'rc_build_live_runtime', return_value=rt), \
+         patch.object(main, '_activate_execution_strategy_runtime'), \
+         patch.object(main, 'bind_trade_state_access', return_value=port) as bind:
+        main.build_live_runtime(retain_interval_receipts=True)
+    assert bind.call_args.kwargs['receipt_enabled'] is True
+
+
+def test_invalid_receipt_option_fails_before_live_runtime_builder_or_provider():
+    from unittest.mock import patch
+    import main
+    with patch.object(main, 'rc_build_live_runtime') as builder:
+        with pytest.raises(ValueError, match='state_session_receipt_flag_invalid'):
+            main.build_live_runtime(retain_interval_receipts='true')
+        builder.assert_not_called()
