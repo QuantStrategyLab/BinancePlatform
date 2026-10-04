@@ -1243,3 +1243,153 @@ class CycleServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+import pytest
+
+
+def run_bound_source_cycle(*, receipt_enabled=True, failure=None, revoke=False):
+    from test_portfolio_service import forward_bound_fixture, consume_forward_bound
+    from runtime_support import runtime_set_trade_state as fenced_write, build_execution_report as full_report
+    from application.portfolio_service import maybe_reset_daily_state as reset_daily
+    runtime, native, observation, cash = forward_bound_fixture(receipt_enabled=receipt_enabled)
+    # The cycle must acquire itself and reload under that newly claimed owner.
+    assert runtime.bound_state_access.release(runtime.state_owner_id)
+    runtime.state_owner_held = False
+    from test_live_services import session_fixture
+    access, native, _ = session_fixture(native.data[native.ledger], receipt_enabled=receipt_enabled)
+    runtime.bound_state_access = access
+    runtime.state_loader, runtime.state_writer, runtime.state_owner_claim, runtime.state_owner_release = access
+    events = []
+    def load(rt, report, allow):
+        state = access.load(normalize=False)
+        rt.trade_state = state
+        fenced_write(rt, report, state, reason='trend_pool_metadata_refresh')
+        events.append('metadata')
+        return state, {'degraded': False}, {}, True
+    def forward(state, rt, report, *_args):
+        if revoke:
+            native.change(native.owner, {'owner_id': 'replacement'})
+        native.failure = failure
+        result = consume_forward_bound(rt, observation, cash, report)
+        events.append('forward_verified')
+        return result
+    def reset(state, rt, report, today, total, trend):
+        state['last_reset_date'] = '2026-09-11'
+        reset_daily(state, rt, report, today, total, trend, runtime_set_trade_state_fn=fenced_write)
+        events.append('daily_reset')
+    snapshot = {a: round(float(v['quantity']), 8) for a, v in observation['assets'].items()}
+    report = execute_strategy_cycle(runtime,
+        build_execution_report=full_report,
+        ensure_runtime_client=lambda *args: True,
+        load_cycle_execution_settings=lambda: SimpleNamespace(btc_status_report_interval_hours=24,
+                                                             allow_new_trend_entries_on_degraded=False),
+        load_cycle_state=load, append_trend_pool_source_logs=lambda *args: None,
+        capture_market_snapshot=lambda *args: {'u_total': 100.0, 'fuel_val': 1500.000005,
+            'dynamic_usdt_buffer': 0, 'prices': {'BTCUSDT': 50000, 'BNBUSDT': 500},
+            'balances': {'BTCUSDT': 0, 'BNBUSDT': 3.00000001}, 'btc_snapshot': {}, 'trend_indicators': {}},
+        top_up_bnb_fuel=lambda *args: events.append('fuel') or (100, 1500.000005, 'ready'),
+        compute_portfolio_allocation=lambda *args: {'total_equity': 1600.000005, 'trend_val': 0, 'dca_val': 0,
+            'execution_permitted': True, 'btc_target_ratio': 0, 'dca_usdt_pool': 0, 'btc_base_order_usdt': 0},
+        build_balance_snapshot=lambda *args: copy.deepcopy(snapshot),
+        maybe_reset_daily_state=reset, maybe_rebase_daily_state_for_balance_change=forward,
+        compute_daily_pnls=lambda *args: (0, 0), append_portfolio_report=lambda *args: None,
+        run_daily_circuit_breaker=lambda *args: False,
+        execute_trend_rotation=lambda *args, **kwargs: events.append('trend') or 100,
+        execute_btc_dca_cycle=lambda *args: events.append('dca') or 100,
+        manage_usdt_earn_buffer_runtime=lambda *args, **kwargs: events.append('earn'),
+        maybe_send_periodic_btc_status_report=lambda *args, **kwargs: None,
+        runtime_set_trade_state=fenced_write, append_report_error=lambda *args, **kwargs: None,
+        runtime_notify=lambda *args: None, translate_fn=lambda key, **kwargs: key, traceback_module=SimpleNamespace())
+    return runtime, native, report, events, observation
+
+
+@pytest.mark.parametrize('receipt_enabled', [False, True])
+def test_full_candidate_cycle_preserves_ordering_and_forward_checkpoint_through_later_saves(receipt_enabled):
+    with patch('application.cycle_service.try_record_platform_execution'):
+        runtime, native, report, events, observation = run_bound_source_cycle(receipt_enabled=receipt_enabled)
+    assert report['status'] == 'ok'
+    assert events == ['metadata', 'forward_verified', 'daily_reset', 'fuel', 'trend', 'dca', 'earn']
+    reasons = [item['reason'] for item in report['state_write_intents']]
+    assert reasons == ['trend_pool_metadata_refresh', 'earn_forward_accounting', 'daily_reset', 'cycle_complete']
+    assert native.data[native.ledger]['earn_accrual_checkpoint'] == observation
+    assert native.data[native.ledger]['external_cash_flow_cursor']['observed_at'] == observation['observed_at']
+    assert len([key for key in native.data if '__interval_receipt_' in key]) == int(receipt_enabled)
+    assert native.owner not in native.data
+    assert not runtime.state_owner_held and not runtime.bound_state_access.active
+
+
+@pytest.mark.parametrize('failure,revoke', [('before_commit', False), ('after_commit', False), (None, True)])
+def test_full_cycle_uncertainty_or_midcycle_revocation_stops_before_reset_and_broker_stages(failure, revoke):
+    with patch('application.cycle_service.try_record_platform_execution'):
+        runtime, native, report, events, observation = run_bound_source_cycle(failure=failure, revoke=revoke)
+    assert report['status'] == 'error'
+    assert report['diagnostics']['cycle_failure']['stage'] == 'daily_state'
+    assert events == ['metadata']
+    assert not runtime.state_owner_held and not runtime.bound_state_access.active
+    assert native.owner in native.data
+    assert 'external_cash_flow_interval' not in report
+    if failure == 'after_commit':
+        assert native.data[native.ledger]['earn_accrual_checkpoint'] == observation
+        assert len([key for key in native.data if '__interval_receipt_' in key]) == 1
+    else:
+        assert native.data[native.ledger]['earn_accrual_checkpoint'] != observation
+        assert not any('__interval_receipt_' in key for key in native.data)
+    runtime.client.order_market_buy.assert_not_called()
+
+
+def test_production_native_mutation_inventory_has_no_blind_saver_bypass():
+    import ast
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    live = ast.parse((root / 'live_services.py').read_text())
+    public = next(n for n in live.body if isinstance(n, ast.FunctionDef) and n.name == 'save_trade_state')
+    calls = [ast.unparse(n.func) for n in ast.walk(public) if isinstance(n, ast.Call)]
+    assert '_get_document_store' not in calls
+    assert not any(call.endswith('.set') for call in calls)
+    assert 'bound_access.save' in calls
+    support = ast.parse((root / 'runtime_support.py').read_text())
+    writer_calls = [n for n in ast.walk(support) if isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Attribute) and n.func.attr == 'state_writer']
+    assert len(writer_calls) == 1
+    seam = next(n for n in support.body if isinstance(n, ast.FunctionDef) and n.name == '_persist_runtime_state')
+    assert writer_calls[0] in list(ast.walk(seam))
+    for name in ['runtime_set_trade_state', '_persist_order_submission_state']:
+        node = next(n for n in support.body if isinstance(n, ast.FunctionDef) and n.name == name)
+        assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                   and n.func.id == '_persist_runtime_state' for n in ast.walk(node))
+    assert set(path for path, _, _ in _owned_native_mutation_calls(root)) <= {
+        'live_services.py', 'application/interval_source_receipt_candidate.py'}
+
+
+def _owned_native_mutation_calls(root):
+    import ast
+    source_calls = []
+    # These are this repository's verified production roots. CI's external/
+    # checkouts and .venv/ packages are separate dependencies, not owned writers.
+    files = list(root.glob('*.py'))
+    for directory in ('application', 'entrypoints', 'infra', 'reporting', 'research', 'strategy'):
+        files.extend((root / directory).rglob('*.py'))
+    caches = {'__pycache__', '.pytest_cache', '.ruff_cache', '.mypy_cache', '.cache', '.venv'}
+    for file in sorted(files):
+        if any(part in caches for part in file.relative_to(root).parts[:-1]):
+            continue
+        tree = ast.parse(file.read_text())
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in {'set', 'update', 'create', 'delete'}:
+                receiver = ast.unparse(n.func.value)
+                if 'transaction' in receiver or receiver in {'store', 'bound_access._store'}:
+                    source_calls.append((str(file.relative_to(root)), receiver, n.func.attr))
+    return source_calls
+
+
+def test_owned_writer_inventory_excludes_ci_dependencies_but_detects_nested_owned_writer(tmp_path):
+    owned = tmp_path / 'application' / 'nested' / 'writer.py'
+    owned.parent.mkdir(parents=True)
+    owned.write_text('store.set(data)\n')
+    for relative in ['external/QuantPlatformKit/provider.py', '.venv/lib/site-packages/provider.py',
+                     'application/__pycache__/cache.py', '.pytest_cache/cache.py', '.ruff_cache/cache.py']:
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('transaction.update(ref, data)\n')
+    assert _owned_native_mutation_calls(tmp_path) == [('application/nested/writer.py', 'store', 'set')]

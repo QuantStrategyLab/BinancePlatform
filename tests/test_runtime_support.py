@@ -5,9 +5,10 @@ import threading
 import traceback
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import requests
+import pytest
 
 if not hasattr(requests, "exceptions"):
     class RequestException(OSError):
@@ -1542,3 +1543,139 @@ def test_release_uncertainty_does_not_authorize_old_owner_and_readonly_never_cla
         assert acquire_runtime_state_owner(runtime) is True
         claim.assert_not_called()
         assert runtime.state_owner_held is False
+
+
+# All native submission and ordinary writes use the same server-checked port.
+def bound_owned_runtime(previous, *, receipt_enabled=False):
+    from test_live_services import session_fixture
+    access, native, _ = session_fixture(previous, receipt_enabled=receipt_enabled)
+    runtime = ExecutionRuntime(client=Mock(), bound_state_access=access, state_loader=access.load,
+        state_writer=access.save, state_owner_claim=access.claim, state_owner_release=access.release)
+    assert acquire_runtime_state_owner(runtime)
+    runtime.trade_state = access.load(normalize=False)
+    return runtime, native
+
+
+@pytest.mark.parametrize('kind', ['ordinary', 'submission', 'broker_submission'])
+@pytest.mark.parametrize('revocation', ['removed', 'replaced'])
+def test_revoked_owner_cached_local_flag_cannot_mutate_or_submit(kind, revocation):
+    from runtime_support import StatePersistenceError, _persist_order_submission_state
+    runtime, native = bound_owned_runtime({'order_submission': {'state': 'RESERVED'}, 'value': 1})
+    if revocation == 'removed':
+        native.data.pop(native.owner)
+    else:
+        native.change(native.owner, {'owner_id': 'replacement'})
+    assert runtime.state_owner_held  # Intentionally stale cached local flag.
+    report = build_execution_report(runtime)
+    with pytest.raises(StatePersistenceError):
+        if kind == 'ordinary':
+            runtime_set_trade_state(runtime, report, runtime.trade_state, reason='cycle_complete')
+        elif kind == 'submission':
+            _persist_order_submission_state(runtime, runtime.trade_state, {'state': 'TERMINAL'})
+        else:
+            runtime_call_client(runtime, report, method_name='order_market_buy',
+                                payload={'symbol': 'BTCUSDT', 'quantity': 1}, effect_type='order_buy')
+    assert native.data[native.ledger]['order_submission']['state'] == 'RESERVED'
+    assert not runtime.state_owner_held
+    assert not runtime.bound_state_access.active
+    runtime.client.order_market_buy.assert_not_called()
+    with pytest.raises(StatePersistenceError):
+        runtime_call_client(runtime, report, method_name='order_market_buy',
+                            payload={'symbol': 'BTCUSDT', 'quantity': 1}, effect_type='order_buy')
+    runtime.client.order_market_buy.assert_not_called()
+
+
+@pytest.mark.parametrize('failure', ['before_commit', 'after_commit'])
+def test_submission_commit_uncertainty_halts_broker_and_cannot_retry(failure):
+    from runtime_support import StatePersistenceError
+    runtime, native = bound_owned_runtime({'order_submission': {'state': 'RESERVED'}})
+    native.failure = failure
+    report = build_execution_report(runtime)
+    with pytest.raises(StatePersistenceError):
+        runtime_call_client(runtime, report, method_name='order_market_buy',
+                            payload={'symbol': 'BTCUSDT', 'quantity': 1}, effect_type='order_buy')
+    runtime.client.order_market_buy.assert_not_called()
+    assert not runtime.state_owner_held and not runtime.bound_state_access.active
+    if failure == 'after_commit':
+        assert native.data[native.ledger]['order_submission']['state'] == 'SUBMISSION_UNKNOWN'
+    else:
+        assert native.data[native.ledger]['order_submission']['state'] == 'RESERVED'
+    calls = len(native.events)
+    with pytest.raises(StatePersistenceError):
+        runtime_call_client(runtime, report, method_name='order_market_buy',
+                            payload={'symbol': 'BTCUSDT', 'quantity': 1}, effect_type='order_buy')
+    assert len(native.events) == calls
+
+
+def test_bound_native_port_rejects_replaced_writer_before_any_mutation():
+    from runtime_support import StatePersistenceError, _persist_order_submission_state
+    runtime, native = bound_owned_runtime({'order_submission': {'state': 'RESERVED'}})
+    rogue = Mock(return_value=True)
+    runtime.state_writer = rogue
+    with pytest.raises(StatePersistenceError):
+        _persist_order_submission_state(runtime, runtime.trade_state, {'state': 'TERMINAL'})
+    rogue.assert_not_called()
+    assert not runtime.bound_state_access.active
+    assert native.data[native.ledger]['order_submission']['state'] == 'RESERVED'
+
+
+def test_receipt_forward_requires_interval_and_reason_on_bound_runtime():
+    from test_interval_source_receipt_candidate import material
+    from runtime_support import StatePersistenceError
+    previous, following, interval = material()
+    for reason, payload in [('earn_forward_accounting', None), ('daily_reset', interval)]:
+        runtime, native = bound_owned_runtime(previous, receipt_enabled=True)
+        calls = len(native.events)
+        with pytest.raises(StatePersistenceError):
+            runtime_set_trade_state(runtime, build_execution_report(runtime), following,
+                                    reason=reason, interval=payload)
+        assert len(native.events) == calls
+        assert not runtime.bound_state_access.active
+        assert not runtime.state_owner_held
+
+
+def test_ordinary_then_all_submission_transition_saves_preserve_committed_receipt_checkpoint():
+    from test_interval_source_receipt_candidate import material
+    from runtime_support import _persist_order_submission_state
+    previous, following, interval = material()
+    runtime, native = bound_owned_runtime(previous, receipt_enabled=True)
+    report = build_execution_report(runtime)
+    state = runtime.trade_state
+    state['last_reset_date'] = previous['last_reset_date']
+    runtime_set_trade_state(runtime, report, state, reason='trend_pool_metadata_refresh')
+    runtime_set_trade_state(runtime, report, following, reason='earn_forward_accounting', interval=interval)
+    for record in [{'state': 'RESERVED'}, {'state': 'SUBMISSION_UNKNOWN', 'identity_sha256': 'b' * 64, 'symbol': 'ETHUSDT'},
+                   {'state': 'FILLED_ACCOUNTING_PENDING', 'identity_sha256': 'b' * 64, 'symbol': 'ETHUSDT',
+                    'known_fill': {'quantity': '1', 'quote_quantity': '100', 'commissions': []}},
+                   {'state': 'TERMINAL'},
+                   {'state': 'SUBMISSION_UNKNOWN', 'identity_sha256': 'c' * 64,
+                    'method_name': 'subscribe_simple_earn_flexible_product',
+                    'funding_receipt': {'id': 1, 'asset': 'USDT', 'product_id': 'synthetic',
+                                        'amount': '1', 'spot_before': '10'}}, {'state': 'TERMINAL'}]:
+        _persist_order_submission_state(runtime, following, record)
+        assert native.data[native.ledger]['earn_accrual_checkpoint'] == following['earn_accrual_checkpoint']
+    for reason in ['daily_reset', 'daily_circuit_breaker', 'trend_buy', 'trend_sell', 'btc_dca_buy',
+                   'btc_dca_sell', 'cash_reconciliation', 'cycle_complete']:
+        runtime_set_trade_state(runtime, report, following, reason=reason)
+        assert native.data[native.ledger]['external_cash_flow_cursor'] == following['external_cash_flow_cursor']
+    assert len([key for key in native.data if '__interval_receipt_' in key]) == 1
+
+
+def test_external_mid_commit_invalidation_cannot_rearm_runtime_or_continue_broker():
+    from runtime_support import StatePersistenceError
+    runtime, native = bound_owned_runtime({'order_submission': {'state': 'RESERVED'}, 'value': 1})
+    native.after_commit = lambda _native: runtime.bound_state_access.invalidate()
+    report = build_execution_report(runtime)
+    previous_source = copy.deepcopy(runtime.bound_state_access._source)
+    with pytest.raises(StatePersistenceError):
+        runtime_set_trade_state(runtime, report, {'order_submission': {'state': 'RESERVED'}, 'value': 2},
+                                reason='cycle_complete')
+    assert native.data[native.ledger]['value'] == 2
+    assert runtime.bound_state_access._source == previous_source
+    assert not runtime.state_owner_held and not runtime.bound_state_access.active
+    calls = len(native.events)
+    with pytest.raises(StatePersistenceError):
+        runtime_call_client(runtime, report, method_name='order_market_buy',
+                            payload={'symbol': 'BTCUSDT', 'quantity': 1}, effect_type='order_buy')
+    runtime.client.order_market_buy.assert_not_called()
+    assert len(native.events) == calls
