@@ -9,11 +9,14 @@ advance a cursor, clear receipts or register with runtime. Every preview reports
 `blocked_archive_enumeration_and_durable_ack_unqualified` and
 `delivery_acknowledged=False`. The default runtime remains unchanged.
 
-The exact missing consumer seam is a qualified, explicitly bound durable sink
-that can create-or-verify the same logical interval plus exact payload digest,
-detect conflicts, and perform authoritative readback without treating a local
-fallback or a swallowed error as confirmation. The existing pinned contracts do
-not provide that seam, so no ACK adapter is fabricated here.
+The missing native seam is qualified acquisition of the existing retained source
+archive, with explicit physical identity, complete bounded enumeration, cutover
+and retention evidence. As the later
+[bound source contract](interval_source_receipt_candidate.md#source-consumers-and-rollout-limits)
+states, retained receipts can feed the existing calculator directly. A second
+PerformanceStore sink or delivery ACK is unnecessary for that read-only path.
+The preview's existing delivery-status string is retained for compatibility; it
+is not a requirement to create another sink. No ACK adapter is fabricated here.
 
 ## Existing consumer contracts inspected
 
@@ -104,13 +107,129 @@ not declare success, rollback, exactly-once delivery or durable ACK. No network,
 cloud list/read, credential or real store factory is used in that regression.
 
 Future work requires separately qualified archive identity/query/pagination and
-completeness, access/cost/retention bounds, explicit cutover, and the durable sink
-ACK/readback/idempotency contract. Source/backend qualification and mixed-writer
-runtime adoption remain separate. No receipt deletion or new queue/service is
-proposed. Runtime switch, source release pin, workflows and ordinary writes are
-unchanged; no Runtime dispatch or deployment is authorized by this candidate.
+completeness, access/cost/retention bounds and explicit cutover. Source/backend
+qualification and mixed-writer runtime adoption remain separate. Direct
+calculation does not require a sink ACK; adding a sink would require its own
+ACK/readback/idempotency qualification. No receipt deletion or new queue/service
+is proposed. Runtime switch, source release pin, workflows and ordinary writes
+are unchanged; no Runtime dispatch or deployment is authorized by this candidate.
 
-## Local verification
+## Native input preflight and existing handoff
+
+The 2026-10-05 offline preflight is against Binance main
+`db87064bbd89a67d021694e02bcdbc337c164180` and its unchanged QPK pin
+`8e8ec51884bf8abb0a7ca699fc2da39fad134f89`. The existing reader already separates
+supplied-batch integrity from native authenticity and completeness. No additional
+preflight API, receipt format, archive service or production query is needed to
+represent this distinction.
+
+Available evidence establishes the source/reader code and synthetic regressions.
+It does not establish a native archive, physical database or authorized protected
+read entry, actual account scope, retained window, cutover, retention/PITR policy,
+terminal-page enumeration or current runtime adoption. Missing evidence means
+unqualified, not proof that an archive does not exist. The default-off
+construction option does not establish the flag of a running process.
+
+The following is an evidence handoff checklist, not a new accepted schema or
+authorization to acquire protected records:
+
+1. Source and permitted entry: original retained-export location or approved
+   read entry, provenance/checksum, observation time, read identity and permitted
+   fields/window; exact producing application revision and backend/SDK version.
+   Do not construct another client or infer a cloud principal from this document.
+2. Physical binding: full `projects/{project}/databases/{database}` identity,
+   original relative ledger path, native account-scope digest and its original
+   account binding; chosen strategy profile and lifecycle stream. The source
+   defaults `strategy/MULTI_ASSET_STATE` and sibling document pattern
+   `<ledger>__interval_receipt_<interval_id_sha256>` are code conventions, not a
+   verified production entry. Identical relative paths do not bind a database.
+3. Window and cutover: exact requested receipt start/end, producing revision,
+   first retained checkpoint and full source version, retention-enable and
+   disable/gap boundaries, and old/maintenance/external-writer quiescence evidence.
+   Rebase dates, current balances or a first observed receipt cannot create an
+   earlier retained start or opening equity.
+4. Enumeration: original query/filter/ordering definition, one authoritative
+   as-of/read snapshot across all pages, each requested/returned cursor, page
+   count and bytes, document identities, terminal marker and all errors or
+   truncations. Complete source enumeration must precede selection of the
+   bounded reader batch. Hash-suffixed document IDs are not chronological, and
+   raw interval time strings can use equivalent UTC offsets; neither lexical
+   timestamp filtering nor contiguity proves complete enumeration. No native
+   query/index or snapshot-pagination contract is qualified by this preflight.
+5. Retention and access: actual receipt retention/PITR and deletion history for
+   the window, read completeness and limits, permitted principal, indexes and
+   storage/read-cost bounds. Create-once API behavior is not WORM or IAM evidence.
+6. Business source: original checkpoint/flow/fill/fee/price provenance sufficient
+   for the supported Spot plus Flexible Earn scope; USDT external deposits must
+   remain distinct from same-account movements. The seven-field receipt alone
+   cannot prove these gates. Unsupported withdrawals, unknown fees, FX or scope
+   changes remain unavailable; do not substitute wallet estimates or daily totals.
+
+For each supplied receipt, preserve exactly these existing fields:
+
+- `schema_version`, `interval_id_sha256`, `payload_sha256`, `source`, `interval`
+- Source: `ledger_path`, `ledger_before_version` (nine-digit UTC nanoseconds),
+  `ledger_before_sha256`, `ledger_after_sha256`, `patch_sha256`
+- Interval: `account_scope_sha256`, `start_at`, `end_at`, `end_equity_usdt`,
+  `net_external_cash_flow`, `currency`, `valuation_basis`
+
+Keep original receipt paths, unchanged field values and export-byte checksums
+with external provenance. Do not
+change lexical timestamps, regenerate hashes, fabricate ledgers or repair missing
+pages to make an export pass. Redaction that changes covered receipt material
+cannot be presented as the original native payload. A synthetic fixture, a
+redacted inspection copy and an unchanged native export are different inputs;
+successful parsing does not promote any of them to verified native evidence.
+
+Once original supplied material is independently qualified, the existing local
+calculation path is:
+
+1. Materialize bounded `(original_receipt_path, original_receipt_dict)` pairs.
+2. Call `prepare_retained_interval_preview` with the separately verified ledger,
+   account-scope digest, exact receipt-window endpoints, explicit profile/stream
+   and count/byte budgets. Hard limits stay 1,000 entries and 1,048,576 bytes,
+   counting duplicates. Exceeding them blocks this batch; do not silently truncate
+   or concatenate independent batches to claim a whole-window pass.
+3. Pass `preview.live_run_records()` directly to the existing pinned
+   `live_run_records_to_return_series_result(..., domain="crypto")`. No store
+   write, delivery ACK, receipt deletion or cursor change is part of this path.
+4. Report native qualification separately from the calculator's status, and
+   disclose account scope, currency, valuation basis, receipt window, calculable
+   return window, gaps/truncation and observation/end-flow method.
+
+The receipt window and return window differ. The pinned calculator uses the
+first ending-equity observation as its opening anchor, groups observations/flows
+by UTC end date and requires consecutive observed days. Three receipts covering
+`t0→t1`, `t1→t2`, `t2→t3` across three successive end dates yield returns for
+`t1→t2` and `t2→t3`; they do not establish a return for `t0→t1`. A single receipt
+or multiple receipts ending on one UTC date are insufficient. The calculator
+can retain only a later component when other inputs have a missing day; this
+reader instead rejects a supplied receipt gap. Receipt contiguity and nonempty `ok`
+therefore cannot certify a requested whole return window. Coverage disclosure is
+the separately coordinated QPK consumer contract; this reader does not change it.
+Do not invent an opening-equity point or label these observations exact TWR or
+natural-midnight-day returns. Benchmark comparisons also need independently
+qualified same-currency, same-return-window total-return inputs.
+
+## Offline preflight verification (2026-10-05)
+
+- The complete 185-file Binance fixed-main tree and modes match the local
+  baseline; the only proposed change is this document. All 184 other files,
+  including producer, reader, tests, runtime, pins and workflows, are unchanged
+- All 496 blobs of the existing exact QPK pin were checked before execution
+- The 35 existing reader tests and 37 existing source tests pass with network,
+  credential lookup and provider factories denied: zero attempts
+- Additional synthetic observations confirm that a single receipt and two
+  receipts ending on one UTC date produce `insufficient_observations`; three
+  successive end dates produce two return points
+- The documentation patch applies to the exact baseline and its relative source
+  link/section resolves. No production behavior changed, so no code RED/fix is
+  claimed. Full application tests and lint were not rerun for this docs-only
+  preflight; the historical results below are separate
+- No native archive was acquired or qualified, and no protected data, broker,
+  credentials, runtime dispatch, publication, deployment or adoption was used
+
+## Original reader candidate verification (historical)
 
 - 35 new synthetic reader/consumer tests and 37 existing receipt fake tests pass
   with network and cloud factories denied: zero attempts
