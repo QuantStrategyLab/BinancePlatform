@@ -1,23 +1,18 @@
 # BinancePlatform
 
+BinancePlatform 是 QuantStrategyLab 的 Binance 加密货币执行 runtime：它通过面向 Binance 的 workflow 和 self-hosted 编排来运行已启用的加密货币策略，负责券商/API 连接、dry-run/live 控制和部署配置。它只是执行层，不是研究仓库——策略逻辑来自 `CryptoStrategies`，如果 profile 依赖 live-pool，相关验证和产物来自 `CryptoLivePoolPipelines`。在整个 QuantStrategyLab 多仓库系统里，它处于 runtime-platform 层，消费上游策略和 pipeline 产物，而不自行决定策略逻辑。它主要面向负责运维或审查该平台部署与运行行为的工程师，而不是寻找现成策略或投资信号的交易者。
 
-## QSL 架构角色
+[English README](README.md)
+
+> 投资有风险。本项目不构成投资建议，仅用于学习、研究和工程审阅。
+
+## 架构角色
 
 - **层级**：`执行平台`。
 - **职责**：Binance 加密执行运行时。
 - **事实源/归属**：券商/API 连接、dry-run/live 控制、部署设置。
 - **消费对象**：CryptoStrategies、CryptoLivePoolPipelines artifacts、QuantPlatformKit、QuantRuntimeSettings。
 - **禁止事项**：承载策略研究逻辑或发布 live-pool 成员。
-
-[English README](README.md)
-
-> 投资有风险。本项目不构成投资建议，仅用于学习、研究和工程审阅。
-
-## 这个仓库是什么
-
-BinancePlatform 是 QuantStrategyLab 的Binance 加密货币执行平台。通过面向 Binance 的 workflow 和 self-hosted 编排执行 runtime-enabled 加密货币策略。
-
-它属于执行层，不是策略研究仓库。策略逻辑来自 `CryptoStrategies`；如果 profile 依赖 live-pool，验证和产物来自 `CryptoLivePoolPipelines`。
 
 ## 运行边界
 

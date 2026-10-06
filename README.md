@@ -1,23 +1,18 @@
 # BinancePlatform
 
+BinancePlatform is QuantStrategyLab's execution runtime for Binance crypto trading: it runs runtime-enabled crypto strategies through Binance-facing workflows and self-hosted orchestration, handling broker/API connectivity, dry-run/live controls, and deployment. It is strictly an execution layer, not a research repository — strategy logic comes from `CryptoStrategies`, and live-pool eligibility plus validation artifacts come from `CryptoLivePoolPipelines` when a profile needs them. Within the larger QuantStrategyLab system it sits at the runtime-platform layer, consuming upstream strategy and pipeline artifacts rather than deciding strategy logic itself. It's meant for engineers operating or auditing this platform's deployment and runtime behavior, not for traders looking for ready-made strategies or investment signals.
 
-## QSL architecture role
+[Chinese README](README.zh-CN.md)
+
+> Investing involves risk. This project does not provide investment advice and is for education, research, and engineering review only.
+
+## Architecture role
 
 - **Layer**: `runtime-platform`.
 - **Responsibility**: Binance crypto execution runtime.
 - **Owns**: broker/API connectivity, dry-run/live controls, deployment settings.
 - **Consumes**: CryptoStrategies, CryptoLivePoolPipelines artifacts, QuantPlatformKit, QuantRuntimeSettings.
 - **Must not**: own strategy research logic or publish live-pool membership.
-
-[Chinese README](README.zh-CN.md)
-
-> Investing involves risk. This project does not provide investment advice and is for education, research, and engineering review only.
-
-## What this repository is
-
-BinancePlatform is a QuantStrategyLab Binance crypto execution platform. It executes runtime-enabled crypto strategies through Binance-facing workflows and self-hosted orchestration.
-
-It is an execution layer, not a strategy research repository. Strategy logic comes from `CryptoStrategies`; live-pool and validation artifacts come from `CryptoLivePoolPipelines` when a profile requires them.
 
 ## Runtime boundary
 
