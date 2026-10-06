@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,6 +56,41 @@ class RuntimeConfigSupportTests(unittest.TestCase):
         self.assertEqual(settings.strategy_display_name, "Crypto Live Pool Rotation")
         self.assertEqual(settings.strategy_display_name_localized, "Crypto Live Pool Rotation")
         self.assertEqual(settings.strategy_domain, CRYPTO_DOMAIN)
+
+    def test_load_cycle_execution_settings_preserves_zero_and_interval_bounds(self):
+        cases = (
+            ("missing", {}, 24),
+            ("empty", {"BTC_STATUS_REPORT_INTERVAL_HOURS": ""}, 24),
+            ("invalid", {"BTC_STATUS_REPORT_INTERVAL_HOURS": "not-an-int"}, 24),
+            ("zero", {"BTC_STATUS_REPORT_INTERVAL_HOURS": "0"}, 0),
+            ("negative", {"BTC_STATUS_REPORT_INTERVAL_HOURS": "-1"}, 1),
+            ("minimum", {"BTC_STATUS_REPORT_INTERVAL_HOURS": "1"}, 1),
+            ("maximum", {"BTC_STATUS_REPORT_INTERVAL_HOURS": "24"}, 24),
+            ("above_maximum", {"BTC_STATUS_REPORT_INTERVAL_HOURS": "48"}, 24),
+        )
+        for name, env_updates, expected in cases:
+            with self.subTest(name=name), patch.dict(os.environ, env_updates, clear=True):
+                with (
+                    patch(
+                        "runtime_config_support._resolve_runtime_target",
+                        return_value=(
+                            object(),
+                            SimpleNamespace(profile="test-profile", domain=CRYPTO_DOMAIN),
+                        ),
+                    ),
+                    patch(
+                        "runtime_config_support.resolve_research_strategy_metadata",
+                        return_value=SimpleNamespace(display_name="Test Strategy"),
+                    ),
+                    patch("runtime_config_support.get_notify_lang", return_value="en"),
+                    patch("runtime_config_support.build_translator", return_value=object()),
+                    patch(
+                        "runtime_config_support.build_strategy_display_name",
+                        return_value=lambda profile, **kwargs: "Test Strategy",
+                    ),
+                ):
+                    settings = load_cycle_execution_settings()
+                self.assertEqual(settings.btc_status_report_interval_hours, expected)
 
     def test_load_cycle_execution_settings_ignores_legacy_trend_pool_degraded_alias(self):
         with patch.dict(
