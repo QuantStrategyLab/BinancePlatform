@@ -854,3 +854,41 @@ returns `blocked` and exit 2. All outcomes keep full account reconciliation and
 execution authority false, including when out-of-scope Spot assets are present.
 Stop on the first real failure; do not initialize a cursor or activate trading
 to make this diagnostic pass. A successful preview is not durable accounting.
+
+
+## Public diagnostic output privacy
+
+The Runtime workflow must not upload the complete `execution_report.json` to
+GitHub Actions or copy it into the public `logs` branch. Its former full-report
+upload and isolated repository log-publisher job are removed. Existing local and
+configured private runtime-report persistence remain unchanged; this change
+creates no storage destination, identity or permission.
+
+Public lifecycle export and console completion records contain bounded health
+metadata only. They omit account valuation, cash-flow amounts, account-scope digests,
+free-form portfolio lines and nested financial objects. The private report and
+PerformanceStore recorder keep their existing content. Missing financial values
+in public diagnostics mean unavailable, never zero or a substitute account NAV.
+The public lifecycle payload explicitly keeps `external_cash_flow: null`, since
+legacy consumers otherwise interpret an absent cash-flow field as zero.
+
+The standalone protected account-facts workflow remains unchanged. Its exact
+source-artifact requirement now makes new Runtime sources unavailable: the
+preflight or required download must fail before native-account reading and
+publication. Do not bypass that check, substitute an old report, or enable a
+strategy to manufacture a source. Restoring this optional reader needs a
+separately reviewed private handoff; automatic native account facts remain open.
+
+This source change is not a deployment or permission to restore trading.
+Runtime stays manually disabled. Both the workflow and application revisions
+must be reviewed and adopted through the existing protected process before any
+future operator recovery; deploying the workflow alone can still upload an old
+application's unsanitized lifecycle file. Do not change pins or enable Runtime
+as part of this patch.
+
+Deleting existing Actions artifacts or job logs is separate from this source
+fix and requires an exact operator decision because that evidence cannot be
+restored normally. Public Git copies and history, clones and prior downloads
+are not removed by artifact/log deletion. Keep only non-financial audit metadata
+(run/artifact/job identifiers, timestamps, source revisions and field-presence
+booleans) in the incident summary; do not copy amounts or account-scope hashes.
