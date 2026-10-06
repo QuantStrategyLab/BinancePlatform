@@ -770,21 +770,3 @@ jobs:
           git commit -m "execution: ${TS}"
           git push origin "HEAD:${LOGS_BRANCH}"
 
-  account-facts-readonly:
-    name: Read-only native account quantities
-    needs: deploy
-    if: >-
-      needs.deploy.result == 'success' &&
-      needs.deploy.outputs.runtime_target_enabled == 'true' &&
-      github.ref == 'refs/heads/runtime-production' &&
-      vars.BINANCE_ACCOUNT_FACTS_ENABLED == 'true' &&
-      github.event.inputs.validate_only != 'true' &&
-      github.event.inputs.reconcile_only != 'true'
-    permissions:
-      actions: read
-      contents: read
-    uses: QuantStrategyLab/BinancePlatform/.github/workflows/binance-account-facts.yml@e46bda23661a4851df7ad84edd010546ab104b3c
-    with:
-      enabled: true
-      source_mode: same_parent
-    secrets: inherit

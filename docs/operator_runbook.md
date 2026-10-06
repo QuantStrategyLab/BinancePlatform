@@ -169,6 +169,41 @@ The monthly execution pool is locked to the accepted upstream `version` / `as_of
 - Repository variable changes are consumed by the next externally scheduled dispatch; they do not reconfigure the VPS scheduler cadence.
 - Avoid overlapping dispatches from multiple schedulers or from a second manual run while the current runtime job is still in progress.
 
+### Optional native account facts: separate manual capability
+
+The automatic `Runtime` workflow does not attach the optional native
+account-facts collector. Its original workflow-wide concurrency lock, strategy
+job, and isolated execution-log publisher remain unchanged. Waiting for optional
+account-data approval must not become part of an automatic trading run.
+
+`Binance Account Facts` remains a separate protected manual workflow. Its existing
+manual inputs are `enabled` (default `false`), an exact `source_run_id`, and
+`source_mode=legacy_terminal`. The repository gate, `runtime-production` ref,
+`binance-runtime` environment approval, trusted reader revision, source checks,
+and isolated publication token still apply. Retaining this entry does not grant
+permission to invoke it or relax its checks.
+
+Use it only during an explicitly established quiet maintenance window: Runtime
+workflow admission remains disabled, no active or runnable Runtime attempt exists,
+and no other operator or controller can re-enable, rerun, or dispatch trading.
+Its separate concurrency group and point-in-time source checks do not provide an
+atomic read-to-publication fence against a later Runtime. Actions-level inactivity
+does not establish host-process or broker-order inactivity.
+
+The reader also requires the latest qualifying Runtime source to be terminal
+success with its exact approved revisions and report. At the 2026-10-06
+maintenance checkpoint, the latest queued run and old waiting parent were
+cancelled, so no eligible latest successful source was established. Do not create
+one by enabling or dispatching a strategy merely to fill the account-data gap;
+do not make the reader accept cancellation or stale sources.
+
+Automatic native account facts are not yet a completed data path. Preserve
+historical observation timestamps and unavailable/stale states rather than
+presenting old data as fresh or missing data as zero. Reliable asynchronous
+collection and receiver-side run/session fencing require separate review.
+Source publication, workflow-pin adoption, and resuming trading are separate
+decisions; this detachment itself authorizes none of them.
+
 ### Approved runtime release pin
 
 `BINANCE_RUNTIME_RELEASE_SHA` is the single protected repository variable that
