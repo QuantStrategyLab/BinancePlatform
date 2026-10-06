@@ -37,6 +37,45 @@ class RuntimeIsolationHostProbeTests(unittest.TestCase):
         self.assertEqual(result["broker_secret_scope"], "strategy_step_only")
         self.assertFalse(result["secret_values_read"])
 
+    def _inspect_synthetic_workflow(self, text: str):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "workflow.yml"
+            path.write_text(text, encoding="utf-8")
+            return self.probe.inspect_secret_source(path)
+
+    def test_strategy_secret_boundary_requires_unique_adjacent_step_markers(self) -> None:
+        workflow = MAIN_WORKFLOW.read_text(encoding="utf-8")
+        start = "      - name: 4. Run trading strategy"
+        end = "      - name: Remove protected LIVE risk authority source"
+        variants = {
+            "missing_start": workflow.replace(start, "      - name: Unrecognized strategy"),
+            "missing_end": workflow.replace(end, "      - name: Unrecognized cleanup"),
+            "duplicate_start": workflow + "\n" + start + "\n",
+            "duplicate_end": workflow + "\n" + end + "\n",
+            "intervening_named_step": workflow.replace(end, "      - name: Unrecognized step\n" + end),
+            "intervening_unnamed_step": workflow.replace(end, "      - uses: example/action@v1\n" + end),
+        }
+        for case, text in variants.items():
+            with self.subTest(case=case):
+                result = self._inspect_synthetic_workflow(text)
+                self.assertEqual(result["broker_secret_scope"], "UNVERIFIED")
+                self.assertFalse(result["secret_values_read"])
+
+    def test_cross_step_secret_references_are_not_claimed_strategy_only(self) -> None:
+        workflow = MAIN_WORKFLOW.read_text(encoding="utf-8")
+        key = "          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}"
+        secret = "          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}"
+        later_step = "\n      - name: Other synthetic step\n        env:\n" + key + "\n" + secret + "\n"
+        for case, text in {
+            "moved": workflow.replace(key + "\n", "").replace(secret + "\n", "") + later_step,
+            "duplicated": workflow + later_step,
+        }.items():
+            with self.subTest(case=case):
+                result = self._inspect_synthetic_workflow(text)
+                self.assertTrue(result["broker_secret_references_present"])
+                self.assertEqual(result["broker_secret_scope"], "UNVERIFIED")
+                self.assertFalse(result["secret_values_read"])
+
     def test_provider_inference_does_not_assume_gce(self) -> None:
         self.assertEqual(
             self.probe.infer_host_provider({"sys_vendor": "OracleCloud.com"}),

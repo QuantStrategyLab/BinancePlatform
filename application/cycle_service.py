@@ -11,8 +11,10 @@ import tempfile
 
 from quant_platform_kit.common.runtime_reports import persist_runtime_report
 from quant_platform_kit.strategy_lifecycle.performance_monitor import (
+    PerformanceMonitor,
+    infer_strategy_domain,
+    logger as _performance_monitor_logger,
     resolve_lifecycle_stream_id,
-    try_record_platform_execution,
 )
 from application.execution_receipt_adapter import attach_execution_receipt_from_report
 from application.portfolio_service import EARN_FORWARD_REASON_CODES
@@ -23,6 +25,25 @@ from runtime_support import (
     reconcile_runtime_cash_effects, ExecutionIntegrityError, StatePersistenceError,
     OrderReconciliationError, ClientCallError,
 )
+
+
+def try_record_platform_execution(
+    profile_id, execution_result, *, domain="", decision=None, stream_id="",
+):
+    """Preserve the pinned recorder's best-effort behavior without raw errors."""
+    try:
+        if not execution_result:
+            return
+        monitor = PerformanceMonitor()
+        monitor.record_execution(
+            profile_id,
+            execution_result,
+            domain=infer_strategy_domain(profile_id, explicit_domain=domain),
+            decision=decision,
+            stream_id=stream_id,
+        )
+    except Exception:  # noqa: BLE001 - preserve the recorder's best-effort boundary
+        _performance_monitor_logger.warning("platform_execution_record_failed")
 
 
 def _record_risk_diagnostics(report, allocation):
@@ -68,8 +89,12 @@ def _build_platform_execution_result(report, *, state_healthy, state_owner_relea
     }
 
 
+def _public_cycle_status(status):
+    return status if isinstance(status, str) and status in {"ok", "aborted", "error"} else "unknown"
+
+
 def _write_lifecycle_export(profile_id, execution_result):
-    """Best-effort, redacted export of the current recorder payload.
+    """Best-effort public health metadata, without financial recorder fields.
 
     The normal PerformanceStore path remains authoritative. This optional
     file is a short-lived transport handoff for the monitor and must never
@@ -90,18 +115,13 @@ def _write_lifecycle_export(profile_id, execution_result):
         profile = str(profile_id or "").strip()
         if not profile:
             return
-        stream_id = resolve_lifecycle_stream_id(execution_result=execution_result)
+        stream_id = resolve_lifecycle_stream_id(execution_result={"platform": "binance"})
         safe_result = {
-            key: execution_result.get(key)
-            for key in (
-                "platform",
-                "status",
-                "total_equity_usdt",
-                "trend_equity_usdt",
-                "external_cash_flow",
-                "external_cash_flow_interval",
-                "degraded_mode_level",
-            )
+            "platform": "binance",
+            "status": _public_cycle_status(execution_result.get("status")),
+            # Legacy consumers treat an absent flow as zero. Explicit null
+            # preserves unknown performance evidence without exposing values.
+            "external_cash_flow": None,
         }
         if safe_result.get("status") != "ok":
             safe_result["error_code"] = "cycle_failed"
@@ -651,10 +671,10 @@ def run_live_cycle(
         printer=output_printer,
     )
     report = execute_cycle(runtime)
-    output_printer("\n".join(report.get("log_lines", [])))
+    # Free-form portfolio lines belong only in the existing private report.
+    output_printer("Strategy report details retained in the execution report.")
     report_path = report_writer(report)
     persisted_local_path = report_path
-    persisted_cloud_uri = None
     try:
         persisted = persist_runtime_report(
             report,
@@ -663,16 +683,12 @@ def run_live_cycle(
             project_id=os.getenv("CLOUD_PROJECT_ID") or os.getenv("GCP_PROJECT_ID") or os.getenv("GOOGLE_CLOUD_PROJECT"),
         )
         persisted_local_path = persisted.local_path or report_path
-        if hasattr(persisted, "cloud_uri"):
-            persisted_cloud_uri = persisted.cloud_uri
-        else:
-            persisted_cloud_uri = getattr(persisted, "gcs_uri", None)
     except Exception:
         report["status"] = "error"
         append_report_error(report, "report_persistence_failed", stage="report_persistence")
         output_printer("failed to persist archived execution report: report_persistence_failed")
         persisted_local_path = report_writer(report)
-    report_status = str(report.get("status", "unknown"))
+    report_status = _public_cycle_status(report.get("status"))
     status_event = {
         "ok": "strategy_cycle_completed",
         "aborted": "strategy_cycle_aborted",
@@ -684,12 +700,10 @@ def run_live_cycle(
         severity="INFO" if report_status in {"ok", "aborted"} else "ERROR",
         printer=output_printer,
         status=report_status,
-        report_path=persisted_local_path,
-        report_cloud_uri=persisted_cloud_uri,
-        total_equity_usdt=report.get("total_equity_usdt"),
-        trend_equity_usdt=report.get("trend_equity_usdt"),
-        degraded_mode_level=report.get("degraded_mode_level"),
-        circuit_breaker_triggered=report.get("circuit_breaker_triggered"),
+        circuit_breaker_triggered=(
+            report.get("circuit_breaker_triggered")
+            if isinstance(report.get("circuit_breaker_triggered"), bool) else None
+        ),
         error_count=len(report.get("error_summary", {}).get("errors", [])),
     )
 

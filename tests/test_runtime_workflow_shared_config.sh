@@ -18,7 +18,10 @@ grep -Fq 'BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA }}
 grep -Fq 'Verify approved workflow revision' "$workflow_file"
 grep -Fq 'candidate_release_sha:' "$workflow_file"
 grep -Fq 'Runtime target is disabled; broker strategy was intentionally not invoked.' "$workflow_file"
-grep -Fq 'needs.deploy.outputs.runtime_target_enabled == '\''true'\''' "$workflow_file"
+if grep -Fq 'binance-execution-report-' "$workflow_file" || grep -Fq 'publish-execution-log:' "$workflow_file"; then
+  echo "workflow must not publish complete financial reports to public artifacts or Git" >&2
+  exit 1
+fi
 grep -Fq 'id-token: write' "$workflow_file"
 grep -Fq 'workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}' "$workflow_file"
 grep -Fq 'service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}' "$workflow_file"

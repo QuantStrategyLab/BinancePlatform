@@ -622,16 +622,6 @@ jobs:
         if: ${{ env.RUNTIME_TARGET_ENABLED == 'false' && github.event.inputs.full_cycle == 'true' }}
         run: echo "Runtime target is disabled; full-cycle validation used read-only broker calls and suppressed all writes."
 
-      - name: 5. Stage execution report for isolated log publisher
-        continue-on-error: true
-        if: ${{ github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: binance-execution-report-${{ github.run_id }}
-          path: reports/execution_report.json
-          if-no-files-found: warn
-          retention-days: 1
-
       - name: 5a. Stage redacted lifecycle recorder output for monitor
         continue-on-error: true
         if: ${{ always() && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
@@ -713,60 +703,4 @@ jobs:
           NOTIFY_LANG: ${{ vars.NOTIFY_LANG || 'zh' }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
-
-  publish-execution-log:
-    name: Publish execution log without broker credentials
-    needs: deploy
-    if: ${{ needs.deploy.result == 'success' && needs.deploy.outputs.runtime_target_enabled == 'true' && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      actions: read
-      contents: write
-    steps:
-      - name: Download staged execution report
-        continue-on-error: true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          name: binance-execution-report-${{ github.run_id }}
-          path: reports
-
-      - name: Push execution log to logs branch
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          LOGS_BRANCH="logs"
-          TS="$(date -u +%Y-%m-%dT%H%M)"
-          MONTH="${TS:0:7}"
-          REPORT_FILE="${GITHUB_WORKSPACE}/reports/execution_report.json"
-
-          if [ ! -f "$REPORT_FILE" ]; then
-            echo "No execution report found, skipping log push."
-            exit 0
-          fi
-
-          TMP_DIR=$(mktemp -d)
-          trap 'rm -rf "$TMP_DIR"' EXIT
-          git clone --no-checkout "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "${TMP_DIR}/logs-repo"
-          cd "${TMP_DIR}/logs-repo"
-
-          if git ls-remote --exit-code --heads origin "${LOGS_BRANCH}" >/dev/null 2>&1; then
-            git fetch origin "${LOGS_BRANCH}:${LOGS_BRANCH}"
-            git checkout "${LOGS_BRANCH}"
-          else
-            git checkout --orphan "${LOGS_BRANCH}"
-            git rm -rf . >/dev/null 2>&1 || true
-            find . -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
-          fi
-
-          mkdir -p "hourly/${MONTH}"
-          cp "$REPORT_FILE" "hourly/${MONTH}/${TS}.json"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "hourly/${MONTH}/${TS}.json"
-          git commit -m "execution: ${TS}"
-          git push origin "HEAD:${LOGS_BRANCH}"
 

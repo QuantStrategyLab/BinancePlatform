@@ -55,11 +55,14 @@ def inspect_secret_source(workflow_path: Path) -> dict[str, Any]:
     workflow = workflow_path.read_text(encoding="utf-8")
     key_ref = "BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}"
     secret_ref = "BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}"
-    strategy_marker = "- name: 4. Run trading strategy"
-    next_marker = "- name: 5. Stage execution report"
+    strategy_marker = "      - name: 4. Run trading strategy"
+    next_marker = "      - name: Remove protected LIVE risk authority source"
     strategy_block = ""
-    if strategy_marker in workflow and next_marker in workflow:
-        strategy_block = workflow[workflow.index(strategy_marker) : workflow.index(next_marker)]
+    if workflow.count(strategy_marker) == 1 and workflow.count(next_marker) == 1:
+        candidate = workflow[workflow.index(strategy_marker) : workflow.index(next_marker)]
+        # The end marker must be the very next step, never a broader job slice.
+        if not any(line.startswith("      - ") for line in candidate.splitlines()[1:]):
+            strategy_block = candidate
     references_present = key_ref in workflow and secret_ref in workflow
     return {
         "source": "github_actions_environment_secrets" if references_present else "UNVERIFIED",
@@ -68,6 +71,7 @@ def inspect_secret_source(workflow_path: Path) -> dict[str, Any]:
         "broker_secret_scope": (
             "strategy_step_only"
             if key_ref in strategy_block and secret_ref in strategy_block
+            and workflow.count(key_ref) == 1 and workflow.count(secret_ref) == 1
             else "UNVERIFIED"
         ),
         "secret_values_read": False,
