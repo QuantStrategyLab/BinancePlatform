@@ -19,6 +19,55 @@ def _job_block(workflow: str, job: str, next_job: str | None = None) -> str:
     return workflow[start:end]
 
 
+def test_runtime_does_not_automatically_run_optional_account_facts() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    jobs = workflow.split("\njobs:\n", 1)[1]
+    assert re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.MULTILINE) == [
+        "deploy", "publish-execution-log",
+    ]
+    assert "account-facts-readonly:" not in jobs
+    assert "/.github/workflows/binance-account-facts.yml@" not in jobs
+
+
+def test_runtime_keeps_workflow_lock_after_optional_reader_detachment() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    before_jobs = workflow.split("\njobs:\n", 1)[0]
+    assert workflow.startswith("name: Runtime\n")
+    assert (
+        "\nconcurrency:\n"
+        "  group: ${{ github.workflow }}-${{ github.ref_name }}\n"
+        "  cancel-in-progress: false\n"
+    ) in before_jobs
+    assert "\n    concurrency:\n" not in workflow
+
+
+def test_manual_native_facts_entry_remains_opt_in_and_source_bound() -> None:
+    workflow = WORKFLOW.with_name("binance-account-facts.yml").read_text(encoding="utf-8")
+    dispatch = workflow.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:\n", 1)[0]
+    enabled = dispatch.split("      enabled:\n", 1)[1].split("      source_run_id:\n", 1)[0]
+    assert "        type: boolean\n" in enabled
+    assert "        default: false\n" in enabled
+    assert "      source_run_id:\n" in dispatch
+    assert "        options: [legacy_terminal]\n" in dispatch
+    assert "  schedule:" not in workflow
+    assert "vars.BINANCE_ACCOUNT_FACTS_ENABLED == 'true'" in workflow
+    assert "github.ref == 'refs/heads/runtime-production'" in workflow
+    assert "github.workflow == 'Binance Account Facts' && github.event_name == 'workflow_dispatch'" in workflow
+    assert "inputs.enabled == true && inputs.source_mode == 'legacy_terminal'" in workflow
+    assert "    environment: binance-runtime\n" in workflow
+    assert "  group: binance-account-facts-readonly\n  cancel-in-progress: false\n" in workflow
+    assert "          ref: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION }}\n" in workflow
+    assert "scripts/read_binance_account_facts.py --preflight" in workflow
+    assert "scripts/read_binance_account_facts.py --verify-current-source" in workflow
+    assert "SOURCE_RUN_ID: ${{ steps.preflight.outputs.source_run_id }}" in workflow
+    assert "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN: ${{ secrets.BINANCE_ACCOUNT_FACTS_SYNC_TOKEN }}" in workflow
+    assert workflow.index("Verify trusted checkout and exact Runtime source") < (
+        workflow.index("Read the bound Spot and Flexible Earn account quantities")
+    ) < workflow.index("Recheck Runtime source before publishing") < (
+        workflow.index("Publish with the isolated account-facts token")
+    )
+
+
 def test_runtime_workflow_shared_config_shell_contract() -> None:
     script = (
         Path(__file__).resolve().parents[1]
