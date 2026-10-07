@@ -59,6 +59,18 @@ maintenance entry point. Promote the authentication change through the approved
 release path and verify the dispatched revision; do not widen the environment
 branch policy to make validation pass.
 
+After that adoption, dispatch `authority-app-auth-check.yml` on
+`runtime-production` to verify installation-token creation, repository scope,
+and configuration reads. This separate manual check does not read the authority
+JSON, write configuration, or dispatch trading; it requires no authority-update
+inputs and can run without stopping a trading runtime.
+
+Before adopting a maintenance change on `runtime-production`, compare its
+current revision with `BINANCE_RUNTIME_WORKFLOW_SHA`. Updating the branch also
+changes the runtime workflow revision. Do not advance the approved runtime pin
+or include unrelated runtime changes merely to validate authentication; those
+changes require their own approved release decision.
+
 ## Explicit inputs (no main-tip selection)
 
 All of the following must be supplied as full lowercase hex values:
