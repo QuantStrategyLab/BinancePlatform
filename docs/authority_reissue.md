@@ -23,14 +23,61 @@ operator-supplied target SHA.
 ## Modes
 
 - `plan` (default): verify live preconditions + byte digest + surgical patch;
-  **zero** secret/variable writes. It uses the scoped environment token only
-  to read the current GitHub configuration; the script clears its write-token
-  input before executing the plan.
+  **zero** secret/variable writes. It uses a scoped GitHub App installation
+  token to read the current GitHub configuration; the script clears its
+  write-token input before executing the plan.
 - `apply`: same checks, then submit secret bytes, the new SHA256 variable, and
   the new source revision variable (skipping any write that is already at
-  target). Requires environment secret `BINANCE_AUTHORITY_UPDATE_TOKEN`
-  (fine-grained **Environments: write**). Ordinary `GITHUB_TOKEN` cannot write
-  environment secrets; do not invent `permissions: secrets: write`.
+  target). The same installation token is passed to the write gateway only in
+  apply mode.
+
+## GitHub App maintenance identity
+
+Create a dedicated private organization GitHub App and install it only on
+`QuantStrategyLab/BinancePlatform`. Grant the installation **Actions: read**,
+**Variables: read**, **Environments: write**, and **Metadata: read**. The
+workflow downscopes each minted token to this repository; plan requests
+**Environments: read**, while apply requests **Environments: write**. GitHub
+App Environments permission applies repository-wide and cannot be restricted
+to the named `binance-runtime` environment. Keeping the App private key as a
+secret in the protected `binance-runtime` environment limits which workflow
+jobs can access that key. No webhook or OAuth configuration is needed.
+
+Set `BINANCE_AUTHORITY_APP_CLIENT_ID` as an environment variable and
+`BINANCE_AUTHORITY_APP_PRIVATE_KEY` as an environment secret in
+`binance-runtime`. Each workflow run mints an installation token that expires
+within one hour; the action attempts to revoke it in its post-job step. A
+revocation failure is reported as a warning; expiry still limits its lifetime.
+The private key
+remains long-lived until manually revoked or rotated. Keep the existing
+`BINANCE_AUTHORITY_UPDATE_TOKEN` PAT until the App identity has been validated
+with the maintenance workflow, then retire the PAT.
+
+The current `binance-runtime` deployment branch policy allows only
+`runtime-production`. A change merged to `main` alone is not adopted by that
+maintenance entry point. Promote the authentication change through the approved
+release path and verify the dispatched revision; do not widen the environment
+branch policy to make validation pass.
+
+After that adoption, dispatch `authority-app-auth-check.yml` on
+`runtime-production` to verify installation-token creation, repository scope,
+and configuration reads. This separate manual check does not read the authority
+JSON, write configuration, or dispatch trading; it requires no authority-update
+inputs and can run without stopping a trading runtime. It serially mints the
+read and write Environment permission variants used by plan and apply, while
+performing only read requests with both tokens.
+
+Before adopting a maintenance change on `runtime-production`, compare its
+current revision with `BINANCE_RUNTIME_WORKFLOW_SHA`. Updating the branch also
+changes the runtime workflow revision. Do not advance the approved runtime pin
+or include unrelated runtime changes merely to validate authentication; those
+changes require their own approved release decision.
+
+An authentication-only adoption must leave `.github/workflows/main.yml`,
+runtime source, and the approved runtime pins unchanged. If the production
+branch already differs from the approved workflow pin, that mismatch remains
+a separate runtime release issue; token verification does not resolve it or
+authorize execution.
 
 ## Explicit inputs (no main-tip selection)
 

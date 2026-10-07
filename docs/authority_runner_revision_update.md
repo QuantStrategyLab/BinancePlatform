@@ -22,9 +22,29 @@ digest, mandate, and `BINANCE_RISK_AUTHORITY_SOURCE_REVISION` stay unchanged.
 - `plan` (default): verify live preconditions + byte digest + surgical patch;
   **zero** secret/variable writes. Do not inject the write token.
 - `apply`: same checks, then submit secret bytes and the new SHA256 variable.
-  Requires environment secret `BINANCE_AUTHORITY_UPDATE_TOKEN` (fine-grained
-  **Environments: write** on this repository). Ordinary `GITHUB_TOKEN` cannot
-  write environment secrets; do not invent `permissions: secrets: write`.
+  The workflow passes its per-run GitHub App installation token through the
+  existing `BINANCE_AUTHORITY_UPDATE_TOKEN` process environment only in apply
+  mode. No saved PAT is required by the script.
+
+## GitHub App maintenance identity
+
+Use a dedicated private organization GitHub App installed only on
+`QuantStrategyLab/BinancePlatform`, with **Actions: read**, **Variables: read**,
+**Environments: write**, and **Metadata: read**. The workflow scopes each
+installation token to this repository and requests **Environments: read** for
+plan or **Environments: write** for apply. GitHub App Environments permission
+is repository-wide; the protected `binance-runtime` environment that stores
+the App private key controls which workflow jobs can access it. No webhook or
+OAuth configuration is needed.
+
+Store `BINANCE_AUTHORITY_APP_CLIENT_ID` as an environment variable and
+`BINANCE_AUTHORITY_APP_PRIVATE_KEY` as an environment secret in
+`binance-runtime`. The action mints a token for each run, valid for at most one
+hour, and attempts to revoke it in the post-job step. A revocation failure is
+reported as a warning; expiry still limits its lifetime. The private key remains long-lived
+until manually revoked or rotated. Retain the existing
+`BINANCE_AUTHORITY_UPDATE_TOKEN` PAT until the new App identity is validated,
+then retire the PAT.
 
 ## Preconditions (fail closed)
 
@@ -57,7 +77,8 @@ external `gh`/console writers; operators must coordinate before `apply`.
 
 ## Not production-ready until
 
-- `BINANCE_AUTHORITY_UPDATE_TOKEN` is created out-of-band (never paste into chat).
+- GitHub App client ID and private key are configured out-of-band in
+  `binance-runtime`.
 - Environment/branch protection and human approval gates are confirmed for
   `binance-runtime` / `main` as required by operators.
 - Version triangle is decided: maintenance workflow revision, approved trading

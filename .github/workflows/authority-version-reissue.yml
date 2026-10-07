@@ -3,8 +3,8 @@ run-name: Authority version reissue · ${{ inputs.mode }}
 
 # One-shot maintenance only. Does not enable trading, does not alter RECONCILE_ONLY
 # or risk mandate, and does not dispatch Runtime / no-submit full_cycle.
-# The scoped environment token supplies GitHub configuration reads in both
-# modes.  Only apply passes it to the write gateway.  This workflow is not
+# A scoped GitHub App installation token supplies configuration access in
+# both modes. Only apply passes it to the write gateway. This workflow is not
 # production-ready until that identity and branch/environment protections are
 # configured by operators.
 
@@ -61,6 +61,22 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
 
+      - name: Mint scoped authority maintenance token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.BINANCE_AUTHORITY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BINANCE_AUTHORITY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-actions: read
+          permission-environments: ${{ inputs.mode == 'apply' && 'write' || 'read' }}
+          permission-metadata: read
+        env:
+          # v3.2.0's INPUT_PERMISSION_* parser maps this to actions_variables;
+          # its declared inputs omit the variables permission.
+          INPUT_PERMISSION-ACTIONS-VARIABLES: read
+
       - name: Materialize authority secret to a 0600 temp file
         id: materialize
         shell: bash
@@ -82,7 +98,7 @@ jobs:
         id: reissue
         shell: bash
         env:
-          GH_TOKEN: ${{ secrets.BINANCE_AUTHORITY_UPDATE_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           UPDATE_MODE: ${{ inputs.mode }}
           TARGET_STRATEGY_REVISION: ${{ inputs.target_strategy_revision }}
           TARGET_RUNNER_REVISION: ${{ inputs.target_runner_revision }}
@@ -92,7 +108,7 @@ jobs:
           AUTHORITY_FILE: ${{ steps.materialize.outputs.authority_file }}
           MAINTENANCE_WORKFLOW_SHA: ${{ github.sha }}
           MAINTENANCE_RUN_ID: ${{ github.run_id }}
-          BINANCE_AUTHORITY_UPDATE_TOKEN: ${{ inputs.mode == 'apply' && secrets.BINANCE_AUTHORITY_UPDATE_TOKEN || '' }}
+          BINANCE_AUTHORITY_UPDATE_TOKEN: ${{ inputs.mode == 'apply' && steps.app-token.outputs.token || '' }}
         run: |
           set -euo pipefail
           python3 scripts/update_binance_authority_reissue.py \
