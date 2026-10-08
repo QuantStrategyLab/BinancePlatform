@@ -364,8 +364,9 @@ def test_workflow_uses_fixed_protected_reader_revision_not_trigger_sha():
     workflow = (Path(__file__).parents[1] / ".github" / "workflows" / "binance-account-facts.yml").read_text()
     checkout = workflow.index("      - name: Checkout trusted default-branch reader source")
     setup_uv = workflow.index("      - name: Set up uv")
-    preflight = workflow.index("      - name: Verify trusted checkout and exact Runtime source")
+    preflight = workflow.index("      - name: Verify trusted reader checkout and source mode")
     install = workflow.index("uv sync --frozen --no-dev")
+    preflight_env = workflow[preflight:install]
 
     assert checkout < setup_uv < preflight < install
     setup_uv_step = workflow[setup_uv:preflight]
@@ -375,15 +376,191 @@ def test_workflow_uses_fixed_protected_reader_revision_not_trigger_sha():
     assert workflow.count("astral-sh/setup-uv@") == 1
 
     assert "ref: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION }}" in workflow
-    assert 'BINANCE_ACCOUNT_FACTS_READER_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || \'\' }}' in workflow
+    assert (
+        'BINANCE_ACCOUNT_FACTS_READER_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || \'\' }}'
+        in workflow
+    )
+    assert preflight_env.count("BINANCE_ACCOUNT_FACTS_READER_REVISION:") == 1
     assert "READER_PUBLIC_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || '' }}" in workflow
     assert "ref: ${{ github.sha }}" not in workflow
     assert "git rev-parse HEAD" in workflow
     assert "workflow_call:" in workflow
     assert "workflow_run:" not in workflow
+    assert 'description: "Run the manual read-only account-facts read; repository gate must also be true."' in workflow
     assert "github.ref == 'refs/heads/runtime-production'" in workflow
     assert "timeout-minutes: 5" in workflow
     assert "continue-on-error: true" in workflow
+
+    direct = workflow.split("      - name: Read directly from the protected account binding", 1)[1]
+    direct = direct.split("      - name: Recheck Runtime source before publishing", 1)[0]
+    assert (
+        "if: ${{ github.event_name == 'workflow_dispatch' && inputs.source_mode == 'direct_read' }}"
+        in direct
+    )
+    assert "--direct-read" in direct
+    assert "BINANCE_ACCOUNT_FACTS_BINDING_JSON: ${{ secrets.BINANCE_ACCOUNT_FACTS_BINDING_JSON }}" in direct
+    assert "BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}" in direct
+    assert "BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}" in direct
+    for trading_gate in (
+        "RUNTIME_TARGET_ENABLED", "BINANCE_DRY_RUN", "BINANCE_RISK_AUTHORITY_JSON",
+        "BINANCE_RUNTIME_RELEASE_SHA", "BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON",
+    ):
+        assert trading_gate not in direct
+    assert "inputs.source_mode == 'direct_read'" in workflow
+    assert "github.ref == 'refs/heads/runtime-production'" in workflow
+    assert "options: [direct_read, legacy_terminal]" in workflow
+    assert "expected_ref=refs/heads/runtime-production" in workflow
+    assert '[ "$SOURCE_MODE" != "direct_read" ]' in workflow
+    assert "if: ${{ inputs.source_mode != 'direct_read' }}" in workflow
+    assert "environment: binance-runtime" in workflow
+    assert "group: binance-account-facts-readonly" in workflow
+
+
+def _direct_read_binding_env(*, dry_run_only=True):
+    from scripts import read_binance_account_facts as reader
+
+    expected_scope = _uid_hash()
+    target = {
+        "platform_id": "binance",
+        "strategy_profile": "synthetic-profile",
+        "dry_run_only": dry_run_only,
+        "deployment_selector": "synthetic-deployment",
+        "account_selector": ["synthetic-account"],
+        "account_scope": "synthetic-scope",
+        "service_name": "synthetic-service",
+    }
+    binding = {
+        "platform": "binance",
+        "account_key": "synthetic-key",
+        "account_scope": "synthetic-scope",
+        "target_name": "synthetic-target",
+        "service_name": "synthetic-service",
+        "deployment_selector": "synthetic-deployment",
+        "account_selector": "synthetic-account",
+        "target_id": "synthetic-target-id",
+        "account_scope_sha256": expected_scope,
+        "reader_revision": READER_SHA,
+        "approved_application_revision": APP_SHA,
+        "source_binding": {
+            "kind": "binance_readonly_scope_revision",
+            "id": build_source_binding_id(
+                account_scope_sha256=expected_scope,
+                reader_public_revision=READER_SHA,
+                approved_application_revision=APP_SHA,
+            ),
+        },
+    }
+    env = {
+        "SOURCE_MODE": "direct_read",
+        "GITHUB_REPOSITORY": reader.REPOSITORY,
+        "GITHUB_REF": "refs/heads/runtime-production",
+        "BINANCE_ACCOUNT_FACTS_ENABLED": "true",
+        "BINANCE_ACCOUNT_FACTS_READER_REVISION": READER_SHA,
+        "READER_PUBLIC_REVISION": READER_SHA,
+        "BINANCE_API_KEY": "synthetic-api-key",
+        "BINANCE_API_SECRET": "synthetic-api-secret",
+        "RUNTIME_TARGET_JSON": json.dumps(target),
+        "BINANCE_ACCOUNT_FACTS_BINDING_JSON": json.dumps(binding),
+    }
+    return env, target, binding
+
+
+@pytest.mark.parametrize("dry_run_only", [True, False])
+def test_direct_read_uses_private_uid_and_app_binding_without_runtime_or_trade_gates(
+    monkeypatch, tmp_path, dry_run_only
+):
+    import types
+    from scripts import read_binance_account_facts as reader
+
+    env, _target, binding = _direct_read_binding_env(dry_run_only=dry_run_only)
+    calls = []
+
+    class SyntheticClient(FakeBinance):
+        def __init__(self, api_key, api_secret, *, requests_params, ping):
+            calls.append((api_key, api_secret, requests_params, ping))
+            super().__init__()
+
+    monkeypatch.setitem(sys.modules, "binance", types.ModuleType("binance"))
+    client_module = types.ModuleType("binance.client")
+    client_module.Client = SyntheticClient
+    monkeypatch.setitem(sys.modules, "binance.client", client_module)
+    def unexpected_github_request(*_args, **_kwargs):
+        raise AssertionError("GitHub API must not be used")
+
+    monkeypatch.setattr(reader, "_api_json", unexpected_github_request)
+
+    output = tmp_path / "facts.json"
+    result = reader.read_account_facts_direct(output_path=output, env=env)
+
+    assert result == "SPOT"
+    assert calls == [("synthetic-api-key", "synthetic-api-secret", {"timeout": 15}, False)]
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["target_id"] == binding["target_id"]
+    assert payload["account_scope_sha256"] == _uid_hash()
+    assert payload["source_binding"]["id"] == binding["source_binding"]["id"]
+    assert "RUNTIME_TARGET_ENABLED" not in env
+    assert "BINANCE_DRY_RUN" not in env
+    assert "BINANCE_RISK_AUTHORITY_JSON" not in env
+    assert "BINANCE_RUNTIME_RELEASE_SHA" not in env
+    assert "BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON" not in env
+
+
+@pytest.mark.parametrize(
+    ("change", "reason"),
+    [
+        ({"GITHUB_REF": "refs/heads/main"}, "reader_source_mismatch"),
+        ({"READER_PUBLIC_REVISION": "c" * 40}, "reader_source_mismatch"),
+        ({"BINANCE_ACCOUNT_FACTS_ENABLED": "false"}, "disabled"),
+    ],
+)
+def test_direct_read_still_requires_manual_protected_reader_and_account_binding(
+    monkeypatch, tmp_path, change, reason
+):
+    from scripts import read_binance_account_facts as reader
+
+    env, _target, _binding = _direct_read_binding_env()
+    env.update(change)
+    with pytest.raises(reader.ReaderError, match=reason):
+        reader.read_account_facts_direct(output_path=tmp_path / "facts.json", env=env)
+
+
+def test_direct_read_preflight_needs_only_pinned_reader_and_protected_context(tmp_path):
+    from scripts import read_binance_account_facts as reader
+
+    env, _target, _binding = _direct_read_binding_env()
+    assert env["GITHUB_REF"] == "refs/heads/runtime-production"
+    output = tmp_path / "github-output.txt"
+    reader.preflight(env=env, output=output)
+    assert output.read_text(encoding="utf-8") == (
+        "source_mode=direct_read\nreader_revision=" + READER_SHA + "\n"
+    )
+
+
+def test_direct_read_rejects_wrong_account_uid_before_earn_or_write(monkeypatch, tmp_path):
+    import types
+    from scripts import read_binance_account_facts as reader
+
+    env, _target, _binding = _direct_read_binding_env()
+    calls = []
+
+    class WrongUidClient(FakeBinance):
+        def get_account(self):
+            calls.append("spot")
+            return {"uid": "654321", "balances": []}
+
+        def get_simple_earn_flexible_product_position(self, **_kwargs):
+            calls.append("earn")
+            return {"rows": [], "total": 0}
+
+    monkeypatch.setitem(sys.modules, "binance", types.ModuleType("binance"))
+    client_module = types.ModuleType("binance.client")
+    client_module.Client = lambda *_args, **_kwargs: WrongUidClient()
+    monkeypatch.setitem(sys.modules, "binance.client", client_module)
+    output = tmp_path / "facts.json"
+    with pytest.raises(AccountFactsUnavailable, match="account_identity_mismatch"):
+        reader.read_account_facts_direct(output_path=output, env=env)
+    assert calls == ["spot"]
+    assert not output.exists()
 
 
 def _parent_run_api(url, _token):
@@ -937,6 +1114,25 @@ def test_account_facts_cli_emits_only_closed_product_type(
     assert f"account_facts_provider_product_type={expected}" in output
     for private_value in ("synthetic-private-id", "synthetic-secret", "123456", "0.5", "a" * 64):
         assert private_value not in output
+
+
+def test_account_facts_cli_direct_read_uses_dedicated_argument(monkeypatch, capsys, tmp_path):
+    from scripts import read_binance_account_facts as reader
+
+    calls = []
+    monkeypatch.setattr(
+        reader,
+        "read_account_facts_direct",
+        lambda **kwargs: calls.append(kwargs) or "SPOT",
+    )
+    output_path = tmp_path / "facts.json"
+    assert reader.main(["--direct-read", "--output", str(output_path)]) == 0
+    output = capsys.readouterr().out
+    assert calls == [{"output_path": output_path, "env": reader.os.environ}]
+    assert output.splitlines() == [
+        "account_facts_read=complete_for_scope",
+        "account_facts_provider_product_type=SPOT",
+    ]
 
 
 def test_account_facts_cli_failure_never_prints_product_type(monkeypatch, capsys, tmp_path):
