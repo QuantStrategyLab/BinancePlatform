@@ -25,7 +25,7 @@ jobs:
       - name: Observe scheduler state
         env:
           SCHEDULER_OBSERVATION_PATH: ${{ runner.temp }}/runtime-scheduler-observation.json
-        run: python -m scripts.runtime_scheduler_probe --output-path "$SCHEDULER_OBSERVATION_PATH"
+        run: python3 -m scripts.runtime_scheduler_probe --output-path "$SCHEDULER_OBSERVATION_PATH"
 
       - name: Upload bounded scheduler observation
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
