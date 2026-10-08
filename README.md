@@ -21,6 +21,12 @@ BinancePlatform is QuantStrategyLab's execution runtime for Binance crypto tradi
 - Must keep credentials in GitHub Secrets, cloud secret stores, or the broker-specific secret system, never in Git.
 - Should start with dry-run or paper mode before any live order path is enabled.
 
+### Read-only Binance account-facts refresh
+
+The `Refresh Binance Account Facts` workflow can dispatch the existing `Binance Account Facts` workflow once per day at 06:17 UTC. It is restricted to this repository's `main` branch and is disabled unless the repository variable `BINANCE_ACCOUNT_FACTS_REFRESH_ENABLED` is exactly `true`; an absent variable leaves it disabled. The dispatcher uses only its short-lived GitHub token to request the fixed `runtime-production` `direct_read` workflow input. It does not receive broker credentials, enable Runtime, or dispatch the trading workflow. The target workflow retains its own `BINANCE_ACCOUNT_FACTS_ENABLED` gate and protected `binance-runtime` environment.
+
+QSL treats account-facts reports as stale after 36 hours. A daily refresh is intended to keep read-only balances current; a failed or skipped target run does not make old data current. The default configuration remains off; production activation is controlled by the dedicated repository gate and requires explicit authorization.
+
 ## Direct vs snapshot-backed profiles
 
 Direct runtime profiles can usually run from market history or portfolio state. Snapshot-backed profiles need a current artifact bundle from the matching live-pool pipeline before this platform should execute them. The platform should not invent strategy eligibility; it should consume the status and artifacts published by the strategy and live-pool repositories.
