@@ -36,6 +36,7 @@ REPOSITORY = "QuantStrategyLab/BinancePlatform"
 LEGACY_RUNTIME_WORKFLOW_SHA = "9cfcf0531d1ea176e6f26590cf15edbd31bd6567"
 APPROVED_APPLICATION_SHA = "8cb56617115fa45028e34d788e71884b6a303d77"
 RUNTIME_BRANCH = "runtime-production"
+DIRECT_READ_BRANCH = "main"
 EXPECTED_REPORT_ARTIFACT_PREFIX = "binance-execution-report-"
 _GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -439,7 +440,9 @@ def verify_parent_run(
 
 def verify_current_source_from_env(env: Mapping[str, str]) -> None:
     mode = env.get("SOURCE_MODE", "legacy_terminal")
-    if mode == "same_parent":
+    if mode == "direct_read":
+        verify_direct_reader_source_from_env(env)
+    elif mode == "same_parent":
         try:
             attempt = int(env.get("GITHUB_RUN_ATTEMPT", ""))
         except ValueError:
@@ -458,6 +461,19 @@ def verify_current_source_from_env(env: Mapping[str, str]) -> None:
         verify_terminal_source_from_env(env)
     else:
         raise _stop("source_mode_invalid")
+
+
+def verify_direct_reader_source_from_env(env: Mapping[str, str]) -> None:
+    """Verify the manual read-only entry is running from its pinned main source."""
+    reader_revision = str(env.get("BINANCE_ACCOUNT_FACTS_READER_REVISION") or "")
+    if (
+        env.get("GITHUB_REPOSITORY") != REPOSITORY
+        or env.get("GITHUB_REF") != f"refs/heads/{DIRECT_READ_BRANCH}"
+        or env.get("SOURCE_MODE") != "direct_read"
+        or not _GIT_SHA.fullmatch(reader_revision)
+        or env.get("READER_PUBLIC_REVISION") != reader_revision
+    ):
+        raise _stop("reader_source_mismatch")
 
 
 def verify_trigger_run(
@@ -693,7 +709,7 @@ def _validate_execution_receipt_status(report: Mapping[str, Any]) -> None:
         raise _stop("strategy_submission_unclosed")
 
 
-def _target_identity(raw: str) -> dict[str, Any]:
+def _target_identity(raw: str, *, allow_dry_run_only: bool = False) -> dict[str, Any]:
     decoded = _json_no_duplicates(raw.encode("utf-8"))
     if not isinstance(decoded, Mapping):
         raise _stop("runtime_target_invalid")
@@ -707,7 +723,7 @@ def _target_identity(raw: str) -> dict[str, Any]:
         raise _stop("runtime_target_invalid")
     value = target.to_dict()
     if (
-        target.dry_run_only
+        (target.dry_run_only and not allow_dry_run_only)
         or not isinstance(value.get("account_scope"), str)
         or not value["account_scope"]
         or value["account_scope"] == "default"
@@ -774,6 +790,19 @@ def _expected_scope(raw: str) -> str:
     if not isinstance(digests, Mapping) or set(digests) != expected_keys:
         raise _stop("account_identity_unbound")
     scope = str(digests.get("account_scope_sha256") or "").lower().removeprefix("sha256:")
+    if not _SHA256.fullmatch(scope):
+        raise _stop("account_identity_unbound")
+    return scope
+
+
+def _bound_scope(raw_binding: str) -> str:
+    """Read the expected UID digest from the protected account-facts binding."""
+    value = _json_no_duplicates(raw_binding.encode("utf-8"))
+    scope = (
+        str(value.get("account_scope_sha256") or "").lower().removeprefix("sha256:")
+        if isinstance(value, Mapping)
+        else ""
+    )
     if not _SHA256.fullmatch(scope):
         raise _stop("account_identity_unbound")
     return scope
@@ -868,29 +897,10 @@ def _provider_product_type_for_log(payload: Mapping[str, Any]) -> str:
     return value if type(value) is str and value in ("SPOT", "unknown") else "unknown"
 
 
-def read_account_facts(*, report_path: Path, output_path: Path, env: Mapping[str, str]) -> str:
-    if env.get("BINANCE_ACCOUNT_FACTS_ENABLED") != "true":
-        raise _stop("disabled")
-    if env.get("RUNTIME_TARGET_ENABLED") != "true" or env.get("BINANCE_DRY_RUN") != "false":
-        raise _stop("runtime_not_live")
-    if not env.get("BINANCE_API_KEY") or not env.get("BINANCE_API_SECRET"):
-        raise _stop("credentials_missing")
-    target = _target_identity(env.get("RUNTIME_TARGET_JSON", ""))
-    expected_scope = _expected_scope(env.get("BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON", ""))
-    reader_revision = env.get("READER_PUBLIC_REVISION", "")
-    if not _GIT_SHA.fullmatch(reader_revision):
-        raise _stop("reader_revision_invalid")
-    if env.get("BINANCE_RUNTIME_RELEASE_SHA") != APPROVED_APPLICATION_SHA:
-        raise _stop("application_revision_mismatch")
-    binding = _binding(
-        env.get("BINANCE_ACCOUNT_FACTS_BINDING_JSON", ""), target, expected_scope, reader_revision
-    )
-    authority = _authority_payload(env)
-    _validate_authority_target(authority, target)
-    report = _report_json(report_path)
-    validate_strategy_report(report, target)
-    verify_current_source_from_env(env)
-
+def _collect_bound_account_facts(
+    *, binding: Mapping[str, Any], expected_scope: str,
+    reader_revision: str, env: Mapping[str, str],
+) -> Mapping[str, Any]:
     # Client construction is network-silent: python-binance ping is disabled.
     # The capability wrapper exposes only the required signed read-only GETs.
     try:
@@ -912,14 +922,76 @@ def read_account_facts(*, report_path: Path, output_path: Path, env: Mapping[str
         observed_started_at=started_at,
         clock=lambda: datetime.now(timezone.utc),
     )
+    return validate_account_facts_payload(payload)
+
+
+def read_account_facts(*, report_path: Path, output_path: Path, env: Mapping[str, str]) -> str:
+    if env.get("BINANCE_ACCOUNT_FACTS_ENABLED") != "true":
+        raise _stop("disabled")
+    if env.get("SOURCE_MODE", "legacy_terminal") == "direct_read":
+        raise _stop("source_mode_invalid")
+    if env.get("RUNTIME_TARGET_ENABLED") != "true" or env.get("BINANCE_DRY_RUN") != "false":
+        raise _stop("runtime_not_live")
+    if not env.get("BINANCE_API_KEY") or not env.get("BINANCE_API_SECRET"):
+        raise _stop("credentials_missing")
+    target = _target_identity(env.get("RUNTIME_TARGET_JSON", ""))
+    expected_scope = _expected_scope(env.get("BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON", ""))
+    reader_revision = env.get("READER_PUBLIC_REVISION", "")
+    if not _GIT_SHA.fullmatch(reader_revision):
+        raise _stop("reader_revision_invalid")
+    if env.get("BINANCE_RUNTIME_RELEASE_SHA") != APPROVED_APPLICATION_SHA:
+        raise _stop("application_revision_mismatch")
+    binding = _binding(
+        env.get("BINANCE_ACCOUNT_FACTS_BINDING_JSON", ""), target, expected_scope, reader_revision
+    )
+    authority = _authority_payload(env)
+    _validate_authority_target(authority, target)
+    report = _report_json(report_path)
+    validate_strategy_report(report, target)
     verify_current_source_from_env(env)
-    validated_payload = validate_account_facts_payload(payload)
+
+    validated_payload = _collect_bound_account_facts(
+        binding=binding, expected_scope=expected_scope,
+        reader_revision=reader_revision, env=env,
+    )
+    verify_current_source_from_env(env)
+    _write_private_json(output_path, validated_payload)
+    return _provider_product_type_for_log(validated_payload)
+
+
+def read_account_facts_direct(*, output_path: Path, env: Mapping[str, str]) -> str:
+    """Read the existing bound account directly without Runtime or trade authority."""
+    if env.get("BINANCE_ACCOUNT_FACTS_ENABLED") != "true":
+        raise _stop("disabled")
+    if not env.get("BINANCE_API_KEY") or not env.get("BINANCE_API_SECRET"):
+        raise _stop("credentials_missing")
+    verify_direct_reader_source_from_env(env)
+    target = _target_identity(env.get("RUNTIME_TARGET_JSON", ""), allow_dry_run_only=True)
+    reader_revision = str(env.get("BINANCE_ACCOUNT_FACTS_READER_REVISION") or "")
+    if not _GIT_SHA.fullmatch(reader_revision):
+        raise _stop("reader_revision_invalid")
+    raw_binding = env.get("BINANCE_ACCOUNT_FACTS_BINDING_JSON", "")
+    expected_scope = _bound_scope(raw_binding)
+    binding = _binding(raw_binding, target, expected_scope, reader_revision)
+    validated_payload = _collect_bound_account_facts(
+        binding=binding, expected_scope=expected_scope,
+        reader_revision=reader_revision, env=env,
+    )
+    verify_direct_reader_source_from_env(env)
     _write_private_json(output_path, validated_payload)
     return _provider_product_type_for_log(validated_payload)
 
 
 def preflight(*, env: Mapping[str, str], output: Path) -> None:
     mode = env.get("SOURCE_MODE", "legacy_terminal")
+    if mode == "direct_read":
+        verify_direct_reader_source_from_env(env)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            f"source_mode=direct_read\nreader_revision={env['BINANCE_ACCOUNT_FACTS_READER_REVISION']}\n",
+            encoding="utf-8",
+        )
+        return
     if mode == "same_parent":
         try:
             attempt = int(env.get("GITHUB_RUN_ATTEMPT", ""))
@@ -952,17 +1024,32 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preflight", action="store_true")
     parser.add_argument("--verify-current-source", action="store_true")
+    parser.add_argument("--direct-read", action="store_true")
     parser.add_argument("--report", type=Path)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
     try:
         if args.preflight:
-            preflight(env=os.environ, output=Path(os.getenv("GITHUB_OUTPUT") or "account-facts-preflight.json"))
+            preflight(
+                env=os.environ,
+                output=Path(os.getenv("GITHUB_OUTPUT") or "account-facts-preflight.json"),
+            )
             print("account_facts_preflight=ready")
             return 0
         if args.verify_current_source:
             verify_current_source_from_env(os.environ)
             print("account_facts_source_current=true")
+            return 0
+        if args.direct_read:
+            if args.report is not None or args.output is None:
+                raise _stop("arguments_invalid")
+            provider_product_type = read_account_facts_direct(
+                output_path=args.output, env=os.environ
+            )
+            if type(provider_product_type) is not str or provider_product_type not in ("SPOT", "unknown"):
+                provider_product_type = "unknown"
+            print("account_facts_read=complete_for_scope")
+            print(f"account_facts_provider_product_type={provider_product_type}")
             return 0
         if args.report is None or args.output is None:
             raise _stop("arguments_invalid")
