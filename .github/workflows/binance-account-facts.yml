@@ -46,7 +46,7 @@ jobs:
       vars.BINANCE_ACCOUNT_FACTS_ENABLED == 'true' &&
       ((github.event_name == 'workflow_dispatch' && github.workflow == 'Binance Account Facts' &&
         inputs.enabled == true && inputs.source_mode == 'direct_read' &&
-        github.ref == 'refs/heads/main') ||
+        github.ref == 'refs/heads/runtime-production') ||
        (github.ref == 'refs/heads/runtime-production' &&
         ((inputs.enabled == true && inputs.source_mode == 'same_parent') ||
          (github.workflow == 'Binance Account Facts' && github.event_name == 'workflow_dispatch' &&
@@ -80,9 +80,8 @@ jobs:
         run: |
           set -euo pipefail
           expected_ref=refs/heads/runtime-production
-          if [ "$SOURCE_MODE" = "direct_read" ]; then
-            expected_ref=refs/heads/main
-          elif [ "$SOURCE_MODE" != "same_parent" ] && [ "$SOURCE_MODE" != "legacy_terminal" ]; then
+          if [ "$SOURCE_MODE" != "direct_read" ] && \
+            [ "$SOURCE_MODE" != "same_parent" ] && [ "$SOURCE_MODE" != "legacy_terminal" ]; then
             echo "account_facts_source_mode_invalid" >&2
             exit 1
           fi

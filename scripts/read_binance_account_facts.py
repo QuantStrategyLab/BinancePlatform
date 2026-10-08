@@ -36,7 +36,7 @@ REPOSITORY = "QuantStrategyLab/BinancePlatform"
 LEGACY_RUNTIME_WORKFLOW_SHA = "9cfcf0531d1ea176e6f26590cf15edbd31bd6567"
 APPROVED_APPLICATION_SHA = "8cb56617115fa45028e34d788e71884b6a303d77"
 RUNTIME_BRANCH = "runtime-production"
-DIRECT_READ_BRANCH = "main"
+DIRECT_READ_BRANCH = "runtime-production"
 EXPECTED_REPORT_ARTIFACT_PREFIX = "binance-execution-report-"
 _GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -464,7 +464,7 @@ def verify_current_source_from_env(env: Mapping[str, str]) -> None:
 
 
 def verify_direct_reader_source_from_env(env: Mapping[str, str]) -> None:
-    """Verify the manual read-only entry is running from its pinned main source."""
+    """Verify the manual read-only entry runs from the protected production branch."""
     reader_revision = str(env.get("BINANCE_ACCOUNT_FACTS_READER_REVISION") or "")
     if (
         env.get("GITHUB_REPOSITORY") != REPOSITORY

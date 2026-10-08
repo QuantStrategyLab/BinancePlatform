@@ -407,11 +407,10 @@ def test_workflow_uses_fixed_protected_reader_revision_not_trigger_sha():
     ):
         assert trading_gate not in direct
     assert "inputs.source_mode == 'direct_read'" in workflow
-    assert "github.ref == 'refs/heads/main'" in workflow
+    assert "github.ref == 'refs/heads/runtime-production'" in workflow
     assert "options: [direct_read, legacy_terminal]" in workflow
     assert "expected_ref=refs/heads/runtime-production" in workflow
-    assert "expected_ref=refs/heads/main" in workflow
-    assert "[ \"$SOURCE_MODE\" = \"direct_read\" ]" in workflow
+    assert '[ "$SOURCE_MODE" != "direct_read" ]' in workflow
     assert "if: ${{ inputs.source_mode != 'direct_read' }}" in workflow
     assert "environment: binance-runtime" in workflow
     assert "group: binance-account-facts-readonly" in workflow
@@ -454,7 +453,7 @@ def _direct_read_binding_env(*, dry_run_only=True):
     env = {
         "SOURCE_MODE": "direct_read",
         "GITHUB_REPOSITORY": reader.REPOSITORY,
-        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_REF": "refs/heads/runtime-production",
         "BINANCE_ACCOUNT_FACTS_ENABLED": "true",
         "BINANCE_ACCOUNT_FACTS_READER_REVISION": READER_SHA,
         "READER_PUBLIC_REVISION": READER_SHA,
@@ -509,12 +508,12 @@ def test_direct_read_uses_private_uid_and_app_binding_without_runtime_or_trade_g
 @pytest.mark.parametrize(
     ("change", "reason"),
     [
-        ({"GITHUB_REF": "refs/heads/runtime-production"}, "reader_source_mismatch"),
+        ({"GITHUB_REF": "refs/heads/main"}, "reader_source_mismatch"),
         ({"READER_PUBLIC_REVISION": "c" * 40}, "reader_source_mismatch"),
         ({"BINANCE_ACCOUNT_FACTS_ENABLED": "false"}, "disabled"),
     ],
 )
-def test_direct_read_still_requires_manual_main_reader_and_account_binding(
+def test_direct_read_still_requires_manual_protected_reader_and_account_binding(
     monkeypatch, tmp_path, change, reason
 ):
     from scripts import read_binance_account_facts as reader
@@ -525,10 +524,11 @@ def test_direct_read_still_requires_manual_main_reader_and_account_binding(
         reader.read_account_facts_direct(output_path=tmp_path / "facts.json", env=env)
 
 
-def test_direct_read_preflight_needs_only_pinned_reader_and_main_context(tmp_path):
+def test_direct_read_preflight_needs_only_pinned_reader_and_protected_context(tmp_path):
     from scripts import read_binance_account_facts as reader
 
     env, _target, _binding = _direct_read_binding_env()
+    assert env["GITHUB_REF"] == "refs/heads/runtime-production"
     output = tmp_path / "github-output.txt"
     reader.preflight(env=env, output=output)
     assert output.read_text(encoding="utf-8") == (
