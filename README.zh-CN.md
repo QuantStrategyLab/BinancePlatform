@@ -21,6 +21,12 @@ BinancePlatform 是 QuantStrategyLab 的 Binance 加密货币执行 runtime：�
 - 凭据必须放在 GitHub Secrets、云密钥系统或券商专用密钥系统中，不能提交到 Git。
 - 任何 live 下单路径启用前，都应先从 dry-run 或 paper mode 开始。
 
+### Binance 账户事实只读取数
+
+`Refresh Binance Account Facts` workflow 可每天 UTC 06:17 触发一次现有的 `Binance Account Facts` workflow。触发器只接受本仓库 `main` 分支，并要求仓库变量 `BINANCE_ACCOUNT_FACTS_REFRESH_ENABLED` 的值严格为 `true`；变量未设置时保持关闭。dispatcher 只用短时 GitHub token 请求固定的 `runtime-production` 与 `direct_read` 输入，不接收券商凭据、不启用 Runtime，也不触发交易 workflow。目标 workflow 仍独立检查 `BINANCE_ACCOUNT_FACTS_ENABLED`，并使用受保护的 `binance-runtime` environment。
+
+QSL 会在账户事实报告超过 36 小时后将其视为过期。每日刷新用于保持只读余额及时；目标任务失败或被跳过不会让旧数据变新。默认配置保持关闭；生产启用由专用仓库开关控制，并需要明确授权。
+
 ## 普通 profile 与 snapshot-backed profile
 
 普通 runtime profile 通常可以直接基于 market history 或 portfolio state 执行。Snapshot-backed profile 需要先从对应 live-pool pipeline 获取当前 artifact bundle，平台才应该执行。平台不应该自行判断策略资格，而应消费策略仓和 live-pool 仓发布的状态与产物。
