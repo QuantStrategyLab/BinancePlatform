@@ -5,16 +5,44 @@ on:
   schedule:
     - cron: "47 * * * *"
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref_name }}
-  cancel-in-progress: false
-
 jobs:
+  observe-scheduler:
+    name: Observe Binance scheduler
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: self-hosted
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref_name }}-scheduler-observation
+      cancel-in-progress: false
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Observe scheduler state
+        env:
+          SCHEDULER_OBSERVATION_PATH: ${{ runner.temp }}/runtime-scheduler-observation.json
+        run: python -m scripts.runtime_scheduler_probe --output-path "$SCHEDULER_OBSERVATION_PATH"
+
+      - name: Upload bounded scheduler observation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: binance-scheduler-observation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/runtime-scheduler-observation.json
+          if-no-files-found: error
+          retention-days: 1
+
   publish:
     name: Publish Binance monitor state (non-trading)
     if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref_name }}
+      cancel-in-progress: false
     permissions:
       actions: read
       contents: read
@@ -117,6 +145,34 @@ jobs:
           test -s "$RUNTIME_HEARTBEAT_OUTPUT_PATH"
           echo "path=$RUNTIME_HEARTBEAT_OUTPUT_PATH" >> "$GITHUB_OUTPUT"
 
+      - name: Select recent scheduler observation
+        id: scheduler-artifact
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python -m scripts.runtime_scheduler_artifact select
+
+      - name: Download recent scheduler observation
+        if: ${{ steps.scheduler-artifact.outputs.scheduler_artifact_available == 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ steps.scheduler-artifact.outputs.scheduler_artifact_name }}
+          run-id: ${{ steps.scheduler-artifact.outputs.scheduler_artifact_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          path: ${{ runner.temp }}/scheduler-observation-artifact
+
+      - name: Validate scheduler observation
+        id: scheduler-observation
+        env:
+          SCHEDULER_ARTIFACT_AVAILABLE: ${{ steps.scheduler-artifact.outputs.scheduler_artifact_available || 'false' }}
+          SCHEDULER_ARTIFACT_CREATED_AT: ${{ steps.scheduler-artifact.outputs.scheduler_artifact_created_at }}
+          SCHEDULER_ARTIFACT_SIZE: ${{ steps.scheduler-artifact.outputs.scheduler_artifact_size }}
+        run: >-
+          python -m scripts.runtime_scheduler_artifact validate
+          --artifact-path "${{ runner.temp }}/scheduler-observation-artifact/runtime-scheduler-observation.json"
+          --output-path "${{ runner.temp }}/validated-runtime-scheduler-observation.json"
+
       - name: Publish monitor execution evidence
         if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.execution-heartbeat.outcome == 'success' }}
         uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-execution-evidence@f2597e8bfb25881242b13145cb5f42d06ba3476c
@@ -135,6 +191,9 @@ jobs:
           CONFIGURATION_GUARD: ${{ steps.target.outputs.runtime_guard }}
           WORKFLOW_HEARTBEAT_PATH: ${{ steps.workflow-heartbeat.outputs.path }}
           EXECUTION_HEARTBEAT_PATH: ${{ steps.execution-heartbeat.outputs.path }}
+          SCHEDULER_OBSERVATION_PATH: ${{ runner.temp }}/validated-runtime-scheduler-observation.json
+          TARGET_ID: ${{ steps.target.outputs.target_id }}
+          EXECUTION_MODE: ${{ steps.target.outputs.execution_mode }}
         run: python scripts/runtime_target_lifecycle_monitoring.py
 
       - name: Publish target lifecycle snapshot
