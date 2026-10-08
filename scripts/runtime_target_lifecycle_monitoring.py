@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from datetime import datetime
 
 
 _CHECKS = frozenset({"pass", "attention", "not_due", "not_applicable", "unavailable"})
+_DEPLOYMENT_FIELDS = ("runtime_enabled", "scheduler_state", "strategy_profile", "execution_mode", "observed_at")
 
 
 def _read_assessment(path: str | None) -> dict:
@@ -39,6 +42,33 @@ def _execution_check(status: str) -> str:
         "not_applicable": "not_applicable",
         "unavailable": "unavailable",
     }.get(status, "unavailable")
+
+
+def _deployment_json(value: object) -> str | None:
+    if not isinstance(value, dict) or not all(field in value for field in _DEPLOYMENT_FIELDS):
+        return None
+    runtime_enabled = value.get("runtime_enabled")
+    profile = value.get("strategy_profile")
+    scheduler_state = value.get("scheduler_state")
+    execution_mode = value.get("execution_mode")
+    observed_at = value.get("observed_at")
+    if runtime_enabled is False or (runtime_enabled is not None and type(runtime_enabled) is not bool):
+        return None
+    if not isinstance(scheduler_state, str) or scheduler_state not in {"enabled", "paused", "unknown"}:
+        return None
+    if not isinstance(profile, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._=-]{0,127}", profile):
+        return None
+    if not isinstance(execution_mode, str) or execution_mode not in {"live", "paper", "dry_run"}:
+        return None
+    if not isinstance(observed_at, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return json.dumps({key: value[key] for key in _DEPLOYMENT_FIELDS}, sort_keys=True)
 
 
 def resolve_monitoring(
@@ -78,9 +108,9 @@ def main() -> int:
         execution_status=str(execution.get("status") or "unavailable"),
     )
     deployment = execution.get("deployment")
-    fields = ("runtime_enabled", "scheduler_state", "strategy_profile", "execution_mode", "observed_at")
-    if execution.get("status") == "healthy" and isinstance(deployment, dict) and all(key in deployment for key in fields):
-        values["deployment_json"] = json.dumps({key: deployment[key] for key in fields}, sort_keys=True)
+    deployment_json = _deployment_json(deployment)
+    if deployment_json is not None:
+        values["deployment_json"] = deployment_json
     output = os.environ.get("GITHUB_OUTPUT")
     if output:
         with open(output, "a", encoding="utf-8") as handle:
