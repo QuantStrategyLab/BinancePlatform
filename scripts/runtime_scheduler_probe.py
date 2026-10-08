@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import argparse
 from datetime import datetime, timezone
 import json
 import os
+from pathlib import Path
 
 from runtime_scheduler_observation import observe_runtime_scheduler_state
 
@@ -38,11 +40,27 @@ def _write_github_output(path: str, result: dict[str, str]) -> bool:
     return True
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--output-path")
+    args = parser.parse_args(argv)
     result = observe()
+    if args.output_path:
+        try:
+            Path(args.output_path).write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
+        except OSError:
+            result["scheduler_state"] = "unknown"
+            print(json.dumps(result, sort_keys=True))
+            return 1
     output_path = os.environ.get("GITHUB_OUTPUT")
     if output_path and not _write_github_output(output_path, result):
         result["scheduler_state"] = "unknown"
+        if args.output_path:
+            try:
+                Path(args.output_path).write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
+            except OSError:
+                print(json.dumps(result, sort_keys=True))
+                return 1
     print(json.dumps(result, sort_keys=True))
     return 0
 
