@@ -46,8 +46,22 @@ def test_manual_native_reader_remains_fail_closed_without_report_artifact() -> N
     assert "actions/download-artifact@" in download
     assert "binance-execution-report-${{ steps.preflight.outputs.source_run_id }}" in download
     assert "continue-on-error" not in download
-    assert "if:" not in download
-    assert workflow.index("Verify trusted checkout and exact Runtime source") < (
+    assert "if: ${{ inputs.source_mode != 'direct_read' }}" in download
+
+    legacy_read = workflow.split(
+        "      - name: Read the bound Spot and Flexible Earn account quantities", 1
+    )[1].split("      - name: Read directly from the protected account binding", 1)[0]
+    assert "if: ${{ inputs.source_mode != 'direct_read' }}" in legacy_read
+    assert "--report \"$FACTS_DIR/source/execution_report.json\"" in legacy_read
+
+    direct_read = workflow.split(
+        "      - name: Read directly from the protected account binding", 1
+    )[1].split("      - name: Recheck Runtime source before publishing", 1)[0]
+    assert "actions/download-artifact@" not in direct_read
+    assert "if: ${{ github.event_name == 'workflow_dispatch' && inputs.source_mode == 'direct_read' }}" in direct_read
+    assert "--direct-read" in direct_read
+
+    assert workflow.index("Verify trusted reader checkout and source mode") < (
         workflow.index("Download only the exact successful Runtime report artifact")
     ) < workflow.index("Read the bound Spot and Flexible Earn account quantities")
 
@@ -68,15 +82,23 @@ def test_manual_native_facts_entry_remains_opt_in_and_source_bound() -> None:
     workflow = WORKFLOW.with_name("binance-account-facts.yml").read_text(encoding="utf-8")
     dispatch = workflow.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:\n", 1)[0]
     enabled = dispatch.split("      enabled:\n", 1)[1].split("      source_run_id:\n", 1)[0]
+    source_mode = dispatch.split("      source_mode:\n", 1)[1]
     assert "        type: boolean\n" in enabled
     assert "        default: false\n" in enabled
     assert "      source_run_id:\n" in dispatch
-    assert "        options: [legacy_terminal]\n" in dispatch
+    assert "        type: choice\n" in source_mode
+    assert "        options: [direct_read, legacy_terminal]\n" in source_mode
     assert "  schedule:" not in workflow
     assert "vars.BINANCE_ACCOUNT_FACTS_ENABLED == 'true'" in workflow
     assert "github.ref == 'refs/heads/runtime-production'" in workflow
     assert "github.workflow == 'Binance Account Facts' && github.event_name == 'workflow_dispatch'" in workflow
     assert "inputs.enabled == true && inputs.source_mode == 'legacy_terminal'" in workflow
+    job = workflow.split("  read-and-publish:\n", 1)[1].split("    runs-on:", 1)[0]
+    assert "vars.BINANCE_ACCOUNT_FACTS_ENABLED == 'true'" in job
+    assert "inputs.enabled == true && inputs.source_mode == 'direct_read'" in job
+    assert "inputs.enabled == true && inputs.source_mode == 'legacy_terminal'" in job
+    assert "inputs.enabled == true && inputs.source_mode == 'same_parent'" in job
+    assert "github.ref == 'refs/heads/runtime-production'" in job
     assert "    environment: binance-runtime\n" in workflow
     assert "  group: binance-account-facts-readonly\n  cancel-in-progress: false\n" in workflow
     assert "          ref: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION }}\n" in workflow
@@ -84,7 +106,16 @@ def test_manual_native_facts_entry_remains_opt_in_and_source_bound() -> None:
     assert "scripts/read_binance_account_facts.py --verify-current-source" in workflow
     assert "SOURCE_RUN_ID: ${{ steps.preflight.outputs.source_run_id }}" in workflow
     assert "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN: ${{ secrets.BINANCE_ACCOUNT_FACTS_SYNC_TOKEN }}" in workflow
-    assert workflow.index("Verify trusted checkout and exact Runtime source") < (
+    direct_read = workflow.split(
+        "      - name: Read directly from the protected account binding", 1
+    )[1].split("      - name: Recheck Runtime source before publishing", 1)[0]
+    for trade_or_runtime_gate in (
+        "RUNTIME_TARGET_ENABLED", "BINANCE_DRY_RUN", "BINANCE_RISK_AUTHORITY_JSON",
+        "BINANCE_RUNTIME_RELEASE_SHA", "BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON",
+    ):
+        assert trade_or_runtime_gate not in direct_read
+    assert "RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}" in direct_read
+    assert workflow.index("Verify trusted reader checkout and source mode") < (
         workflow.index("Read the bound Spot and Flexible Earn account quantities")
     ) < workflow.index("Recheck Runtime source before publishing") < (
         workflow.index("Publish with the isolated account-facts token")

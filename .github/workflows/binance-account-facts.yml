@@ -16,7 +16,7 @@ name: Binance Account Facts
   workflow_dispatch:
     inputs:
       enabled:
-        description: "Run the existing terminal-report read; repository gate must also be true."
+        description: "Run the manual read-only account-facts read; repository gate must also be true."
         required: false
         type: boolean
         default: false
@@ -25,10 +25,10 @@ name: Binance Account Facts
         required: false
         type: string
       source_mode:
-        description: "Keep this workflow_dispatch on the single legacy terminal-report path."
+        description: "Read directly from the bound account, or use the legacy Runtime report."
         required: true
         type: choice
-        options: [legacy_terminal]
+        options: [direct_read, legacy_terminal]
 
 permissions:
   actions: read
@@ -44,10 +44,13 @@ jobs:
   read-and-publish:
     if: >-
       vars.BINANCE_ACCOUNT_FACTS_ENABLED == 'true' &&
-      github.ref == 'refs/heads/runtime-production' &&
-      ((inputs.enabled == true && inputs.source_mode == 'same_parent') ||
-       (github.workflow == 'Binance Account Facts' && github.event_name == 'workflow_dispatch' &&
-        inputs.enabled == true && inputs.source_mode == 'legacy_terminal'))
+      ((github.event_name == 'workflow_dispatch' && github.workflow == 'Binance Account Facts' &&
+        inputs.enabled == true && inputs.source_mode == 'direct_read' &&
+        github.ref == 'refs/heads/runtime-production') ||
+       (github.ref == 'refs/heads/runtime-production' &&
+        ((inputs.enabled == true && inputs.source_mode == 'same_parent') ||
+         (github.workflow == 'Binance Account Facts' && github.event_name == 'workflow_dispatch' &&
+          inputs.enabled == true && inputs.source_mode == 'legacy_terminal'))))
     runs-on: self-hosted
     timeout-minutes: 5
     continue-on-error: true
@@ -62,7 +65,7 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
 
-      - name: Verify trusted checkout and exact Runtime source
+      - name: Verify trusted reader checkout and source mode
         id: preflight
         shell: bash
         env:
@@ -71,13 +74,20 @@ jobs:
           BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA || '' }}
           SOURCE_MODE: ${{ inputs.source_mode || 'legacy_terminal' }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id || '' }}
-          GITHUB_TOKEN: ${{ github.token }}
+          READER_PUBLIC_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || '' }}
+          GITHUB_TOKEN: ${{ inputs.source_mode != 'direct_read' && github.token || '' }}
           GITHUB_API_URL: ${{ github.api_url }}
         run: |
           set -euo pipefail
+          expected_ref=refs/heads/runtime-production
+          if [ "$SOURCE_MODE" != "direct_read" ] && \
+            [ "$SOURCE_MODE" != "same_parent" ] && [ "$SOURCE_MODE" != "legacy_terminal" ]; then
+            echo "account_facts_source_mode_invalid" >&2
+            exit 1
+          fi
           if [[ ! "$BINANCE_ACCOUNT_FACTS_READER_REVISION" =~ ^[0-9a-f]{40}$ ]] || \
             [ "$(git rev-parse HEAD)" != "$BINANCE_ACCOUNT_FACTS_READER_REVISION" ] || \
-            [ "$GITHUB_REF" != "refs/heads/runtime-production" ]; then
+            [ "$GITHUB_REF" != "$expected_ref" ]; then
             echo "account_facts_trusted_checkout_invalid" >&2
             exit 1
           fi
@@ -94,6 +104,7 @@ jobs:
           chmod 700 "$private_dir"
 
       - name: Download only the exact successful Runtime report artifact
+        if: ${{ inputs.source_mode != 'direct_read' }}
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: binance-execution-report-${{ steps.preflight.outputs.source_run_id }}
@@ -104,6 +115,7 @@ jobs:
 
       - name: Read the bound Spot and Flexible Earn account quantities
         id: read-account-facts
+        if: ${{ inputs.source_mode != 'direct_read' }}
         shell: bash
         env:
           FACTS_DIR: ${{ steps.private-dir.outputs.facts_dir }}
@@ -133,7 +145,30 @@ jobs:
             --report "$FACTS_DIR/source/execution_report.json" \
             --output "$FACTS_DIR/account_facts.json"
 
+      - name: Read directly from the protected account binding
+        id: read-direct-account-facts
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.source_mode == 'direct_read' }}
+        shell: bash
+        env:
+          FACTS_DIR: ${{ steps.private-dir.outputs.facts_dir }}
+          SOURCE_MODE: direct_read
+          BINANCE_ACCOUNT_FACTS_ENABLED: ${{ vars.BINANCE_ACCOUNT_FACTS_ENABLED || 'false' }}
+          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+          BINANCE_ACCOUNT_FACTS_BINDING_JSON: ${{ secrets.BINANCE_ACCOUNT_FACTS_BINDING_JSON }}
+          RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}
+          BINANCE_ACCOUNT_FACTS_READER_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || '' }}
+          READER_PUBLIC_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || '' }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          uv run --no-sync python scripts/read_binance_account_facts.py \
+            --direct-read \
+            --output "$FACTS_DIR/account_facts.json"
+
       - name: Recheck Runtime source before publishing
+        if: ${{ inputs.source_mode != 'direct_read' }}
         shell: bash
         env:
           SOURCE_RUN_ID: ${{ steps.preflight.outputs.source_run_id }}
