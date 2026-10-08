@@ -12,7 +12,7 @@ from scripts.runtime_target_lifecycle_monitoring import resolve_monitoring
 class RuntimeTargetLifecycleMonitoringTests(unittest.TestCase):
     def test_report_observation_is_forwarded_without_changing_its_time(self):
         deployment = {
-            "runtime_enabled": False,
+            "runtime_enabled": None,
             "scheduler_state": "unknown",
             "strategy_profile": "crypto_live_pool_rotation",
             "execution_mode": "dry_run",
@@ -31,6 +31,51 @@ class RuntimeTargetLifecycleMonitoringTests(unittest.TestCase):
                 self.assertEqual(monitoring.main(), 0)
             values = dict(line.split("=", 1) for line in output.read_text().splitlines())
         self.assertEqual(json.loads(values["deployment_json"]), deployment)
+
+    def test_alert_does_not_hide_valid_report_deployment(self):
+        deployment = {
+            "runtime_enabled": True,
+            "scheduler_state": "enabled",
+            "strategy_profile": "crypto_live_pool_rotation",
+            "execution_mode": "dry_run",
+            "observed_at": "2026-08-30T02:00:00Z",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            assessment = Path(directory) / "assessment.json"
+            output = Path(directory) / "output.txt"
+            assessment.write_text(json.dumps({"status": "alert", "deployment": deployment}), encoding="utf-8")
+            with patch.dict(os.environ, {
+                "CONFIGURED_STATE": "enabled",
+                "CONFIGURATION_GUARD": "pass",
+                "EXECUTION_HEARTBEAT_PATH": str(assessment),
+                "GITHUB_OUTPUT": str(output),
+            }, clear=True):
+                self.assertEqual(monitoring.main(), 0)
+            values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        self.assertEqual(json.loads(values["deployment_json"]), deployment)
+        self.assertEqual(values["execution_heartbeat"], "attention")
+
+    def test_malformed_deployment_is_not_forwarded(self):
+        invalid_deployments = (
+            {"runtime_enabled": "true"},
+            {"runtime_enabled": False, "scheduler_state": "enabled", "strategy_profile": "x", "execution_mode": "dry_run", "observed_at": "2026-08-30T02:00:00Z"},
+            {"runtime_enabled": None, "scheduler_state": [], "strategy_profile": "x", "execution_mode": "dry_run", "observed_at": "2026-08-30T02:00:00Z"},
+            {"runtime_enabled": None, "scheduler_state": "unknown", "strategy_profile": "x", "execution_mode": "unknown", "observed_at": "2026-08-30T02:00:00Z"},
+            {"runtime_enabled": None, "scheduler_state": "unknown", "strategy_profile": "x", "execution_mode": "dry_run", "observed_at": "2026-08-30T02:00:00"},
+        )
+        for deployment in invalid_deployments:
+            with self.subTest(deployment=deployment), tempfile.TemporaryDirectory() as directory:
+                assessment = Path(directory) / "assessment.json"
+                output = Path(directory) / "output.txt"
+                assessment.write_text(json.dumps({"status": "alert", "deployment": deployment}), encoding="utf-8")
+                with patch.dict(os.environ, {
+                    "CONFIGURED_STATE": "enabled",
+                    "CONFIGURATION_GUARD": "pass",
+                    "EXECUTION_HEARTBEAT_PATH": str(assessment),
+                    "GITHUB_OUTPUT": str(output),
+                }, clear=True):
+                    self.assertEqual(monitoring.main(), 0)
+                self.assertNotIn("deployment_json", output.read_text())
 
     def test_missing_report_does_not_synthesize_environment_observation(self):
         with tempfile.TemporaryDirectory() as directory:
