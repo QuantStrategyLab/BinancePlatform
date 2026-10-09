@@ -188,6 +188,28 @@ class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
 
         request.assert_not_called()
 
+    def test_disabled_runtime_workflow_skips_alert_without_failing(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "GITHUB_TOKEN": "token-1",
+                "RUNTIME_TARGET_ENABLED": "true",
+                "RUNTIME_HEARTBEAT_FAIL_WORKFLOW_ON_ALERT": "true",
+            },
+            clear=True,
+        ):
+            with patch.object(
+                heartbeat,
+                "_get_workflow_state",
+                return_value="disabled_manually",
+            ) as state:
+                with patch.object(heartbeat, "_list_runtime_runs") as list_runs:
+                    with patch.object(heartbeat, "_send_telegram") as send_telegram:
+                        self.assertEqual(heartbeat.main(), 0)
+        state.assert_called_once()
+        list_runs.assert_not_called()
+        send_telegram.assert_not_called()
+
     def test_github_api_outage_is_reported_as_unavailable_when_non_failing(self) -> None:
         with patch.dict(
             os.environ,
@@ -352,6 +374,8 @@ class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
         def fake_github_request(url: str, token: str) -> dict[str, object]:
             requested_urls.append(url)
             self.assertEqual(token, "token-1")
+            if url.endswith("/actions/workflows/main.yml"):
+                return {"state": "active", "path": ".github/workflows/main.yml"}
             if "/actions/workflows/main.yml/runs?" in url:
                 return {"workflow_runs": []}
             if "/actions/runs?" in url:
