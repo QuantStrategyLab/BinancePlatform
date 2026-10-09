@@ -301,6 +301,19 @@ def _list_runtime_runs(
     return [run for run in runs if run.get("display_title") == "Runtime · strategy"]
 
 
+
+def _get_workflow_state(*, repository: str, workflow: str, token: str) -> str | None:
+    """Return GitHub Actions workflow state (active/disabled_manually/...), or None if unknown."""
+    url = f"https://api.github.com/repos/{repository}/actions/workflows/{workflow}"
+    try:
+        payload = _github_request(url, token)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Workflow state lookup skipped: {exc}", file=sys.stderr)
+        return None
+    state = payload.get("state")
+    return state if isinstance(state, str) and state else None
+
+
 def _run_summary(run: dict[str, Any] | None) -> dict[str, Any] | None:
     if run is None:
         return None
@@ -469,6 +482,29 @@ def main() -> int:
     token = os.environ.get("GITHUB_TOKEN")
     if not token:
         raise SystemExit("GITHUB_TOKEN is required")
+
+    workflow_state = _get_workflow_state(repository=repository, workflow=workflow, token=token)
+    if workflow_state in {"disabled_manually", "disabled_inactivity"}:
+        assessment = {
+            "schema": _ASSESSMENT_SCHEMA,
+            "observed_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "status": "not_applicable",
+            "reason": "runtime_workflow_disabled",
+            "query": {
+                "workflow": workflow,
+                "branch": branch,
+                "workflow_state": workflow_state,
+                "runs_returned": 0,
+            },
+        }
+        _write_assessment(assessment)
+        print(json.dumps(assessment, sort_keys=True))
+        print(
+            "Runtime workflow heartbeat skipped: "
+            f"workflow={workflow} state={workflow_state} "
+            "(no strategy runs expected while disabled)"
+        )
+        return 0
 
     now = dt.datetime.now(dt.timezone.utc)
     since = now - dt.timedelta(hours=max(lookback_hours, expected_interval_hours * (max_consecutive_misses + 1)))
