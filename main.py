@@ -104,7 +104,9 @@ from strategy_runtime import load_strategy_runtime
 from run_context import (
     RunContext,
     bind_run_context,
+    get_active_run_context,
     reset_run_context,
+    resolve_strategy_runtime,
     resolve_trend_universe,
     set_active_trend_universe,
 )
@@ -263,8 +265,12 @@ DEFAULT_TREND_POOL_ACCEPTABLE_MODES = tuple(STRATEGY_RUNTIME.artifact_contract["
 BTC_MARKET_SNAPSHOT_RETRY_DELAYS = (5, 15)
 
 
-def _activate_execution_strategy_runtime(profile: str, *, runtime_target=None) -> None:
-    """Replace the import-safe evaluator only after RuntimeTarget validation."""
+def _activate_execution_strategy_runtime(profile: str, *, runtime_target=None):
+    """Replace the import-safe evaluator only after RuntimeTarget validation.
+
+    Writes the activated handle to module STRATEGY_RUNTIME (compat / unbound
+    fallback) and, when a RunContext is bound, also to ctx.strategy_runtime.
+    """
 
     global STRATEGY_RUNTIME
     global TREND_POOL_SIZE
@@ -272,12 +278,20 @@ def _activate_execution_strategy_runtime(profile: str, *, runtime_target=None) -
     global DEFAULT_TREND_POOL_MAX_AGE_DAYS
     global DEFAULT_TREND_POOL_ACCEPTABLE_MODES
 
-    STRATEGY_RUNTIME = (load_strategy_runtime(profile) if runtime_target is None
-                        else load_strategy_runtime(profile, runtime_target=runtime_target))
-    TREND_POOL_SIZE = STRATEGY_RUNTIME.trend_pool_size
-    DEFAULT_LIVE_POOL_LEGACY_PATH = STRATEGY_RUNTIME.default_local_artifact_path
-    DEFAULT_TREND_POOL_MAX_AGE_DAYS = int(STRATEGY_RUNTIME.artifact_contract["max_age_days"])
-    DEFAULT_TREND_POOL_ACCEPTABLE_MODES = tuple(STRATEGY_RUNTIME.artifact_contract["acceptable_modes"])
+    activated = (
+        load_strategy_runtime(profile)
+        if runtime_target is None
+        else load_strategy_runtime(profile, runtime_target=runtime_target)
+    )
+    STRATEGY_RUNTIME = activated
+    TREND_POOL_SIZE = activated.trend_pool_size
+    DEFAULT_LIVE_POOL_LEGACY_PATH = activated.default_local_artifact_path
+    DEFAULT_TREND_POOL_MAX_AGE_DAYS = int(activated.artifact_contract["max_age_days"])
+    DEFAULT_TREND_POOL_ACCEPTABLE_MODES = tuple(activated.artifact_contract["acceptable_modes"])
+    ctx = get_active_run_context()
+    if ctx is not None:
+        ctx.strategy_runtime = activated
+    return activated
 
 
 class BalanceFetchError(RuntimeError):
@@ -362,7 +376,8 @@ def validate_trend_pool_payload(
 
 
 def get_default_live_pool_candidates():
-    return list(STRATEGY_RUNTIME.local_artifact_candidates) or tp_get_default_live_pool_candidates(
+    strategy_runtime = resolve_strategy_runtime(STRATEGY_RUNTIME)
+    return list(strategy_runtime.local_artifact_candidates) or tp_get_default_live_pool_candidates(
         DEFAULT_LIVE_POOL_LEGACY_PATH
     )
 
@@ -658,9 +673,10 @@ def maybe_send_periodic_btc_status_report(
     strategy_display_name=None,
     notifier_fn=None,
 ):
-    runtime_manifest = getattr(getattr(STRATEGY_RUNTIME, "entrypoint", None), "manifest", None)
+    strategy_runtime = resolve_strategy_runtime(STRATEGY_RUNTIME)
+    runtime_manifest = getattr(getattr(strategy_runtime, "entrypoint", None), "manifest", None)
     resolved_strategy_display_name = strategy_display_name or build_strategy_display_name(t)(
-        getattr(STRATEGY_RUNTIME, "profile", "crypto_live_pool_rotation"),
+        getattr(strategy_runtime, "profile", "crypto_live_pool_rotation"),
         fallback_name=getattr(runtime_manifest, "display_name", "Crypto Live Pool Rotation"),
     )
     return report_maybe_send_periodic_btc_status_report(
@@ -850,7 +866,10 @@ def build_live_runtime(now_utc=None, *, retain_interval_receipts=False):
         state_writer=set_trade_state,
         notifier=lambda **kwargs: send_tg_msg(kwargs["token"], kwargs["chat_id"], kwargs["text"]),
     )
-    _activate_execution_strategy_runtime(runtime.strategy_profile, runtime_target=runtime.runtime_target)
+    runtime.strategy_runtime = _activate_execution_strategy_runtime(
+        runtime.strategy_profile,
+        runtime_target=runtime.runtime_target,
+    )
     if not runtime.dry_run and runtime.standard_execution_permitted:
         runtime.bound_state_access = bind_trade_state_access(
             normalize_fn=normalize_trade_state, default_state_factory=build_default_state,
@@ -963,14 +982,15 @@ def _resolve_strategy_evaluation(
         for symbol, meta in runtime_trend_universe.items()
         if not meta.get("valuation_only")
     )
-    account_metrics = STRATEGY_RUNTIME.compute_account_metrics(
+    strategy_runtime = resolve_strategy_runtime(STRATEGY_RUNTIME)
+    account_metrics = strategy_runtime.compute_account_metrics(
         runtime_trend_universe,
         balances,
         prices,
         u_total,
         fuel_val,
     )
-    return STRATEGY_RUNTIME.evaluate(
+    return strategy_runtime.evaluate(
         prices=prices,
         trend_indicators=trend_indicators,
         btc_snapshot=btc_snapshot,
@@ -1330,9 +1350,12 @@ def _execute_btc_dca_cycle(
 
 
 def execute_cycle(runtime):
-    # B09: cycle-scoped universe on RunContext — do not mutate module TREND_UNIVERSE.
+    # B09: cycle-scoped universe + strategy handle on RunContext.
+    # Do not mutate module TREND_UNIVERSE; STRATEGY_RUNTIME stays as unbound fallback.
+    mounted_strategy = getattr(runtime, "strategy_runtime", None) or STRATEGY_RUNTIME
     ctx = RunContext(
         trend_universe={symbol: meta.copy() for symbol, meta in TREND_UNIVERSE.items()},
+        strategy_runtime=mounted_strategy,
     )
     runtime.run_context = ctx
     token = bind_run_context(ctx)
