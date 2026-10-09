@@ -1,7 +1,8 @@
 """Per-cycle RunContext for BinancePlatform (B09).
 
-First slice: trend universe leaves module globals during execute_cycle.
-Strategy-runtime activation stays on module globals until a follow-up PR.
+Trend universe (PR-1) and strategy-runtime handle (PR-2) bind to a cycle-scoped
+context during execute_cycle. Module STRATEGY_RUNTIME / TREND_UNIVERSE remain
+import-safe fallbacks and out-of-cycle patch points.
 Does not change order-submission or state-owner semantics in runtime_support.
 """
 
@@ -17,7 +18,7 @@ class RunContext:
     """Cycle-scoped mutable view. Not a replacement for ExecutionRuntime."""
 
     trend_universe: MutableMapping[str, dict[str, Any]]
-    strategy_runtime: Any | None = None  # reserved for B09 phase 2
+    strategy_runtime: Any | None = None
 
 
 _ACTIVE_RUN_CONTEXT: ContextVar[Optional[RunContext]] = ContextVar(
@@ -57,3 +58,23 @@ def set_active_trend_universe(
         ctx.trend_universe = resolved
         return
     fallback_setter(resolved)
+
+
+def resolve_strategy_runtime(fallback: Any) -> Any:
+    """Prefer cycle-bound strategy runtime; else module/import-safe fallback."""
+    ctx = _ACTIVE_RUN_CONTEXT.get()
+    if ctx is not None and ctx.strategy_runtime is not None:
+        return ctx.strategy_runtime
+    return fallback
+
+
+def set_active_strategy_runtime(
+    activated: Any,
+    *,
+    fallback_setter: Callable[[Any], None],
+) -> None:
+    ctx = _ACTIVE_RUN_CONTEXT.get()
+    if ctx is not None:
+        ctx.strategy_runtime = activated
+        return
+    fallback_setter(activated)

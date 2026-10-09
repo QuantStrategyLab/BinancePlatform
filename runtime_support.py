@@ -321,6 +321,7 @@ class ExecutionRuntime:
     fuel_asset: str = "BNB"
     side_effect_log: list[dict[str, Any]] = field(default_factory=list)
     run_context: Any = None
+    strategy_runtime: Any = None  # B09 PR-2: activated handle; cycle mounts onto RunContext
 
     def __post_init__(self):
         if self.now_utc is None:
