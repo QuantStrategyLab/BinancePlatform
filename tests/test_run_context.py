@@ -9,6 +9,7 @@ from unittest.mock import patch
 import main
 from run_context import (
     RunContext,
+    RunContextError,
     bind_run_context,
     get_active_run_context,
     reset_run_context,
@@ -37,6 +38,12 @@ class RunContextUnitTests(unittest.TestCase):
     def test_resolve_falls_back_to_module_when_unbound(self):
         self.assertIs(resolve_trend_universe(main.TREND_UNIVERSE), main.TREND_UNIVERSE)
         self.assertIs(resolve_strategy_runtime(main.STRATEGY_RUNTIME), main.STRATEGY_RUNTIME)
+
+    def test_unbound_resolve_without_fallback_fails_closed(self):
+        with self.assertRaises(RunContextError):
+            resolve_strategy_runtime()
+        with self.assertRaises(RunContextError):
+            resolve_trend_universe()
 
     def test_set_and_resolve_use_active_context(self):
         custom = {"ZZZTESTUSDT": {"base_asset": "ZZZ"}}
@@ -81,17 +88,32 @@ class RunContextUnitTests(unittest.TestCase):
 
         self.assertEqual(dict(main.TREND_UNIVERSE), _baseline_universe())
 
-    def test_resolve_strategy_runtime_prefers_active_context(self):
+    def test_bound_resolve_ignores_poisoned_module_strategy_runtime(self):
+        """PR-3: while bound, module STRATEGY_RUNTIME must not be consulted."""
         module_handle = main.STRATEGY_RUNTIME
         bound_handle = SimpleNamespace(profile="bound-profile", marker="ctx")
+        poison = SimpleNamespace(profile="poison-module", marker="module")
         ctx = RunContext(trend_universe=_baseline_universe(), strategy_runtime=bound_handle)
         token = bind_run_context(ctx)
         try:
+            main.STRATEGY_RUNTIME = poison
+            # Fallback arg is also poisoned — bound path must ignore both.
+            self.assertIs(resolve_strategy_runtime(poison), bound_handle)
             self.assertIs(resolve_strategy_runtime(module_handle), bound_handle)
-            self.assertIs(main.STRATEGY_RUNTIME, module_handle)
+            self.assertIs(main.STRATEGY_RUNTIME, poison)
         finally:
             reset_run_context(token)
+            main.STRATEGY_RUNTIME = module_handle
         self.assertIs(resolve_strategy_runtime(module_handle), module_handle)
+
+    def test_bound_without_strategy_runtime_fails_closed(self):
+        ctx = RunContext(trend_universe=_baseline_universe(), strategy_runtime=None)
+        token = bind_run_context(ctx)
+        try:
+            with self.assertRaises(RunContextError):
+                resolve_strategy_runtime(main.STRATEGY_RUNTIME)
+        finally:
+            reset_run_context(token)
 
     def test_sequential_binds_do_not_leak_strategy_runtime(self):
         first = SimpleNamespace(profile="first")
@@ -183,7 +205,36 @@ class ExecuteCycleUniverseIsolationTests(unittest.TestCase):
         self.assertEqual(report["status"], "ok")
         self.assertIsNone(get_active_run_context())
 
-    def test_activate_while_bound_writes_context_and_module(self):
+    def test_execute_cycle_ignores_module_strategy_poison_and_does_not_leak(self):
+        """PR-3: cycle resolve ignores module poison; module STRATEGY_RUNTIME unchanged."""
+        prior = main.STRATEGY_RUNTIME
+        mounted = SimpleNamespace(profile="cycle-mounted", marker="rt")
+        poison = SimpleNamespace(profile="poison", marker="module")
+
+        def fake_cycle(runtime, **_kwargs):
+            main.STRATEGY_RUNTIME = poison
+            self.assertIs(resolve_strategy_runtime(poison), mounted)
+            self.assertIs(runtime.run_context.strategy_runtime, mounted)
+            return {"status": "ok"}
+
+        runtime = ExecutionRuntime(
+            dry_run=True,
+            strategy_profile="crypto_live_pool_rotation",
+            strategy_runtime=mounted,
+        )
+        try:
+            with patch("main.execute_strategy_cycle", side_effect=fake_cycle):
+                report = main.execute_cycle(runtime)
+            self.assertEqual(report["status"], "ok")
+            # Poison applied inside cycle must not be "restored over" — we prove
+            # cycle itself did not write module STRATEGY_RUNTIME; caller poison remains.
+            self.assertIs(main.STRATEGY_RUNTIME, poison)
+        finally:
+            main.STRATEGY_RUNTIME = prior
+        self.assertIsNone(get_active_run_context())
+
+    def test_activate_while_bound_writes_context_not_module(self):
+        """PR-3: activate during a bound cycle must not leak into module STRATEGY_RUNTIME."""
         prior = main.STRATEGY_RUNTIME
         prior_pool = main.TREND_POOL_SIZE
         prior_legacy = main.DEFAULT_LIVE_POOL_LEGACY_PATH
@@ -199,7 +250,10 @@ class ExecuteCycleUniverseIsolationTests(unittest.TestCase):
             },
             local_artifact_candidates=(),
         )
-        ctx = RunContext(trend_universe=_baseline_universe())
+        ctx = RunContext(
+            trend_universe=_baseline_universe(),
+            strategy_runtime=SimpleNamespace(profile="seed"),
+        )
         token = bind_run_context(ctx)
         try:
             with patch("main.load_strategy_runtime", return_value=fake) as loader:
@@ -207,7 +261,7 @@ class ExecuteCycleUniverseIsolationTests(unittest.TestCase):
             loader.assert_called_once_with("crypto_live_pool_rotation")
             self.assertIs(activated, fake)
             self.assertIs(ctx.strategy_runtime, fake)
-            self.assertIs(main.STRATEGY_RUNTIME, fake)
+            self.assertIs(main.STRATEGY_RUNTIME, prior)  # no module leakage
             self.assertIs(resolve_strategy_runtime(prior), fake)
             self.assertEqual(main.TREND_POOL_SIZE, 11)
         finally:
@@ -218,16 +272,44 @@ class ExecuteCycleUniverseIsolationTests(unittest.TestCase):
             main.DEFAULT_TREND_POOL_MAX_AGE_DAYS = prior_max_age
             main.DEFAULT_TREND_POOL_ACCEPTABLE_MODES = prior_modes
 
+    def test_activate_unbound_still_updates_module_for_compat(self):
+        prior = main.STRATEGY_RUNTIME
+        prior_pool = main.TREND_POOL_SIZE
+        prior_legacy = main.DEFAULT_LIVE_POOL_LEGACY_PATH
+        prior_max_age = main.DEFAULT_TREND_POOL_MAX_AGE_DAYS
+        prior_modes = main.DEFAULT_TREND_POOL_ACCEPTABLE_MODES
+        fake = SimpleNamespace(
+            profile="unbound-activate",
+            trend_pool_size=7,
+            default_local_artifact_path=prior.default_local_artifact_path,
+            artifact_contract={
+                "max_age_days": int(prior.artifact_contract["max_age_days"]),
+                "acceptable_modes": tuple(prior.artifact_contract["acceptable_modes"]),
+            },
+            local_artifact_candidates=(),
+        )
+        self.assertIsNone(get_active_run_context())
+        try:
+            with patch("main.load_strategy_runtime", return_value=fake):
+                activated = main._activate_execution_strategy_runtime("crypto_live_pool_rotation")
+            self.assertIs(activated, fake)
+            self.assertIs(main.STRATEGY_RUNTIME, fake)
+            self.assertEqual(main.TREND_POOL_SIZE, 7)
+        finally:
+            main.STRATEGY_RUNTIME = prior
+            main.TREND_POOL_SIZE = prior_pool
+            main.DEFAULT_LIVE_POOL_LEGACY_PATH = prior_legacy
+            main.DEFAULT_TREND_POOL_MAX_AGE_DAYS = prior_max_age
+            main.DEFAULT_TREND_POOL_ACCEPTABLE_MODES = prior_modes
+
 
 class StrategyRuntimeEquivalenceTests(unittest.TestCase):
-    """Bound resolve path must match direct module handle for a frozen profile."""
+    """Bound resolve path must match direct handle for a frozen profile."""
 
     def tearDown(self):
         self.assertIsNone(get_active_run_context())
 
     def test_bound_resolve_matches_module_metrics_for_same_handle(self):
-        # Use the import-safe module handle (already loaded) — behavior-equivalent
-        # mount onto RunContext without requiring full CryptoStrategies catalog.
         activated = main.STRATEGY_RUNTIME
         universe = {
             "ETHUSDT": {"base_asset": "ETH"},
