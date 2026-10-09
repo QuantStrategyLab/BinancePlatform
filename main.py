@@ -268,8 +268,10 @@ BTC_MARKET_SNAPSHOT_RETRY_DELAYS = (5, 15)
 def _activate_execution_strategy_runtime(profile: str, *, runtime_target=None):
     """Replace the import-safe evaluator only after RuntimeTarget validation.
 
-    Writes the activated handle to module STRATEGY_RUNTIME (compat / unbound
-    fallback) and, when a RunContext is bound, also to ctx.strategy_runtime.
+    When a RunContext is bound (cycle path), mount the handle on the context only
+    — do not rewrite module STRATEGY_RUNTIME (no cycle→module leakage). Unbound
+    callers still update the module symbol for out-of-cycle compat / patches.
+    Pool-derived knobs (size / artifact paths) still refresh either way.
     """
 
     global STRATEGY_RUNTIME
@@ -283,7 +285,6 @@ def _activate_execution_strategy_runtime(profile: str, *, runtime_target=None):
         if runtime_target is None
         else load_strategy_runtime(profile, runtime_target=runtime_target)
     )
-    STRATEGY_RUNTIME = activated
     TREND_POOL_SIZE = activated.trend_pool_size
     DEFAULT_LIVE_POOL_LEGACY_PATH = activated.default_local_artifact_path
     DEFAULT_TREND_POOL_MAX_AGE_DAYS = int(activated.artifact_contract["max_age_days"])
@@ -291,6 +292,8 @@ def _activate_execution_strategy_runtime(profile: str, *, runtime_target=None):
     ctx = get_active_run_context()
     if ctx is not None:
         ctx.strategy_runtime = activated
+        return activated
+    STRATEGY_RUNTIME = activated
     return activated
 
 
@@ -1350,9 +1353,12 @@ def _execute_btc_dca_cycle(
 
 
 def execute_cycle(runtime):
-    # B09: cycle-scoped universe + strategy handle on RunContext.
-    # Do not mutate module TREND_UNIVERSE; STRATEGY_RUNTIME stays as unbound fallback.
+    # B09 PR-3: cycle-scoped universe + strategy handle on RunContext.
+    # Bind-time seed may copy module defaults once; while bound, resolves never
+    # fall back to module STRATEGY_RUNTIME / TREND_UNIVERSE.
     mounted_strategy = getattr(runtime, "strategy_runtime", None) or STRATEGY_RUNTIME
+    if mounted_strategy is None:
+        raise RuntimeError("execute_cycle_missing_strategy_runtime")
     ctx = RunContext(
         trend_universe={symbol: meta.copy() for symbol, meta in TREND_UNIVERSE.items()},
         strategy_runtime=mounted_strategy,
