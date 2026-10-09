@@ -101,6 +101,13 @@ from decision_mapper import (
     map_strategy_decision_to_rotation_plan as map_decision_to_rotation_plan,
 )
 from strategy_runtime import load_strategy_runtime
+from run_context import (
+    RunContext,
+    bind_run_context,
+    reset_run_context,
+    resolve_trend_universe,
+    set_active_trend_universe,
+)
 from strategy_registry import DEFAULT_STRATEGY_PROFILE
 from trade_state_support import (
     build_default_state as ts_build_default_state,
@@ -452,7 +459,7 @@ def update_trend_pool_state(state, resolution):
 
 def build_default_state():
     return ts_build_default_state(
-        trend_universe=TREND_UNIVERSE,
+        trend_universe=resolve_trend_universe(TREND_UNIVERSE),
         last_good_payload_key=TREND_POOL_LAST_GOOD_PAYLOAD_KEY,
         action_history_key=TREND_POOL_ACTION_HISTORY_KEY,
         retired_positions_key=RETIRED_TREND_POSITIONS_KEY,
@@ -462,7 +469,7 @@ def build_default_state():
 def normalize_trade_state(state):
     return ts_normalize_trade_state(
         state,
-        trend_universe=TREND_UNIVERSE,
+        trend_universe=resolve_trend_universe(TREND_UNIVERSE),
         last_good_payload_key=TREND_POOL_LAST_GOOD_PAYLOAD_KEY,
         action_history_key=TREND_POOL_ACTION_HISTORY_KEY,
         retired_positions_key=RETIRED_TREND_POSITIONS_KEY,
@@ -472,7 +479,7 @@ def normalize_trade_state(state):
 def get_runtime_trend_universe(state):
     return ts_get_runtime_trend_universe(
         state,
-        trend_universe=TREND_UNIVERSE,
+        trend_universe=resolve_trend_universe(TREND_UNIVERSE),
         retired_positions_key=RETIRED_TREND_POSITIONS_KEY,
     )
 
@@ -481,7 +488,7 @@ def get_symbol_trade_state(state, symbol):
     return ts_get_symbol_trade_state(
         state,
         symbol,
-        trend_universe=TREND_UNIVERSE,
+        trend_universe=resolve_trend_universe(TREND_UNIVERSE),
         retired_positions_key=RETIRED_TREND_POSITIONS_KEY,
     )
 
@@ -491,7 +498,7 @@ def set_symbol_trade_state(state, symbol, symbol_state):
         state,
         symbol,
         symbol_state,
-        trend_universe=TREND_UNIVERSE,
+        trend_universe=resolve_trend_universe(TREND_UNIVERSE),
         retired_positions_key=RETIRED_TREND_POSITIONS_KEY,
     )
 
@@ -786,7 +793,7 @@ def enrich_btc_snapshot_with_cycle_indicators(btc_snapshot: dict, log_buffer: li
 def resolve_runtime_trend_indicators(runtime):
     return infra_resolve_runtime_trend_indicators(
         runtime,
-        TREND_UNIVERSE,
+        resolve_trend_universe(TREND_UNIVERSE),
         fetch_daily_indicators_fn=fetch_daily_indicators,
     )
 
@@ -855,9 +862,16 @@ def build_live_runtime(now_utc=None, *, retain_interval_receipts=False):
     return runtime
 
 
-def _set_runtime_trend_universe(resolved_trend_universe):
+def _module_set_trend_universe(resolved_trend_universe):
     global TREND_UNIVERSE
     TREND_UNIVERSE = resolved_trend_universe
+
+
+def _set_runtime_trend_universe(resolved_trend_universe):
+    set_active_trend_universe(
+        resolved_trend_universe,
+        fallback_setter=_module_set_trend_universe,
+    )
 
 
 def _ensure_runtime_client(runtime, report):
@@ -1269,7 +1283,7 @@ def _execute_trend_rotation(
         execute_trend_sells=_execute_trend_sells,
         execute_trend_buys=_execute_trend_buys,
         append_trend_symbol_status=_append_trend_symbol_status,
-        official_trend_pool_symbols=list(TREND_UNIVERSE.keys()),
+        official_trend_pool_symbols=list(resolve_trend_universe(TREND_UNIVERSE).keys()),
     )
 
 
@@ -1316,9 +1330,12 @@ def _execute_btc_dca_cycle(
 
 
 def execute_cycle(runtime):
-    global TREND_UNIVERSE
-    previous_trend_universe = {symbol: meta.copy() for symbol, meta in TREND_UNIVERSE.items()}
-
+    # B09: cycle-scoped universe on RunContext — do not mutate module TREND_UNIVERSE.
+    ctx = RunContext(
+        trend_universe={symbol: meta.copy() for symbol, meta in TREND_UNIVERSE.items()},
+    )
+    runtime.run_context = ctx
+    token = bind_run_context(ctx)
     try:
         return execute_strategy_cycle(
             runtime,
@@ -1347,7 +1364,7 @@ def execute_cycle(runtime):
             traceback_module=traceback,
         )
     finally:
-        TREND_UNIVERSE = previous_trend_universe
+        reset_run_context(token)
 
 
 def main():

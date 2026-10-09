@@ -320,6 +320,7 @@ class ExecutionRuntime:
     fuel_symbol: str = "BNBUSDT"
     fuel_asset: str = "BNB"
     side_effect_log: list[dict[str, Any]] = field(default_factory=list)
+    run_context: Any = None
 
     def __post_init__(self):
         if self.now_utc is None:
