@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -17,7 +17,7 @@ resolution-markers = [
 ]
 
 [manifest]
-overrides = [{ name = "quant-platform-kit", git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=8e8ec51884bf8abb0a7ca699fc2da39fad134f89" }]
+overrides = [{ name = "quant-platform-kit", git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=155d74a615ccdebf7223787939c2dc7151d75efd" }]
 
 [[package]]
 name = "aiohappyeyeballs"
@@ -214,7 +214,7 @@ requires-dist = [
     { name = "pandas" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8" },
     { name = "python-binance" },
-    { name = "quant-platform-kit", git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=8e8ec51884bf8abb0a7ca699fc2da39fad134f89" },
+    { name = "quant-platform-kit", git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=155d74a615ccdebf7223787939c2dc7151d75efd" },
     { name = "requests" },
     { name = "ruff", marker = "extra == 'test'", specifier = ">=0.12" },
 ]
@@ -1658,7 +1658,7 @@ wheels = [
 [[package]]
 name = "quant-platform-kit"
 version = "1.0.0"
-source = { git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=8e8ec51884bf8abb0a7ca699fc2da39fad134f89#8e8ec51884bf8abb0a7ca699fc2da39fad134f89" }
+source = { git = "https://github.com/QuantStrategyLab/QuantPlatformKit.git?rev=155d74a615ccdebf7223787939c2dc7151d75efd#155d74a615ccdebf7223787939c2dc7151d75efd" }
 
 [[package]]
 name = "regex"

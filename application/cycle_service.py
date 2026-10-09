@@ -15,6 +15,7 @@ from quant_platform_kit.strategy_lifecycle.performance_monitor import (
     try_record_platform_execution,
 )
 from application.execution_receipt_adapter import attach_execution_receipt_from_report
+from application.execution_kernel_adapter import consult_t2_unknown_new_cycle
 from application.portfolio_service import EARN_FORWARD_REASON_CODES
 from runtime_logging import RuntimeLogContext, emit_runtime_log
 from runtime_support import (
@@ -231,6 +232,8 @@ def execute_strategy_cycle(
         reconcile_pending_funding_submission(runtime)
         submission_state = state.get("order_submission", {}).get("state", "RESERVED")
         if submission_state == "SUBMISSION_UNKNOWN":
+            # N13: redundant T2 consult; local raise always wins (no behavior change).
+            consult_t2_unknown_new_cycle()
             raise ExecutionIntegrityError("order_reconciliation_uncertain")
         if submission_state == "FILLED_ACCOUNTING_PENDING":
             raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
