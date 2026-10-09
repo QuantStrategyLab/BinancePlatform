@@ -13,6 +13,7 @@ from typing import Any, Callable, Optional
 
 import requests
 from quant_platform_kit.common.runtime_reports import build_runtime_report_base
+from application.execution_kernel_adapter import consult_t3_deny_blind_retry
 from application.execution_receipt_adapter import (
     record_order_failure,
     record_order_response,
@@ -1210,6 +1211,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
         submission_status = submission_record["state"]
         if submission_status == _ORDER_SUBMISSION_UNKNOWN:
             if "method_name" in submission_record or is_earn_call:
+                # N13: redundant T3 consult; local raise always wins (no behavior change).
+                consult_t3_deny_blind_retry(transport_uncertain=True, reconciled=False)
                 raise OrderReconciliationError("order_reconciliation_uncertain") from None
             current_payload, current_identity_sha256 = _ensure_order_logical_identity(runtime, method_name, payload)
             if current_identity_sha256 != submission_record["identity_sha256"]:
@@ -1300,6 +1303,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 payload={"payload": dict(client_payload), "reason": "order_reconciliation_uncertain", "retries": 0},
                 executed=False,
             )
+            # N13: redundant T3 consult; local raise always wins (no behavior change).
+            consult_t3_deny_blind_retry(transport_uncertain=True, reconciled=False)
             raise OrderReconciliationError("order_reconciliation_uncertain") from None
         if not _is_confirmed_earn_success(method_name, response):
             record_side_effect(
@@ -1310,6 +1315,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 payload={"payload": dict(client_payload), "reason": "order_reconciliation_uncertain", "retries": 0},
                 executed=False,
             )
+            # N13: redundant T3 consult; local raise always wins (no behavior change).
+            consult_t3_deny_blind_retry(transport_uncertain=True, reconciled=False)
             raise OrderReconciliationError("order_reconciliation_uncertain") from None
         record_side_effect(
             runtime,
