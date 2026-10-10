@@ -1,7 +1,8 @@
 name: Notify Bot Identity (read-only)
 
 # Resolves the Telegram token the Binance runtime would use (main.yml deploy job:
-# environment binance-runtime, secrets.TG_TOKEN) to its public bot id/username via
+# secrets.TG_TOKEN, a repo-level secret; binance-runtime only holds other secrets
+# and is restricted to runtime-production, so this job does not bind it) to its public bot id/username via
 # getMe, and compares it with the unified QSL资产管家 bot (8334367951).
 # Prints only bot id / username; never prints token or chat id; sends no message;
 # does not re-enable main.yml or change any secret.
@@ -16,7 +17,6 @@ jobs:
     name: TG_TOKEN bot identity (read-only)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    environment: binance-runtime
     env:
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
