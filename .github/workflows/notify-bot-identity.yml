@@ -1,0 +1,50 @@
+name: Notify Bot Identity (read-only)
+
+# Resolves the Telegram token the Binance runtime would use (main.yml deploy job:
+# environment binance-runtime, secrets.TG_TOKEN) to its public bot id/username via
+# getMe, and compares it with the unified QSL资产管家 bot (8334367951).
+# Prints only bot id / username; never prints token or chat id; sends no message;
+# does not re-enable main.yml or change any secret.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  identity:
+    name: TG_TOKEN bot identity (read-only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: binance-runtime
+    env:
+      TG_TOKEN: ${{ secrets.TG_TOKEN }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      EXPECTED_BOT_ID: "8334367951"
+    steps:
+      - name: Resolve bot identity
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          expected = int(os.environ["EXPECTED_BOT_ID"])
+          out = []
+          for key in ("TG_TOKEN", "TELEGRAM_TOKEN"):
+              token = (os.environ.get(key) or "").strip()
+              if not token:
+                  out.append({"env": key, "status": "absent"})
+                  continue
+              try:
+                  with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/getMe", timeout=15) as r:
+                      body = json.loads(r.read().decode("utf-8"))
+                  res = body.get("result") or {}
+                  out.append({"env": key, "status": "ok" if body.get("ok") else "getme_not_ok",
+                              "bot_id": res.get("id"), "bot_username": res.get("username"),
+                              "same_bot_as_unified": res.get("id") == expected})
+              except Exception as exc:  # noqa: BLE001
+                  out.append({"env": key, "status": f"getme_failed:{type(exc).__name__}"})
+          text = json.dumps({"runtime_token_env": "TG_TOKEN", "expected_bot_id": expected, "tokens": out},
+                            ensure_ascii=False, indent=2)
+          print(text)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as fh:
+              fh.write("## Binance notify bot identity\n\n```json\n" + text + "\n```\n")
+          PY
