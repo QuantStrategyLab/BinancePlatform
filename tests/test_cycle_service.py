@@ -13,6 +13,7 @@ from application.cycle_service import (
     _write_lifecycle_export,
     execute_strategy_cycle,
     run_live_cycle,
+    try_record_platform_execution,
     write_execution_report,
 )
 from application.execution_service import execute_trend_buys
@@ -309,6 +310,56 @@ class CycleServiceTests(unittest.TestCase):
         self.assertIn("state_write", events)
         monitor.beat.assert_called_once_with(status="ok", error="")
 
+    def test_public_safe_recorder_preserves_private_call_and_return_contract(self):
+        payload = {"platform": "binance", "total_equity_usdt": 918273.625}
+        decision = object()
+        with patch("application.cycle_service.PerformanceMonitor") as monitor:
+            result = try_record_platform_execution(
+                "crypto_live_pool_rotation", payload, domain="crypto",
+                decision=decision, stream_id="binance",
+            )
+        self.assertIsNone(result)
+        monitor.assert_called_once_with()
+        monitor.return_value.record_execution.assert_called_once_with(
+            "crypto_live_pool_rotation", payload, domain="crypto",
+            decision=decision, stream_id="binance",
+        )
+        self.assertIs(monitor.return_value.record_execution.call_args.args[1], payload)
+        with patch("application.cycle_service.PerformanceMonitor") as monitor:
+            self.assertIsNone(try_record_platform_execution("crypto_live_pool_rotation", None))
+            monitor.assert_not_called()
+
+    def test_public_safe_recorder_replaces_constructor_and_write_exception_details(self):
+        sentinel = "SYNTHETIC_PRIVATE_STORE_EXCEPTION"
+        for failure_stage in ("constructor", "write"):
+            with self.subTest(failure_stage=failure_stage):
+                with (
+                    patch("application.cycle_service.PerformanceMonitor") as monitor,
+                    patch("application.cycle_service._performance_monitor_logger.warning") as warning,
+                ):
+                    if failure_stage == "constructor":
+                        monitor.side_effect = RuntimeError(sentinel)
+                    else:
+                        monitor.return_value.record_execution.side_effect = RuntimeError(sentinel)
+                    self.assertIsNone(try_record_platform_execution(
+                        "crypto_live_pool_rotation", {"platform": "binance"},
+                    ))
+                warning.assert_called_once_with("platform_execution_record_failed")
+                self.assertNotIn(sentinel, str(warning.call_args))
+
+    def test_public_safe_recorder_failure_does_not_change_real_cycle_result(self):
+        def rebase(*args):
+            args[2]["status"] = "ok"
+
+        with (
+            patch("application.cycle_service.PerformanceMonitor", side_effect=RuntimeError("SYNTHETIC_PRIVATE_STORE_EXCEPTION")),
+            patch("application.cycle_service._performance_monitor_logger.warning") as warning,
+        ):
+            report, events = self._run_funds_cycle(True, rebase_fn=rebase)
+        self.assertEqual(report["status"], "ok")
+        self.assertIn("state_write", events)
+        warning.assert_called_once_with("platform_execution_record_failed")
+
     def test_platform_performance_record_marks_external_cash_flow_incomparable(self):
         with patch("application.cycle_service.try_record_platform_execution") as record:
             self._run_funds_cycle(True)
@@ -359,11 +410,87 @@ class CycleServiceTests(unittest.TestCase):
             self.assertEqual(payload["domain"], "crypto")
             self.assertEqual(payload["record_kind"], "execution")
             self.assertEqual(payload["lifecycle_stream_id"], "binance")
-            self.assertIsNone(payload["execution_result"]["external_cash_flow_interval"])
+            self.assertNotIn("external_cash_flow_interval", payload["execution_result"])
             self.assertEqual(payload["execution_result"]["error_code"], "cycle_failed")
             self.assertNotIn("provider-secret-must-not-export", json.dumps(payload))
             self.assertNotIn("orders", json.dumps(payload))
             self.assertEqual(os.stat(export_path).st_mode & 0o777, 0o600)
+
+    def test_public_lifecycle_export_omits_financial_values_and_nested_details(self):
+        sentinel = "SYNTHETIC_PRIVATE_VALUE_DO_NOT_PUBLISH"
+        execution_result = {
+            "platform": "binance",
+            "status": "ok",
+            "total_equity_usdt": 918273.625,
+            "trend_equity_usdt": 817263.125,
+            "external_cash_flow": sentinel,
+            "external_cash_flow_interval": {
+                "end_equity_usdt": sentinel,
+                "net_external_cash_flow": sentinel,
+                "account_scope_sha256": sentinel,
+                "nested": {"unknown": sentinel},
+            },
+            "degraded_mode_level": {"details": sentinel},
+            "error": sentinel,
+            "unknown": sentinel,
+        }
+        original = copy.deepcopy(execution_result)
+        with tempfile.TemporaryDirectory() as directory:
+            export_path = os.path.join(directory, "lifecycle-run.json")
+            with patch.dict(os.environ, {"BINANCE_LIFECYCLE_EXPORT_PATH": export_path}):
+                _write_lifecycle_export("crypto_live_pool_rotation", execution_result)
+            with open(export_path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        self.assertEqual(payload["execution_result"], {
+            "platform": "binance", "status": "ok", "external_cash_flow": None,
+        })
+        self.assertNotIn(sentinel, json.dumps(payload))
+        self.assertNotIn("918273.625", json.dumps(payload))
+        self.assertNotIn("817263.125", json.dumps(payload))
+        self.assertEqual(execution_result, original)
+
+    def test_public_lifecycle_export_does_not_copy_unexpected_status_payloads(self):
+        sentinel = "SYNTHETIC_PRIVATE_STATUS_DO_NOT_PUBLISH"
+        for status in (sentinel, {"detail": sentinel}, [sentinel], None):
+            with self.subTest(status_type=type(status).__name__):
+                with tempfile.TemporaryDirectory() as directory:
+                    export_path = os.path.join(directory, "lifecycle-run.json")
+                    with patch.dict(os.environ, {"BINANCE_LIFECYCLE_EXPORT_PATH": export_path}):
+                        _write_lifecycle_export(
+                            "crypto_live_pool_rotation",
+                            {"platform": sentinel, "status": status},
+                        )
+                    with open(export_path, encoding="utf-8") as handle:
+                        payload = json.load(handle)
+                self.assertEqual(payload["execution_result"], {
+                    "platform": "binance", "status": "unknown", "error_code": "cycle_failed",
+                    "external_cash_flow": None,
+                })
+                self.assertNotIn(sentinel, json.dumps(payload))
+
+    def test_public_lifecycle_is_unavailable_to_pinned_return_consumer(self):
+        from quant_platform_kit.strategy_lifecycle.live_equity import (
+            extract_equity_value,
+            extract_external_cash_flow,
+            live_run_records_to_return_series_result,
+        )
+
+        with tempfile.TemporaryDirectory() as directory:
+            export_path = os.path.join(directory, "lifecycle-run.json")
+            with patch.dict(os.environ, {"BINANCE_LIFECYCLE_EXPORT_PATH": export_path}):
+                _write_lifecycle_export("crypto_live_pool_rotation", {
+                    "platform": "binance", "status": "ok",
+                    "total_equity_usdt": 918273.625,
+                    "external_cash_flow_interval": {"end_equity_usdt": "918273.625"},
+                })
+            with open(export_path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+        self.assertIsNone(extract_equity_value(payload))
+        self.assertIsNone(extract_external_cash_flow(payload))
+        records = [dict(payload, recorded_at=f"2026-10-0{day}T12:00:00Z") for day in (5, 6)]
+        result = live_run_records_to_return_series_result(records, domain="crypto")
+        self.assertTrue(result.series.empty)
+        self.assertEqual(result.status, "insufficient_observations")
 
     def test_lifecycle_export_without_authorized_path_does_not_write(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -749,7 +876,7 @@ class CycleServiceTests(unittest.TestCase):
 
         self.assertEqual(observed["built"], 1)
         self.assertEqual(len(observed["printed"]), 3)
-        self.assertEqual(observed["printed"][1], "line-1\nline-2")
+        self.assertEqual(observed["printed"][1], "Strategy report details retained in the execution report.")
         self.assertEqual(report["status"], "ok")
         self.assertEqual(payload["log_lines"], ["line-1", "line-2"])
 
@@ -802,6 +929,90 @@ class CycleServiceTests(unittest.TestCase):
         self.assertEqual(start_log["run_id"], "run-001")
         self.assertEqual(end_log["event"], "strategy_cycle_completed")
         self.assertEqual(end_log["status"], "ok")
+
+    def test_public_cycle_stdout_omits_financial_data_but_preserves_private_report(self):
+        sentinel = "SYNTHETIC_PRIVATE_REPORT_DO_NOT_PUBLISH"
+        report = {
+            "status": "ok",
+            "total_equity_usdt": 918273.625,
+            "trend_equity_usdt": 817263.125,
+            "external_cash_flow_interval": {"end_equity_usdt": sentinel},
+            "log_lines": [sentinel],
+            "degraded_mode_level": {"detail": sentinel},
+            "circuit_breaker_triggered": {"detail": sentinel},
+            "error_summary": {"errors": []},
+        }
+        original = copy.deepcopy(report)
+        printed = []
+        archived = []
+        with tempfile.TemporaryDirectory() as directory:
+            with patch(
+                "application.cycle_service.persist_runtime_report",
+                side_effect=lambda value, **kwargs: archived.append(copy.deepcopy(value))
+                or SimpleNamespace(local_path=kwargs["output_path"], cloud_uri=sentinel),
+            ):
+                returned, output_path = run_live_cycle(
+                    runtime_builder=lambda: SimpleNamespace(run_id="public-test", dry_run=False),
+                    execute_cycle=lambda _runtime: report,
+                    output_printer=printed.append,
+                    report_writer=lambda value: write_execution_report(
+                        value, reports_dir=directory, filename=f"{sentinel}.json",
+                    ),
+                )
+            with open(output_path, encoding="utf-8") as handle:
+                persisted = json.load(handle)
+        public_output = "\n".join(printed)
+        for private_value in (sentinel, "918273.625", "817263.125"):
+            self.assertNotIn(private_value, public_output)
+        completion = json.loads(printed[-1])
+        self.assertEqual(completion["event"], "strategy_cycle_completed")
+        self.assertEqual(completion["status"], "ok")
+        for field in ("total_equity_usdt", "trend_equity_usdt", "degraded_mode_level",
+                      "report_path", "report_cloud_uri", "circuit_breaker_triggered"):
+            self.assertNotIn(field, completion)
+        self.assertEqual(returned, original)
+        self.assertEqual(persisted, original)
+        self.assertEqual(archived, [original])
+
+    def test_public_stdout_with_real_cycle_keeps_nested_financial_evidence_private(self):
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        sentinel = "SYNTHETIC_CYCLE_PRIVATE_DO_NOT_PUBLISH"
+        private_interval = {"end_equity_usdt": sentinel, "account_scope_sha256": sentinel}
+        observed = {}
+
+        def rebase(*args):
+            args[2]["status"] = "ok"
+            args[2]["external_cash_flow_interval"] = private_interval
+            args[6].append(sentinel)
+
+        def run_real_cycle(_runtime):
+            report, events = self._run_funds_cycle(True, rebase_fn=rebase)
+            observed["events"] = events
+            return report
+
+        output = StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch("application.cycle_service.try_record_platform_execution") as recorder,
+                patch("application.cycle_service.persist_runtime_report",
+                      return_value=SimpleNamespace(local_path=None, cloud_uri=None)),
+                redirect_stdout(output), redirect_stderr(output),
+            ):
+                report, output_path = run_live_cycle(
+                    runtime_builder=lambda: SimpleNamespace(dry_run=False),
+                    execute_cycle=run_real_cycle,
+                    report_writer=lambda value: write_execution_report(value, reports_dir=directory),
+                )
+            with open(output_path, encoding="utf-8") as handle:
+                persisted = json.load(handle)
+        self.assertNotIn(sentinel, output.getvalue())
+        self.assertIn("state_write", observed["events"])
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(persisted["external_cash_flow_interval"], private_interval)
+        self.assertIn(sentinel, persisted["log_lines"])
+        self.assertEqual(recorder.call_args.args[1]["external_cash_flow_interval"], private_interval)
 
     def test_run_live_cycle_uses_shared_runtime_report_archive(self):
         observed = {}

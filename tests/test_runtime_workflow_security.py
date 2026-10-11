@@ -19,6 +19,109 @@ def _job_block(workflow: str, job: str, next_job: str | None = None) -> str:
     return workflow[start:end]
 
 
+def test_runtime_does_not_automatically_run_optional_account_facts() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    jobs = workflow.split("\njobs:\n", 1)[1]
+    assert re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.MULTILINE) == [
+        "deploy",
+    ]
+    assert "account-facts-readonly:" not in jobs
+    assert "/.github/workflows/binance-account-facts.yml@" not in jobs
+
+
+def test_runtime_never_uploads_full_execution_report_or_publishes_logs_branch() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    assert "binance-execution-report-" not in workflow
+    assert "publish-execution-log:" not in workflow
+    assert 'LOGS_BRANCH="logs"' not in workflow
+    assert "contents: write" not in workflow
+    assert "EXECUTION_REPORT_GCS_URI: ${{ vars.EXECUTION_REPORT_GCS_URI }}" in workflow
+
+
+def test_manual_native_reader_remains_fail_closed_without_report_artifact() -> None:
+    workflow = WORKFLOW.with_name("binance-account-facts.yml").read_text(encoding="utf-8")
+    download = workflow.split(
+        "      - name: Download only the exact successful Runtime report artifact", 1
+    )[1].split("      - name: Read the bound Spot and Flexible Earn account quantities", 1)[0]
+    assert "actions/download-artifact@" in download
+    assert "binance-execution-report-${{ steps.preflight.outputs.source_run_id }}" in download
+    assert "continue-on-error" not in download
+    assert "if: ${{ inputs.source_mode != 'direct_read' }}" in download
+
+    legacy_read = workflow.split(
+        "      - name: Read the bound Spot and Flexible Earn account quantities", 1
+    )[1].split("      - name: Read directly from the protected account binding", 1)[0]
+    assert "if: ${{ inputs.source_mode != 'direct_read' }}" in legacy_read
+    assert "--report \"$FACTS_DIR/source/execution_report.json\"" in legacy_read
+
+    direct_read = workflow.split(
+        "      - name: Read directly from the protected account binding", 1
+    )[1].split("      - name: Recheck Runtime source before publishing", 1)[0]
+    assert "actions/download-artifact@" not in direct_read
+    assert "if: ${{ github.event_name == 'workflow_dispatch' && inputs.source_mode == 'direct_read' }}" in direct_read
+    assert "--direct-read" in direct_read
+
+    assert workflow.index("Verify trusted reader checkout and source mode") < (
+        workflow.index("Download only the exact successful Runtime report artifact")
+    ) < workflow.index("Read the bound Spot and Flexible Earn account quantities")
+
+
+def test_runtime_keeps_workflow_lock_after_optional_reader_detachment() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    before_jobs = workflow.split("\njobs:\n", 1)[0]
+    assert workflow.startswith("name: Runtime\n")
+    assert (
+        "\nconcurrency:\n"
+        "  group: ${{ github.workflow }}-${{ github.ref_name }}\n"
+        "  cancel-in-progress: false\n"
+    ) in before_jobs
+    assert "\n    concurrency:\n" not in workflow
+
+
+def test_manual_native_facts_entry_remains_opt_in_and_source_bound() -> None:
+    workflow = WORKFLOW.with_name("binance-account-facts.yml").read_text(encoding="utf-8")
+    dispatch = workflow.split("  workflow_dispatch:\n", 1)[1].split("\npermissions:\n", 1)[0]
+    enabled = dispatch.split("      enabled:\n", 1)[1].split("      source_run_id:\n", 1)[0]
+    source_mode = dispatch.split("      source_mode:\n", 1)[1]
+    assert "        type: boolean\n" in enabled
+    assert "        default: false\n" in enabled
+    assert "      source_run_id:\n" in dispatch
+    assert "        type: choice\n" in source_mode
+    assert "        options: [direct_read, legacy_terminal]\n" in source_mode
+    assert "  schedule:" not in workflow
+    assert "vars.BINANCE_ACCOUNT_FACTS_ENABLED == 'true'" in workflow
+    assert "github.ref == 'refs/heads/runtime-production'" in workflow
+    assert "github.workflow == 'Binance Account Facts' && github.event_name == 'workflow_dispatch'" in workflow
+    assert "inputs.enabled == true && inputs.source_mode == 'legacy_terminal'" in workflow
+    job = workflow.split("  read-and-publish:\n", 1)[1].split("    runs-on:", 1)[0]
+    assert "vars.BINANCE_ACCOUNT_FACTS_ENABLED == 'true'" in job
+    assert "inputs.enabled == true && inputs.source_mode == 'direct_read'" in job
+    assert "inputs.enabled == true && inputs.source_mode == 'legacy_terminal'" in job
+    assert "inputs.enabled == true && inputs.source_mode == 'same_parent'" in job
+    assert "github.ref == 'refs/heads/runtime-production'" in job
+    assert "    environment: binance-runtime\n" in workflow
+    assert "  group: binance-account-facts-readonly\n  cancel-in-progress: false\n" in workflow
+    assert "          ref: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION }}\n" in workflow
+    assert "scripts/read_binance_account_facts.py --preflight" in workflow
+    assert "scripts/read_binance_account_facts.py --verify-current-source" in workflow
+    assert "SOURCE_RUN_ID: ${{ steps.preflight.outputs.source_run_id }}" in workflow
+    assert "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN: ${{ secrets.BINANCE_ACCOUNT_FACTS_SYNC_TOKEN }}" in workflow
+    direct_read = workflow.split(
+        "      - name: Read directly from the protected account binding", 1
+    )[1].split("      - name: Recheck Runtime source before publishing", 1)[0]
+    for trade_or_runtime_gate in (
+        "RUNTIME_TARGET_ENABLED", "BINANCE_DRY_RUN", "BINANCE_RISK_AUTHORITY_JSON",
+        "BINANCE_RUNTIME_RELEASE_SHA", "BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON",
+    ):
+        assert trade_or_runtime_gate not in direct_read
+    assert "RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}" in direct_read
+    assert workflow.index("Verify trusted reader checkout and source mode") < (
+        workflow.index("Read the bound Spot and Flexible Earn account quantities")
+    ) < workflow.index("Recheck Runtime source before publishing") < (
+        workflow.index("Publish with the isolated account-facts token")
+    )
+
+
 def test_runtime_workflow_shared_config_shell_contract() -> None:
     script = (
         Path(__file__).resolve().parents[1]
@@ -41,7 +144,7 @@ def test_runtime_remote_actions_are_pinned_to_full_commit_shas() -> None:
 
 def test_runtime_release_pin_is_required_before_execution_checkout() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
 
     assert (
         "BINANCE_RUNTIME_RELEASE_SHA: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA }}"
@@ -64,7 +167,7 @@ def test_runtime_release_pin_is_required_before_execution_checkout() -> None:
 
 def test_runtime_workflow_revision_pin_is_required_before_release_selection() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
 
     assert "Verify approved workflow revision" in broker_job
     assert (
@@ -85,7 +188,7 @@ def test_runtime_workflow_revision_pin_is_required_before_release_selection() ->
 
 def test_runtime_workflow_keeps_trigger_sha_distinct_from_app_checkout() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
 
     assert "ref: ${{ github.sha }}" in broker_job
     assert "ref: ${{ steps.runtime-release.outputs.sha }}" in broker_job
@@ -103,7 +206,7 @@ def test_runtime_workflow_keeps_trigger_sha_distinct_from_app_checkout() -> None
 
 def test_runtime_dependency_bootstrap_does_not_upgrade_pip_or_uv() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
     deps = broker_job.split(
         "      - name: 3. Prepare or update dependency environment", 1
     )[1].split("      - name: Download approved accounting migration preview", 1)[0]
@@ -158,23 +261,17 @@ def test_candidate_release_sha_guard_rejects_write_modes() -> None:
 
 def test_broker_job_cannot_write_repository_contents() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
-    log_job = _job_block(workflow, "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
 
     assert "BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}" in broker_job
-    assert "contents: write" not in broker_job
+    assert "contents: write" not in workflow
     assert "contents: read" in broker_job
-    assert "BINANCE_API_KEY" not in log_job
-    assert "BINANCE_API_SECRET" not in log_job
-    assert "contents: write" in log_job
-    assert "actions/download-artifact@" in log_job
+    assert "publish-execution-log:" not in workflow
 
 
 def test_reconciliation_run_does_not_try_to_publish_a_regular_execution_report() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    log_job = _job_block(workflow, "publish-execution-log")
-
-    assert "github.event.inputs.reconcile_only != 'true'" in log_job
+    assert "binance-execution-report-" not in workflow
 
 
 def test_reconciliation_artifact_retention_matches_repository_policy() -> None:
@@ -195,7 +292,7 @@ def test_reconciliation_failure_still_uploads_the_redacted_candidate() -> None:
 
 def test_reconciliation_only_can_collect_evidence_while_normal_runtime_is_disabled() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
 
     reconciliation_gate = "env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true'"
     assert broker_job.count(reconciliation_gate) >= 4
@@ -205,7 +302,7 @@ def test_reconciliation_only_can_collect_evidence_while_normal_runtime_is_disabl
 
 def test_strategy_step_passes_and_revalidates_runtime_controls_before_main() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
     strategy = broker_job.split("      - name: 4. Run trading strategy", 1)[1].split(
         "      - name: Remove protected LIVE risk authority source", 1
     )[0]
@@ -366,7 +463,7 @@ def test_lifecycle_workflow_is_read_only_and_uses_pinned_actions() -> None:
 
 def test_reconciliation_defaults_to_zero_persistence_and_no_notification() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
 
     assert "reconcile_persist_candidate:" in workflow
     assert 'default: false' in workflow[workflow.index("reconcile_persist_candidate:") : workflow.index("permissions:")]
@@ -377,7 +474,7 @@ def test_reconciliation_defaults_to_zero_persistence_and_no_notification() -> No
 
 def test_live_authority_secret_is_materialized_and_removed_in_broker_job() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
     materialize = broker_job.split("      - name: Materialize protected LIVE risk authority source", 1)[1].split(
         "      - name:", 1
     )[0]
@@ -393,7 +490,7 @@ def test_live_authority_secret_is_materialized_and_removed_in_broker_job() -> No
     assert "if: ${{ always() }}" in cleanup
     assert ': > "$BINANCE_RISK_AUTHORITY_TEMP_FILE"' in cleanup
     assert 'rm -- "$BINANCE_RISK_AUTHORITY_TEMP_FILE"' in cleanup
-    assert "BINANCE_RISK_AUTHORITY_JSON" not in _job_block(workflow, "publish-execution-log")
+    assert "publish-execution-log:" not in workflow
 
 
 def test_live_authority_materialization_roundtrip_uses_synthetic_secret(tmp_path) -> None:
@@ -402,7 +499,7 @@ def test_live_authority_materialization_roundtrip_uses_synthetic_secret(tmp_path
     import textwrap
 
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
     materialize = textwrap.dedent(
         broker_job.split("      - name: Materialize protected LIVE risk authority source", 1)[1]
         .split("      - name:", 1)[0]
@@ -434,7 +531,7 @@ def test_live_authority_materialization_roundtrip_uses_synthetic_secret(tmp_path
 
 def test_live_lifecycle_recorder_export_is_scoped_to_normal_strategy_runs() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
 
     assert (
         "BINANCE_LIFECYCLE_EXPORT_PATH: ${{ runner.temp }}/binance-lifecycle-${{ github.run_id }}-"
@@ -450,12 +547,12 @@ def test_live_lifecycle_recorder_export_is_scoped_to_normal_strategy_runs() -> N
     assert "if-no-files-found: warn" in export_step
     assert "retention-days: 7" in export_step
     assert "continue-on-error: true" in export_step
-    assert "BINANCE_API_KEY" not in _job_block(workflow, "publish-execution-log")
+    assert "publish-execution-log:" not in workflow
 
 
 def test_disabled_host_observation_uses_actual_control_read_and_existing_source() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
     control = broker_job.split("id: runtime-target-control", 1)[1].split("      - name:", 1)[0]
     assert 'echo "observed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"' in control
     assert 'if [ "${RUNTIME_TARGET_ENABLED,,}" = "false" ]; then' in control
@@ -477,7 +574,7 @@ def test_disabled_host_observation_uses_actual_control_read_and_existing_source(
 
 def test_disabled_host_does_not_require_cloud_identity_or_runtime_dependencies() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
     identity = broker_job.split("      - name: 0. Validate deployment identity configuration", 1)[1].split("      - name:", 1)[0]
     assert "if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}" in identity
     assert broker_job.index("Publish disabled host observation") < broker_job.index("Authenticate to Google Cloud")
@@ -678,7 +775,7 @@ def test_accounting_migration_guard_is_disabled_main_only(
 
 def test_accounting_migration_uses_fixed_artifact_and_never_falls_through_to_strategy():
     workflow = WORKFLOW.read_text()
-    broker_job = _job_block(workflow, "deploy", "publish-execution-log")
+    broker_job = _job_block(workflow, "deploy")
     download = broker_job.split(
         "      - name: Download approved accounting migration preview", 1
     )[1].split("      - name:", 1)[0]
