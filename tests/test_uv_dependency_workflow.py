@@ -72,6 +72,18 @@ class UvDependencyWorkflowTests(unittest.TestCase):
         self.assertNotIn("requirements-lock.txt", ci)
         self.assertNotIn("requirements.txt", ci)
 
+    def test_exact_pin_job_is_separate_from_candidate_overrides(self) -> None:
+        ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+        candidate, exact = ci.split("\n  exact-pin:", 1)
+        self.assertIn("uv pip install --no-deps -e external/QuantPlatformKit", candidate)
+        self.assertIn("uv sync --frozen --extra test", exact)
+        self.assertIn('BINANCE_EXACT_PIN_TESTS: "1"', exact)
+        self.assertIn("tests/test_exact_pin_install.py tests/test_strategy_runtime.py", exact)
+        self.assertNotIn("uv pip install", exact)
+        self.assertNotIn("external/", exact)
+        self.assertNotIn("GITHUB_HEAD_REF", exact)
+        self.assertNotIn("secrets.", exact)
+
     def test_uv_outside_project_env_remains_callable_after_sync(self) -> None:
         """Regression for run 35540307399: uv used for sync must stay callable after it."""
         with tempfile.TemporaryDirectory() as tmp:
