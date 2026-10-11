@@ -121,3 +121,29 @@ jobs:
         # discovery to this repository: editable dependencies keep their own
         # test suites and may expose same-named helper modules.
         run: PYTHONPATH=. uv run --no-sync python -m pytest -q tests
+
+  exact-pin:
+    name: Exact pinned dependency contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BINANCE_EXACT_PIN_TESTS: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install frozen dependencies only
+        run: |
+          python -m pip install --upgrade pip uv
+          uv sync --frozen --extra test
+
+      - name: Verify installed pins and real catalog risk gates
+        # No sibling checkouts, editable overrides, credentials, or broker calls.
+        run: >-
+          PYTHONPATH=. uv run --no-sync python -m pytest -q
+          tests/test_exact_pin_install.py tests/test_strategy_runtime.py
