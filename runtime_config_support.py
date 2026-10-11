@@ -30,6 +30,13 @@ def get_env_int(name: str, default: int) -> int:
         return int(default)
 
 
+def _resolve_btc_status_report_interval_hours() -> int:
+    configured_hours = get_env_int("BTC_STATUS_REPORT_INTERVAL_HOURS", 24)
+    if configured_hours == 0:
+        return 0
+    return max(1, min(24, configured_hours))
+
+
 def get_env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -86,7 +93,7 @@ def load_cycle_execution_settings() -> CycleExecutionSettings:
         metadata=strategy_metadata,
     )
     return CycleExecutionSettings(
-        btc_status_report_interval_hours=max(1, min(24, get_env_int("BTC_STATUS_REPORT_INTERVAL_HOURS", 24))),
+        btc_status_report_interval_hours=_resolve_btc_status_report_interval_hours(),
         allow_new_trend_entries_on_degraded=get_env_bool(
             "STRATEGY_ARTIFACT_ALLOW_NEW_ENTRIES_ON_DEGRADED",
             False,

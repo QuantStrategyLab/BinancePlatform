@@ -1,7 +1,12 @@
 # BinancePlatform
 
+BinancePlatform 是 QuantStrategyLab 的 Binance 加密货币执行 runtime：它通过面向 Binance 的 workflow 和 self-hosted 编排来运行已启用的加密货币策略，负责券商/API 连接、dry-run/live 控制和部署配置。它只是执行层，不是研究仓库——策略逻辑来自 `CryptoStrategies`，如果 profile 依赖 live-pool，相关验证和产物来自 `CryptoLivePoolPipelines`。在整个 QuantStrategyLab 多仓库系统里，它处于 runtime-platform 层，消费上游策略和 pipeline 产物，而不自行决定策略逻辑。它主要面向负责运维或审查该平台部署与运行行为的工程师，而不是寻找现成策略或投资信号的交易者。
 
-## QSL 架构角色
+[English README](README.md)
+
+> 投资有风险。本项目不构成投资建议，仅用于学习、研究和工程审阅。
+
+## 架构角色
 
 - **层级**：`执行平台`。
 - **职责**：Binance 加密执行运行时。
@@ -9,22 +14,18 @@
 - **消费对象**：CryptoStrategies、CryptoLivePoolPipelines artifacts、QuantPlatformKit、QuantRuntimeSettings。
 - **禁止事项**：承载策略研究逻辑或发布 live-pool 成员。
 
-[English README](README.md)
-
-> 投资有风险。本项目不构成投资建议，仅用于学习、研究和工程审阅。
-
-## 这个仓库是什么
-
-BinancePlatform 是 QuantStrategyLab 的Binance 加密货币执行平台。通过面向 Binance 的 workflow 和 self-hosted 编排执行 runtime-enabled 加密货币策略。
-
-它属于执行层，不是策略研究仓库。策略逻辑来自 `CryptoStrategies`；如果 profile 依赖 live-pool，验证和产物来自 `CryptoLivePoolPipelines`。
-
 ## 运行边界
 
 - 只加载策略包暴露的 runtime-enabled profile。
 - 负责券商/API 连接、dry-run 检查、通知和部署配置。
 - 凭据必须放在 GitHub Secrets、云密钥系统或券商专用密钥系统中，不能提交到 Git。
 - 任何 live 下单路径启用前，都应先从 dry-run 或 paper mode 开始。
+
+### Binance 账户事实只读取数
+
+`Refresh Binance Account Facts` workflow 可每天 UTC 06:17 触发一次现有的 `Binance Account Facts` workflow。触发器只接受本仓库 `main` 分支，并要求仓库变量 `BINANCE_ACCOUNT_FACTS_REFRESH_ENABLED` 的值严格为 `true`；变量未设置时保持关闭。dispatcher 只用短时 GitHub token 请求固定的 `runtime-production` 与 `direct_read` 输入，不接收券商凭据、不启用 Runtime，也不触发交易 workflow。目标 workflow 仍独立检查 `BINANCE_ACCOUNT_FACTS_ENABLED`，并使用受保护的 `binance-runtime` environment。
+
+QSL 会在账户事实报告超过 36 小时后将其视为过期。每日刷新用于保持只读余额及时；目标任务失败或被跳过不会让旧数据变新。默认配置保持关闭；生产启用由专用仓库开关控制，并需要明确授权。
 
 ## 普通 profile 与 snapshot-backed profile
 

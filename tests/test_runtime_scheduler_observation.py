@@ -134,6 +134,22 @@ class RuntimeSchedulerObservationTests(unittest.TestCase):
                     )
                 self.assertEqual(state, "unknown")
 
+    def test_unavailable_daemon_probe_is_unknown(self):
+        exact = "0 * * * * /home/ubuntu/binance-quant/ops/dispatch-runtime.sh\n"
+        run = self.command_runner(
+            crontab=(0, exact, ""),
+            daemon=subprocess.TimeoutExpired(["systemctl", "is-active", "cron"], 2),
+        )
+        with (
+            patch("runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
+            patch("runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
+            patch("runtime_scheduler_observation.os.access", return_value=True),
+        ):
+            self.assertEqual(
+                observe_runtime_scheduler_state(environ=self.expected_environment, run_command=run),
+                "unknown",
+            )
+
     def test_unreviewed_host_context_does_not_run_commands(self):
         contexts = []
         for field in self.expected_environment:

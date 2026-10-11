@@ -31,7 +31,7 @@ def _observed_report():
     return {
         **_report(),
         "started_at": "2026-08-30T10:00:00.123456+08:00",
-        "standard_execution_permitted": False,
+        "standard_execution_permitted": True,
         "dry_run": True,
         "scheduler_state": "enabled",
         "runtime_target": {
@@ -92,8 +92,8 @@ class ExecutionReportHeartbeatTests(unittest.TestCase):
                 heartbeat,
                 "_read_report",
                 side_effect=[
-                    _report(execution_blocked_reason="state_owner_busy"),
-                    _report(),
+                {**_observed_report(), "execution_blocked_reason": "state_owner_busy"},
+                _report(),
                 ],
             ),
         ):
@@ -101,6 +101,8 @@ class ExecutionReportHeartbeatTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "alert")
         self.assertEqual(result["reason"], "execution_blocked:state_owner_busy")
+        self.assertEqual(result["deployment"]["runtime_enabled"], True)
+        self.assertEqual(result["deployment"]["observed_at"], "2026-08-30T02:00:00Z")
 
     def test_non_operational_execution_blockers_remain_accepted(self) -> None:
         for status, blocked_reason in (
@@ -143,7 +145,7 @@ class ExecutionReportHeartbeatTests(unittest.TestCase):
             result = heartbeat.assess_execution_report_heartbeat(now)
 
         self.assertEqual(result["deployment"], {
-            "runtime_enabled": False,
+            "runtime_enabled": True,
             "scheduler_state": "enabled",
             "strategy_profile": "crypto_live_pool_rotation",
             "execution_mode": "dry_run",
@@ -185,12 +187,42 @@ class ExecutionReportHeartbeatTests(unittest.TestCase):
     def test_permission_is_strict_boolean_and_mode_does_not_use_environment(self) -> None:
         now = dt.datetime(2026, 8, 30, 3, tzinfo=dt.timezone.utc)
         os.environ["BINANCE_DRY_RUN"] = "false"
-        for permission in (None, "true", 1):
+        for permission in (False, None, "true", 1):
             with self.subTest(permission=permission):
                 report = {**_observed_report(), "standard_execution_permitted": permission}
                 observed = heartbeat._deployment_observation(report, now=now)
                 self.assertIsNone(observed["runtime_enabled"])
                 self.assertEqual(observed["execution_mode"], "dry_run")
+
+    def test_deployment_observation_requires_recent_exact_identity(self) -> None:
+        now = dt.datetime(2026, 8, 30, 3, tzinfo=dt.timezone.utc)
+        since = dt.datetime(2026, 8, 30, 0, 30, tzinfo=dt.timezone.utc)
+        for mutate in (
+            lambda report: report.update(platform="schwab"),
+            lambda report: report.update(service_name="other-service"),
+            lambda report: report.update(strategy_profile="other-profile"),
+            lambda report: report.update(started_at="2026-08-29T23:00:00Z"),
+            lambda report: report.update(started_at="2026-08-30T04:00:00Z"),
+        ):
+            with self.subTest(mutate=mutate):
+                report = _observed_report()
+                mutate(report)
+                self.assertIsNone(
+                    heartbeat._deployment_observation(report, now=now, min_observed_at=since)
+                )
+
+    def test_attention_report_can_carry_deployment_without_becoming_healthy(self) -> None:
+        now = dt.datetime(2026, 8, 30, 3, tzinfo=dt.timezone.utc)
+        payload = {**_observed_report(), "status": "error", "errors": ["synthetic"]}
+        with (
+            patch.object(heartbeat, "_list_reports", return_value=([_entry("2026-08-30T02:59:00Z")], "gs://reports")),
+            patch.object(heartbeat, "_read_report", return_value=payload),
+        ):
+            result = heartbeat.assess_execution_report_heartbeat(now)
+
+        self.assertEqual(result["status"], "alert")
+        self.assertEqual(result["reason"], "no_recent_accepted_execution_report")
+        self.assertEqual(result["deployment"]["runtime_enabled"], True)
 
     def test_report_mode_fallback_and_conflict_remain_bounded(self) -> None:
         now = dt.datetime(2026, 8, 30, 3, tzinfo=dt.timezone.utc)
@@ -199,10 +231,10 @@ class ExecutionReportHeartbeatTests(unittest.TestCase):
         self.assertEqual(heartbeat._deployment_observation(report, now=now)["execution_mode"], "dry_run")
         report["runtime_target"]["execution_mode"] = {}
         report["dry_run"] = None
-        self.assertIsNone(heartbeat._deployment_observation(report, now=now)["execution_mode"])
+        self.assertIsNone(heartbeat._deployment_observation(report, now=now))
         report["dry_run"] = True
         report["runtime_target"]["execution_mode"] = "live"
-        self.assertIsNone(heartbeat._deployment_observation(report, now=now)["execution_mode"])
+        self.assertIsNone(heartbeat._deployment_observation(report, now=now))
         report["runtime_target"]["strategy_profile"] = "other_profile"
         self.assertIsNone(heartbeat._deployment_observation(report, now=now))
 

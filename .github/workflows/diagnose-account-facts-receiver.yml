@@ -1,0 +1,48 @@
+name: Diagnose Binance Account Facts Receiver
+
+"on":
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: binance-account-facts-readonly
+  cancel-in-progress: false
+
+jobs:
+  readiness:
+    if: github.event_name == 'workflow_dispatch' && github.repository == 'QuantStrategyLab/BinancePlatform' && github.ref == 'refs/heads/main'
+    runs-on: self-hosted
+    timeout-minutes: 2
+    environment: binance-runtime
+    steps:
+      - name: Checkout the exact dispatch revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Require the exact current main revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || \
+            "$GITHUB_REPOSITORY" != "QuantStrategyLab/BinancePlatform" || \
+            "$GITHUB_REF" != "refs/heads/main" || \
+            ! "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ || \
+            "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]]; then
+            echo "receiver_diagnosis_source_unqualified" >&2
+            exit 1
+          fi
+          current_main_sha="$(git ls-remote https://github.com/QuantStrategyLab/BinancePlatform.git refs/heads/main 2>/dev/null | awk 'NF == 2 && $2 == "refs/heads/main" { print $1 }')"
+          if [[ ! "$current_main_sha" =~ ^[0-9a-f]{40}$ || "$current_main_sha" != "$GITHUB_SHA" ]]; then
+            echo "receiver_diagnosis_main_sha_mismatch" >&2
+            exit 1
+          fi
+
+      - name: Read receiver readiness once
+        shell: bash
+        env:
+          BINANCE_ACCOUNT_FACTS_SYNC_TOKEN: ${{ secrets.BINANCE_ACCOUNT_FACTS_SYNC_TOKEN }}
+        run: python3 scripts/diagnose_binance_account_facts_receiver.py

@@ -403,3 +403,97 @@ class PortfolioServiceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+import copy
+from unittest.mock import Mock
+
+import pytest
+
+from runtime_support import build_execution_report, runtime_set_trade_state, StatePersistenceError
+
+
+def forward_bound_fixture(*, receipt_enabled=True):
+    from test_forward_earn_accounting import materials, NOW
+    from test_runtime_support import bound_owned_runtime
+    state, observation, cash = materials()
+    state.setdefault('daily_external_principal_usdt', 0.0)
+    runtime, native = bound_owned_runtime(state, receipt_enabled=receipt_enabled)
+    runtime.now_utc = NOW
+    runtime.earn_accrual_observation = observation
+    return runtime, native, observation, cash
+
+
+def consume_forward_bound(runtime, observation, cash, report, *, writer=runtime_set_trade_state):
+    return maybe_rebase_daily_state_for_balance_change(
+        runtime.trade_state, runtime, report, 1600.000005, 0,
+        {a: round(float(v['quantity']), 8) for a, v in observation['assets'].items()}, [],
+        collect_external_cash_flows_fn=lambda *args, **kwargs: cash,
+        runtime_set_trade_state_fn=writer, append_log_fn=lambda *args: None,
+        translate_fn=lambda *args, **kwargs: '',
+    )
+
+
+def test_verified_forward_retains_exact_interval_before_mutating_working_checkpoint():
+    runtime, native, observation, cash = forward_bound_fixture()
+    original_state = runtime.trade_state
+    before = copy.deepcopy(original_state)
+    report = build_execution_report(runtime)
+    def checked_writer(rt, rp, updated, **kwargs):
+        assert original_state == before
+        assert 'external_cash_flow_interval' not in rp
+        assert native.data[native.ledger] == before
+        assert set(kwargs['interval']) == {'account_scope_sha256', 'start_at', 'end_at', 'end_equity_usdt',
+                                          'net_external_cash_flow', 'currency', 'valuation_basis'}
+        runtime_set_trade_state(rt, rp, updated, **kwargs)
+        assert native.data[native.ledger]['earn_accrual_checkpoint'] == observation
+        assert original_state == before
+    assert consume_forward_bound(runtime, observation, cash, report, writer=checked_writer)
+    assert runtime.trade_state is original_state
+    assert original_state['earn_accrual_checkpoint'] == observation
+    receipts = [value for key, value in native.data.items() if '__interval_receipt_' in key]
+    assert len(receipts) == 1
+    assert receipts[0]['interval'] == report['external_cash_flow_interval']
+    assert report['diagnostics']['earn_accrual'] == {'status': 'reconciled'}
+
+
+@pytest.mark.parametrize('failure', ['before_commit', 'after_commit'])
+def test_uncertain_forward_does_not_advance_working_state_report_or_broker(failure):
+    runtime, native, observation, cash = forward_bound_fixture()
+    before = copy.deepcopy(runtime.trade_state)
+    native.failure = failure
+    report = build_execution_report(runtime)
+    with pytest.raises(StatePersistenceError):
+        consume_forward_bound(runtime, observation, cash, report)
+    assert runtime.trade_state == before
+    assert 'external_cash_flow_interval' not in report
+    assert not runtime.bound_state_access.active
+    assert not runtime.state_owner_held
+    if failure == 'before_commit':
+        assert native.data[native.ledger] == before
+        assert not any('__interval_receipt_' in key for key in native.data)
+    else:
+        assert native.data[native.ledger]['earn_accrual_checkpoint'] == observation
+        assert len([key for key in native.data if '__interval_receipt_' in key]) == 1
+    runtime.client.order_market_buy.assert_not_called()
+
+
+def test_default_off_preserves_forward_ordinary_save_and_existing_payload():
+    runtime, native, observation, cash = forward_bound_fixture(receipt_enabled=False)
+    report = build_execution_report(runtime)
+    assert consume_forward_bound(runtime, observation, cash, report)
+    assert native.data[native.ledger]['earn_accrual_checkpoint'] == observation
+    assert not any('__interval_receipt_' in key for key in native.data)
+    assert report['external_cash_flow_interval']['end_equity_usdt'] == '1600.000005'
+
+
+def test_enabled_checkpointless_legacy_branch_does_not_read_history_or_call_saver():
+    runtime = SimpleNamespace(bound_state_access=SimpleNamespace(receipt_enabled=True))
+    read = Mock()
+    save = Mock()
+    with pytest.raises(ExecutionIntegrityError, match='earn_checkpoint_required_for_receipt'):
+        maybe_rebase_daily_state_for_balance_change({}, runtime, {}, 100, 0, {'USDT': 100}, [],
+            collect_external_cash_flows_fn=read, runtime_set_trade_state_fn=save,
+            append_log_fn=Mock(), translate_fn=Mock())
+    read.assert_not_called()
+    save.assert_not_called()

@@ -1,7 +1,12 @@
 # BinancePlatform
 
+BinancePlatform is QuantStrategyLab's execution runtime for Binance crypto trading: it runs runtime-enabled crypto strategies through Binance-facing workflows and self-hosted orchestration, handling broker/API connectivity, dry-run/live controls, and deployment. It is strictly an execution layer, not a research repository — strategy logic comes from `CryptoStrategies`, and live-pool eligibility plus validation artifacts come from `CryptoLivePoolPipelines` when a profile needs them. Within the larger QuantStrategyLab system it sits at the runtime-platform layer, consuming upstream strategy and pipeline artifacts rather than deciding strategy logic itself. It's meant for engineers operating or auditing this platform's deployment and runtime behavior, not for traders looking for ready-made strategies or investment signals.
 
-## QSL architecture role
+[Chinese README](README.zh-CN.md)
+
+> Investing involves risk. This project does not provide investment advice and is for education, research, and engineering review only.
+
+## Architecture role
 
 - **Layer**: `runtime-platform`.
 - **Responsibility**: Binance crypto execution runtime.
@@ -9,22 +14,18 @@
 - **Consumes**: CryptoStrategies, CryptoLivePoolPipelines artifacts, QuantPlatformKit, QuantRuntimeSettings.
 - **Must not**: own strategy research logic or publish live-pool membership.
 
-[Chinese README](README.zh-CN.md)
-
-> Investing involves risk. This project does not provide investment advice and is for education, research, and engineering review only.
-
-## What this repository is
-
-BinancePlatform is a QuantStrategyLab Binance crypto execution platform. It executes runtime-enabled crypto strategies through Binance-facing workflows and self-hosted orchestration.
-
-It is an execution layer, not a strategy research repository. Strategy logic comes from `CryptoStrategies`; live-pool and validation artifacts come from `CryptoLivePoolPipelines` when a profile requires them.
-
 ## Runtime boundary
 
 - Loads only runtime-enabled strategy profiles exposed by the strategy packages.
 - Handles broker/API connectivity, dry-run checks, notifications, and deployment settings.
 - Must keep credentials in GitHub Secrets, cloud secret stores, or the broker-specific secret system, never in Git.
 - Should start with dry-run or paper mode before any live order path is enabled.
+
+### Read-only Binance account-facts refresh
+
+The `Refresh Binance Account Facts` workflow can dispatch the existing `Binance Account Facts` workflow once per day at 06:17 UTC. It is restricted to this repository's `main` branch and is disabled unless the repository variable `BINANCE_ACCOUNT_FACTS_REFRESH_ENABLED` is exactly `true`; an absent variable leaves it disabled. The dispatcher uses only its short-lived GitHub token to request the fixed `runtime-production` `direct_read` workflow input. It does not receive broker credentials, enable Runtime, or dispatch the trading workflow. The target workflow retains its own `BINANCE_ACCOUNT_FACTS_ENABLED` gate and protected `binance-runtime` environment.
+
+QSL treats account-facts reports as stale after 36 hours. A daily refresh is intended to keep read-only balances current; a failed or skipped target run does not make old data current. The default configuration remains off; production activation is controlled by the dedicated repository gate and requires explicit authorization.
 
 ## Direct vs snapshot-backed profiles
 

@@ -13,6 +13,7 @@ from typing import Any, Callable, Optional
 
 import requests
 from quant_platform_kit.common.runtime_reports import build_runtime_report_base
+from application.execution_kernel_adapter import consult_t3_deny_blind_retry
 from application.execution_receipt_adapter import (
     record_order_failure,
     record_order_response,
@@ -310,6 +311,7 @@ class ExecutionRuntime:
     print_traceback: bool = True
     order_sequence: int = 0
     trade_state: Optional[dict[str, Any]] = None
+    bound_state_access: Any = None
     state_owner_claim: Optional[Callable[[str], bool]] = None
     state_owner_release: Optional[Callable[[str], bool]] = None
     state_owner_id: str = ""
@@ -319,6 +321,8 @@ class ExecutionRuntime:
     fuel_symbol: str = "BNBUSDT"
     fuel_asset: str = "BNB"
     side_effect_log: list[dict[str, Any]] = field(default_factory=list)
+    run_context: Any = None
+    strategy_runtime: Any = None  # B09 PR-2: activated handle; cycle mounts onto RunContext
 
     def __post_init__(self):
         if self.now_utc is None:
@@ -546,6 +550,36 @@ def acquire_runtime_state_owner(runtime):
 def require_runtime_state_owner(runtime):
     if not getattr(runtime, "state_owner_held", False) or not getattr(runtime, "state_owner_id", ""):
         raise StatePersistenceError("state_owner_required") from None
+    access = getattr(runtime, "bound_state_access", None)
+    if access is not None:
+        try:
+            access.ensure_active()
+        except Exception:
+            runtime.state_owner_held = False
+            raise StatePersistenceError("state_session_inactive") from None
+
+
+def _persist_runtime_state(runtime, state, *, interval=None):
+    """One persistence admission seam for ordinary and submission mutations."""
+    access = getattr(runtime, "bound_state_access", None)
+    try:
+        if access is not None:
+            if runtime.state_writer != access.save:
+                raise StatePersistenceError("state_session_writer_mismatch")
+            persisted = access.save(state, interval=interval)
+        else:
+            if interval is not None:
+                raise StatePersistenceError("state_session_receipt_unavailable")
+            if runtime.state_writer is None:
+                raise StatePersistenceError("state_persistence_unavailable")
+            persisted = runtime.state_writer(state)
+        if persisted is not True:
+            raise StatePersistenceError("state_persistence_failed")
+    except Exception:
+        if access is not None:
+            runtime.state_owner_held = False
+            access.invalidate()
+        raise StatePersistenceError("state_persistence_failed") from None
 
 
 def release_runtime_state_owner(runtime):
@@ -717,27 +751,31 @@ def _accounted_funds(runtime, state, reason, item):
     return bool(asset and asset in observed and reason in {"cycle_complete", "cash_reconciliation"}
                 and all(state.get("last_balance_snapshot", {}).get(key) == value for key, value in observed.items()))
 
-def runtime_set_trade_state(runtime, report, state, *, reason):
+def runtime_set_trade_state(runtime, report, state, *, reason, interval=None):
     payload = {"reason": str(reason)}
     report["state_write_intents"].append(payload)
     if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
         record_side_effect(runtime, report, effect_type="state_write", target="firestore", payload=payload, executed=False)
         return
     require_runtime_state_owner(runtime)
-    if runtime.state_writer is None:
-        raise StatePersistenceError("state_persistence_failed")
+    access = getattr(runtime, "bound_state_access", None)
+    if access is not None and access.receipt_enabled and reason == "earn_forward_accounting" and interval is None:
+        access.invalidate()
+        runtime.state_owner_held = False
+        raise StatePersistenceError("state_session_interval_required")
+    if interval is not None and reason != "earn_forward_accounting":
+        if access is not None:
+            access.invalidate()
+        runtime.state_owner_held = False
+        raise StatePersistenceError("state_session_interval_reason_invalid")
     import copy
     before_write = copy.deepcopy(state)
     try:
-        persisted = runtime.state_writer(state)
+        _persist_runtime_state(runtime, state, interval=interval)
     except Exception:
         state.clear()
         state.update(before_write)
         raise StatePersistenceError("state_persistence_failed") from None
-    if persisted is not True:
-        state.clear()
-        state.update(before_write)
-        raise StatePersistenceError("state_persistence_failed")
     runtime.trade_state = state
     runtime.pending_funds = [item for item in runtime.pending_funds if not _accounted_funds(runtime, state, reason, item)]
     record_side_effect(runtime, report, effect_type="state_write", target="firestore", payload=payload, executed=True)
@@ -865,16 +903,9 @@ def _load_order_submission_state(runtime):
 
 def _persist_order_submission_state(runtime, state, record):
     require_runtime_state_owner(runtime)
-    if runtime.state_writer is None:
-        raise StatePersistenceError("state_persistence_unavailable") from None
     updated_state = dict(state)
     updated_state[_ORDER_SUBMISSION_STATE_KEY] = dict(record)
-    try:
-        persisted = runtime.state_writer(updated_state)
-    except Exception:
-        raise StatePersistenceError("state_persistence_failed") from None
-    if persisted is not True:
-        raise StatePersistenceError("state_persistence_failed") from None
+    _persist_runtime_state(runtime, updated_state)
     state[_ORDER_SUBMISSION_STATE_KEY] = dict(record)
     runtime.trade_state = state
 
@@ -1180,6 +1211,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
         submission_status = submission_record["state"]
         if submission_status == _ORDER_SUBMISSION_UNKNOWN:
             if "method_name" in submission_record or is_earn_call:
+                # N13: redundant T3 consult; local raise always wins (no behavior change).
+                consult_t3_deny_blind_retry(transport_uncertain=True, reconciled=False)
                 raise OrderReconciliationError("order_reconciliation_uncertain") from None
             current_payload, current_identity_sha256 = _ensure_order_logical_identity(runtime, method_name, payload)
             if current_identity_sha256 != submission_record["identity_sha256"]:
@@ -1270,6 +1303,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 payload={"payload": dict(client_payload), "reason": "order_reconciliation_uncertain", "retries": 0},
                 executed=False,
             )
+            # N13: redundant T3 consult; local raise always wins (no behavior change).
+            consult_t3_deny_blind_retry(transport_uncertain=True, reconciled=False)
             raise OrderReconciliationError("order_reconciliation_uncertain") from None
         if not _is_confirmed_earn_success(method_name, response):
             record_side_effect(
@@ -1280,6 +1315,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 payload={"payload": dict(client_payload), "reason": "order_reconciliation_uncertain", "retries": 0},
                 executed=False,
             )
+            # N13: redundant T3 consult; local raise always wins (no behavior change).
+            consult_t3_deny_blind_retry(transport_uncertain=True, reconciled=False)
             raise OrderReconciliationError("order_reconciliation_uncertain") from None
         record_side_effect(
             runtime,

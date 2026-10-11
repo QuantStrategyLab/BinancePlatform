@@ -143,16 +143,23 @@ def _operational_blocker(payload: dict[str, Any]) -> str | None:
     return value if isinstance(value, str) and value in _OPERATIONAL_BLOCKERS else None
 
 
-def _accepted_payload(payload: dict[str, Any]) -> tuple[bool, str]:
+def _identity_error(payload: dict[str, Any]) -> str | None:
     expected_platform = (os.environ.get("RUNTIME_HEARTBEAT_REPORT_PLATFORM") or "binance").strip().lower()
     expected_strategy = (os.environ.get("RUNTIME_HEARTBEAT_STRATEGY_PROFILE") or "").strip()
     expected_service = (os.environ.get("RUNTIME_HEARTBEAT_SERVICE_NAME") or "").strip()
     if str(payload.get("platform") or "").strip().lower() != expected_platform:
-        return False, "platform does not match"
+        return "platform does not match"
     if expected_strategy and _payload_strategy(payload) != expected_strategy:
-        return False, "strategy profile does not match"
+        return "strategy profile does not match"
     if expected_service and _payload_service_name(payload) != expected_service:
-        return False, "service name does not match"
+        return "service name does not match"
+    return None
+
+
+def _accepted_payload(payload: dict[str, Any]) -> tuple[bool, str]:
+    identity_error = _identity_error(payload)
+    if identity_error is not None:
+        return False, identity_error
     if _operational_blocker(payload) is not None:
         return False, _OPERATIONAL_BLOCKER_REASON
     errors = payload.get("errors")
@@ -168,8 +175,15 @@ def _accepted_payload(payload: dict[str, Any]) -> tuple[bool, str]:
     return True, f"status={status}"
 
 
-def _deployment_observation(payload: dict[str, Any], *, now: dt.datetime) -> dict[str, Any] | None:
-    """Project the last run, never the hosted monitor's current environment."""
+def _deployment_observation(
+    payload: dict[str, Any],
+    *,
+    now: dt.datetime,
+    min_observed_at: dt.datetime | None = None,
+) -> dict[str, Any] | None:
+    """Project recent, identity-matched runtime metadata, never monitor config."""
+    if _identity_error(payload) is not None:
+        return None
     target = payload.get("runtime_target")
     if not isinstance(target, dict) or target.get("platform_id") != "binance":
         return None
@@ -184,6 +198,9 @@ def _deployment_observation(payload: dict[str, Any], *, now: dt.datetime) -> dic
         return None
     if observed.tzinfo is None or observed > now:
         return None
+    observed = observed.astimezone(dt.timezone.utc)
+    if min_observed_at is not None and observed < min_observed_at.astimezone(dt.timezone.utc):
+        return None
 
     mode = target.get("execution_mode")
     dry_run = payload.get("dry_run")
@@ -191,7 +208,8 @@ def _deployment_observation(payload: dict[str, Any], *, now: dt.datetime) -> dic
         mode = ("dry_run" if dry_run else "live") if isinstance(dry_run, bool) else None
     elif (mode == "live" and dry_run is True) or (mode != "live" and dry_run is False):
         mode = None
-    permitted = payload.get("standard_execution_permitted")
+    if mode not in {"live", "paper", "dry_run"}:
+        return None
     scheduler_state = payload.get("scheduler_state")
     scheduler_projection = {
         "enabled": "enabled",
@@ -199,11 +217,14 @@ def _deployment_observation(payload: dict[str, Any], *, now: dt.datetime) -> dic
         "unknown": "unknown",
     }.get(scheduler_state, "unknown") if isinstance(scheduler_state, str) else "unknown"
     return {
-        "runtime_enabled": permitted if isinstance(permitted, bool) else None,
+        # standard_execution_permitted is the operator switch AND live-
+        # continuity permission. True proves the source switch was enabled;
+        # false cannot distinguish a disabled switch from a continuity hold.
+        "runtime_enabled": True if payload.get("standard_execution_permitted") is True else None,
         "scheduler_state": scheduler_projection,
         "strategy_profile": profile,
         "execution_mode": mode,
-        "observed_at": observed.astimezone(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "observed_at": observed.isoformat(timespec="seconds").replace("+00:00", "Z"),
     }
 
 
@@ -243,6 +264,7 @@ def assess_execution_report_heartbeat(now: dt.datetime | None = None) -> dict[st
         }
 
     recent = [entry for entry in entries if (_entry_updated_at(entry) or current) >= since]
+    latest_deployment: dict[str, Any] | None = None
     for entry in sorted(recent, key=lambda item: _entry_updated_at(item) or dt.datetime.min.replace(tzinfo=dt.timezone.utc), reverse=True)[:10]:
         uri = _entry_uri(entry)
         if not uri:
@@ -250,10 +272,13 @@ def assess_execution_report_heartbeat(now: dt.datetime | None = None) -> dict[st
         payload = _read_report(uri)
         if payload is None:
             continue
+        deployment = _deployment_observation(payload, now=current, min_observed_at=since)
+        if deployment is not None and latest_deployment is None:
+            latest_deployment = deployment
         accepted, reason = _accepted_payload(payload)
         if not accepted and reason == _OPERATIONAL_BLOCKER_REASON:
             blocker = _operational_blocker(payload)
-            return {
+            assessment = {
                 "schema": _SCHEMA,
                 "observed_at": current.isoformat().replace("+00:00", "Z"),
                 "status": "alert",
@@ -262,6 +287,9 @@ def assess_execution_report_heartbeat(now: dt.datetime | None = None) -> dict[st
                 "report_updated_at": (_entry_updated_at(entry) or current).isoformat().replace("+00:00", "Z"),
                 "reports_returned": len(entries),
             }
+            if deployment is not None:
+                assessment["deployment"] = deployment
+            return assessment
         if accepted:
             assessment = {
                 "schema": _SCHEMA,
@@ -271,12 +299,11 @@ def assess_execution_report_heartbeat(now: dt.datetime | None = None) -> dict[st
                 "name": name,
                 "report_updated_at": (_entry_updated_at(entry) or current).isoformat().replace("+00:00", "Z"),
             }
-            deployment = _deployment_observation(payload, now=current)
             if deployment is not None:
                 assessment["deployment"] = deployment
             return assessment
 
-    return {
+    assessment = {
         "schema": _SCHEMA,
         "observed_at": current.isoformat().replace("+00:00", "Z"),
         "status": "alert",
@@ -284,6 +311,9 @@ def assess_execution_report_heartbeat(now: dt.datetime | None = None) -> dict[st
         "name": name,
         "reports_returned": len(entries),
     }
+    if latest_deployment is not None:
+        assessment["deployment"] = latest_deployment
+    return assessment
 
 
 def _write_assessment(assessment: dict[str, Any]) -> None:
