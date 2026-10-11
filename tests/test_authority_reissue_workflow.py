@@ -70,3 +70,23 @@ def test_manual_inputs_and_existing_stop_contract_remain() -> None:
         assert f"      {name}:\n        description:" in workflow
     assert "RUNTIME_TARGET_ENABLED` live value is exactly `false`" in docs
     assert "first failure or uncertain outcome: stop" in docs
+
+
+def test_authentication_check_covers_both_modes_without_authority_or_writes() -> None:
+    workflow = WORKFLOW.with_name("authority-app-auth-check.yml").read_text(encoding="utf-8")
+
+    assert "environment-permission: [read, write]" in workflow
+    assert "max-parallel: 1" in workflow
+    assert "permission-environments: ${{ matrix.environment-permission }}" in workflow
+    assert "repositories: ${{ github.event.repository.name }}" in workflow
+    assert "GH_TOKEN: ${{ steps.app-token.outputs.token }}" in workflow
+    assert "skip-token-revoke:" not in workflow
+    assert "BINANCE_RISK_AUTHORITY_JSON" not in workflow
+    assert "BINANCE_AUTHORITY_UPDATE_TOKEN" not in workflow
+    assert "actions/checkout" not in workflow
+    for method in ("POST", "PUT", "PATCH", "DELETE"):
+        assert f"--method {method}" not in workflow
+        assert f"-X {method}" not in workflow
+    assert "scripts/update_binance_authority_reissue.py" not in workflow
+    assert "main.py" not in workflow
+    assert "schedule:" not in workflow
