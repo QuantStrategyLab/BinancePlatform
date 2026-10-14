@@ -892,3 +892,41 @@ restored normally. Public Git copies and history, clones and prior downloads
 are not removed by artifact/log deletion. Keep only non-financial audit metadata
 (run/artifact/job identifiers, timestamps, source revisions and field-presence
 booleans) in the incident summary; do not copy amounts or account-scope hashes.
+
+## Private daily digest candidates (default off)
+
+The existing `Runtime Target Lifecycle` workflow can project the latest
+archived `runtime_report.v1` into `qsl.digest_candidates.v1`. Set
+`BINANCE_DIGEST_CANDIDATES_ENABLED=true` only after the protected mapping and
+the existing monitor identity's prefix-scoped store permission have been
+verified. An absent gate leaves this step disabled. It uses the original
+main-only monitor, source locator and WIF; it never invokes Runtime, brokers,
+models, account-facts refresh or notifications. Candidate failure is visible
+as a fixed blocked reason and does not change the original monitor outcome.
+
+Protected Secrets are `BINANCE_DIGEST_OPAQUE_ACCOUNT_UID` and
+`BINANCE_DIGEST_TARGET_ID` (explicit central identity strings, at most 128
+characters), `BINANCE_DIGEST_STORE_TARGET` (the approved lowercase object
+slot, at most 41 characters), and `DIGEST_CANDIDATES_GCS_URI` (the approved
+existing private prefix). No identity is derived from an account label or the
+lifecycle's display target. Existing `RUNTIME_TARGET_JSON` supplies expected
+platform/profile/service/account scope/account selector/deployment selector
+and dry-run mode; an absent or mismatched source stops projection. No private
+mapping, locator or raw source is printed or uploaded as an Actions artifact.
+
+The source's timezone-aware `started_at` must be within 36 hours and not in
+the future. Its New York date is retained even across midnight; reading an
+older object never makes it today's evidence. A completed archived cycle
+proves source presence only. All fill/order/cycle counts remain null and
+`counts_unknown`; execution/coverage/persistence remain unknown, with no
+equity or holdings projection. Neither source code nor candidate publication
+attests the real serving release, complete daily coverage or business success.
+
+The pure store helper is vendored byte-for-byte from
+InteractiveBrokersPlatform `abd6c6cd51afe61b40e2422ef9c1b86da7845226`,
+`scripts/digest_candidates_store.py`, SHA256
+`96d1b4b34fdceb106ecaa6aaf1c030db6f784184302fb5fc451d63db31d5814e`.
+It keeps the existing `<prefix>/binance/<business_day>/<slot>.json` convention;
+no cross-repository token, dependency or new storage service is needed. A
+failed or unknown write is not retried by this producer. Production mapping,
+permissions, activation and a natural daily receipt require separate readback.
