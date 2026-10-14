@@ -210,3 +210,16 @@ jobs:
           sync-url: ${{ env.EXECUTION_EVIDENCE_SYNC_URL }}
         env:
           EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}
+
+      - name: Project and store private digest candidate (opt-in)
+        # Isolated from all runtime/monitor success semantics. This gate does
+        # not enable Runtime, refresh broker facts, or send a notification.
+        if: ${{ success() && vars.BINANCE_DIGEST_CANDIDATES_ENABLED == 'true' && steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
+        continue-on-error: true
+        env:
+          BINANCE_DIGEST_CANDIDATES_ENABLED: ${{ vars.BINANCE_DIGEST_CANDIDATES_ENABLED || 'false' }}
+          BINANCE_DIGEST_OPAQUE_ACCOUNT_UID: ${{ secrets.BINANCE_DIGEST_OPAQUE_ACCOUNT_UID }}
+          BINANCE_DIGEST_TARGET_ID: ${{ secrets.BINANCE_DIGEST_TARGET_ID }}
+          BINANCE_DIGEST_STORE_TARGET: ${{ secrets.BINANCE_DIGEST_STORE_TARGET }}
+          DIGEST_CANDIDATES_GCS_URI: ${{ secrets.DIGEST_CANDIDATES_GCS_URI }}
+        run: uv run --no-sync python scripts/emit_digest_candidates.py
