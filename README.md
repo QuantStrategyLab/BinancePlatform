@@ -63,7 +63,6 @@ uv run --no-sync python -m unittest discover -s tests -v
 
 ## Useful docs
 
-- [`docs/binance_platform_rename_checklist.md`](docs/binance_platform_rename_checklist.md)
 - [`docs/operator_runbook.md`](docs/operator_runbook.md)
 
 For a forward Earn accounting failure, the disabled `main` workflow has one

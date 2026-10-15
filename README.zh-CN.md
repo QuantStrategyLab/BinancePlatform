@@ -57,7 +57,6 @@ uv run --no-sync python -m unittest discover -s tests -v
 
 ## 延伸文档
 
-- [`docs/binance_platform_rename_checklist.md`](docs/binance_platform_rename_checklist.md)
 - [`docs/operator_runbook.md`](docs/operator_runbook.md)
 
 ## 社区和安全
