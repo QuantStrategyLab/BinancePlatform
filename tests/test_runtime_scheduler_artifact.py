@@ -235,7 +235,7 @@ class RuntimeSchedulerArtifactTests(unittest.TestCase):
         self.assertIn("group: ${{ github.workflow }}-${{ github.ref_name }}", publish)
         self.assertNotIn("\nconcurrency:\n", text)
         self.assertIn("actions: read", publish)
-        self.assertIn("actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", observer)
+        self.assertIn("actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9", observer)
         self.assertIn("actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333", publish)
 
 

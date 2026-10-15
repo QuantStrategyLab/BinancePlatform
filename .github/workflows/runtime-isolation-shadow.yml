@@ -68,7 +68,7 @@ jobs:
             --digest-output reports/runtime_isolation_shadow.sha256
 
       - name: Upload redacted shadow report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runtime-isolation-shadow-github-${{ github.run_id }}
           path: |
@@ -140,7 +140,7 @@ jobs:
             --digest-output reports/runtime_isolation_shadow.sha256
 
       - name: Upload redacted current-runner shadow report
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: runtime-isolation-shadow-current-runner-${{ github.run_id }}
           path: |
