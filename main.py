@@ -100,6 +100,7 @@ from decision_mapper import (
     map_strategy_decision_to_allocation as map_decision_to_allocation,
     map_strategy_decision_to_rotation_plan as map_decision_to_rotation_plan,
 )
+from portfolio_stoploss_observation import public_stoploss_observation
 from strategy_runtime import load_strategy_runtime
 from run_context import (
     RunContext,
@@ -1073,6 +1074,9 @@ def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, pri
     assessment = evaluation.decision.diagnostics.get("member_risk_assessment")
     if isinstance(assessment, Mapping):
         allocation["risk_assessment"] = dict(assessment)
+    allocation["portfolio_stoploss_observation"] = public_stoploss_observation(
+        evaluation.metadata.get("portfolio_stoploss_observation")
+    )
     allocation["risk_flags"] = tuple(str(flag) for flag in evaluation.decision.risk_flags)
     return allocation
 

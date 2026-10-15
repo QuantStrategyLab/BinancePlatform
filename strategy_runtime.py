@@ -24,6 +24,7 @@ from live_risk_authority import (
     bind_live_risk_authority,
     config_sha256,
 )
+from portfolio_stoploss_observation import observe_portfolio_stoploss, public_stoploss_observation
 from strategy_loader import (
     load_research_strategy_entrypoint_for_profile,
     load_strategy_entrypoint_for_profile,
@@ -459,10 +460,19 @@ class LoadedStrategyRuntime:
             artifacts=artifacts,
         )
         decision = self.entrypoint.evaluate(ctx)
+        try:
+            stoploss_observation = observe_portfolio_stoploss(
+                portfolio_snapshot,
+                entrypoint=self.entrypoint,
+                assessment=decision.diagnostics.get("member_risk_assessment"),
+            )
+        except Exception:  # noqa: BLE001 - report-only failure must not change execution
+            stoploss_observation = public_stoploss_observation(None)
         return StrategyEvaluationResult(
             decision=decision,
             account_metrics=dict(account_metrics),
             metadata={
+                "portfolio_stoploss_observation": stoploss_observation,
                 "strategy_profile": self.profile,
                 "strategy_display_name": resolve_research_strategy_metadata(
                     self.profile,

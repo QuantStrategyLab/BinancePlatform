@@ -93,6 +93,38 @@ def _evaluate_minimal_runtime(
 
 
 class StrategyRuntimeTests(unittest.TestCase):
+    def test_stoploss_observation_does_not_mutate_strategy_decision(self):
+        import strategy_runtime as module
+        from quant_platform_kit.common.strategy_contracts import StrategyDecision
+
+        runtime = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        decision = StrategyDecision(diagnostics={
+            "member_risk_assessment": {"scope": "MEMBER", "outcome": "APPROVE"},
+            "strategy_stop_evaluation": {"original": "preserved"},
+        })
+        now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        candidate = _synthetic_candidate_identity()
+        with patch.object(type(runtime.entrypoint), "evaluate", return_value=decision):
+            evaluation = _evaluate_minimal_runtime(runtime, now=now,
+                mandate=_synthetic_mandate(now, candidate), candidate=candidate)
+        self.assertIs(evaluation.decision, decision)
+        self.assertEqual(decision.diagnostics["strategy_stop_evaluation"], {"original": "preserved"})
+        observation = evaluation.metadata["portfolio_stoploss_observation"]
+        self.assertEqual(observation["position_count"], 1)
+        self.assertEqual(observation["pnl_input_status"], "missing")
+        self.assertEqual(observation["evaluation_status"], "unknown")
+        self.assertNotIn("portfolio_stoploss_observation", decision.diagnostics)
+        with patch.object(type(runtime.entrypoint), "evaluate", return_value=decision), patch.object(
+            module, "observe_portfolio_stoploss", side_effect=RuntimeError("PRIVATE token")
+        ):
+            failed_observation = _evaluate_minimal_runtime(runtime, now=now,
+                mandate=_synthetic_mandate(now, candidate), candidate=candidate)
+        self.assertIs(failed_observation.decision, decision)
+        self.assertEqual(failed_observation.account_metrics, evaluation.account_metrics)
+        self.assertEqual(failed_observation.metadata["portfolio_stoploss_observation"]["pnl_input_status"], "unknown")
+        self.assertNotIn("PRIVATE", str(failed_observation.metadata))
+
+
     def test_build_portfolio_snapshot_values_all_non_usdt_risk_assets(self):
         import strategy_runtime as strategy_runtime_module
 

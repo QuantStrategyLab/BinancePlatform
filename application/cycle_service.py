@@ -19,6 +19,7 @@ from quant_platform_kit.strategy_lifecycle.performance_monitor import (
 from application.execution_receipt_adapter import attach_execution_receipt_from_report
 from application.execution_kernel_adapter import consult_t2_unknown_new_cycle
 from application.portfolio_service import EARN_FORWARD_REASON_CODES
+from portfolio_stoploss_observation import public_stoploss_observation, unevaluated_stoploss_observation
 from runtime_logging import RuntimeLogContext, emit_runtime_log
 from runtime_support import (
     append_report_error, finalize_notification_delivery, acquire_runtime_state_owner,
@@ -47,7 +48,10 @@ def try_record_platform_execution(
         _performance_monitor_logger.warning("platform_execution_record_failed")
 
 
-def _record_risk_diagnostics(report, allocation):
+def _record_risk_diagnostics(report, allocation, *, phase):
+    report.setdefault("diagnostics", {}).setdefault("portfolio_stoploss", {})[phase] = (
+        public_stoploss_observation(allocation.get("portfolio_stoploss_observation"))
+    )
     assessment = allocation.get("risk_assessment")
     if not isinstance(assessment, Mapping):
         return
@@ -199,6 +203,10 @@ def execute_strategy_cycle(
     allow_new_trend_entries_on_degraded = cycle_settings.allow_new_trend_entries_on_degraded
 
     report = build_execution_report(runtime)
+    report.setdefault("diagnostics", {})["portfolio_stoploss"] = {
+        phase: unevaluated_stoploss_observation()
+        for phase in ("pre_trade", "post_trade")
+    }
     log_buffer = []
     if not getattr(runtime, "standard_execution_permitted", True):
         report["execution_blocked_reason"] = "runtime_target_disabled"
@@ -299,7 +307,7 @@ def execute_strategy_cycle(
 
         report["total_equity_usdt"] = total_equity
         report["trend_equity_usdt"] = trend_val_equity
-        _record_risk_diagnostics(report, allocation)
+        _record_risk_diagnostics(report, allocation, phase="pre_trade")
 
         if not allocation.get("execution_permitted", False):
             report["execution_blocked_reason"] = "risk_execution_not_permitted"
@@ -413,7 +421,7 @@ def execute_strategy_cycle(
 
         report["total_equity_usdt"] = total_equity
         report["trend_equity_usdt"] = trend_val_equity
-        _record_risk_diagnostics(report, post_trade_allocation)
+        _record_risk_diagnostics(report, post_trade_allocation, phase="post_trade")
 
         if not post_trade_allocation.get("execution_permitted", False):
             report["execution_blocked_reason"] = "risk_execution_not_permitted"

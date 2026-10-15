@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
+from portfolio_stoploss_observation import unevaluated_stoploss_observation
 from application.cycle_service import (
     _write_lifecycle_export,
     execute_strategy_cycle,
@@ -48,11 +49,14 @@ class CycleServiceTests(unittest.TestCase):
         rebase_fn=None,
         reset_fn=None,
         trend_pool_resolution=None,
+        stoploss_observations=None,
+        notifications=None,
     ):
         events = []
         state = {} if state is None else state
         post_execution_permitted = execution_permitted if post_execution_permitted is None else post_execution_permitted
         allocation_permissions = [execution_permitted, post_execution_permitted]
+        stoploss_observations = list(stoploss_observations or [None, None])
 
         def manage_earn(*_args, **_kwargs):
             events.append("earn")
@@ -120,6 +124,7 @@ class CycleServiceTests(unittest.TestCase):
             ),
             top_up_bnb_fuel=lambda *_args: events.append("fuel") or (185.0, 15.0, "ready"),
             compute_portfolio_allocation=lambda *_args: {
+                "portfolio_stoploss_observation": stoploss_observations.pop(0),
                 "total_equity": 200.0,
                 "trend_val": 0.0,
                 "dca_val": 0.0,
@@ -142,11 +147,43 @@ class CycleServiceTests(unittest.TestCase):
             maybe_send_periodic_btc_status_report=send_periodic_status,
             runtime_set_trade_state=lambda *_args, **_kwargs: events.append("state_write"),
             append_report_error=lambda *_args, **_kwargs: None,
-            runtime_notify=lambda *_args, **_kwargs: None,
+            runtime_notify=lambda *args, **kwargs: notifications.append((args, kwargs)) if notifications is not None else None,
             translate_fn=lambda value, **_kwargs: value,
             traceback_module=SimpleNamespace(),
         )
         return report, events
+
+    def test_stoploss_reporting_preserves_execution_and_notifications(self):
+        from portfolio_stoploss_observation import observe_portfolio_stoploss
+        from quant_platform_kit import PortfolioSnapshot, Position
+
+        now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        observations = []
+        with patch("portfolio_stoploss_observation._reviewed_member_gate", return_value=True):
+            for costs in ((None, None), (1.0, None), (1.0, 2.0)):
+                snapshot = PortfolioSnapshot(as_of=now, total_equity=1000.0, positions=tuple(
+                    Position("SYNTHETIC", 1.0, 3.0, cost) for cost in costs
+                ))
+                observations.append(observe_portfolio_stoploss(snapshot, entrypoint=None, assessment={}))
+        baseline_notifications = []
+        baseline, baseline_events = self._run_funds_cycle(True, notifications=baseline_notifications)
+        baseline.pop("diagnostics")
+        for observation in observations:
+            notifications = []
+            report, events = self._run_funds_cycle(
+                True, stoploss_observations=[observation, observations[-1]], notifications=notifications,
+            )
+            phases = report.pop("diagnostics")["portfolio_stoploss"]
+            self.assertEqual(phases["pre_trade"], observation)
+            self.assertEqual(phases["post_trade"], observations[-1])
+            self.assertEqual(report, baseline)
+            self.assertEqual(events, baseline_events)
+            self.assertEqual(notifications, baseline_notifications)
+        rejected, events = self._run_funds_cycle(False, stoploss_observations=[observations[0], observations[-1]])
+        self.assertEqual(rejected["diagnostics"]["portfolio_stoploss"]["pre_trade"], observations[0])
+        self.assertEqual(rejected["diagnostics"]["portfolio_stoploss"]["post_trade"], unevaluated_stoploss_observation())
+        self.assertNotIn("trend", events)
+        self.assertNotIn("dca", events)
 
     def test_cycle_report_preserves_original_upstream_pool_symbols(self):
         report, _events = self._run_funds_cycle(
@@ -1320,6 +1357,10 @@ class CycleServiceTests(unittest.TestCase):
                 self.assertEqual(report["status"], "error")
                 self.assertEqual(report["diagnostics"], {
                     "existing": "preserved",
+                    "portfolio_stoploss": {
+                        phase: unevaluated_stoploss_observation()
+                        for phase in ("pre_trade", "post_trade")
+                    },
                     "cycle_failure": {"stage": "state_owner_claim", "error_type": expected_type},
                 })
                 callbacks["ensure_runtime_client"].assert_not_called()
