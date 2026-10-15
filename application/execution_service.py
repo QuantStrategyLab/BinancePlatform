@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from notifications.digest_snapshot.digest_routing import routine_notification
+
 import math
 from collections.abc import Mapping
 
@@ -388,12 +390,13 @@ def execute_trend_sells(
         )
         try:
             if qty <= 0:
-                runtime_notify_fn(
+                routine_notification(runtime_notify_fn,
                     runtime,
                     report,
                     f"{translate_fn('trend_sell_skipped')} {symbol}\n"
                     f"{translate_fn('reason_label')}: {sell_reason}\n"
                     f"{translate_fn('qty_zero_msg')}",
+                routine_order=False,
                 )
                 continue
             if not ensure_asset_available_fn(runtime, report, config["base_asset"], qty, log_buffer):
@@ -426,12 +429,13 @@ def execute_trend_sells(
             )
             record_trend_action_fn(state, symbol, "sell", today_id_str)
             runtime_set_trade_state_fn(runtime, report, state, reason=f"trend_sell:{symbol}")
-            runtime_notify_fn(
+            routine_notification(runtime_notify_fn,
                 runtime,
                 report,
                 f"{translate_fn('trend_sell')} {symbol}\n"
                 f"{translate_fn('reason_label')}: {sell_reason}\n"
                 f"{translate_fn('price_label')}: ${curr_price:.2f}",
+            routine_order=True,
             )
         except ExecutionIntegrityError:
             raise
@@ -518,12 +522,13 @@ def execute_trend_buys(
                     symbol=symbol,
                     detail={"budget_usdt": round(float(buy_u), 4)},
                 )
-                runtime_notify_fn(
+                routine_notification(runtime_notify_fn,
                     runtime,
                     report,
                     f"{translate_fn('trend_buy_skipped')} {symbol}\n"
                     f"{translate_fn('budget_label')}: ${buy_u:.2f}\n"
                     f"{translate_fn('qty_zero_msg')}",
+                routine_order=False,
                 )
                 continue
             if not ensure_asset_available_fn(runtime, report, "USDT", usdt_cost, log_buffer):
@@ -560,7 +565,7 @@ def execute_trend_buys(
             )
             record_trend_action_fn(state, symbol, "buy", today_id_str)
             runtime_set_trade_state_fn(runtime, report, state, reason=f"trend_buy:{symbol}")
-            runtime_notify_fn(
+            routine_notification(runtime_notify_fn,
                 runtime,
                 report,
                 f"{translate_fn('trend_buy')} {symbol}\n"
@@ -568,6 +573,7 @@ def execute_trend_buys(
                 f"{translate_fn('budget_label')}: ${buy_u:.2f}\n"
                 f"{translate_fn('weight_label')}: {candidate_meta['weight']:.0%}\n"
                 f"{translate_fn('rel_score_label')}: {candidate_meta['relative_score']:.2f}",
+            routine_order=True,
             )
         except ExecutionIntegrityError:
             raise
@@ -819,11 +825,12 @@ def execute_btc_dca_cycle(
         )
         try:
             if qty <= 0 or buy_cost <= 0:
-                runtime_notify_fn(
+                routine_notification(runtime_notify_fn,
                     runtime,
                     report,
                     f"{translate_fn('btc_dca_buy_skipped')}\n"
                     f"{translate_fn('qty_zero_msg')}",
+                routine_order=False,
                 )
             else:
                 if not ensure_asset_available_fn(runtime, report, "USDT", buy_cost, log_buffer):
@@ -849,13 +856,14 @@ def execute_btc_dca_cycle(
                     state, symbol="BTCUSDT", base_asset="BTC", balances=balances, u_total=u_total
                 )
                 state["dca_last_buy_date"] = today_id_str
-                runtime_notify_fn(
+                routine_notification(runtime_notify_fn,
                     runtime,
                     report,
                     f"{translate_fn('btc_dca_buy')} BTC\n"
                     f"{translate_fn('ahr999')}: {ahr:.2f}\n"
                     f"{translate_fn('target_alloc_label')}: {btc_target_ratio:.1%}\n"
                     f"{translate_fn('quantity_label')}: {qty} BTC",
+                routine_order=True,
                 )
                 runtime_set_trade_state_fn(runtime, report, state, reason="btc_dca_buy")
         except ExecutionIntegrityError:
@@ -897,11 +905,12 @@ def execute_btc_dca_cycle(
         )
         try:
             if qty <= 0:
-                runtime_notify_fn(
+                routine_notification(runtime_notify_fn,
                     runtime,
                     report,
                     f"{translate_fn('btc_dca_trim_skipped')}\n"
                     f"{translate_fn('qty_zero_msg')}",
+                routine_order=False,
                 )
             else:
                 if not ensure_asset_available_fn(runtime, report, "BTC", qty, log_buffer):
@@ -927,12 +936,13 @@ def execute_btc_dca_cycle(
                     state, symbol="BTCUSDT", base_asset="BTC", balances=balances, u_total=u_total
                 )
                 state["dca_last_sell_date"] = today_id_str
-                runtime_notify_fn(
+                routine_notification(runtime_notify_fn,
                     runtime,
                     report,
                     f"{translate_fn('btc_dca_trim')} BTC\n"
                     f"{translate_fn('ratio_label')}: {sell_pct*100}%\n"
                     f"{translate_fn('quantity_label')}: {qty} BTC",
+                routine_order=True,
                 )
                 runtime_set_trade_state_fn(runtime, report, state, reason="btc_dca_sell")
         except ExecutionIntegrityError:

@@ -617,13 +617,20 @@ def log_and_notify(log_buffer, tg_token, tg_chat_id, text):
     append_log(log_buffer, text)
     send_tg_msg(tg_token, tg_chat_id, text)
 
+def _send_routine_tg_message(token, chat_id, text):
+    from notifications.digest_snapshot.digest_routing import daily_digest_enabled
+    if daily_digest_enabled():
+        return False
+    return send_tg_msg(token, chat_id, text)
+
+
 def ensure_asset_available(client, asset, required_amount, tg_token, tg_chat_id):
     """Redeem from flexible earn if spot balance is below required amount."""
     return qpk_ensure_asset_available(
         client,
         asset,
         required_amount,
-        on_redeem=lambda amount: send_tg_msg(
+        on_redeem=lambda amount: _send_routine_tg_message(
             tg_token,
             tg_chat_id,
             t("execution_spot_short_redeeming_from_earn", asset=asset, amount=amount),
