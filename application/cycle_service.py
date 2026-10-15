@@ -623,8 +623,8 @@ def execute_strategy_cycle(
                 and not (report.get("error_summary") or {}).get("errors"))
             report.setdefault("summary", {})["notification_digest"] = {
                 "schema_version": "qsl.notification_cycle.v1", "dry_run": bool(runtime.dry_run),
-                "order_count": observation["submission_attempted_count"] if known and not runtime.dry_run else None,
-                "fill_count": observation["filled_count"] if known and not runtime.dry_run else None,
+                "order_count": observation["filled_count"] if healthy and not runtime.dry_run else None,
+                "fill_count": 0 if healthy and observation["filled_count"] == 0 and not runtime.dry_run else None,
                 "routine": healthy and not runtime.dry_run,
             }
 
