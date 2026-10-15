@@ -787,7 +787,7 @@ def test_accounting_migration_uses_fixed_artifact_and_never_falls_through_to_str
     )[1].split("      - name:", 1)[0]
 
     assert (
-        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8"
+        "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8"
         in download
     )
     assert "name: binance-accounting-migration-preview" in download
