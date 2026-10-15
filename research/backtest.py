@@ -18,9 +18,10 @@ from crypto_strategies.strategies.crypto_live_pool_rotation.core import (
     build_rotation_pool_ranking,
     compute_allocation_budgets,
     get_dynamic_btc_base_order,
+)
+from crypto_strategies.strategies.crypto_live_pool_rotation.core import (
     select_rotation_weights as core_select_rotation_weights,
 )
-
 
 INITIAL_CAPITAL = 10000.0
 ATR_MULTIPLIER = 2.5
@@ -158,18 +159,22 @@ def load_klines(client: Client, symbol: str, interval: str, start: pd.Timestamp,
         end.strftime("%Y-%m-%d %H:%M:%S"),
     )
     if not klines:
-        return pd.DataFrame(columns=["time", "open", "high", "low", "close", "vol"])
+        return pd.DataFrame(columns=["time", "open", "high", "low", "close", "vol", "available_at"])
 
-    df = pd.DataFrame(klines).iloc[:, :6]
-    df.columns = ["time", "open", "high", "low", "close", "vol"]
+    df = pd.DataFrame(klines).iloc[:, :7]
+    df.columns = ["time", "open", "high", "low", "close", "vol", "close_time"]
     df["time"] = pd.to_datetime(df["time"], unit="ms", utc=True)
+    # Binance's close timestamp is inclusive; the full bar is available after it.
+    df["available_at"] = pd.to_datetime(df.pop("close_time"), unit="ms", utc=True) + pd.Timedelta(milliseconds=1)
     df[["open", "high", "low", "close", "vol"]] = df[["open", "high", "low", "close", "vol"]].astype(float)
     return df
 
 
 def prepare_trend_daily_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+    df = df.sort_values("time").copy()
     df["date"] = df["time"].dt.floor("D")
+    df["indicator_event_time"] = df["time"]
+    df["indicator_available_at"] = df.get("available_at", df["time"] + pd.Timedelta(days=1))
     df["quote_vol"] = df["close"] * df["vol"]
 
     df["sma20"] = df["close"].rolling(20).mean()
@@ -197,6 +202,8 @@ def prepare_trend_daily_indicators(df: pd.DataFrame) -> pd.DataFrame:
     return df[
         [
             "date",
+            "indicator_available_at",
+            "indicator_event_time",
             "sma20",
             "sma60",
             "sma200",
@@ -215,8 +222,10 @@ def prepare_trend_daily_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def prepare_btc_daily_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
+    df = df.sort_values("time").copy()
     df["date"] = df["time"].dt.floor("D")
+    df["indicator_event_time"] = df["time"]
+    df["indicator_available_at"] = df.get("available_at", df["time"] + pd.Timedelta(days=1))
     df["ma200"] = df["close"].rolling(200).mean()
     df["std200"] = df["close"].rolling(200).std()
     df["zscore"] = (df["close"] - df["ma200"]) / df["std200"]
@@ -226,7 +235,7 @@ def prepare_btc_daily_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["btc_roc20"] = df["close"].pct_change(20)
     df["btc_roc60"] = df["close"].pct_change(60)
     df["btc_roc120"] = df["close"].pct_change(120)
-    return df[["date", "ma200", "zscore", "geom200", "sell_trigger", "ma200_slope", "btc_roc20", "btc_roc60", "btc_roc120"]]
+    return df[["date", "indicator_event_time", "indicator_available_at", "ma200", "zscore", "geom200", "sell_trigger", "ma200_slope", "btc_roc20", "btc_roc60", "btc_roc120"]]
 
 
 def align_symbol_data(hourly_df: pd.DataFrame, daily_indicators: pd.DataFrame, timeline: pd.DatetimeIndex) -> pd.DataFrame:
@@ -234,12 +243,24 @@ def align_symbol_data(hourly_df: pd.DataFrame, daily_indicators: pd.DataFrame, t
     aligned.index.name = "time"
     aligned["date"] = aligned.index.floor("D")
 
-    if hourly_df.empty:
-        return aligned.reset_index()
-
-    aligned["close"] = hourly_df.set_index("time")[["close"]].reindex(timeline)["close"].ffill()
+    hourly = hourly_df.set_index("time").reindex(timeline)
+    aligned["open"] = hourly.get("open", pd.Series(np.nan, index=timeline))
+    observed_close = hourly.get("close", pd.Series(np.nan, index=timeline))
+    aligned["quote_observed"] = observed_close.notna()
+    # Carry-forward is a mark only. Neither open nor quote_observed is filled.
+    aligned["close"] = observed_close.ffill()
+    aligned["available_at"] = hourly.get("available_at", pd.Series(timeline + pd.Timedelta(hours=1), index=timeline))
     if not daily_indicators.empty:
-        aligned = aligned.join(daily_indicators.set_index("date"), on="date")
+        daily = daily_indicators.copy()
+        if "indicator_available_at" not in daily:
+            daily["indicator_available_at"] = daily["date"] + pd.Timedelta(days=1)
+        # Conservative boundary: only daily information already available at
+        # this hourly bar's OPEN enters its later close-derived signal.
+        aligned = pd.merge_asof(
+            aligned.reset_index().sort_values("time"),
+            daily.drop(columns="date").dropna(subset=["indicator_available_at"]).sort_values("indicator_available_at"),
+            left_on="time", right_on="indicator_available_at", direction="backward",
+        ).set_index("time")
     return aligned.reset_index()
 
 
@@ -390,9 +411,29 @@ def select_rotation_weights(strategy, rows, btc_gate_on, ts, pool_state):
     )
 
 
-def simulate_window(strategy, window_name: str, start: pd.Timestamp, end: pd.Timestamp, market_data, capture_details=False):
+def simulate_window(
+    strategy, window_name: str, start: pd.Timestamp, end: pd.Timestamp, market_data,
+    capture_details=False, *, fee_rate=None, slippage_rate=None,
+):
+    """Closed-hour signals fill at the next actual hourly open, never on a mark.
+
+    start/end bound available observations, not unfinished bar open timestamps.
+    Rates are per-side fractions supplied by the caller, not account fee claims.
+    Omitting either rate is explicitly labelled unspecified zero-cost research.
+    """
+    costs_configured = fee_rate is not None and slippage_rate is not None
+    fee_rate = 0.0 if fee_rate is None else float(fee_rate)
+    slippage_rate = 0.0 if slippage_rate is None else float(slippage_rate)
+    if any(not np.isfinite(rate) or not 0 <= rate < 1 for rate in (fee_rate, slippage_rate)):
+        raise ValueError("fee/slippage rates must be finite per-side fractions in [0, 1)")
+    if end < start:
+        raise ValueError("end must not precede start")
     base_index = market_data["BTCUSDT"]["time"]
-    mask = (base_index >= start) & (base_index <= end)
+    for symbol in ALL_SYMBOLS:
+        if not market_data[symbol]["time"].equals(base_index):
+            raise ValueError(f"unaligned hourly timeline for {symbol}")
+    base_available = market_data["BTCUSDT"].get("available_at", base_index + pd.Timedelta(hours=1))
+    mask = (base_index >= start) & (base_available <= end)
     idxs = np.flatnonzero(mask.to_numpy())
 
     positions = {symbol: 0.0 for symbol in ALL_SYMBOLS}
@@ -405,23 +446,67 @@ def simulate_window(strategy, window_name: str, start: pd.Timestamp, end: pd.Tim
     daily_trend_equity_base = None
     last_reset_date = None
     is_circuit_broken = False
-    equity_curve = []
+    pending_circuit_exits = set()
+    equity_curve = [(start, INITIAL_CAPITAL)]
+    trade_ledger = []
     circuit_breaker_dates = []
     circuit_breaker_events = []
     pool_trace = []
     pool_state = {}
 
     trend_symbols = [symbol for symbol in ALL_SYMBOLS if symbol != "BTCUSDT"]
+    last_available_close = {symbol: np.nan for symbol in ALL_SYMBOLS}
 
     for idx in idxs:
         ts = base_index.iloc[idx]
         today_utc = ts.strftime("%Y-%m-%d")
         today_id_str = ts.strftime("%Y%m%d")
-        rows = {symbol: market_data[symbol].iloc[idx] for symbol in ALL_SYMBOLS}
+        current_rows = {symbol: market_data[symbol].iloc[idx] for symbol in ALL_SYMBOLS}
+        rows = {symbol: market_data[symbol].iloc[idx - 1].copy() for symbol in ALL_SYMBOLS} if idx > 0 else {}
+        signal_time = base_index.iloc[idx - 1] if idx > 0 else None
+        for symbol, row in rows.items():
+            available = row.get("available_at", row["time"] + pd.Timedelta(hours=1))
+            observed = row.get("quote_observed", pd.notna(row["close"]))
+            if not observed or pd.isna(available) or available > ts:
+                row["close"] = np.nan
+            elif pd.notna(row["close"]):
+                last_available_close[symbol] = row["close"]
+        mark_rows = {}
+        for symbol, current in current_rows.items():
+            mark_rows[symbol] = current.copy()
+            # At execution time current close is still in the future. In a gap,
+            # the preceding observed close may be used only for valuation.
+            mark_rows[symbol]["close"] = current.get("open") if pd.notna(current.get("open")) else last_available_close[symbol]
 
-        trend_val = position_value(trend_symbols, positions, rows)
-        btc_price = rows["BTCUSDT"]["close"]
-        dca_val = 0.0 if pd.isna(btc_price) else positions["BTCUSDT"] * btc_price
+        def executable_price(symbol, execution_rows=current_rows):
+            price = execution_rows[symbol].get("open")
+            return float(price) if pd.notna(price) and np.isfinite(price) and price > 0 else None
+
+        def record_trade(
+            symbol, side, quantity, reference_price, reason, *,
+            signal_rows=rows, observed_signal_time=signal_time, fill_time=ts,
+        ):
+            execution_price = reference_price * (1 + slippage_rate if side == "buy" else 1 - slippage_rate)
+            notional = quantity * execution_price
+            fee = notional * fee_rate
+            cash_delta = -notional - fee if side == "buy" else notional - fee
+            trade_ledger.append({
+                "symbol": symbol, "side": side, "reason": reason,
+                "signal_time": fill_time if reason == "circuit_breaker" else observed_signal_time,
+                "signal_available_at": fill_time if reason == "circuit_breaker" else signal_rows[symbol].get(
+                    "available_at", observed_signal_time + pd.Timedelta(hours=1)
+                ),
+                "fill_time": fill_time, "reference_price": reference_price,
+                "execution_price": execution_price, "quantity": quantity,
+                "notional": notional, "fee": fee,
+                "slippage_cost": quantity * abs(execution_price - reference_price),
+                "cash_delta": cash_delta,
+            })
+            return cash_delta
+
+        trend_val = position_value(trend_symbols, positions, mark_rows)
+        btc_mark = mark_rows["BTCUSDT"]["close"]
+        dca_val = 0.0 if pd.isna(btc_mark) else positions["BTCUSDT"] * btc_mark
         total_equity = cash_usdt + trend_val + dca_val
         allocation = compute_allocation_budgets(total_equity, cash_usdt, trend_val, dca_val)
         trend_usdt_pool = allocation["trend_usdt_pool"]
@@ -439,13 +524,7 @@ def simulate_window(strategy, window_name: str, start: pd.Timestamp, end: pd.Tim
             0.0 if not daily_trend_equity_base else (trend_val - daily_trend_equity_base) / daily_trend_equity_base
         )
         if trend_daily_pnl <= CIRCUIT_BREAKER_PCT and not is_circuit_broken:
-            for symbol in trend_symbols:
-                price = rows[symbol]["close"]
-                if not pd.isna(price) and positions[symbol] * price > 10:
-                    cash_usdt += positions[symbol] * price
-                    positions[symbol] = 0.0
-                    trend_state[symbol] = {"is_holding": False, "highest_price": 0.0}
-                    trade_count += 1
+            pending_circuit_exits.update(symbol for symbol in trend_symbols if positions[symbol] > 0)
             is_circuit_broken = True
             circuit_breaker_dates.append(today_utc)
             circuit_breaker_events.append(
@@ -459,22 +538,47 @@ def simulate_window(strategy, window_name: str, start: pd.Timestamp, end: pd.Tim
                 }
             )
 
+        # A missing executable quote defers a risk exit; it does not cancel it.
+        # Keep these exits across daily resets until a real open permits a fill.
+        for symbol in trend_symbols:
+            if symbol not in pending_circuit_exits:
+                continue
+            if positions[symbol] <= 0:
+                pending_circuit_exits.remove(symbol)
+                continue
+            price = executable_price(symbol)
+            if price is not None and positions[symbol] * price > 10 and rows:
+                cash_usdt += record_trade(symbol, "sell", positions[symbol], price, "circuit_breaker")
+                positions[symbol] = 0.0
+                trend_state[symbol] = {"is_holding": False, "highest_price": 0.0}
+                pending_circuit_exits.remove(symbol)
+                trade_count += 1
+
+        if not rows:
+            equity_curve.append((base_available.iloc[idx], total_equity))
+            continue
         btc_row = rows["BTCUSDT"]
+        btc_price = btc_row["close"]
         btc_gate_on = (
             not any(pd.isna(btc_row.get(k)) for k in ["close", "ma200", "ma200_slope"])
             and btc_row["close"] > btc_row["ma200"]
             and btc_row["ma200_slope"] > 0
         )
 
-        active_weights = select_rotation_weights(strategy, rows, btc_gate_on, ts, pool_state)
-        current_pool = get_candidate_pool(strategy, rows, ts, pool_state)
+        active_weights = select_rotation_weights(strategy, rows, btc_gate_on, signal_time, pool_state)
+        current_pool = get_candidate_pool(strategy, rows, signal_time, pool_state)
         if capture_details and (not pool_trace or pool_trace[-1][0].strftime("%Y-%m") != ts.strftime("%Y-%m")):
             pool_trace.append((ts, list(current_pool)))
 
         if not is_circuit_broken:
             for symbol in trend_symbols:
+                if symbol in pending_circuit_exits:
+                    continue
                 row = rows[symbol]
                 price = row["close"]
+                if pd.isna(price):
+                    # Missing signal information is not an instruction to exit.
+                    continue
                 sma60 = row.get("sma60")
                 atr14 = row.get("atr14")
 
@@ -491,23 +595,26 @@ def simulate_window(strategy, window_name: str, start: pd.Timestamp, end: pd.Tim
                     and positions[symbol] > 0
                     and (symbol not in active_weights or stop_triggered)
                 )
-                if should_liquidate and not pd.isna(price):
-                    cash_usdt += positions[symbol] * price
+                fill_price = executable_price(symbol)
+                if should_liquidate and fill_price is not None:
+                    cash_usdt += record_trade(symbol, "sell", positions[symbol], fill_price, "trend_exit")
                     positions[symbol] = 0.0
                     trend_state[symbol] = {"is_holding": False, "highest_price": 0.0}
                     trade_count += 1
 
-            trend_val = position_value(trend_symbols, positions, rows)
-            dca_val = 0.0 if pd.isna(btc_price) else positions["BTCUSDT"] * btc_price
+            trend_val = position_value(trend_symbols, positions, mark_rows)
+            dca_val = 0.0 if pd.isna(btc_mark) else positions["BTCUSDT"] * btc_mark
             total_equity = cash_usdt + trend_val + dca_val
             post_sell_allocation = compute_allocation_budgets(total_equity, cash_usdt, trend_val, dca_val)
             trend_usdt_pool = post_sell_allocation["trend_usdt_pool"]
             eligible_buy_symbols = []
             for symbol in active_weights:
+                if symbol in pending_circuit_exits:
+                    continue
                 row = rows[symbol]
                 price = row["close"]
                 needed = ["sma20", "sma60", "sma200", "atr14"]
-                if pd.isna(price) or any(pd.isna(row.get(k)) for k in needed):
+                if pd.isna(price) or price <= 0 or executable_price(symbol) is None or any(pd.isna(row.get(k)) for k in needed):
                     continue
                 if trend_state[symbol]["is_holding"]:
                     continue
@@ -516,25 +623,26 @@ def simulate_window(strategy, window_name: str, start: pd.Timestamp, end: pd.Tim
             planned_trend_buys = allocate_trend_buy_budget(active_weights, eligible_buy_symbols, trend_usdt_pool)
             for symbol in eligible_buy_symbols:
                 row = rows[symbol]
-                price = row["close"]
+                price = executable_price(symbol)
                 buy_u = planned_trend_buys.get(symbol, 0.0)
                 if buy_u > 15:
-                    qty = (buy_u * 0.985) / price
-                    cost = qty * price
+                    qty = (buy_u * 0.985) / (price * (1 + slippage_rate) * (1 + fee_rate))
+                    cost = qty * price * (1 + slippage_rate) * (1 + fee_rate)
                     if cost <= cash_usdt:
                         positions[symbol] += qty
-                        cash_usdt -= cost
+                        cash_usdt += record_trade(symbol, "buy", qty, price, "trend_buy")
                         trend_state[symbol] = {"is_holding": True, "highest_price": price}
                         trade_count += 1
 
-        trend_val = position_value(trend_symbols, positions, rows)
-        dca_val = 0.0 if pd.isna(btc_price) else positions["BTCUSDT"] * btc_price
+        trend_val = position_value(trend_symbols, positions, mark_rows)
+        dca_val = 0.0 if pd.isna(btc_mark) else positions["BTCUSDT"] * btc_mark
         total_equity = cash_usdt + trend_val + dca_val
         post_trade_allocation = compute_allocation_budgets(total_equity, cash_usdt, trend_val, dca_val)
         trend_usdt_pool = post_trade_allocation["trend_usdt_pool"]
         dca_usdt_pool = post_trade_allocation["dca_usdt_pool"]
 
-        if not pd.isna(btc_price):
+        btc_fill_price = executable_price("BTCUSDT")
+        if not pd.isna(btc_price) and btc_price > 0 and btc_fill_price is not None:
             geom200 = btc_row.get("geom200")
             zscore = btc_row.get("zscore")
             sell_trigger = btc_row.get("sell_trigger")
@@ -551,11 +659,11 @@ def simulate_window(strategy, window_name: str, start: pd.Timestamp, end: pd.Tim
 
                 if multiplier > 0 and dca_usdt_pool > 15 and dca_last_buy_date != today_id_str:
                     buy_budget = min(dca_usdt_pool, get_dynamic_btc_base_order(total_equity) * multiplier)
-                    qty = (buy_budget * 0.985) / btc_price
-                    cost = qty * btc_price
+                    qty = (buy_budget * 0.985) / (btc_fill_price * (1 + slippage_rate) * (1 + fee_rate))
+                    cost = qty * btc_fill_price * (1 + slippage_rate) * (1 + fee_rate)
                     if cost <= cash_usdt:
                         positions["BTCUSDT"] += qty
-                        cash_usdt -= cost
+                        cash_usdt += record_trade("BTCUSDT", "buy", qty, btc_fill_price, "dca_buy")
                         dca_last_buy_date = today_id_str
                         trade_count += 1
 
@@ -574,21 +682,26 @@ def simulate_window(strategy, window_name: str, start: pd.Timestamp, end: pd.Tim
 
                 qty = positions["BTCUSDT"] * sell_pct
                 if qty > 0:
-                    cash_usdt += qty * btc_price
+                    cash_usdt += record_trade("BTCUSDT", "sell", qty, btc_fill_price, "dca_reduce")
                     positions["BTCUSDT"] -= qty
                     dca_last_sell_date = today_id_str
                     trade_count += 1
 
-        end_equity = cash_usdt + position_value(trend_symbols, positions, rows)
-        if not pd.isna(btc_price):
-            end_equity += positions["BTCUSDT"] * btc_price
-        equity_curve.append((ts, end_equity))
+        close_marks = {}
+        for symbol, current in current_rows.items():
+            available = current.get("available_at", current["time"] + pd.Timedelta(hours=1))
+            if pd.notna(available) and available <= base_available.iloc[idx] and pd.notna(current["close"]):
+                last_available_close[symbol] = current["close"]
+            close_marks[symbol] = {"close": last_available_close[symbol]}
+        end_equity = cash_usdt + position_value(ALL_SYMBOLS, positions, close_marks)
+        equity_curve.append((base_available.iloc[idx], end_equity))
 
     equity_series = pd.Series([v for _, v in equity_curve], index=[ts for ts, _ in equity_curve], dtype=float)
     final_equity = float(equity_series.iloc[-1])
     total_return = final_equity / INITIAL_CAPITAL - 1.0
     years = (equity_series.index[-1] - equity_series.index[0]).total_seconds() / (365.25 * 24 * 3600)
-    cagr = np.nan if years <= 0 else (final_equity / INITIAL_CAPITAL) ** (1 / years) - 1.0
+    with np.errstate(over="ignore", invalid="ignore"):
+        cagr = np.nan if years <= 0 else np.expm1(np.log(final_equity / INITIAL_CAPITAL) / years)
     drawdown = equity_series / equity_series.cummax() - 1.0
     max_drawdown = float(drawdown.min())
 
@@ -601,6 +714,15 @@ def simulate_window(strategy, window_name: str, start: pd.Timestamp, end: pd.Tim
         "cagr": float(cagr),
         "max_drawdown": float(max_drawdown),
         "trades": trade_count,
+        "execution_model": "closed_hour_signal_next_open_v1",
+        "cost_assumption_status": "EXPLICIT_RESEARCH_RATES" if costs_configured else "UNSPECIFIED_ZERO_COST",
+        "fee_rate": fee_rate,
+        "slippage_rate": slippage_rate,
+        "research_status": "DEVELOPMENT_ONLY",
+        "total_fees": sum(trade["fee"] for trade in trade_ledger),
+        "total_costs": sum(trade["fee"] + trade["slippage_cost"] for trade in trade_ledger),
+        "turnover_notional": sum(trade["notional"] for trade in trade_ledger),
+        "trade_ledger": trade_ledger if capture_details else [],
         "equity_series": equity_series if capture_details else None,
         "circuit_breaker_dates": circuit_breaker_dates if capture_details else [],
         "circuit_breaker_events": circuit_breaker_events if capture_details else [],
@@ -845,7 +967,8 @@ def run_strategy_comparison():
             if capture_details:
                 detailed_results.append(result)
 
-    print("===== 全自动选池研究回测（每小时执行，尽量贴近当前 main.py）=====")
+    print("===== 全自动选池研究回测（已完成小时信号、下一实际小时开盘成交）=====")
+    print("研究状态: DEVELOPMENT_ONLY；未提供真实费率与滑点，当前结果为 UNSPECIFIED_ZERO_COST，不可用于晋级或调整预算。")
     print("说明: 所有策略都保留 BTC 动态仓位 + AHR 定投/高估减仓 + BTC 趋势闸门 + ATR/SMA60 风控。")
     print("当前重点比较 固定5币池 基准 与 稳健质量排序家族的不同参数变体。")
 

@@ -1,0 +1,10 @@
+{
+  "mode": "mock",
+  "source_id": "binance.reconciliation_observation.mock",
+  "environment": "synthetic",
+  "expected_account_id": "binance-paper-mock-001",
+  "strategy_profile": "synthetic_reconciliation",
+  "scope_version": "synthetic-scope-v1",
+  "max_age_seconds": 1800,
+  "max_window_seconds": 300
+}

@@ -1,3 +1,4 @@
+import os
 import sys
 import types
 import unittest
@@ -10,7 +11,9 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 QPK_SRC = PROJECT_ROOT.parent / "QuantPlatformKit" / "src"
 CRYPTO_STRATEGIES_SRC = PROJECT_ROOT.parent / "CryptoStrategies" / "src"
-for path in (PROJECT_ROOT, QPK_SRC, CRYPTO_STRATEGIES_SRC):
+# Exact-pin CI must use installed wheels, never sibling source checkouts.
+paths = (PROJECT_ROOT,) if os.environ.get("BINANCE_EXACT_PIN_TESTS") == "1" else (PROJECT_ROOT, QPK_SRC, CRYPTO_STRATEGIES_SRC)
+for path in paths:
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 

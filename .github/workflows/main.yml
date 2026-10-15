@@ -221,7 +221,7 @@ jobs:
 
       - name: Publish disabled host observation
         if: ${{ steps.disabled-host.outputs.publish_ready == 'true' }}
-        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-target-lifecycle@f2597e8bfb25881242b13145cb5f42d06ba3476c
+        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-target-lifecycle@28f3dbb7a88b30d6b38575b2fc4f07cc475e4c9c
         with:
           source-id: binance.runtime-target-lifecycle
           target-id: ${{ steps.disabled-host.outputs.target_id }}
@@ -454,7 +454,7 @@ jobs:
 
       - name: Download approved accounting migration preview
         if: ${{ inputs.accounting_migration_action == 'apply' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: binance-accounting-migration-preview
           path: reports/binance-accounting-migration-preview
@@ -625,7 +625,7 @@ jobs:
       - name: 5a. Stage redacted lifecycle recorder output for monitor
         continue-on-error: true
         if: ${{ always() && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: binance-live-run-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/binance-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}/lifecycle-run.json
@@ -634,7 +634,7 @@ jobs:
 
       - name: 5b. Retain redacted reconciliation candidate
         if: ${{ always() && github.event.inputs.reconcile_only == 'true' && github.event.inputs.reconcile_persist_candidate == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: binance-reconciliation-candidate-${{ github.run_id }}
           path: reports/binance-reconciliation-candidate.json
@@ -645,7 +645,7 @@ jobs:
 
       - name: Retain redacted accounting migration preview
         if: ${{ always() && inputs.accounting_migration_action == 'preview' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: binance-accounting-migration-preview
           path: reports/binance-accounting-migration-preview/candidate.json
@@ -654,7 +654,7 @@ jobs:
 
       - name: Retain encrypted new accounting start proposal
         if: ${{ success() && inputs.accounting_migration_action == 'rebase-proposal' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: binance-accounting-rebase-proposal
           path: reports/binance-accounting-rebase-proposal/proposal.cms
