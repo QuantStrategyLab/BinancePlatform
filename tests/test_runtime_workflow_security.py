@@ -806,7 +806,7 @@ def test_accounting_migration_uses_fixed_artifact_and_never_falls_through_to_str
         ]
     )
     assert (
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7"
+        "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7"
         in upload
     )
     assert "retention-days: 1" in upload
