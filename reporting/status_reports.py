@@ -45,6 +45,9 @@ def maybe_send_periodic_btc_status_report(
     notifier_fn=None,
     send_tg_msg_fn=None,
 ):
+    from notifications.digest_snapshot.digest_routing import daily_digest_enabled
+    if daily_digest_enabled():
+        return False
     if interval_hours <= 0:
         return  # heartbeat disabled
     report_bucket = get_periodic_report_bucket(now_utc, interval_hours)

@@ -563,6 +563,8 @@ jobs:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
           NOTIFY_LANG: ${{ vars.NOTIFY_LANG }}
+          QSL_ROUTINE_NOTIFICATION_MODE: ${{ vars.QSL_ROUTINE_NOTIFICATION_MODE || 'immediate' }}
+          QSL_DIGEST_ROUTINE_ORDERS: ${{ vars.QSL_DIGEST_ROUTINE_ORDERS || 'true' }}
           EXECUTION_REPORT_GCS_URI: ${{ vars.EXECUTION_REPORT_GCS_URI }}
           BINANCE_LIFECYCLE_EXPORT_PATH: ${{ runner.temp }}/binance-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}/lifecycle-run.json
           BINANCE_DRY_RUN: ${{ vars.BINANCE_DRY_RUN || 'true' }}
@@ -703,4 +705,3 @@ jobs:
           NOTIFY_LANG: ${{ vars.NOTIFY_LANG || 'zh' }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
-

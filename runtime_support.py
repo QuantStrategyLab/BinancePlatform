@@ -430,7 +430,7 @@ def next_order_id(runtime, prefix, symbol):
     return f"{prefix}_{symbol}_{safe_run_id}_{runtime.order_sequence:03d}"
 
 
-def runtime_notify(runtime, report, text):
+def runtime_notify(runtime, report, text, *, urgent=True):
     message = str(text)
     safe_event = {
         "sink": "telegram",
@@ -439,6 +439,11 @@ def runtime_notify(runtime, report, text):
         "run_id": str(runtime.run_id),
         "dry_run": bool(runtime.dry_run),
     }
+    from notifications.digest_snapshot.digest_routing import daily_digest_enabled
+    if not urgent and daily_digest_enabled():
+        safe_event.update(delivery_status="deferred_digest", transport_acknowledged=False)
+        report["notifications"].append(safe_event)
+        return False
     if runtime.dry_run:
         safe_event.update(
             {
@@ -485,7 +490,7 @@ def runtime_notify(runtime, report, text):
     delivery_events = [
         event
         for event in report["notifications"]
-        if event.get("delivery_status") != "suppressed"
+        if event.get("delivery_status") not in {"suppressed", "deferred_digest"}
     ]
     report.setdefault("summary", {})["notification_delivery_summary"] = {
         "event_count": len(delivery_events),
