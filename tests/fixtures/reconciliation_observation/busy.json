@@ -1,0 +1,50 @@
+{
+  "observation_id": "fixture-observation-busy",
+  "report_id": "fixture-report-busy",
+  "broker_before": {
+    "observed_at": "2000-01-01T00:01:00Z",
+    "account_id": "binance-paper-mock-001",
+    "complete": true,
+    "balances": {
+      "USDT": "100",
+      "BTC": "0.01"
+    },
+    "open_orders": [],
+    "executions": []
+  },
+  "broker_after": {
+    "observed_at": "2000-01-01T00:01:50Z",
+    "account_id": "binance-paper-mock-001",
+    "complete": true,
+    "balances": {
+      "USDT": "100",
+      "BTC": "0.01"
+    },
+    "open_orders": [],
+    "executions": []
+  },
+  "ledger_before": {
+    "observed_at": "2000-01-01T00:01:01Z",
+    "version": "synthetic-ledger-v1",
+    "complete": true,
+    "entries": []
+  },
+  "ledger_after": {
+    "observed_at": "2000-01-01T00:01:49Z",
+    "version": "synthetic-ledger-v2",
+    "complete": true,
+    "entries": []
+  },
+  "reference": {
+    "version": "synthetic-reference-v1",
+    "scope_version": "synthetic-scope-v1",
+    "account_id": "binance-paper-mock-001",
+    "balances": {
+      "USDT": "100",
+      "BTC": "0.01"
+    },
+    "open_orders": [],
+    "executions": [],
+    "ledger_entries": []
+  }
+}
