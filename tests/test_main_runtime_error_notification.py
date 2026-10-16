@@ -124,7 +124,7 @@ class MainRuntimeErrorNotificationTests(unittest.TestCase):
         with patch.dict(os.environ, {"NOTIFY_LANG": "zh-CN", "STRATEGY_PROFILE": "crypto_live_pool_rotation"}):
             message = main._runtime_error_notification_message(RuntimeError("PRIVATE_SENTINEL"))
         self.assertIn("Binance 策略运行失败", message)
-        self.assertIn("加密实时池轮动", message)
+        self.assertIn("加密池轮动", message)
         self.assertIn("下一步", message)
         self.assertNotIn("PRIVATE_SENTINEL", message)
         self.assertNotIn("未提交订单", message)

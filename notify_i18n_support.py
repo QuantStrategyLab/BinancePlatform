@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from notifications.display_names import display_name
+
 import os
 
 from quant_platform_kit.common.operational_notification_localization import resolve_operational_notification_locale
@@ -12,11 +14,10 @@ _TEXTS = {
     "en": {
         "rebalance_title": "🔔 Crypto Trade",
         "heartbeat_title": "💓 Crypto Status",
-        "telegram_prefix": "🤖 Binance Quant",
         "firestore_get_state_failed": "Firestore get state failed: {error}",
         "firestore_write_failed": "Firestore write failed: {error}",
         "telegram_send_failed": "Telegram send failed",
-        "runtime_error_title": "⚠️ Binance strategy run failed",
+        "runtime_error_title": "⚠️ {platform} strategy run failed",
         "runtime_error_reason_recovery_control_read_failed": "Temporary recovery configuration read failure; trading did not start.",
         "runtime_error_reason_recovery_not_active": "Recovery authorization is not active; trading did not start.",
         "runtime_error_reason_recovery_control_state_invalid": "Recovery configuration is invalid; trading did not start.",
@@ -147,18 +148,14 @@ _TEXTS = {
         "usdt_unavailable_for_trend_buy": "USDT unavailable for trend buy",
         "usdt_unavailable_for_btc_dca_buy": "USDT unavailable for BTC DCA buy",
         "btc_unavailable_for_dca_sell": "BTC unavailable for DCA sell",
-        "strategy_name_crypto_leader_rotation": "Crypto Leader Rotation",
-        "strategy_name_crypto_live_pool_rotation": "Crypto Live Pool Rotation",
-        "strategy_name_crypto_equity_combo": "Crypto Equity Combo",
     },
     "zh": {
         "rebalance_title": "🔔 加密调仓",
         "heartbeat_title": "💓 加密状态",
-        "telegram_prefix": "🤖 加密量化助手",
         "firestore_get_state_failed": "Firestore 读取状态失败: {error}",
         "firestore_write_failed": "Firestore 写入状态失败: {error}",
         "telegram_send_failed": "Telegram 发送失败",
-        "runtime_error_title": "⚠️ Binance 策略运行失败",
+        "runtime_error_title": "⚠️ {platform} 策略运行失败",
         "runtime_error_reason_recovery_control_read_failed": "暂时无法读取恢复配置，本次未启动交易。",
         "runtime_error_reason_recovery_not_active": "恢复授权尚未激活，本次未启动交易。",
         "runtime_error_reason_recovery_control_state_invalid": "恢复配置状态无效，本次未启动交易。",
@@ -289,9 +286,6 @@ _TEXTS = {
         "usdt_unavailable_for_trend_buy": "USDT 不足，无法执行趋势买入",
         "usdt_unavailable_for_btc_dca_buy": "USDT 不足，无法执行 BTC 定投买入",
         "btc_unavailable_for_dca_sell": "BTC 不足，无法执行定投止盈卖出",
-        "strategy_name_crypto_leader_rotation": "加密领涨轮动",
-        "strategy_name_crypto_live_pool_rotation": "加密实时池轮动",
-        "strategy_name_crypto_equity_combo": "加密动量组合",
     },
 }
 
@@ -308,11 +302,16 @@ def build_translator(lang: str):
     active_lang = resolve_operational_notification_locale(lang)
 
     def translator(key: str, **kwargs) -> str:
+        if key.startswith("strategy_name_"):
+            profile = key.removeprefix("strategy_name_")
+            return display_name("strategies", profile, active_lang, fallback=key)
         template = _TEXTS.get(active_lang, _TEXTS[DEFAULT_NOTIFY_LANG]).get(key)
         if template is None:
             template = _TEXTS[DEFAULT_NOTIFY_LANG].get(key, key)
+        template = template.replace("{platform}", display_name("platforms", "binance", active_lang))
         return template.format(**kwargs) if kwargs else template
 
+    translator.notification_locale = active_lang
     return translator
 
 
@@ -328,6 +327,9 @@ def build_strategy_display_name(translate_fn):
         metadata=None,
     ) -> str:
         # If StrategyMetadata is provided, use the canonical catalog resolver
+        configured = display_name("strategies", profile, getattr(translate_fn, "notification_locale", get_notify_lang()))
+        if configured != profile:
+            return configured
         if metadata is not None:
             try:
                 from quant_platform_kit.common.notification_localization import (
@@ -354,4 +356,7 @@ def build_strategy_display_name(translate_fn):
 
 
 def build_telegram_message(text: str) -> str:
-    return f"{translate('telegram_prefix')}:\n{text}"
+    lane = display_name("accounts", os.getenv("QSL_NOTIFICATION_ACCOUNT_ALIAS", "crypto_combo"), get_notify_lang(), platform="binance")
+    platform = display_name("platforms", "binance", get_notify_lang())
+    sender = display_name("senders", "quant_sentinel", get_notify_lang())
+    return f"[{platform} {lane}] {sender}:\n{text}"
