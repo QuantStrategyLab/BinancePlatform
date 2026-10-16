@@ -26,16 +26,18 @@ uv sync --frozen --extra test
 uv run --no-sync python -m unittest discover -s tests -v
 ```
 
+下面的命令都通过 `uv run --no-sync` 运行，因此会使用 `uv sync` 安装的解释器和依赖，不会重新解析它们。
+
 在不接触交易所的情况下，对固定输入回放一个周期：
 
 ```bash
-python run_cycle_replay.py --help
+uv run --no-sync python run_cycle_replay.py --help
 ```
 
 设置好 runtime target 和凭据后运行 live cycle（默认 dry-run）：
 
 ```bash
-python main.py
+uv run --no-sync python main.py
 ```
 
 ## 配置

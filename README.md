@@ -37,17 +37,20 @@ uv sync --frozen --extra test
 uv run --no-sync python -m unittest discover -s tests -v
 ```
 
+The commands below all go through `uv run --no-sync` so they use the interpreter
+and dependencies installed by `uv sync` without re-resolving them.
+
 Replay a fixed input cycle without touching the exchange:
 
 ```bash
-python run_cycle_replay.py --help
+uv run --no-sync python run_cycle_replay.py --help
 ```
 
 Run the live cycle (dry-run by default) once a runtime target and credentials
 are set:
 
 ```bash
-python main.py
+uv run --no-sync python main.py
 ```
 
 ## Configuration
