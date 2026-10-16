@@ -1,53 +1,24 @@
 # BinancePlatform
 
-BinancePlatform 是 QuantStrategyLab 的 Binance 加密货币执行 runtime：它通过面向 Binance 的 workflow 和 self-hosted 编排来运行已启用的加密货币策略，负责券商/API 连接、dry-run/live 控制和部署配置。它只是执行层，不是研究仓库——策略逻辑来自 `CryptoStrategies`，如果 profile 依赖 live-pool，相关验证和产物来自 `CryptoLivePoolPipelines`。在整个 QuantStrategyLab 多仓库系统里，它处于 runtime-platform 层，消费上游策略和 pipeline 产物，而不自行决定策略逻辑。它主要面向负责运维或审查该平台部署与运行行为的工程师，而不是寻找现成策略或投资信号的交易者。
+在 Binance 上运行加密策略、并带 dry-run 与 live 控制的执行运行时。
 
-[English README](README.md)
+[English](README.md) | 简体中文
 
-> 投资有风险。本项目不构成投资建议，仅用于学习、研究和工程审阅。
+## 状态
 
-## 架构角色
+实验性项目，使用风险自负。本项目不构成投资建议，也不保证任何交易结果。实盘交易可能亏损；你需要对自己的配置和订单负责。默认运行为 dry-run。
 
-- **层级**：`执行平台`。
-- **职责**：Binance 加密执行运行时。
-- **事实源/归属**：券商/API 连接、dry-run/live 控制、部署设置。
-- **消费对象**：CryptoStrategies、CryptoLivePoolPipelines artifacts、QuantPlatformKit、QuantRuntimeSettings。
-- **禁止事项**：承载策略研究逻辑或发布 live-pool 成员。
+## 简介
 
-## 运行边界
+BinancePlatform 是 QuantStrategyLab 面向 Binance 加密交易的执行运行时。它通过 live cycle 运行已启用的加密策略，负责 Binance 连接、dry-run 与 live 门控、状态与对账、通知以及部署。策略逻辑来自 `CryptoStrategies`，live-pool 资格与验证产物来自 `CryptoLivePoolPipelines`。它面向运维或审查该平台的工程师。
 
-- 只加载策略包暴露的 runtime-enabled profile。
-- 负责券商/API 连接、dry-run 检查、通知和部署配置。
-- 凭据必须放在 GitHub Secrets、云密钥系统或券商专用密钥系统中，不能提交到 Git。
-- 任何 live 下单路径启用前，都应先从 dry-run 或 paper mode 开始。
+## 不适用范围
 
-### Binance 账户事实只读取数
-
-`Refresh Binance Account Facts` workflow 可每天 UTC 06:17 触发一次现有的 `Binance Account Facts` workflow。触发器只接受本仓库 `main` 分支，并要求仓库变量 `BINANCE_ACCOUNT_FACTS_REFRESH_ENABLED` 的值严格为 `true`；变量未设置时保持关闭。dispatcher 只用短时 GitHub token 请求固定的 `runtime-production` 与 `direct_read` 输入，不接收券商凭据、不启用 Runtime，也不触发交易 workflow。目标 workflow 仍独立检查 `BINANCE_ACCOUNT_FACTS_ENABLED`，并使用受保护的 `binance-runtime` environment。
-
-QSL 会在账户事实报告超过 36 小时后将其视为过期。每日刷新用于保持只读余额及时；目标任务失败或被跳过不会让旧数据变新。默认配置保持关闭；生产启用由专用仓库开关控制，并需要明确授权。
-
-## 普通 profile 与 snapshot-backed profile
-
-普通 runtime profile 通常可以直接基于 market history 或 portfolio state 执行。Snapshot-backed profile 需要先从对应 live-pool pipeline 获取当前 artifact bundle，平台才应该执行。平台不应该自行判断策略资格，而应消费策略仓和 live-pool 仓发布的状态与产物。
-
-## 安全部署顺序
-
-1. 在 Git 之外配置 secrets 和 runtime variables。
-2. 先以 dry-run 模式运行 workflow 或服务。
-3. 检查生成订单、日志、通知和 reconciliation 输出。
-4. 确认回滚步骤和 artifact 版本。
-5. 上述检查清楚后，再启用定时任务或 live 执行。
-
-## 仓库结构
-
-- `tests/`：单元测试、契约测试和回归测试。
-- `docs/`：运行手册、设计说明、证据和集成契约。
-- `.github/workflows/`：CI、定时任务、发布或部署 workflow。
-- `scripts/`：运维脚本和本地辅助工具。
-- `research/`：研究配置和非 live 候选产物。
+它不包含策略研究或信号生成。它不决定哪些策略可以运行，只加载其他仓库发布的 profile。没有明确的 runtime target 和凭据时它不会运行。
 
 ## 快速开始
+
+需要 Python 3.11 或更高版本。
 
 ```bash
 python -m pip install --upgrade pip uv
@@ -55,22 +26,58 @@ uv sync --frozen --extra test
 uv run --no-sync python -m unittest discover -s tests -v
 ```
 
-## QSL 兼容性
+下面的命令都通过 `uv run --no-sync` 运行，因此会使用 `uv sync` 安装的解释器和依赖，不会重新解析它们。
 
-- `qsl.toml` 记录 `tier`、`upgrade_ring` 和 `compat.bundle`，用于跟踪运行时兼容性。
-- 依赖在 `pyproject.toml` 中声明，并固定在 `uv.lock` 中。
-- CI、watchdog 和 self-hosted runtime 启动流程都从 `uv.lock` 安装依赖。
+在不接触交易所的情况下，用本地 fixtures 回放一个固定输入的周期（传入 `--help` 可查看 `--fixtures-dir`、`--output` 等选项）：
 
-## 延伸文档
+```bash
+uv run --no-sync python run_cycle_replay.py
+```
 
-- [`docs/operator_runbook.md`](docs/operator_runbook.md)
+设置好 runtime target 和凭据后运行 live cycle（默认 dry-run）：
 
-## 社区和安全
+```bash
+uv run --no-sync python main.py
+```
 
-- 贡献前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)，确认 PR 范围、本地校验和文档要求。
-- 讨论、issue 和 review 请遵守 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
-- 涉及密钥、自动化、券商/交易所或云资源的漏洞请按 [SECURITY.md](SECURITY.md) 私密报告；不要为 secret 或实盘风险开公开 issue。
+## 配置
+
+| 变量 | 必填 | 默认值 | 用途 |
+|---|---|---|---|
+| `BINANCE_API_KEY` | 是 | 无 | Binance API key。 |
+| `BINANCE_API_SECRET` | 是 | 无 | Binance API secret。 |
+| `STRATEGY_PROFILE` | 否 | `crypto_live_pool_rotation` | 要加载的运行时策略 profile。 |
+| `BINANCE_DRY_RUN` | 否 | `true` | 保持周期运行在 dry-run 模式。 |
+| `RUNTIME_TARGET_JSON` | 否 | 无 | 与 `BINANCE_DRY_RUN` 一致的 runtime target 描述。 |
+| `ACCOUNT_SELECTOR` | 否 | `default` | 要运行的已配置账户。 |
+| `GCP_PROJECT_ID` | 否 | 无 | 存放状态与报告的 Google Cloud 项目。 |
+| `HEALTH_PORT` | 否 | `8080` | 健康检查端点端口。 |
+| `NOTIFY_LANG` | 否 | `en` | 通知使用的语言。 |
+
+凭据只从环境变量读取，绝不写入仓库。
+
+## 仓库结构
+
+```
+main.py                 live cycle 入口
+application/            周期、执行与对账服务
+entrypoints/            CLI 入口辅助
+strategy/               策略加载与注册表胶水代码
+notifications/          通知适配器
+infra/                  基础设施辅助
+scripts/                运维脚本
+docs/                   运行手册与契约
+tests/                  单元与契约测试
+```
+
+## 参与贡献
+
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 安全
+
+见 [SECURITY.md](SECURITY.md)。安全漏洞不要开公开 issue，也不要把凭据或账户信息提交到仓库。
 
 ## 许可证
 
-详见 [LICENSE](LICENSE)。
+MIT，见 [LICENSE](LICENSE)。

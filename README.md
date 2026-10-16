@@ -1,53 +1,35 @@
 # BinancePlatform
 
-BinancePlatform is QuantStrategyLab's execution runtime for Binance crypto trading: it runs runtime-enabled crypto strategies through Binance-facing workflows and self-hosted orchestration, handling broker/API connectivity, dry-run/live controls, and deployment. It is strictly an execution layer, not a research repository — strategy logic comes from `CryptoStrategies`, and live-pool eligibility plus validation artifacts come from `CryptoLivePoolPipelines` when a profile needs them. Within the larger QuantStrategyLab system it sits at the runtime-platform layer, consuming upstream strategy and pipeline artifacts rather than deciding strategy logic itself. It's meant for engineers operating or auditing this platform's deployment and runtime behavior, not for traders looking for ready-made strategies or investment signals.
+Execution runtime that runs crypto strategies against Binance with dry-run and live controls.
 
-[Chinese README](README.zh-CN.md)
+English | [简体中文](README.zh-CN.md)
 
-> Investing involves risk. This project does not provide investment advice and is for education, research, and engineering review only.
+## Status
 
-## Architecture role
+Experimental. Use at your own risk. This project is not financial advice and
+does not guarantee any trading result. Live trading can lose money; you are
+responsible for your own configuration and orders. Dry-run is the default.
 
-- **Layer**: `runtime-platform`.
-- **Responsibility**: Binance crypto execution runtime.
-- **Owns**: broker/API connectivity, dry-run/live controls, deployment settings.
-- **Consumes**: CryptoStrategies, CryptoLivePoolPipelines artifacts, QuantPlatformKit, QuantRuntimeSettings.
-- **Must not**: own strategy research logic or publish live-pool membership.
+## What this is
 
-## Runtime boundary
+BinancePlatform is the QuantStrategyLab execution runtime for Binance crypto
+trading. It runs runtime-enabled crypto strategies through a live cycle,
+handling Binance connectivity, dry-run and live gating, state and
+reconciliation, notifications, and deployment. Strategy logic comes from
+`CryptoStrategies`, and live-pool eligibility and validation artifacts come from
+`CryptoLivePoolPipelines`. It is aimed at engineers operating or auditing the
+platform.
 
-- Loads only runtime-enabled strategy profiles exposed by the strategy packages.
-- Handles broker/API connectivity, dry-run checks, notifications, and deployment settings.
-- Must keep credentials in GitHub Secrets, cloud secret stores, or the broker-specific secret system, never in Git.
-- Should start with dry-run or paper mode before any live order path is enabled.
+## What this is not
 
-### Read-only Binance account-facts refresh
-
-The `Refresh Binance Account Facts` workflow can dispatch the existing `Binance Account Facts` workflow once per day at 06:17 UTC. It is restricted to this repository's `main` branch and is disabled unless the repository variable `BINANCE_ACCOUNT_FACTS_REFRESH_ENABLED` is exactly `true`; an absent variable leaves it disabled. The dispatcher uses only its short-lived GitHub token to request the fixed `runtime-production` `direct_read` workflow input. It does not receive broker credentials, enable Runtime, or dispatch the trading workflow. The target workflow retains its own `BINANCE_ACCOUNT_FACTS_ENABLED` gate and protected `binance-runtime` environment.
-
-QSL treats account-facts reports as stale after 36 hours. A daily refresh is intended to keep read-only balances current; a failed or skipped target run does not make old data current. The default configuration remains off; production activation is controlled by the dedicated repository gate and requires explicit authorization.
-
-## Direct vs snapshot-backed profiles
-
-Direct runtime profiles can usually run from market history or portfolio state. Snapshot-backed profiles need a current artifact bundle from the matching live-pool pipeline before this platform should execute them. The platform should not invent strategy eligibility; it should consume the status and artifacts published by the strategy and live-pool repositories.
-
-## Deploy safely
-
-1. Configure secrets and runtime variables outside Git.
-2. Run the workflow or service in dry-run mode.
-3. Review generated orders, logs, notifications, and reconciliation output.
-4. Confirm rollback steps and artifact versions.
-5. Enable scheduled or live execution only after the above checks are clear.
-
-## Repository layout
-
-- `tests/`: unit, contract, and regression tests.
-- `docs/`: runbooks, design notes, evidence, and integration contracts.
-- `.github/workflows/`: CI, scheduled jobs, release, or deployment workflows.
-- `scripts/`: operator scripts and local helpers.
-- `research/`: research configs and non-live candidate artifacts.
+It does not contain strategy research or signal generation. It does not decide
+which strategies are eligible to run; it loads profiles that other repositories
+publish. It does not run at all without an explicit runtime target and
+credentials.
 
 ## Quick start
+
+Requires Python 3.11 or newer.
 
 ```bash
 python -m pip install --upgrade pip uv
@@ -55,29 +37,63 @@ uv sync --frozen --extra test
 uv run --no-sync python -m unittest discover -s tests -v
 ```
 
-## QSL compatibility
+The commands below all go through `uv run --no-sync` so they use the interpreter
+and dependencies installed by `uv sync` without re-resolving them.
 
-- `qsl.toml` records `tier`, `upgrade_ring`, and `compat.bundle` for runtime compatibility tracking.
-- Dependencies are declared in `pyproject.toml` and pinned in `uv.lock`.
-- CI, watchdog, and self-hosted runtime bootstrap all install from `uv.lock`.
+Replay one fixed-input cycle from local fixtures without touching the exchange
+(pass `--help` to list options such as `--fixtures-dir` and `--output`):
 
-## Useful docs
+```bash
+uv run --no-sync python run_cycle_replay.py
+```
 
-- [`docs/operator_runbook.md`](docs/operator_runbook.md)
+Run the live cycle (dry-run by default) once a runtime target and credentials
+are set:
 
-For a forward Earn accounting failure, the disabled `main` workflow has one
-read-only `accounting_migration_action=earn-forward-diagnose` mode. It samples
-from the current ledger checkpoint and reports bounded, redacted diagnostics;
-it never clears an owner, writes accounting state, or grants execution.
+```bash
+uv run --no-sync python main.py
+```
 
-## Community and security
+## Configuration
 
-- See [CONTRIBUTING.md](CONTRIBUTING.md) for pull request scope, local verification, and documentation expectations.
-- Follow [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for maintainer and contributor conduct.
-- Report credential, automation, broker, exchange, or cloud-resource vulnerabilities through [SECURITY.md](SECURITY.md); do not open public issues for secrets or live-execution risk.
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `BINANCE_API_KEY` | Yes | none | Binance API key. |
+| `BINANCE_API_SECRET` | Yes | none | Binance API secret. |
+| `STRATEGY_PROFILE` | No | `crypto_live_pool_rotation` | Runtime strategy profile to load. |
+| `BINANCE_DRY_RUN` | No | `true` | Keep the cycle in dry-run mode. |
+| `RUNTIME_TARGET_JSON` | No | none | Runtime target descriptor aligned with `BINANCE_DRY_RUN`. |
+| `ACCOUNT_SELECTOR` | No | `default` | Which configured account to run. |
+| `GCP_PROJECT_ID` | No | none | Google Cloud project for state and reports. |
+| `HEALTH_PORT` | No | `8080` | Port for the health endpoint. |
+| `NOTIFY_LANG` | No | `en` | Language used for notifications. |
+
+Credentials are read from the environment only and are never stored in the
+repository.
+
+## Repository layout
+
+```
+main.py                 live cycle entrypoint
+application/            cycle, execution, and reconciliation services
+entrypoints/            CLI entrypoint helpers
+strategy/               strategy loading and registry glue
+notifications/          notification adapters
+infra/                  infrastructure helpers
+scripts/                operator scripts
+docs/                   runbooks and contracts
+tests/                  unit and contract tests
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Security
+
+See [SECURITY.md](SECURITY.md). Do not open a public issue for a vulnerability.
+Never commit credentials or account material.
 
 ## License
 
-See [LICENSE](LICENSE).
-
-Display/notification naming configuration: [display names](docs/display-names.md).
+MIT. See [LICENSE](LICENSE).
