@@ -40,10 +40,11 @@ uv run --no-sync python -m unittest discover -s tests -v
 The commands below all go through `uv run --no-sync` so they use the interpreter
 and dependencies installed by `uv sync` without re-resolving them.
 
-Replay a fixed input cycle without touching the exchange:
+Replay one fixed-input cycle from local fixtures without touching the exchange
+(pass `--help` to list options such as `--fixtures-dir` and `--output`):
 
 ```bash
-uv run --no-sync python run_cycle_replay.py --help
+uv run --no-sync python run_cycle_replay.py
 ```
 
 Run the live cycle (dry-run by default) once a runtime target and credentials
