@@ -55,10 +55,10 @@ uv sync --frozen --extra test
 uv run --no-sync python -m unittest discover -s tests -v
 ```
 
-## QSL compatibility status
+## QSL compatibility
 
-- Added `qsl.toml` with `tier = "runtime-platform"`, `ring = 3`, and `compat.bundle = "2026.07.0"` for runtime compatibility tracking.
-- Dependency workflow is now `pyproject.toml + uv.lock`.
+- `qsl.toml` records `tier`, `upgrade_ring`, and `compat.bundle` for runtime compatibility tracking.
+- Dependencies are declared in `pyproject.toml` and pinned in `uv.lock`.
 - CI, watchdog, and self-hosted runtime bootstrap all install from `uv.lock`.
 
 ## Useful docs

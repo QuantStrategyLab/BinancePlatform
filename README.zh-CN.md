@@ -55,6 +55,12 @@ uv sync --frozen --extra test
 uv run --no-sync python -m unittest discover -s tests -v
 ```
 
+## QSL 兼容性
+
+- `qsl.toml` 记录 `tier`、`upgrade_ring` 和 `compat.bundle`，用于跟踪运行时兼容性。
+- 依赖在 `pyproject.toml` 中声明，并固定在 `uv.lock` 中。
+- CI、watchdog 和 self-hosted runtime 启动流程都从 `uv.lock` 安装依赖。
+
 ## 延伸文档
 
 - [`docs/operator_runbook.md`](docs/operator_runbook.md)
