@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from notifications.display_names import display_name
+
 import os
 
 from quant_platform_kit.common.operational_notification_localization import resolve_operational_notification_locale
@@ -147,9 +149,6 @@ _TEXTS = {
         "usdt_unavailable_for_trend_buy": "USDT unavailable for trend buy",
         "usdt_unavailable_for_btc_dca_buy": "USDT unavailable for BTC DCA buy",
         "btc_unavailable_for_dca_sell": "BTC unavailable for DCA sell",
-        "strategy_name_crypto_leader_rotation": "Crypto Leader Rotation",
-        "strategy_name_crypto_live_pool_rotation": "Crypto Live Pool Rotation",
-        "strategy_name_crypto_equity_combo": "Crypto Equity Combo",
     },
     "zh": {
         "rebalance_title": "🔔 加密调仓",
@@ -289,9 +288,6 @@ _TEXTS = {
         "usdt_unavailable_for_trend_buy": "USDT 不足，无法执行趋势买入",
         "usdt_unavailable_for_btc_dca_buy": "USDT 不足，无法执行 BTC 定投买入",
         "btc_unavailable_for_dca_sell": "BTC 不足，无法执行定投止盈卖出",
-        "strategy_name_crypto_leader_rotation": "加密领涨轮动",
-        "strategy_name_crypto_live_pool_rotation": "加密实时池轮动",
-        "strategy_name_crypto_equity_combo": "加密动量组合",
     },
 }
 
@@ -308,11 +304,15 @@ def build_translator(lang: str):
     active_lang = resolve_operational_notification_locale(lang)
 
     def translator(key: str, **kwargs) -> str:
+        if key.startswith("strategy_name_"):
+            profile = key.removeprefix("strategy_name_")
+            return display_name("strategies", profile, active_lang, fallback=key)
         template = _TEXTS.get(active_lang, _TEXTS[DEFAULT_NOTIFY_LANG]).get(key)
         if template is None:
             template = _TEXTS[DEFAULT_NOTIFY_LANG].get(key, key)
         return template.format(**kwargs) if kwargs else template
 
+    translator.notification_locale = active_lang
     return translator
 
 
@@ -328,6 +328,9 @@ def build_strategy_display_name(translate_fn):
         metadata=None,
     ) -> str:
         # If StrategyMetadata is provided, use the canonical catalog resolver
+        configured = display_name("strategies", profile, getattr(translate_fn, "notification_locale", get_notify_lang()))
+        if configured != profile:
+            return configured
         if metadata is not None:
             try:
                 from quant_platform_kit.common.notification_localization import (
@@ -354,4 +357,7 @@ def build_strategy_display_name(translate_fn):
 
 
 def build_telegram_message(text: str) -> str:
-    return f"{translate('telegram_prefix')}:\n{text}"
+    lane = display_name("accounts", os.getenv("QSL_NOTIFICATION_ACCOUNT_ALIAS", "crypto_combo"), get_notify_lang(), platform="binance")
+    platform = display_name("platforms", "binance", get_notify_lang())
+    sender = display_name("senders", "quant_sentinel", get_notify_lang())
+    return f"[{platform} {lane}] {sender}:\n{text}"

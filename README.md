@@ -79,3 +79,5 @@ it never clears an owner, writes accounting state, or grants execution.
 ## License
 
 See [LICENSE](LICENSE).
+
+Display/notification naming configuration: [display names](docs/display-names.md).
