@@ -146,7 +146,8 @@ def test_routine_writes_real_candidate_before_deferral_and_replays_do_not_add_cy
     row = payload["runs"][0]
     assert row["cycle_count"] == 1 and row["order_count"] is None and row["fill_count"] is None
     assert row["persistence_status"] == "source_archive_pending"
-    assert len(payload["notification_events"]) == 1
+    assert len(row["notification_events"]) == 1
+    assert "notification_events" not in payload and "source_facts" not in payload
     assert payload["window_id"] == "sgt-0600:2026-10-17"
     assert payload["report_date"] == "2026-10-18"
 
@@ -234,10 +235,13 @@ def test_two_producers_and_runtime_event_share_one_window_object_and_unique_run_
     old.emit_digest_candidates(env)
     new.emit(env)
     assert len(store.values) == 1
-    row = next(iter(store.values.values()))[1]["runs"][0]
-    assert (row["cycle_count"], row["order_count"], row["fill_count"], row["status"]) == (2, 0, 0, "ok")
+    rows = next(iter(store.values.values()))[1]["runs"]
+    assert {row["source_run_id"] for row in rows} == {"example-run", "second-run"}
+    assert all((row["cycle_count"], row["order_count"], row["fill_count"], row["status"])
+        == (1, 0, 0, "ok") for row in rows)
+    assert [len(row["notification_events"]) for row in rows] == [1, 0]
     assert store.writes == 2  # one runtime observation, one completed-window upgrade
-    assert len(next(iter(store.values.values()))[1]["source_facts"]) == 2
+    assert all(row["source_fact"]["archived"] for row in rows)
 
 
 def test_contradictory_completed_revisions_cannot_erase_an_incident_or_invent_counts(monkeypatch):
@@ -248,6 +252,102 @@ def test_contradictory_completed_revisions_cannot_erase_an_incident_or_invent_co
     producer.update_window(env, reports=[report], archived=True, store=store)
     row = next(iter(store.values.values()))[1]["runs"][0]
     assert row["status"] == "alert" and row["order_count"] is None and row["fill_count"] is None
+
+
+def test_export_keeps_each_runs_archive_counts_events_and_persistence_independent(monkeypatch):
+    env, store = configure(monkeypatch), MemoryStore()
+    pending = source("pending-run", STAMP + timedelta(minutes=1))
+    complete = source("complete-run", archived=True)
+    complete["summary"]["notification_digest"].update(order_count=2, fill_count=3)
+    event = NotificationEvent("routine_cycle", STAMP, **unified.identity(env),
+        source_run_id=complete["run_id"]).to_candidate()
+    producer.update_window(env, reports=[complete], events=[event], archived=True, store=store)
+    producer.update_window(env, reports=[pending], store=store)
+    payload = next(iter(store.values.values()))[1]
+    rows = {row["source_run_id"]: row for row in payload["runs"]}
+    assert set(rows) == {"complete-run", "pending-run"}
+    assert (rows["complete-run"]["cycle_count"], rows["complete-run"]["order_count"],
+        rows["complete-run"]["fill_count"]) == (1, 2, 3)
+    assert rows["complete-run"]["persistence_status"] == "persisted"
+    assert rows["complete-run"]["notification_events"] == [event]
+    assert rows["pending-run"]["persistence_status"] == "source_archive_pending"
+    assert rows["pending-run"]["order_count"] is None
+    assert rows["pending-run"]["notification_events"] == []
+
+
+@pytest.mark.parametrize("receipt", [True, {"transport_acknowledged": True}, False])
+def test_ack_without_new_sender_receipt_stays_uncertain_and_is_not_resent(monkeypatch, receipt):
+    configure(monkeypatch)
+    store, sends = MemoryStore(), []
+    event = NotificationEvent("real_error", STAMP, **unified.identity(environment()),
+        source_run_id="example-run", incident_reason="runtime_failure")
+    report = source()
+    report["notifications"].append({"transport_acknowledged": True,
+        "transport_receipt_id": "example-earlier-unrelated-receipt"})
+    for _ in range(2):
+        unified.immediate_event(event, lambda: sends.append(1) or receipt, report=report, store=store)
+    marker = next(value for _, value in store.values.values() if "delivery_status" in value)
+    assert sends == [1]
+    assert marker["delivery_status"] == "uncertain" and marker["receipt_id"] is None
+
+
+def test_receipt_appended_by_current_sender_confirms_delivery(monkeypatch):
+    configure(monkeypatch)
+    store, report = MemoryStore(), source()
+    event = NotificationEvent("real_error", STAMP, **unified.identity(environment()),
+        source_run_id="example-run", incident_reason="runtime_failure")
+    def send():
+        report["notifications"].append({"transport_acknowledged": True,
+            "transport_receipt_id": "example-current-provider-receipt"})
+        return True
+    assert unified.immediate_event(event, send, report=report, store=store)
+    marker = next(value for _, value in store.values.values() if "delivery_status" in value)
+    assert marker["delivery_status"] == "delivered"
+    assert marker["receipt_id"] == "example-current-provider-receipt"
+
+
+@pytest.mark.parametrize("synthetic", ["ack_hash", "event_hash", "transition_hash"])
+def test_local_ack_and_event_hashes_cannot_confirm_delivery(monkeypatch, synthetic):
+    configure(monkeypatch)
+    store = MemoryStore()
+    event = NotificationEvent("real_error", STAMP, **unified.identity(environment()),
+        source_run_id="example-run", incident_reason="runtime_failure")
+    def send():
+        marker = next(value for _, value in store.values.values() if "delivery_status" in value)
+        receipt_id = {"ack_hash": "transport-ack:" + "a" * 64,
+            "event_hash": event.to_candidate()["dedupe_key"], "transition_hash": marker["transition_key"]}[synthetic]
+        return {"transport_acknowledged": True, "transport_receipt_id": receipt_id}
+    unified.immediate_event(event, send, store=store)
+    marker = next(value for _, value in store.values.values() if "delivery_status" in value)
+    assert marker["delivery_status"] == "uncertain" and marker["receipt_id"] is None
+
+
+@pytest.mark.parametrize("message_id,recipient,confirmed", [(17, "example-chat", True),
+    (None, "example-chat", False), (0, "example-chat", False), (-1, "example-chat", False),
+    (True, "example-chat", False), (17, "different-example-chat", False), (17, None, False)])
+def test_sender_receipt_requires_positive_provider_message_id_and_matching_recipient(
+        monkeypatch, message_id, recipient, confirmed):
+    import live_services
+    from types import SimpleNamespace
+    configure(monkeypatch)
+    result = {"message_id": message_id, "chat": {"id": recipient}}
+    calls = []
+    def post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(status_code=200, json=lambda: {"ok": True, "result": result})
+    monkeypatch.setattr(live_services.requests, "post", post)
+    receipt = live_services.send_tg_msg("example-token", "example-chat", "Example alert")
+    assert receipt["transport_acknowledged"] is True and len(calls) == 1
+    assert bool(receipt.get("transport_receipt_id")) is confirmed
+
+
+def test_monitor_without_business_run_keeps_immediate_path_without_inventing_runs(monkeypatch):
+    env, store, sends = configure(monkeypatch), MemoryStore(), []
+    env["GITHUB_RUN_ID"] = "example-monitor-job"
+    unified.route(lambda: sends.append(1) or True, kind="receipt_missing", reason="runtime_dispatch_missing",
+        env=env, candidate_store=store, marker_store=store)
+    assert sends == [1]
+    assert not any(value.get("runs") is not None for _, value in store.values.values())
 
 
 def test_continuous_window_boundaries_no_run_and_missing_identity_stay_unknown(monkeypatch):
@@ -325,7 +425,7 @@ def test_snapshot_matches_declared_qpk_source_hash_and_new_strings_are_single_la
     root = Path(__file__).resolve().parents[1] / "notifications/digest_snapshot"
     provenance = json.loads((root / "provenance.json").read_text())
     assert hashlib.sha256((root / "unified_contract.py").read_bytes()).hexdigest() == provenance["files"]["unified_contract.py"]["sha256"]
-    assert provenance["snapshot_commit"] == "60a30ff9a5abc8654787095c9d5a003485afb325"
+    assert provenance["snapshot_commit"] == "07e24c0c804a9b47316b6ec3c75bb63820d8f421"
     for locale in ("zh", "en"):
         monkeypatch.setenv("NOTIFY_LANG", locale)
         for category in operational._TEXT[locale]:

@@ -79,7 +79,11 @@ def update_window(env, *, events=(), reports=(), archived=False, complete_archiv
     for _ in range(8):
         previous, generation = store.load(key)
         previous = previous or {}
-        sources = deepcopy(previous.get("source_facts") or {})
+        # Read the reviewed draft's ledger during migration; new candidates
+        # carry each sanitized source fact and its events inside that run row.
+        sources = deepcopy(previous.get("source_facts") or {
+            row["source_run_id"]: row["source_fact"] for row in previous.get("runs", [])
+            if row.get("source_run_id") and row.get("source_fact")})
         for run, source in incoming.items():
             prior = sources.get(run)
             if prior and prior.get("archived") and not source["archived"]:
@@ -93,26 +97,44 @@ def update_window(env, *, events=(), reports=(), archived=False, complete_archiv
                 source = {**source, "error_summary": prior["error_summary"]}
             sources[run] = source
         facts = deepcopy(previous.get("notification_events") or {})
+        for row in previous.get("runs", []):
+            for event in row.get("notification_events", []):
+                event_key = event["dedupe_key"]
+                if event.get("incident_reason"):
+                    event_key += ":" + hashlib.sha256(event["incident_reason"].encode()).hexdigest()
+                facts[event_key] = deepcopy(event)
         for event in events:
             if not event.get("dedupe_key") or any(event.get(k) != scope[k] for k in scope):
                 raise ValueError("candidate_event_identity_unknown")
+            if event.get("source_run_id") not in sources:
+                # A workflow ID is not evidence that a business run happened.
+                # The caller retains the immediate incident path on failure.
+                raise ValueError("candidate_business_run_unverified")
             event_key = event["dedupe_key"]
             if event.get("incident_reason"):
                 event_key += ":" + hashlib.sha256(event["incident_reason"].encode()).hexdigest()
             if event_key in facts and facts[event_key] != event:
                 raise ValueError("candidate_event_conflict")
             facts[event_key] = event
-        payload = project_reports([_report(value, target) for value in sources.values()],
-            expected_target=target, opaque_account_uid=scope["opaque_account_uid"],
-            target_id=scope["target_id"], now=window.end)
-        if not archived:
-            for row in payload["runs"]:
-                if any(not value.get("archived") for value in sources.values()):
-                    row["persistence_status"] = "source_archive_pending"
-        payload.update(source_facts=sources, notification_events=facts, window_id=window.window_id,
-            report_date=window.report_date.isoformat())
+        # The legacy projector aggregates a window. Project one source at a
+        # time here so QRS receives the business run identity and its own counts.
+        rows = []
+        for run, source in sorted(sources.items()):
+            row = project_reports([_report(source, target)], expected_target=target,
+                opaque_account_uid=scope["opaque_account_uid"], target_id=scope["target_id"],
+                now=window.end)["runs"][0]
+            row.update(source_run_id=run, source_fact=deepcopy(source),
+                notification_events=[deepcopy(event) for event in facts.values() if event.get("source_run_id") == run])
+            row["field_status"] = {name: "known" if row.get(name) is not None else "unknown"
+                for name in ("order_count", "fill_count", "cycle_count")}
+            if not source.get("archived"):
+                row["persistence_status"] = "source_archive_pending"
+            rows.append(row)
+        payload = {"schema_version": "qsl.digest_candidates.v1", "producer_status": "projected", "runs": rows}
+        payload.update(window_id=window.window_id, report_date=window.report_date.isoformat())
         legacy = previous.get("legacy_evidence")
-        if previous.get("runs") and not previous.get("source_facts"):
+        if previous.get("runs") and not previous.get("source_facts") and not all(
+                row.get("source_fact") for row in previous["runs"]):
             legacy = previous["runs"]
         if legacy and not complete_archive:
             payload["legacy_evidence"] = legacy

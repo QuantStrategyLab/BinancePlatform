@@ -425,8 +425,11 @@ def send_tg_msg(token, chat_id, text):
         }
         from notifications.unified_notifications import enabled
         if enabled():
-            message_id = payload.get("result", {}).get("message_id") if isinstance(payload.get("result"), dict) else None
-            if type(message_id) is int:
+            provider_result = payload.get("result")
+            message_id = provider_result.get("message_id") if isinstance(provider_result, dict) else None
+            recipient = provider_result.get("chat") if isinstance(provider_result, dict) else None
+            if (type(message_id) is int and message_id > 0 and isinstance(recipient, dict)
+                    and str(recipient.get("id")) == str(chat_id)):
                 result["transport_receipt_id"] = hashlib.sha256(
                     json.dumps([str(chat_id), message_id], separators=(",", ":")).encode()).hexdigest()
         return result

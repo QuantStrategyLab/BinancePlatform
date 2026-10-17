@@ -51,8 +51,9 @@ def _correlated_event(assessment, *, env, store=None):
     slot = unified._alias(env, "DIGEST_STORE_TARGET", "BINANCE_DIGEST_STORE_TARGET")
     store = store or NotificationStore(env.get("DIGEST_CANDIDATES_GCS_URI", ""))
     payload, _ = store.load(f"binance/{day}/{slot}.json")
-    facts = (payload or {}).get("notification_events") or {}
-    matching = [event for event in facts.values() if str(event.get("workflow_run_id")) == workflow_run_id
+    facts = list(((payload or {}).get("notification_events") or {}).values())
+    facts.extend(event for row in (payload or {}).get("runs", []) for event in row.get("notification_events", []))
+    matching = [event for event in facts if str(event.get("workflow_run_id")) == workflow_run_id
         and event.get("incident_reason") and all(event.get(k) == value for k, value in scope.items())]
     return max(matching, key=lambda event: event["occurred_at"]) if matching else None
 

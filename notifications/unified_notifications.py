@@ -140,6 +140,7 @@ def immediate_event(event, send, *, report=None, store=None, state="active", sev
                 _, previous = tracker.store.read(decision.incident_key)
                 return previous.get("delivery_status") == "delivered"
             return False
+        notification_count = len(report.get("notifications", [])) if report is not None else 0
         try:
             receipt = send()
         except Exception:
@@ -149,8 +150,15 @@ def immediate_event(event, send, *, report=None, store=None, state="active", sev
         acknowledged = _acknowledged(receipt)
         receipt_id = receipt.get("transport_receipt_id") if isinstance(receipt, dict) else None
         if acknowledged and receipt_id is None and report is not None:
-            receipt_id = next((value.get("transport_receipt_id") for value in reversed(report.get("notifications", []))
+            # The runtime sender returns a boolean and appends its receipt to
+            # this report. An earlier send's receipt cannot confirm this send.
+            receipt_id = next((value.get("transport_receipt_id") for value in reversed(
+                report.get("notifications", [])[notification_count:])
                 if value.get("transport_acknowledged") is True and value.get("transport_receipt_id")), None)
+        if (not isinstance(receipt_id, str) or not receipt_id.strip()
+                or receipt_id.startswith("transport-ack:")
+                or receipt_id in {decision.incident_key, decision.transition_key, event.to_candidate()["dedupe_key"]}):
+            receipt_id = None
         tracker.record_delivery(decision, receipt_id=receipt_id if acknowledged else None)
         return acknowledged
     except Exception:
