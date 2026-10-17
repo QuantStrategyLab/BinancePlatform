@@ -1,0 +1,13 @@
+{
+  "snapshot_commit": "60a30ff9a5abc8654787095c9d5a003485afb325",
+  "repository": "QuantStrategyLab/QuantPlatformKit",
+  "files": {
+    "unified_contract.py": {
+      "source_path": "src/quant_platform_kit/notifications/unified_contract.py",
+      "sha256": "7ba48d1d7c74e66be8cd3ff983c2117002776e82cda6675a084cfe0dc51aecc0"
+    }
+  },
+  "trading_dependency_unchanged": "155d74a615ccdebf7223787939c2dc7151d75efd",
+  "merge_requirement": "must be re-pinned to merged/released QPK before merge",
+  "merged_commit": "07e24c0c804a9b47316b6ec3c75bb63820d8f421"
+}
