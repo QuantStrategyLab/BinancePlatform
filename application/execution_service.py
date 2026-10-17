@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from notifications.digest_snapshot.digest_routing import routine_notification
+from notifications.routing import immediate_notification, routine_notification
 
 import math
 from collections.abc import Mapping
@@ -287,11 +287,12 @@ def run_daily_circuit_breaker(
         )
         try:
             if qty <= 0:
-                runtime_notify_fn(
+                immediate_notification(runtime_notify_fn,
                     runtime,
                     report,
                     f"{translate_fn('circuit_breaker_sell_skipped')} {symbol}\n"
                     f"{translate_fn('qty_zero_msg')}",
+                    reason="circuit_breaker_sell_skipped", kind="risk_escalation", severity=2,
                 )
                 continue
             if not ensure_asset_available_fn(runtime, report, config["base_asset"], qty, log_buffer):
@@ -323,22 +324,24 @@ def run_daily_circuit_breaker(
         except ExecutionIntegrityError:
             raise
         except Exception:
-            runtime_notify_fn(
+            immediate_notification(runtime_notify_fn,
                 runtime,
                 report,
                 f"{translate_fn('circuit_breaker_sell_failed')} {symbol}\n"
                 f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
+                reason="circuit_breaker_sell_failed",
             )
 
     state.update({"is_circuit_broken": True})
     state["last_balance_snapshot"] = build_balance_snapshot_fn(runtime_trend_universe, balances, u_total)
     report["circuit_breaker_triggered"] = True
     runtime_set_trade_state_fn(runtime, report, state, reason="daily_circuit_breaker")
-    runtime_notify_fn(
+    immediate_notification(runtime_notify_fn,
         runtime,
         report,
         f"{translate_fn('circuit_breaker')}\n"
         f"{translate_fn('circuit_msg', pnl=f'{trend_daily_pnl:.2%}')}",
+        reason="circuit_msg", kind="risk_escalation", severity=2,
     )
     return True
 
@@ -440,12 +443,13 @@ def execute_trend_sells(
         except ExecutionIntegrityError:
             raise
         except Exception:
-            runtime_notify_fn(
+            immediate_notification(runtime_notify_fn,
                 runtime,
                 report,
                 f"{translate_fn('trend_sell_failed')} {symbol}\n"
                 f"{translate_fn('reason_label')}: {sell_reason}\n"
                 f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
+                reason="trend_sell_failed",
             )
 
     return u_total
@@ -578,12 +582,13 @@ def execute_trend_buys(
         except ExecutionIntegrityError:
             raise
         except Exception:
-            runtime_notify_fn(
+            immediate_notification(runtime_notify_fn,
                 runtime,
                 report,
                 f"{translate_fn('trend_buy_failed')} {symbol}\n"
                 f"{translate_fn('budget_label')}: ${buy_u:.2f}\n"
                 f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
+                reason="trend_buy_failed",
             )
 
     return u_total
@@ -869,11 +874,12 @@ def execute_btc_dca_cycle(
         except ExecutionIntegrityError:
             raise
         except Exception:
-            runtime_notify_fn(
+            immediate_notification(runtime_notify_fn,
                 runtime,
                 report,
                 f"{translate_fn('btc_dca_buy_failed')} BTC\n"
                 f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
+                reason="btc_dca_buy_failed",
             )
 
     if zscore > sell_trigger and dca_val <= 20:
@@ -948,11 +954,12 @@ def execute_btc_dca_cycle(
         except ExecutionIntegrityError:
             raise
         except Exception:
-            runtime_notify_fn(
+            immediate_notification(runtime_notify_fn,
                 runtime,
                 report,
                 f"{translate_fn('btc_dca_trim_failed')} BTC\n"
                 f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
+                reason="btc_dca_trim_failed",
             )
 
     return u_total

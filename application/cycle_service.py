@@ -227,6 +227,8 @@ def execute_strategy_cycle(
     cycle_funding_submission_start = None
     cycle_funding_side_effect_start = None
     cycle_order_sequence_start = None
+    from notifications.unified_notifications import bind_cycle, reset_cycle
+    notification_context = bind_cycle(runtime, report)
     try:
         if not acquire_runtime_state_owner(runtime):
             report["execution_blocked_reason"] = "state_owner_busy"
@@ -528,6 +530,7 @@ def execute_strategy_cycle(
         except Exception:
             pass
     finally:
+        reset_cycle(notification_context)
         reason_code = None
         earn_diagnostics = report.get("diagnostics", {}).get("earn_accrual", {})
         if isinstance(earn_diagnostics, Mapping):
@@ -610,7 +613,7 @@ def execute_strategy_cycle(
         report["log_lines"] = list(log_buffer)
         finalize_notification_delivery(report)
         attach_execution_receipt_from_report(report)
-        from notifications.digest_snapshot.digest_routing import daily_digest_enabled
+        from notifications.routing import daily_digest_enabled
         if daily_digest_enabled():
             observation = report.get("execution_receipt_observation") or {}
             fields = ("submission_attempted_count", "broker_acknowledged_count", "partially_filled_count",
@@ -717,6 +720,9 @@ def run_live_cycle(
         append_report_error(report, "report_persistence_failed", stage="report_persistence")
         output_printer("failed to persist archived execution report: report_persistence_failed")
         persisted_local_path = report_writer(report)
+    from notifications.unified_notifications import enabled, observe_archived_report
+    if enabled() and getattr(locals().get("persisted"), "cloud_uri", None):
+        observe_archived_report(report)
     report_status = _public_cycle_status(report.get("status"))
     status_event = {
         "ok": "strategy_cycle_completed",

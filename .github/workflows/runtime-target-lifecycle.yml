@@ -211,12 +211,31 @@ jobs:
         env:
           EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}
 
+      - name: Correlate notification incidents with existing monitor evidence (opt-in)
+        if: ${{ always() && !cancelled() && vars.BINANCE_UNIFIED_NOTIFICATION_ENABLED != '' && vars.BINANCE_UNIFIED_NOTIFICATION_ENABLED != 'false' && steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
+        env:
+          BINANCE_UNIFIED_NOTIFICATION_ENABLED: ${{ vars.BINANCE_UNIFIED_NOTIFICATION_ENABLED || 'false' }}
+          RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON || secrets.RUNTIME_TARGET_JSON }}
+          DIGEST_OPAQUE_ACCOUNT_UID: ${{ secrets.DIGEST_OPAQUE_ACCOUNT_UID || secrets.BINANCE_DIGEST_OPAQUE_ACCOUNT_UID }}
+          DIGEST_TARGET_ID: ${{ secrets.DIGEST_TARGET_ID || secrets.BINANCE_DIGEST_TARGET_ID }}
+          DIGEST_STORE_TARGET: ${{ vars.DIGEST_STORE_TARGET || secrets.BINANCE_DIGEST_STORE_TARGET }}
+          DIGEST_CANDIDATES_GCS_URI: ${{ vars.DIGEST_CANDIDATES_GCS_URI || secrets.DIGEST_CANDIDATES_GCS_URI }}
+          NOTIFICATION_WORKFLOW_ASSESSMENT_PATH: ${{ steps.workflow-heartbeat.outputs.path }}
+          NOTIFICATION_EXECUTION_ASSESSMENT_PATH: ${{ steps.execution-heartbeat.outputs.path }}
+          NOTIFY_LANG: ${{ vars.NOTIFY_LANG || 'zh' }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
+        run: uv run --no-sync python scripts/observe_notification_health.py
+
       - name: Project and store private digest candidate (opt-in)
         # Isolated from all runtime/monitor success semantics. This gate does
         # not enable Runtime, refresh broker facts, or send a notification.
         if: ${{ success() && vars.BINANCE_DIGEST_CANDIDATES_ENABLED == 'true' && steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
         continue-on-error: true
         env:
+          BINANCE_UNIFIED_NOTIFICATION_ENABLED: ${{ vars.BINANCE_UNIFIED_NOTIFICATION_ENABLED || 'false' }}
+          RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED }}
+          EXECUTION_REPORT_GCS_URI: ${{ vars.EXECUTION_REPORT_GCS_URI }}
           BINANCE_DIGEST_CANDIDATES_ENABLED: ${{ vars.BINANCE_DIGEST_CANDIDATES_ENABLED || 'false' }}
           BINANCE_DIGEST_OPAQUE_ACCOUNT_UID: ${{ secrets.BINANCE_DIGEST_OPAQUE_ACCOUNT_UID }}
           BINANCE_DIGEST_TARGET_ID: ${{ secrets.BINANCE_DIGEST_TARGET_ID }}
@@ -225,8 +244,9 @@ jobs:
         run: uv run --no-sync python scripts/emit_digest_candidates.py
 
       - name: Publish existing reports as unified digest candidates
-        if: ${{ success() && vars.QSL_ROUTINE_NOTIFICATION_MODE == 'daily_digest' }}
+        if: ${{ success() && (vars.QSL_ROUTINE_NOTIFICATION_MODE == 'daily_digest' || (vars.BINANCE_UNIFIED_NOTIFICATION_ENABLED != '' && vars.BINANCE_UNIFIED_NOTIFICATION_ENABLED != 'false')) }}
         env:
+          BINANCE_UNIFIED_NOTIFICATION_ENABLED: ${{ vars.BINANCE_UNIFIED_NOTIFICATION_ENABLED || 'false' }}
           QSL_ROUTINE_NOTIFICATION_MODE: ${{ vars.QSL_ROUTINE_NOTIFICATION_MODE || 'immediate' }}
           RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED }}
           RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON || secrets.RUNTIME_TARGET_JSON }}
@@ -237,4 +257,7 @@ jobs:
           DIGEST_TARGET_ID: ${{ secrets.DIGEST_TARGET_ID }}
           DIGEST_TARGET_BINDINGS_JSON: ${{ secrets.DIGEST_TARGET_BINDINGS_JSON }}
           DIGEST_NOTIFICATION_SCHEDULE_JSON: ${{ vars.DIGEST_NOTIFICATION_SCHEDULE_JSON }}
+          BINANCE_DIGEST_OPAQUE_ACCOUNT_UID: ${{ secrets.BINANCE_DIGEST_OPAQUE_ACCOUNT_UID }}
+          BINANCE_DIGEST_TARGET_ID: ${{ secrets.BINANCE_DIGEST_TARGET_ID }}
+          BINANCE_DIGEST_STORE_TARGET: ${{ secrets.BINANCE_DIGEST_STORE_TARGET }}
         run: uv run --no-sync python scripts/emit_unified_digest_candidates.py

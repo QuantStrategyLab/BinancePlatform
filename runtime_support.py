@@ -431,6 +431,16 @@ def next_order_id(runtime, prefix, symbol):
 
 
 def runtime_notify(runtime, report, text, *, urgent=True):
+    from notifications import unified_notifications as unified
+    if unified.enabled() and not getattr(runtime, "dry_run", False):
+        if unified.sending_order():
+            return _legacy_runtime_notify(runtime, report, text, urgent=True)
+        return unified.runtime_notice(runtime, report, text, urgent=urgent,
+            send=lambda: _legacy_runtime_notify(runtime, report, text, urgent=True))
+    return _legacy_runtime_notify(runtime, report, text, urgent=urgent)
+
+
+def _legacy_runtime_notify(runtime, report, text, *, urgent=True):
     message = str(text)
     safe_event = {
         "sink": "telegram",
@@ -485,6 +495,9 @@ def runtime_notify(runtime, report, text, *, urgent=True):
     else:
         acknowledged = receipt is True
     safe_event.setdefault("delivery_status", "sent" if acknowledged else "failed")
+    from notifications.unified_notifications import enabled
+    if enabled() and isinstance(receipt, Mapping) and receipt.get("transport_receipt_id"):
+        safe_event["transport_receipt_id"] = receipt["transport_receipt_id"]
     safe_event["transport_acknowledged"] = acknowledged
     report["notifications"].append(safe_event)
     delivery_events = [

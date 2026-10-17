@@ -45,8 +45,9 @@ def maybe_send_periodic_btc_status_report(
     notifier_fn=None,
     send_tg_msg_fn=None,
 ):
-    from notifications.digest_snapshot.digest_routing import daily_digest_enabled
-    if daily_digest_enabled():
+    from notifications.routing import daily_digest_enabled
+    from notifications.unified_notifications import enabled
+    if daily_digest_enabled() and not enabled():
         return False
     if interval_hours <= 0:
         return  # heartbeat disabled
@@ -65,7 +66,11 @@ def maybe_send_periodic_btc_status_report(
         f"{translate_fn('btc_target')}: {btc_target_ratio:.1%} | "
         f"AHR999: {btc_snapshot['ahr999']:.2f} | {translate_fn('zscore')}: {btc_snapshot['zscore']:.1f}"
     )
-    delivery = send_tg_msg_fn(tg_token, tg_chat_id, text) if notifier_fn is None else notifier_fn(text)
+    if enabled() and notifier_fn is None:
+        from notifications.unified_notifications import external_notice
+        delivery = external_notice(lambda: send_tg_msg_fn(tg_token, tg_chat_id, text), kind="healthy_heartbeat")
+    else:
+        delivery = send_tg_msg_fn(tg_token, tg_chat_id, text) if notifier_fn is None else notifier_fn(text)
     if isinstance(delivery, dict):
         acknowledged = delivery.get("transport_acknowledged") is True
     else:
