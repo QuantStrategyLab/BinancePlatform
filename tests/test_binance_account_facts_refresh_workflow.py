@@ -1,11 +1,13 @@
 import json
 import os
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from contextlib import redirect_stdout, redirect_stderr
+from io import StringIO
+from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.parse import urlsplit
 from pathlib import Path
 import re
 import subprocess
-import sys
-import threading
 import textwrap
 import unittest
 
@@ -30,58 +32,37 @@ def _dispatch_script() -> str:
 def _run_against_mock(status: int) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
     requests: list[dict] = []
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length", "0"))
-            requests.append(
-                {
-                    "path": self.path,
-                    "authorization": self.headers.get("Authorization"),
-                    "body": json.loads(self.rfile.read(length)),
-                }
-            )
-            self.send_response(status)
-            if status == 302:
-                self.send_header(
-                    "Location", f"http://127.0.0.1:{self.server.server_port}/redirect"
-                )
-            self.end_headers()
-            self.wfile.write(b"mock-error-response-body")
+    class Opener:
+        def open(self, request, timeout):
+            requests.append({"path": urlsplit(request.full_url).path,
+                "authorization": request.get_header("Authorization"),
+                "body": json.loads(request.data)})
+            if status not in (200, 204):
+                raise HTTPError(request.full_url, status, "mock-error-response-body", {}, None)
+            return self
 
-        def do_GET(self) -> None:
-            requests.append(
-                {"path": self.path, "authorization": self.headers.get("Authorization")}
-            )
-            self.send_response(204)
-            self.end_headers()
+        def __enter__(self):
+            self.status = status
+            return self
 
-        def log_message(self, _format: str, *_args: object) -> None:
-            pass
+        def __exit__(self, *args):
+            return False
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        env = os.environ.copy()
-        env.update(
-            {
-                "GITHUB_API_URL": f"http://127.0.0.1:{server.server_port}/api/v3",
-                "GITHUB_TOKEN": "synthetic-dispatch-token",
-            }
-        )
-        result = subprocess.run(
-            [sys.executable, "-c", _dispatch_script()],
-            cwd=ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=5,
-        )
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
+    def opener_factory(redirect_handler):
+        # Exercise the actual redirect policy without opening any socket.
+        assert redirect_handler().redirect_request(None, None, 302, "mock", {}, "http://example.invalid") is None
+        return Opener()
+
+    stdout, stderr, code = StringIO(), StringIO(), 0
+    with patch.dict(os.environ, {"GITHUB_API_URL": "http://example.invalid/api/v3",
+            "GITHUB_TOKEN": "synthetic-dispatch-token"}), \
+            patch("urllib.request.build_opener", side_effect=opener_factory), \
+            redirect_stdout(stdout), redirect_stderr(stderr):
+        try:
+            exec(compile(_dispatch_script(), "<workflow-dispatch-fake>", "exec"), {"__name__": "__main__"})
+        except SystemExit as error:
+            code = error.code
+    result = subprocess.CompletedProcess([], code, stdout.getvalue(), stderr.getvalue())
     return result, requests
 
 

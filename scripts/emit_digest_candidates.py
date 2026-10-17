@@ -113,6 +113,10 @@ def project_digest_candidates(report, *, expected_target, opaque_account_uid, ta
 
 
 def emit_digest_candidates(env, *, now=None):
+    from notifications.unified_notifications import enabled
+    if enabled(env):
+        from notifications.unified_producer import emit_archive
+        return emit_archive(env, now=now)
     if env.get("BINANCE_DIGEST_CANDIDATES_ENABLED", "false") == "false":
         return {"status": "disabled", "uploaded": False}
     if env.get("BINANCE_DIGEST_CANDIDATES_ENABLED") != "true":

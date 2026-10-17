@@ -1,0 +1,1392 @@
+{
+  "immediate": {
+    "runtime": [
+      [
+        false,
+        false,
+        true,
+        [
+          {
+            "token": "fixture-token",
+            "chat_id": "fixture-chat",
+            "text": "fixture notice",
+            "run_id": "fixture-run",
+            "dry_run": false
+          }
+        ],
+        {
+          "notifications": [
+            {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": false,
+              "transport_acknowledged": true,
+              "delivery_status": "sent"
+            }
+          ],
+          "summary": {
+            "notification_delivery_summary": {
+              "event_count": 1,
+              "sent_count": 1,
+              "failed_count": 0,
+              "all_acknowledged": true
+            }
+          },
+          "side_effect_summary": {
+            "executed_call_count": 1,
+            "suppressed_call_count": 0
+          }
+        },
+        [
+          {
+            "effect_type": "notify",
+            "target": "telegram",
+            "payload": {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": false,
+              "transport_acknowledged": true,
+              "delivery_status": "sent"
+            },
+            "executed": true
+          }
+        ]
+      ],
+      [
+        false,
+        true,
+        true,
+        [
+          {
+            "token": "fixture-token",
+            "chat_id": "fixture-chat",
+            "text": "fixture notice",
+            "run_id": "fixture-run",
+            "dry_run": false
+          }
+        ],
+        {
+          "notifications": [
+            {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": false,
+              "transport_acknowledged": true,
+              "delivery_status": "sent"
+            }
+          ],
+          "summary": {
+            "notification_delivery_summary": {
+              "event_count": 1,
+              "sent_count": 1,
+              "failed_count": 0,
+              "all_acknowledged": true
+            }
+          },
+          "side_effect_summary": {
+            "executed_call_count": 1,
+            "suppressed_call_count": 0
+          }
+        },
+        [
+          {
+            "effect_type": "notify",
+            "target": "telegram",
+            "payload": {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": false,
+              "transport_acknowledged": true,
+              "delivery_status": "sent"
+            },
+            "executed": true
+          }
+        ]
+      ],
+      [
+        true,
+        false,
+        false,
+        [],
+        {
+          "notifications": [
+            {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": true,
+              "delivery_status": "suppressed",
+              "transport_acknowledged": false
+            }
+          ],
+          "summary": {},
+          "side_effect_summary": {
+            "executed_call_count": 0,
+            "suppressed_call_count": 1
+          }
+        },
+        [
+          {
+            "effect_type": "notify",
+            "target": "telegram",
+            "payload": {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": true,
+              "delivery_status": "suppressed",
+              "transport_acknowledged": false
+            },
+            "executed": false
+          }
+        ]
+      ],
+      [
+        true,
+        true,
+        false,
+        [],
+        {
+          "notifications": [
+            {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": true,
+              "delivery_status": "suppressed",
+              "transport_acknowledged": false
+            }
+          ],
+          "summary": {},
+          "side_effect_summary": {
+            "executed_call_count": 0,
+            "suppressed_call_count": 1
+          }
+        },
+        [
+          {
+            "effect_type": "notify",
+            "target": "telegram",
+            "payload": {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": true,
+              "delivery_status": "suppressed",
+              "transport_acknowledged": false
+            },
+            "executed": false
+          }
+        ]
+      ]
+    ],
+    "routine": [
+      [
+        false,
+        true,
+        [
+          "fixture routine"
+        ],
+        {
+          "notifications": []
+        }
+      ],
+      [
+        true,
+        true,
+        [
+          "fixture routine"
+        ],
+        {
+          "notifications": []
+        }
+      ]
+    ],
+    "status": [
+      [
+        "zh-CN",
+        false,
+        false,
+        [
+          "💓 加密状态\n🧭 策略: 示例策略\n💰 总净值: $1,000 | 📈 趋势层持仓: $250 (+1.0%)\n₿ BTC 价格: $65,000 | 🚦 BTC 闸门: 开启\n🎯 BTC 目标配比: 30.0% | AHR999: 0.70 | Z-Score: 1.2"
+        ],
+        {}
+      ],
+      [
+        "zh-CN",
+        true,
+        true,
+        [
+          "💓 加密状态\n🧭 策略: 示例策略\n💰 总净值: $1,000 | 📈 趋势层持仓: $250 (+1.0%)\n₿ BTC 价格: $65,000 | 🚦 BTC 闸门: 开启\n🎯 BTC 目标配比: 30.0% | AHR999: 0.70 | Z-Score: 1.2"
+        ],
+        {
+          "last_btc_status_report_bucket": "2026101600"
+        }
+      ],
+      [
+        "en",
+        false,
+        false,
+        [
+          "💓 Crypto Status\n🧭 Strategy: Example strategy\n💰 Total Equity: $1,000 | 📈 Trend Holdings: $250 (+1.0%)\n₿ BTC Price: $65,000 | 🚦 BTC Gate: ON\n🎯 BTC Target Allocation: 30.0% | AHR999: 0.70 | Z-Score: 1.2"
+        ],
+        {}
+      ],
+      [
+        "en",
+        true,
+        true,
+        [
+          "💓 Crypto Status\n🧭 Strategy: Example strategy\n💰 Total Equity: $1,000 | 📈 Trend Holdings: $250 (+1.0%)\n₿ BTC Price: $65,000 | 🚦 BTC Gate: ON\n🎯 BTC Target Allocation: 30.0% | AHR999: 0.70 | Z-Score: 1.2"
+        ],
+        {
+          "last_btc_status_report_bucket": "2026101600"
+        }
+      ]
+    ],
+    "funding": [
+      [
+        "fixture-token",
+        "fixture-chat",
+        "fixture funding"
+      ]
+    ],
+    "cycles": [
+      [
+        false,
+        false,
+        {
+          "status": "ok",
+          "buy_sell_intents": [],
+          "btc_dca_intents": [],
+          "redemption_subscription_intents": [],
+          "selected_symbols": {},
+          "gating_summary": {},
+          "gating_events": [],
+          "state_write_intents": [],
+          "diagnostics": {
+            "portfolio_stoploss": {
+              "pre_trade": {
+                "evaluation_status": "unknown",
+                "reason_code": "gate_evaluation_evidence_unavailable",
+                "pnl_input_status": "unknown",
+                "coverage_basis": "strategy_member_position_count",
+                "position_count": null,
+                "cost_covered_position_count": null
+              },
+              "post_trade": {
+                "evaluation_status": "not_evaluated",
+                "reason_code": "evaluation_not_reached",
+                "pnl_input_status": "unknown",
+                "coverage_basis": "strategy_member_position_count",
+                "position_count": null,
+                "cost_covered_position_count": null
+              }
+            }
+          },
+          "upstream_pool_symbols": [
+            "ETHUSDT"
+          ],
+          "total_equity_usdt": 200.0,
+          "trend_equity_usdt": 0.0,
+          "execution_blocked_reason": "risk_execution_not_permitted",
+          "log_lines": [],
+          "execution_receipt_observation": {
+            "submission_attempted_count": 0,
+            "broker_acknowledged_count": 0,
+            "partially_filled_count": 0,
+            "filled_count": 0,
+            "transport_uncertain_count": 0,
+            "failed_count": 0
+          }
+        },
+        [],
+        [
+          "client",
+          "state",
+          "snapshot"
+        ],
+        []
+      ],
+      [
+        true,
+        false,
+        {
+          "status": "ok",
+          "buy_sell_intents": [],
+          "btc_dca_intents": [],
+          "redemption_subscription_intents": [],
+          "selected_symbols": {},
+          "gating_summary": {},
+          "gating_events": [],
+          "state_write_intents": [],
+          "diagnostics": {
+            "portfolio_stoploss": {
+              "pre_trade": {
+                "evaluation_status": "unknown",
+                "reason_code": "gate_evaluation_evidence_unavailable",
+                "pnl_input_status": "unknown",
+                "coverage_basis": "strategy_member_position_count",
+                "position_count": null,
+                "cost_covered_position_count": null
+              },
+              "post_trade": {
+                "evaluation_status": "unknown",
+                "reason_code": "gate_evaluation_evidence_unavailable",
+                "pnl_input_status": "unknown",
+                "coverage_basis": "strategy_member_position_count",
+                "position_count": null,
+                "cost_covered_position_count": null
+              }
+            }
+          },
+          "upstream_pool_symbols": [
+            "ETHUSDT"
+          ],
+          "total_equity_usdt": 185.0,
+          "trend_equity_usdt": 0.0,
+          "log_lines": [],
+          "execution_receipt_observation": {
+            "submission_attempted_count": 0,
+            "broker_acknowledged_count": 0,
+            "partially_filled_count": 0,
+            "filled_count": 0,
+            "transport_uncertain_count": 0,
+            "failed_count": 0
+          }
+        },
+        [
+          "state_rebase",
+          "state_reset",
+          "circuit_breaker",
+          "fuel",
+          "trend",
+          "dca",
+          "earn",
+          "state_write"
+        ],
+        [
+          "client",
+          "state",
+          "snapshot"
+        ],
+        []
+      ],
+      [
+        true,
+        true,
+        {
+          "status": "error",
+          "buy_sell_intents": [],
+          "btc_dca_intents": [],
+          "redemption_subscription_intents": [],
+          "selected_symbols": {},
+          "gating_summary": {},
+          "gating_events": [],
+          "state_write_intents": [],
+          "diagnostics": {
+            "portfolio_stoploss": {
+              "pre_trade": {
+                "evaluation_status": "unknown",
+                "reason_code": "gate_evaluation_evidence_unavailable",
+                "pnl_input_status": "unknown",
+                "coverage_basis": "strategy_member_position_count",
+                "position_count": null,
+                "cost_covered_position_count": null
+              },
+              "post_trade": {
+                "evaluation_status": "unknown",
+                "reason_code": "gate_evaluation_evidence_unavailable",
+                "pnl_input_status": "unknown",
+                "coverage_basis": "strategy_member_position_count",
+                "position_count": null,
+                "cost_covered_position_count": null
+              }
+            },
+            "cycle_failure": {
+              "stage": "earn_execution",
+              "error_type": "execution_integrity_error"
+            }
+          },
+          "upstream_pool_symbols": [
+            "ETHUSDT"
+          ],
+          "total_equity_usdt": 185.0,
+          "trend_equity_usdt": 0.0,
+          "log_lines": [
+            "cycle_execution_failed stage=earn_execution error_type=execution_integrity_error"
+          ],
+          "execution_receipt_observation": {
+            "submission_attempted_count": 0,
+            "broker_acknowledged_count": 0,
+            "partially_filled_count": 0,
+            "filled_count": 0,
+            "transport_uncertain_count": 0,
+            "failed_count": 0
+          }
+        },
+        [
+          "state_rebase",
+          "state_reset",
+          "circuit_breaker",
+          "fuel",
+          "trend",
+          "dca",
+          "earn"
+        ],
+        [
+          "client",
+          "state",
+          "snapshot"
+        ],
+        [
+          [
+            "system_crash\ncycle_execution_failed",
+            {}
+          ]
+        ]
+      ]
+    ],
+    "funding_result": true,
+    "execution": [
+      [
+        "buy",
+        0,
+        500.0,
+        [
+          [
+            "notify",
+            "trend_buy_skipped ETHUSDT\nbudget_label: $100.00\nqty_zero_msg"
+          ]
+        ],
+        {},
+        {
+          "ETHUSDT": 2.0
+        },
+        {
+          "buy_sell_intents": [
+            {
+              "category": "trend",
+              "action": "buy",
+              "symbol": "ETHUSDT",
+              "quantity": 0.0,
+              "budget": 100.0,
+              "weight": 1.0,
+              "relative_score": 1.2
+            }
+          ],
+          "gating_summary": {
+            "trend_buy_zero_order_size": 1
+          },
+          "gating_events": [
+            {
+              "gate": "trend_buy_zero_order_size",
+              "category": "trend",
+              "symbol": "ETHUSDT",
+              "detail": {
+                "budget_usdt": 100.0
+              }
+            }
+          ]
+        }
+      ],
+      [
+        "buy",
+        1,
+        400.0,
+        [
+          [
+            "funding",
+            "USDT",
+            100.0
+          ],
+          [
+            "broker",
+            "order_market_buy",
+            {
+              "symbol": "ETHUSDT",
+              "quantity": 1,
+              "newClientOrderId": "fixture-order"
+            },
+            "order_buy"
+          ],
+          [
+            "record_action",
+            "ETHUSDT",
+            "buy",
+            "20261016"
+          ],
+          [
+            "persist",
+            "trend_buy:ETHUSDT",
+            {
+              "daily_trend_cash_flow_usdt": -100.0,
+              "daily_trend_net_invested_usdt": 100.0,
+              "daily_trend_risk_base_usdt": 100.0,
+              "daily_trend_third_fee_usdt": 0.0,
+              "last_balance_snapshot": {
+                "USDT": 400.0,
+                "ETH": 3.0
+              },
+              "ETHUSDT": {
+                "is_holding": true,
+                "entry_price": 100.0,
+                "highest_price": 100.0
+              }
+            }
+          ],
+          [
+            "notify",
+            "trend_buy ETHUSDT\nprice_label: $100.00\nbudget_label: $100.00\nweight_label: 100%\nrel_score_label: 1.20"
+          ]
+        ],
+        {
+          "daily_trend_cash_flow_usdt": -100.0,
+          "daily_trend_net_invested_usdt": 100.0,
+          "daily_trend_risk_base_usdt": 100.0,
+          "daily_trend_third_fee_usdt": 0.0,
+          "last_balance_snapshot": {
+            "USDT": 400.0,
+            "ETH": 3.0
+          },
+          "ETHUSDT": {
+            "is_holding": true,
+            "entry_price": 100.0,
+            "highest_price": 100.0
+          }
+        },
+        {
+          "ETHUSDT": 3.0
+        },
+        {
+          "buy_sell_intents": [
+            {
+              "category": "trend",
+              "action": "buy",
+              "symbol": "ETHUSDT",
+              "quantity": 1.0,
+              "budget": 100.0,
+              "weight": 1.0,
+              "relative_score": 1.2
+            }
+          ],
+          "gating_summary": {},
+          "gating_events": []
+        }
+      ],
+      [
+        "sell",
+        0,
+        500.0,
+        [
+          [
+            "notify",
+            "trend_sell_skipped ETHUSDT\nreason_label: fixture_reason\nqty_zero_msg"
+          ]
+        ],
+        {},
+        {
+          "ETHUSDT": 2.0
+        },
+        {
+          "buy_sell_intents": [
+            {
+              "category": "trend",
+              "action": "sell",
+              "symbol": "ETHUSDT",
+              "reason": "fixture_reason",
+              "quantity": 0.0,
+              "price": 100.0
+            }
+          ],
+          "gating_summary": {},
+          "gating_events": []
+        }
+      ],
+      [
+        "sell",
+        1,
+        600.0,
+        [
+          [
+            "funding",
+            "ETH",
+            1
+          ],
+          [
+            "broker",
+            "order_market_sell",
+            {
+              "symbol": "ETHUSDT",
+              "quantity": 1,
+              "newClientOrderId": "fixture-order"
+            },
+            "order_sell"
+          ],
+          [
+            "record_action",
+            "ETHUSDT",
+            "sell",
+            "20261016"
+          ],
+          [
+            "persist",
+            "trend_sell:ETHUSDT",
+            {
+              "daily_trend_cash_flow_usdt": 100.0,
+              "daily_trend_net_invested_usdt": -100.0,
+              "daily_trend_risk_base_usdt": 0.0,
+              "daily_trend_third_fee_usdt": 0.0,
+              "last_balance_snapshot": {
+                "USDT": 600.0,
+                "ETH": 1.0
+              },
+              "ETHUSDT": {
+                "is_holding": false,
+                "entry_price": 0.0,
+                "highest_price": 0.0
+              }
+            }
+          ],
+          [
+            "notify",
+            "trend_sell ETHUSDT\nreason_label: fixture_reason\nprice_label: $100.00"
+          ]
+        ],
+        {
+          "daily_trend_cash_flow_usdt": 100.0,
+          "daily_trend_net_invested_usdt": -100.0,
+          "daily_trend_risk_base_usdt": 0.0,
+          "daily_trend_third_fee_usdt": 0.0,
+          "last_balance_snapshot": {
+            "USDT": 600.0,
+            "ETH": 1.0
+          },
+          "ETHUSDT": {
+            "is_holding": false,
+            "entry_price": 0.0,
+            "highest_price": 0.0
+          }
+        },
+        {
+          "ETHUSDT": 1.0
+        },
+        {
+          "buy_sell_intents": [
+            {
+              "category": "trend",
+              "action": "sell",
+              "symbol": "ETHUSDT",
+              "reason": "fixture_reason",
+              "quantity": 1.0,
+              "price": 100.0
+            }
+          ],
+          "gating_summary": {},
+          "gating_events": []
+        }
+      ]
+    ]
+  },
+  "daily_digest": {
+    "runtime": [
+      [
+        false,
+        false,
+        false,
+        [],
+        {
+          "notifications": [
+            {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": false,
+              "delivery_status": "deferred_digest",
+              "transport_acknowledged": false
+            }
+          ],
+          "summary": {},
+          "side_effect_summary": {
+            "executed_call_count": 0,
+            "suppressed_call_count": 0
+          }
+        },
+        []
+      ],
+      [
+        false,
+        true,
+        true,
+        [
+          {
+            "token": "fixture-token",
+            "chat_id": "fixture-chat",
+            "text": "fixture notice",
+            "run_id": "fixture-run",
+            "dry_run": false
+          }
+        ],
+        {
+          "notifications": [
+            {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": false,
+              "transport_acknowledged": true,
+              "delivery_status": "sent"
+            }
+          ],
+          "summary": {
+            "notification_delivery_summary": {
+              "event_count": 1,
+              "sent_count": 1,
+              "failed_count": 0,
+              "all_acknowledged": true
+            }
+          },
+          "side_effect_summary": {
+            "executed_call_count": 1,
+            "suppressed_call_count": 0
+          }
+        },
+        [
+          {
+            "effect_type": "notify",
+            "target": "telegram",
+            "payload": {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": false,
+              "transport_acknowledged": true,
+              "delivery_status": "sent"
+            },
+            "executed": true
+          }
+        ]
+      ],
+      [
+        true,
+        false,
+        false,
+        [],
+        {
+          "notifications": [
+            {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": true,
+              "delivery_status": "deferred_digest",
+              "transport_acknowledged": false
+            }
+          ],
+          "summary": {},
+          "side_effect_summary": {
+            "executed_call_count": 0,
+            "suppressed_call_count": 0
+          }
+        },
+        []
+      ],
+      [
+        true,
+        true,
+        false,
+        [],
+        {
+          "notifications": [
+            {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": true,
+              "delivery_status": "suppressed",
+              "transport_acknowledged": false
+            }
+          ],
+          "summary": {},
+          "side_effect_summary": {
+            "executed_call_count": 0,
+            "suppressed_call_count": 1
+          }
+        },
+        [
+          {
+            "effect_type": "notify",
+            "target": "telegram",
+            "payload": {
+              "sink": "telegram",
+              "compact_text_sha256": "4ce99dd032b384a65ef7848719dac1c12563e640aa3e4f0656a4771ffb8ef2df",
+              "compact_text_length": 14,
+              "run_id": "fixture-run",
+              "dry_run": true,
+              "delivery_status": "suppressed",
+              "transport_acknowledged": false
+            },
+            "executed": false
+          }
+        ]
+      ]
+    ],
+    "routine": [
+      [
+        false,
+        false,
+        [],
+        {
+          "notifications": [
+            {
+              "delivery_status": "deferred_digest",
+              "transport_acknowledged": false,
+              "sink": "telegram",
+              "routine_order": false
+            }
+          ]
+        }
+      ],
+      [
+        true,
+        false,
+        [],
+        {
+          "notifications": [
+            {
+              "delivery_status": "deferred_digest",
+              "transport_acknowledged": false,
+              "sink": "telegram",
+              "routine_order": true
+            }
+          ]
+        }
+      ]
+    ],
+    "status": [
+      [
+        "zh-CN",
+        false,
+        false,
+        [],
+        {}
+      ],
+      [
+        "zh-CN",
+        true,
+        false,
+        [],
+        {}
+      ],
+      [
+        "en",
+        false,
+        false,
+        [],
+        {}
+      ],
+      [
+        "en",
+        true,
+        false,
+        [],
+        {}
+      ]
+    ],
+    "funding": [],
+    "cycles": [
+      [
+        false,
+        false,
+        {
+          "status": "ok",
+          "buy_sell_intents": [],
+          "btc_dca_intents": [],
+          "redemption_subscription_intents": [],
+          "selected_symbols": {},
+          "gating_summary": {},
+          "gating_events": [],
+          "state_write_intents": [],
+          "diagnostics": {
+            "portfolio_stoploss": {
+              "pre_trade": {
+                "evaluation_status": "unknown",
+                "reason_code": "gate_evaluation_evidence_unavailable",
+                "pnl_input_status": "unknown",
+                "coverage_basis": "strategy_member_position_count",
+                "position_count": null,
+                "cost_covered_position_count": null
+              },
+              "post_trade": {
+                "evaluation_status": "not_evaluated",
+                "reason_code": "evaluation_not_reached",
+                "pnl_input_status": "unknown",
+                "coverage_basis": "strategy_member_position_count",
+                "position_count": null,
+                "cost_covered_position_count": null
+              }
+            }
+          },
+          "upstream_pool_symbols": [
+            "ETHUSDT"
+          ],
+          "total_equity_usdt": 200.0,
+          "trend_equity_usdt": 0.0,
+          "execution_blocked_reason": "risk_execution_not_permitted",
+          "log_lines": [],
+          "execution_receipt_observation": {
+            "submission_attempted_count": 0,
+            "broker_acknowledged_count": 0,
+            "partially_filled_count": 0,
+            "filled_count": 0,
+            "transport_uncertain_count": 0,
+            "failed_count": 0
+          },
+          "summary": {
+            "notification_digest": {
+              "schema_version": "qsl.notification_cycle.v1",
+              "dry_run": false,
+              "order_count": null,
+              "fill_count": null,
+              "routine": false
+            }
+          }
+        },
+        [],
+        [
+          "client",
+          "state",
+          "snapshot"
+        ],
+        []
+      ],
+      [
+        true,
+        false,
+        {
+          "status": "ok",
+          "buy_sell_intents": [],
+          "btc_dca_intents": [],
+          "redemption_subscription_intents": [],
+          "selected_symbols": {},
+          "gating_summary": {},
+          "gating_events": [],
+          "state_write_intents": [],
+          "diagnostics": {
+            "portfolio_stoploss": {
+              "pre_trade": {
+                "evaluation_status": "unknown",
+                "reason_code": "gate_evaluation_evidence_unavailable",
+                "pnl_input_status": "unknown",
+                "coverage_basis": "strategy_member_position_count",
+                "position_count": null,
+                "cost_covered_position_count": null
+              },
+              "post_trade": {
+                "evaluation_status": "unknown",
+                "reason_code": "gate_evaluation_evidence_unavailable",
+                "pnl_input_status": "unknown",
+                "coverage_basis": "strategy_member_position_count",
+                "position_count": null,
+                "cost_covered_position_count": null
+              }
+            }
+          },
+          "upstream_pool_symbols": [
+            "ETHUSDT"
+          ],
+          "total_equity_usdt": 185.0,
+          "trend_equity_usdt": 0.0,
+          "log_lines": [],
+          "execution_receipt_observation": {
+            "submission_attempted_count": 0,
+            "broker_acknowledged_count": 0,
+            "partially_filled_count": 0,
+            "filled_count": 0,
+            "transport_uncertain_count": 0,
+            "failed_count": 0
+          },
+          "summary": {
+            "notification_digest": {
+              "schema_version": "qsl.notification_cycle.v1",
+              "dry_run": false,
+              "order_count": 0,
+              "fill_count": 0,
+              "routine": true
+            }
+          }
+        },
+        [
+          "state_rebase",
+          "state_reset",
+          "circuit_breaker",
+          "fuel",
+          "trend",
+          "dca",
+          "earn",
+          "state_write"
+        ],
+        [
+          "client",
+          "state",
+          "snapshot"
+        ],
+        []
+      ],
+      [
+        true,
+        true,
+        {
+          "status": "error",
+          "buy_sell_intents": [],
+          "btc_dca_intents": [],
+          "redemption_subscription_intents": [],
+          "selected_symbols": {},
+          "gating_summary": {},
+          "gating_events": [],
+          "state_write_intents": [],
+          "diagnostics": {
+            "portfolio_stoploss": {
+              "pre_trade": {
+                "evaluation_status": "unknown",
+                "reason_code": "gate_evaluation_evidence_unavailable",
+                "pnl_input_status": "unknown",
+                "coverage_basis": "strategy_member_position_count",
+                "position_count": null,
+                "cost_covered_position_count": null
+              },
+              "post_trade": {
+                "evaluation_status": "unknown",
+                "reason_code": "gate_evaluation_evidence_unavailable",
+                "pnl_input_status": "unknown",
+                "coverage_basis": "strategy_member_position_count",
+                "position_count": null,
+                "cost_covered_position_count": null
+              }
+            },
+            "cycle_failure": {
+              "stage": "earn_execution",
+              "error_type": "execution_integrity_error"
+            }
+          },
+          "upstream_pool_symbols": [
+            "ETHUSDT"
+          ],
+          "total_equity_usdt": 185.0,
+          "trend_equity_usdt": 0.0,
+          "log_lines": [
+            "cycle_execution_failed stage=earn_execution error_type=execution_integrity_error"
+          ],
+          "execution_receipt_observation": {
+            "submission_attempted_count": 0,
+            "broker_acknowledged_count": 0,
+            "partially_filled_count": 0,
+            "filled_count": 0,
+            "transport_uncertain_count": 0,
+            "failed_count": 0
+          },
+          "summary": {
+            "notification_digest": {
+              "schema_version": "qsl.notification_cycle.v1",
+              "dry_run": false,
+              "order_count": null,
+              "fill_count": null,
+              "routine": false
+            }
+          }
+        },
+        [
+          "state_rebase",
+          "state_reset",
+          "circuit_breaker",
+          "fuel",
+          "trend",
+          "dca",
+          "earn"
+        ],
+        [
+          "client",
+          "state",
+          "snapshot"
+        ],
+        [
+          [
+            "system_crash\ncycle_execution_failed",
+            {}
+          ]
+        ]
+      ]
+    ],
+    "funding_result": false,
+    "execution": [
+      [
+        "buy",
+        0,
+        500.0,
+        [],
+        {},
+        {
+          "ETHUSDT": 2.0
+        },
+        {
+          "buy_sell_intents": [
+            {
+              "category": "trend",
+              "action": "buy",
+              "symbol": "ETHUSDT",
+              "quantity": 0.0,
+              "budget": 100.0,
+              "weight": 1.0,
+              "relative_score": 1.2
+            }
+          ],
+          "gating_summary": {
+            "trend_buy_zero_order_size": 1
+          },
+          "gating_events": [
+            {
+              "gate": "trend_buy_zero_order_size",
+              "category": "trend",
+              "symbol": "ETHUSDT",
+              "detail": {
+                "budget_usdt": 100.0
+              }
+            }
+          ],
+          "notifications": [
+            {
+              "delivery_status": "deferred_digest",
+              "transport_acknowledged": false,
+              "sink": "telegram",
+              "routine_order": false
+            }
+          ]
+        }
+      ],
+      [
+        "buy",
+        1,
+        400.0,
+        [
+          [
+            "funding",
+            "USDT",
+            100.0
+          ],
+          [
+            "broker",
+            "order_market_buy",
+            {
+              "symbol": "ETHUSDT",
+              "quantity": 1,
+              "newClientOrderId": "fixture-order"
+            },
+            "order_buy"
+          ],
+          [
+            "record_action",
+            "ETHUSDT",
+            "buy",
+            "20261016"
+          ],
+          [
+            "persist",
+            "trend_buy:ETHUSDT",
+            {
+              "daily_trend_cash_flow_usdt": -100.0,
+              "daily_trend_net_invested_usdt": 100.0,
+              "daily_trend_risk_base_usdt": 100.0,
+              "daily_trend_third_fee_usdt": 0.0,
+              "last_balance_snapshot": {
+                "USDT": 400.0,
+                "ETH": 3.0
+              },
+              "ETHUSDT": {
+                "is_holding": true,
+                "entry_price": 100.0,
+                "highest_price": 100.0
+              }
+            }
+          ]
+        ],
+        {
+          "daily_trend_cash_flow_usdt": -100.0,
+          "daily_trend_net_invested_usdt": 100.0,
+          "daily_trend_risk_base_usdt": 100.0,
+          "daily_trend_third_fee_usdt": 0.0,
+          "last_balance_snapshot": {
+            "USDT": 400.0,
+            "ETH": 3.0
+          },
+          "ETHUSDT": {
+            "is_holding": true,
+            "entry_price": 100.0,
+            "highest_price": 100.0
+          }
+        },
+        {
+          "ETHUSDT": 3.0
+        },
+        {
+          "buy_sell_intents": [
+            {
+              "category": "trend",
+              "action": "buy",
+              "symbol": "ETHUSDT",
+              "quantity": 1.0,
+              "budget": 100.0,
+              "weight": 1.0,
+              "relative_score": 1.2
+            }
+          ],
+          "gating_summary": {},
+          "gating_events": [],
+          "notifications": [
+            {
+              "delivery_status": "deferred_digest",
+              "transport_acknowledged": false,
+              "sink": "telegram",
+              "routine_order": true
+            }
+          ]
+        }
+      ],
+      [
+        "sell",
+        0,
+        500.0,
+        [],
+        {},
+        {
+          "ETHUSDT": 2.0
+        },
+        {
+          "buy_sell_intents": [
+            {
+              "category": "trend",
+              "action": "sell",
+              "symbol": "ETHUSDT",
+              "reason": "fixture_reason",
+              "quantity": 0.0,
+              "price": 100.0
+            }
+          ],
+          "gating_summary": {},
+          "gating_events": [],
+          "notifications": [
+            {
+              "delivery_status": "deferred_digest",
+              "transport_acknowledged": false,
+              "sink": "telegram",
+              "routine_order": false
+            }
+          ]
+        }
+      ],
+      [
+        "sell",
+        1,
+        600.0,
+        [
+          [
+            "funding",
+            "ETH",
+            1
+          ],
+          [
+            "broker",
+            "order_market_sell",
+            {
+              "symbol": "ETHUSDT",
+              "quantity": 1,
+              "newClientOrderId": "fixture-order"
+            },
+            "order_sell"
+          ],
+          [
+            "record_action",
+            "ETHUSDT",
+            "sell",
+            "20261016"
+          ],
+          [
+            "persist",
+            "trend_sell:ETHUSDT",
+            {
+              "daily_trend_cash_flow_usdt": 100.0,
+              "daily_trend_net_invested_usdt": -100.0,
+              "daily_trend_risk_base_usdt": 0.0,
+              "daily_trend_third_fee_usdt": 0.0,
+              "last_balance_snapshot": {
+                "USDT": 600.0,
+                "ETH": 1.0
+              },
+              "ETHUSDT": {
+                "is_holding": false,
+                "entry_price": 0.0,
+                "highest_price": 0.0
+              }
+            }
+          ]
+        ],
+        {
+          "daily_trend_cash_flow_usdt": 100.0,
+          "daily_trend_net_invested_usdt": -100.0,
+          "daily_trend_risk_base_usdt": 0.0,
+          "daily_trend_third_fee_usdt": 0.0,
+          "last_balance_snapshot": {
+            "USDT": 600.0,
+            "ETH": 1.0
+          },
+          "ETHUSDT": {
+            "is_holding": false,
+            "entry_price": 0.0,
+            "highest_price": 0.0
+          }
+        },
+        {
+          "ETHUSDT": 1.0
+        },
+        {
+          "buy_sell_intents": [
+            {
+              "category": "trend",
+              "action": "sell",
+              "symbol": "ETHUSDT",
+              "reason": "fixture_reason",
+              "quantity": 1.0,
+              "price": 100.0
+            }
+          ],
+          "gating_summary": {},
+          "gating_events": [],
+          "notifications": [
+            {
+              "delivery_status": "deferred_digest",
+              "transport_acknowledged": false,
+              "sink": "telegram",
+              "routine_order": true
+            }
+          ]
+        }
+      ]
+    ]
+  }
+}

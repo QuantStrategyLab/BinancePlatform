@@ -455,6 +455,18 @@ def _send_telegram(message: str) -> bool:
     return ok
 
 
+def _notify_assessment(assessment, message):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from notifications.operational import notify_workflow
+    return notify_workflow(assessment, message, send=_send_telegram)
+
+
+def _recover_assessment(assessment):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from notifications.operational import recover_workflow
+    recover_workflow(assessment)
+
+
 def main() -> int:
     repository = os.environ.get("GITHUB_REPOSITORY") or "QuantStrategyLab/BinancePlatform"
     workflow = os.environ.get("RUNTIME_HEARTBEAT_WORKFLOW") or "main.yml"
@@ -536,7 +548,7 @@ def main() -> int:
             workflow_url=_heartbeat_workflow_url(repository),
         )
         print(message)
-        _send_telegram(message[:3900])
+        _notify_assessment(assessment, message[:3900])
         return 1 if fail_workflow else 0
     assessment = _assess_runtime_heartbeat(
         runs=runs,
@@ -549,6 +561,7 @@ def main() -> int:
     print(json.dumps(assessment, sort_keys=True))
 
     if assessment["status"] == "healthy":
+        _recover_assessment(assessment)
         latest_success = assessment["latest_success"] or {}
         print(
             "Runtime workflow heartbeat OK: "
@@ -602,7 +615,7 @@ def main() -> int:
         workflow_url=_heartbeat_workflow_url(repository),
     )
     print(message)
-    _send_telegram(message[:3900])
+    _notify_assessment(assessment, message[:3900])
     return 1 if fail_workflow else 0
 
 

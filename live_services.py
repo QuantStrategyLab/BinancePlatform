@@ -1,5 +1,6 @@
 import copy
 import hashlib
+import json
 from contextlib import contextmanager
 from threading import Lock
 from types import SimpleNamespace
@@ -417,11 +418,18 @@ def send_tg_msg(token, chat_id, text):
         payload = response.json()
         if not isinstance(payload, dict) or payload.get("ok") is not True:
             return {**receipt, "error_type": "telegram_rejected"}
-        return {
+        result = {
             **receipt,
             "delivery_status": "sent",
             "transport_acknowledged": True,
         }
+        from notifications.unified_notifications import enabled
+        if enabled():
+            message_id = payload.get("result", {}).get("message_id") if isinstance(payload.get("result"), dict) else None
+            if type(message_id) is int:
+                result["transport_receipt_id"] = hashlib.sha256(
+                    json.dumps([str(chat_id), message_id], separators=(",", ":")).encode()).hexdigest()
+        return result
     except Exception as exc:
         print(t("telegram_send_failed"))
         return {**receipt, "error_type": type(exc).__name__}

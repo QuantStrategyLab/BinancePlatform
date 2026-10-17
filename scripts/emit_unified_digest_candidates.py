@@ -3,6 +3,25 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from notifications.digest_snapshot.digest_archive import main  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+from notifications.digest_snapshot.digest_archive import emit as legacy_emit  # noqa: E402
+from notifications.unified_notifications import enabled  # noqa: E402
+from notifications.unified_producer import emit_archive  # noqa: E402
+
+
+def emit(env, **kwargs):
+    return emit_archive(env, **kwargs) if enabled(env) else legacy_emit(env, **kwargs)
+
+
+def main():
+    try:
+        print(json.dumps(emit(os.environ), sort_keys=True))
+        return 0
+    except Exception:
+        print(json.dumps({"status": "blocked", "uploaded": False, "reason": "candidate_projection_failed"}))
+        return 1
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

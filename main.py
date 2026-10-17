@@ -593,7 +593,9 @@ def _notify_runtime_error(exc):
         print(t("runtime_notification_missing_target"))
         return False
     try:
-        receipt = send_tg_msg(token, chat_id, _runtime_error_notification_message(exc))
+        from notifications.unified_notifications import external_notice
+        receipt = external_notice(lambda: send_tg_msg(token, chat_id, _runtime_error_notification_message(exc)),
+            kind="real_error", reason="runtime_failure")
     except Exception:
         print(t("runtime_notification_delivery_failed"))
         return False
@@ -615,13 +617,23 @@ def get_total_balance(client, asset, log_buffer=None):
 
 def log_and_notify(log_buffer, tg_token, tg_chat_id, text):
     append_log(log_buffer, text)
-    send_tg_msg(tg_token, tg_chat_id, text)
+    from notifications.unified_notifications import external_notice
+    external_notice(lambda: send_tg_msg(tg_token, tg_chat_id, text), kind="real_error", reason="runtime_failure")
 
 def _send_routine_tg_message(token, chat_id, text):
-    from notifications.digest_snapshot.digest_routing import daily_digest_enabled
+    from notifications.unified_notifications import enabled, external_notice
+    if enabled():
+        return external_notice(lambda: send_tg_msg(token, chat_id, text))
+    from notifications.routing import daily_digest_enabled
     if daily_digest_enabled():
         return False
     return send_tg_msg(token, chat_id, text)
+
+
+def _send_failure_tg_message(token, chat_id, text):
+    from notifications.unified_notifications import external_notice
+    return external_notice(lambda: send_tg_msg(token, chat_id, text),
+        kind="real_error", reason="earn_redeem_failed")
 
 
 def ensure_asset_available(client, asset, required_amount, tg_token, tg_chat_id):
@@ -635,7 +647,7 @@ def ensure_asset_available(client, asset, required_amount, tg_token, tg_chat_id)
             tg_chat_id,
             t("execution_spot_short_redeeming_from_earn", asset=asset, amount=amount),
         ),
-        on_error=lambda _exc: send_tg_msg(
+        on_error=lambda _exc: _send_failure_tg_message(
             tg_token,
             tg_chat_id,
             t("execution_redeem_failed_asset", asset=asset, error="earn_redeem_failed"),
