@@ -7,3 +7,7 @@ ignore = ["E701", "E702", "E401", "F541"]
 "tests/*.py" = ["E402"]
 "research/backtest.py" = ["E402"]
 "run_cycle_replay.py" = ["E402"]
+
+# Preserve upstream test-only source, including its existing unused code.
+"tests/fixtures/qrs_notification_contract/daily_digest_aggregator.py" = ["F841"]
+"tests/fixtures/qrs_notification_contract/unified_daily_digest.py" = ["F401"]
