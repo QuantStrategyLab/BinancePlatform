@@ -219,6 +219,8 @@ def execute_strategy_cycle(
     cycle_funding_submission_start = None
     cycle_funding_side_effect_start = None
     cycle_order_sequence_start = None
+    from notifications.unified_notifications import bind_cycle, reset_cycle, enabled
+    notification_context = bind_cycle(runtime, report)
     try:
         if not acquire_runtime_state_owner(runtime):
             report["execution_blocked_reason"] = "state_owner_busy"
@@ -479,7 +481,8 @@ def execute_strategy_cycle(
             btc_snapshot,
             btc_target_ratio,
             getattr(runtime, "strategy_display_name_localized", "") or getattr(runtime, "strategy_display_name", ""),
-            notifier_fn=lambda text: runtime_notify(runtime, report, text),
+            notifier_fn=lambda text: (runtime_notify(runtime, report, text, urgent=False) if enabled()
+                else runtime_notify(runtime, report, text)),
         )
 
         failure_stage = "state_persistence"
@@ -520,6 +523,7 @@ def execute_strategy_cycle(
         except Exception:
             pass
     finally:
+        reset_cycle(notification_context)
         reason_code = None
         earn_diagnostics = report.get("diagnostics", {}).get("earn_accrual", {})
         if isinstance(earn_diagnostics, Mapping):
@@ -602,6 +606,23 @@ def execute_strategy_cycle(
         report["log_lines"] = list(log_buffer)
         finalize_notification_delivery(report)
         attach_execution_receipt_from_report(report)
+        if enabled():
+            observation = report.get("execution_receipt_observation") or {}
+            fields = ("submission_attempted_count", "broker_acknowledged_count", "partially_filled_count",
+                      "filled_count", "transport_uncertain_count", "failed_count")
+            known = all(type(observation.get(k)) is int and observation[k] >= 0 for k in fields)
+            settled = known and observation["submission_attempted_count"] == observation["filled_count"]
+            healthy = (report.get("status") == "ok" and settled
+                and not any(observation[k] for k in fields if k not in {"submission_attempted_count", "filled_count"})
+                and not report.get("execution_blocked_reason") and not report.get("circuit_breaker_triggered")
+                and not (report.get("error_summary") or {}).get("errors"))
+            report.setdefault("summary", {})["notification_digest"] = {
+                "schema_version": "qsl.notification_cycle.v1", "dry_run": bool(runtime.dry_run),
+                "order_count": observation["filled_count"] if healthy and not runtime.dry_run else None,
+                "fill_count": 0 if healthy and observation["filled_count"] == 0 and not runtime.dry_run else None,
+                "routine": healthy and not runtime.dry_run,
+            }
+
         if not getattr(runtime, "dry_run", False):
             execution_result = _build_platform_execution_result(
                 report,
@@ -691,6 +712,9 @@ def run_live_cycle(
         append_report_error(report, "report_persistence_failed", stage="report_persistence")
         output_printer("failed to persist archived execution report: report_persistence_failed")
         persisted_local_path = report_writer(report)
+    from notifications.unified_notifications import enabled, observe_archived_report
+    if enabled() and getattr(locals().get("persisted"), "cloud_uri", None):
+        observe_archived_report(report)
     report_status = _public_cycle_status(report.get("status"))
     status_event = {
         "ok": "strategy_cycle_completed",
