@@ -21,7 +21,8 @@ concurrency:
 jobs:
   validate:
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run_full_cycle == true && github.ref == 'refs/heads/main' }}
-    runs-on: self-hosted
+    # Keep the existing authority App key off the persistent trading host.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: binance-runtime
     permissions:

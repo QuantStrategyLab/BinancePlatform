@@ -63,6 +63,8 @@ def test_only_explicit_main_dispatch_can_start_isolated_job():
     assert 'schedule:' not in text and 'workflow_call:' not in text and 'push:' not in text
     assert 'group: Runtime-${{ github.ref_name }}' in text
     assert 'cancel-in-progress: false' in text
+    assert 'runs-on: ubuntu-24.04' in text
+    assert 'self-hosted' not in text
     assert 'ref: ${{ github.sha }}' in text
     assert 'git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main' in text
     assert 'persist-credentials: false' in text
