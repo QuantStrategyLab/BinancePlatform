@@ -22,11 +22,9 @@ from degraded_mode_support import (
 )
 from quant_platform_kit.binance import (
     connect_client as qpk_connect_client,
-    ensure_asset_available as qpk_ensure_asset_available,
     fetch_btc_market_snapshot as qpk_fetch_btc_market_snapshot,
     fetch_daily_indicators as qpk_fetch_daily_indicators,
     format_qty as qpk_format_qty,
-    manage_usdt_earn_buffer as qpk_manage_usdt_earn_buffer,
 )
 from live_services import (
     bind_trade_state_access,
@@ -632,36 +630,24 @@ def _send_failure_tg_message(token, chat_id, text):
 
 
 def ensure_asset_available(client, asset, required_amount, tg_token, tg_chat_id):
-    """Redeem from flexible earn if spot balance is below required amount."""
-    return qpk_ensure_asset_available(
-        client,
-        asset,
-        required_amount,
-        on_redeem=lambda amount: _send_routine_tg_message(
-            tg_token,
-            tg_chat_id,
-            t("execution_spot_short_redeeming_from_earn", asset=asset, amount=amount),
-        ),
-        on_error=lambda _exc: _send_failure_tg_message(
-            tg_token,
-            tg_chat_id,
-            t("execution_redeem_failed_asset", asset=asset, error="earn_redeem_failed"),
-        ),
-        sleep_fn=time.sleep,
-    )
+    """Check available Spot cash only; never redeem or read Earn funds."""
+    from math import isfinite
+
+    try:
+        spot_free = float(client.get_asset_balance(asset=asset)["free"])
+        return (
+            isfinite(spot_free)
+            and isfinite(float(required_amount))
+            and 0 <= spot_free
+            and 0 < required_amount <= spot_free
+        )
+    except Exception:
+        return False
 
 def manage_usdt_earn_buffer(client, target_buffer, tg_token, tg_chat_id, log_buffer):
-    """Keep USDT spot buffer near target by subscribing/redeeming flexible earn."""
-    qpk_manage_usdt_earn_buffer(
-        client,
-        target_buffer,
-        on_subscribe=lambda amount: append_log(log_buffer, t("cash_manager_subscribed_to_earn", amount=amount)),
-        on_redeem=lambda amount: append_log(log_buffer, t("cash_manager_redeeming_to_spot", amount=amount)),
-        on_error=lambda _exc: append_log(
-            log_buffer,
-            t("usdt_earn_buffer_maintenance_failed", error="earn_maintenance_failed"),
-        ),
-    )
+    """Leave Earn funds untouched; automatic buffer maintenance is disabled."""
+    return
+
 
 def format_qty(client, symbol, qty):
     """Round quantity to exchange LOT_SIZE to avoid filter errors."""
