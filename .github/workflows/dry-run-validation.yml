@@ -79,12 +79,27 @@ jobs:
           export_environment_variables: true
           cleanup_credentials: true
 
+      # Reuse the existing configuration-reader App without changing its permissions.
+      # Never expose a private target through vars expressions in step env/run/with:
+      # the runner prints those before an add-mask command could protect them.
+      - name: Mint existing read-only configuration token
+        id: config-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.BINANCE_AUTHORITY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BINANCE_AUTHORITY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-environments: read
+          permission-metadata: read
+        env:
+          INPUT_PERMISSION-ACTIONS-VARIABLES: read
+
       - name: Run isolated full-cycle validator
         shell: bash
         env:
-          SOURCE_RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}
+          CONFIG_READ_TOKEN: ${{ steps.config-token.outputs.token }}
           BINANCE_RISK_AUTHORITY_JSON: ${{ secrets.BINANCE_RISK_AUTHORITY_JSON }}
-          BINANCE_RISK_AUTHORITY_FILE_CONFIG: ${{ vars.BINANCE_RISK_AUTHORITY_FILE }}
           BINANCE_RISK_AUTHORITY_SHA256: ${{ vars.BINANCE_RISK_AUTHORITY_SHA256 }}
           BINANCE_RISK_AUTHORITY_SOURCE_REVISION: ${{ vars.BINANCE_RISK_AUTHORITY_SOURCE_REVISION }}
           BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON: ${{ vars.BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON }}
@@ -127,6 +142,8 @@ jobs:
           import subprocess
           import sys
           import tempfile
+          import urllib.error
+          import urllib.request
 
           from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
           from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
@@ -143,9 +160,33 @@ jobs:
               "uv_lock_sha256": hashlib.sha256(Path("uv.lock").read_bytes()).hexdigest(),
           }
           authority_file = None
+          config_token = os.environ.pop("CONFIG_READ_TOKEN", "")
+
+          def read_variable(name, *, optional=False):
+              # GET only, in memory. Neither the response nor token reaches logs/artifacts
+              # or the business subprocess. Preserve environment-over-repository precedence.
+              value = None
+              for prefix in ("actions/variables", "environments/binance-runtime/variables"):
+                  request = urllib.request.Request(
+                      f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/{prefix}/{name}",
+                      headers={"Authorization": "Bearer " + config_token,
+                               "Accept": "application/vnd.github+json"}, method="GET",
+                  )
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          value = json.load(response)["value"]
+                  except urllib.error.HTTPError as exc:
+                      if exc.code != 404:
+                          raise
+              if value is None and not optional:
+                  raise ValueError("private_configuration_missing")
+              return value or ""
+
           exit_code = 1
           try:
-              original = json.loads(os.environ.pop("SOURCE_RUNTIME_TARGET_JSON"))
+              if not config_token:
+                  raise ValueError("private_configuration_reader_missing")
+              original = json.loads(read_variable("RUNTIME_TARGET_JSON"))
               # Validate the original baseline before deriving a separate process target.
               resolve_runtime_target_from_env(
                   env={"RUNTIME_TARGET_JSON": json.dumps(original)}, expected_platform_id="binance",
@@ -165,7 +206,7 @@ jobs:
                   raise ValueError("isolated_target_invalid")
               os.environ["STRATEGY_PROFILE"] = resolved.strategy_profile
               authority = os.environ.pop("BINANCE_RISK_AUTHORITY_JSON", "")
-              configured = os.environ.pop("BINANCE_RISK_AUTHORITY_FILE_CONFIG", "")
+              configured = read_variable("BINANCE_RISK_AUTHORITY_FILE", optional=True)
               if authority and configured:
                   raise ValueError("duplicate_authority")
               if authority:

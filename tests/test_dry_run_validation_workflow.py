@@ -1,9 +1,11 @@
 """Execute the workflow's real input adapter with synthetic targets and no network."""
 import copy
 import json
+import io
 import os
 from pathlib import Path
 import textwrap
+import urllib.error
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -21,9 +23,9 @@ def adapter():
     return compile(textwrap.dedent(script.split('          PYTHON\n', 1)[0]), str(WORKFLOW), 'exec')
 
 
-def run_adapter(monkeypatch, tmp_path, target, process=None, extra=None):
+def run_adapter(monkeypatch, tmp_path, target, process=None, extra=None, *, override=None, read_error=None):
     env = {
-        'SOURCE_RUNTIME_TARGET_JSON': json.dumps(target),
+        'CONFIG_READ_TOKEN': 'private-fixture-token', 'GITHUB_REPOSITORY': 'example/platform',
         'RUNTIME_TARGET_ENABLED': 'true', 'BINANCE_DRY_RUN': 'false',
         'GITHUB_SHA': 'b' * 40, 'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1',
         'RUNNER_TEMP': str(tmp_path),
@@ -31,6 +33,22 @@ def run_adapter(monkeypatch, tmp_path, target, process=None, extra=None):
     env.update(extra or {})
     monkeypatch.setattr(os, 'environ', env)
     monkeypatch.chdir(ROOT)
+    def read(request, timeout):
+        assert request.get_method() == 'GET' and timeout == 30
+        assert request.get_header('Authorization') == 'Bearer private-fixture-token'
+        assert request.full_url.startswith('https://api.github.com/repos/example/platform/')
+        if read_error:
+            raise urllib.error.HTTPError(request.full_url, read_error, 'private-provider-error', {}, None)
+        if request.full_url.endswith('/BINANCE_RISK_AUTHORITY_FILE'):
+            value = (extra or {}).get('BINANCE_RISK_AUTHORITY_FILE_CONFIG', '')
+        elif '/environments/' in request.full_url:
+            if override is None:
+                raise urllib.error.HTTPError(request.full_url, 404, 'not found', {}, None)
+            value = json.dumps(override)
+        else:
+            value = json.dumps(target)
+        return io.StringIO(json.dumps({'value': value}))
+    monkeypatch.setattr('urllib.request.urlopen', read)
     with patch('subprocess.run', side_effect=process) as call:
         with pytest.raises(SystemExit) as stopped:
             exec(adapter(), {})
@@ -73,7 +91,14 @@ def test_production_defaults_and_entry_remain_separate():
     before, after = isolated.split('      - name: Run isolated full-cycle validator', 1)
     validator, artifact = after.split('      - name: Retain safe validation result', 1)
     assert 'BINANCE_API_KEY:' not in before + artifact
-    assert 'SOURCE_RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}' in validator
+    assert 'CONFIG_READ_TOKEN: ${{ steps.config-token.outputs.token }}' in validator
+    assert 'vars.RUNTIME_TARGET_JSON' not in isolated
+    assert 'vars.BINANCE_RISK_AUTHORITY_FILE' not in isolated
+    assert 'INPUT_PERMISSION-ACTIONS-VARIABLES: read' in isolated
+    assert 'permission-environments: read' in isolated
+    assert 'permission-environments: write' not in isolated
+    assert 'permission-actions: write' not in isolated
+    assert 'method="GET"' in validator
     assert 'SOURCE_RUNTIME_TARGET_JSON' not in artifact
     assert 'process.stdout' in validator and 'process.stderr' not in validator
     assert 'path: ${{ runner.temp }}/binance-dry-run-result-${{ github.run_id }}-${{ github.run_attempt }}.json' in artifact
@@ -97,7 +122,7 @@ def test_adapter_derives_process_only_paper_target_and_uses_sole_validator(monke
             k: v for k, v in continuity.items() if k != 'baseline_target_sha256'}
         assert os.environ['RUNTIME_TARGET_ENABLED'] == 'false'
         assert os.environ['BINANCE_DRY_RUN'] == 'true'
-        assert 'SOURCE_RUNTIME_TARGET_JSON' not in os.environ
+        assert 'CONFIG_READ_TOKEN' not in os.environ
         assert 'BINANCE_RISK_AUTHORITY_JSON' not in os.environ
         authority = Path(os.environ['BINANCE_RISK_AUTHORITY_FILE'])
         assert authority.stat().st_mode & 0o777 == 0o600
@@ -162,3 +187,19 @@ def test_malformed_or_unsafe_validator_result_cannot_pass(monkeypatch, tmp_path,
                                   lambda *a, **k: SimpleNamespace(returncode=returncode, stdout=stdout))
     assert code == 1 and result['status'] == 'failed'
     assert result['reason_code'] == 'validator_output_invalid'
+
+
+@pytest.mark.parametrize('status', [403, 404, 500])
+def test_private_reader_failure_stops_before_business_without_provider_text(monkeypatch, tmp_path, capsys, status):
+    code, result, call = run_adapter(monkeypatch, tmp_path, dry_run_target_payload(), read_error=status)
+    assert code == 1 and not result['validator_invoked']
+    call.assert_not_called()
+    assert 'private-provider-error' not in capsys.readouterr().out
+
+
+def test_environment_target_override_is_validated_before_deriving_copy(monkeypatch, tmp_path):
+    override = dry_run_target_payload()
+    override['live_continuity']['state'] = 'ACTIVE_LKG'
+    code, result, call = run_adapter(monkeypatch, tmp_path, dry_run_target_payload(), override=override)
+    assert code == 1 and not result['validator_invoked']
+    call.assert_not_called()
