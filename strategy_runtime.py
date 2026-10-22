@@ -503,11 +503,14 @@ def _build_loaded_strategy_runtime(entrypoint: StrategyEntrypoint) -> LoadedStra
     )
 
 
-def load_strategy_runtime(raw_profile: str | None, *, runtime_target=None) -> LoadedStrategyRuntime:
+def load_strategy_runtime(
+    raw_profile: str | None, *, runtime_target=None, validation_scope: str = "standard",
+) -> LoadedStrategyRuntime:
     """Load an execution-eligible runtime through the platform policy gate."""
 
-    entrypoint = (load_strategy_entrypoint_for_profile(raw_profile) if runtime_target is None
-                  else load_strategy_entrypoint_for_profile(raw_profile, runtime_target=runtime_target))
+    scope_kwargs = {} if validation_scope == "standard" else {"validation_scope": validation_scope}
+    entrypoint = (load_strategy_entrypoint_for_profile(raw_profile, **scope_kwargs) if runtime_target is None
+                  else load_strategy_entrypoint_for_profile(raw_profile, runtime_target=runtime_target, **scope_kwargs))
     return _build_loaded_strategy_runtime(entrypoint)
 
 
