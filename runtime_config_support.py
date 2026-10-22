@@ -16,6 +16,7 @@ from notify_i18n_support import build_strategy_display_name, build_translator, g
 from runtime_support import ExecutionRuntime
 from strategy_registry import (
     BINANCE_PLATFORM,
+    FULL_CYCLE_NO_SUBMIT,
     resolve_strategy_definition,
     resolve_research_strategy_metadata,
     resolve_research_strategy_definition,
@@ -80,9 +81,9 @@ class CycleExecutionSettings:
     runtime_target_enabled: bool
 
 
-def load_cycle_execution_settings() -> CycleExecutionSettings:
+def load_cycle_execution_settings(*, validation_scope: str = "standard") -> CycleExecutionSettings:
     notify_lang = get_notify_lang()
-    runtime_target, strategy_definition = _resolve_runtime_target()
+    runtime_target, strategy_definition = _resolve_runtime_target(validation_scope=validation_scope)
     strategy_metadata = resolve_research_strategy_metadata(
         strategy_definition.profile,
         platform_id=BINANCE_PLATFORM,
@@ -127,7 +128,11 @@ def assert_standard_execution_entry_permitted() -> CycleExecutionSettings:
     return settings
 
 
-def _resolve_runtime_target():
+def _resolve_runtime_target(*, validation_scope: str = "standard"):
+    if validation_scope not in {"standard", FULL_CYCLE_NO_SUBMIT}:
+        raise ValueError("unsupported_strategy_validation_scope")
+    if validation_scope == FULL_CYCLE_NO_SUBMIT and os.getenv("RUNTIME_TARGET_ENABLED") != "false":
+        raise ValueError("full_cycle_no_submit_requires_disabled_runtime")
     raw_runtime_target = str(os.getenv("RUNTIME_TARGET_JSON") or "").strip()
     raw_strategy_profile = str(os.getenv("STRATEGY_PROFILE") or "").strip()
     if raw_runtime_target:
@@ -135,7 +140,9 @@ def _resolve_runtime_target():
             env=os.environ,
             expected_platform_id=BINANCE_PLATFORM,
         )
-        runtime_target, strategy_definition = resolve_runtime_target_strategy(runtime_target)
+        runtime_target, strategy_definition = resolve_runtime_target_strategy(
+            runtime_target, validation_scope=validation_scope,
+        )
         if raw_strategy_profile:
             legacy_definition = resolve_research_strategy_definition(
                 raw_strategy_profile,
@@ -152,6 +159,9 @@ def _resolve_runtime_target():
                     "BINANCE_DRY_RUN does not match RUNTIME_TARGET_JSON.dry_run_only"
                 )
         return runtime_target, strategy_definition
+
+    if validation_scope == FULL_CYCLE_NO_SUBMIT:
+        raise ValueError("full_cycle_no_submit_requires_runtime_target")
 
     strategy_definition = resolve_strategy_definition(
         raw_strategy_profile or None,
@@ -200,13 +210,14 @@ def _load_live_risk_authority(runtime_target, strategy_profile: str, now_utc: da
 
 def build_live_runtime(
     *,
+    validation_scope: str = "standard",
     now_utc: datetime | None = None,
     state_loader: Callable[..., Any] | None = None,
     state_writer: Callable[[dict[str, Any]], Any] | None = None,
     notifier: Callable[..., Any] | None = None,
 ) -> ExecutionRuntime:
     runtime_now = now_utc or datetime.now(timezone.utc)
-    cycle_settings = load_cycle_execution_settings()
+    cycle_settings = load_cycle_execution_settings(validation_scope=validation_scope)
     risk_authority = _load_live_risk_authority(
         cycle_settings.runtime_target,
         cycle_settings.strategy_profile,
