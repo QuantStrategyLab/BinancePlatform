@@ -264,7 +264,7 @@ DEFAULT_TREND_POOL_ACCEPTABLE_MODES = tuple(STRATEGY_RUNTIME.artifact_contract["
 BTC_MARKET_SNAPSHOT_RETRY_DELAYS = (5, 15)
 
 
-def _activate_execution_strategy_runtime(profile: str, *, runtime_target=None):
+def _activate_execution_strategy_runtime(profile: str, *, runtime_target=None, validation_scope: str = "standard"):
     """Replace the import-safe evaluator only after RuntimeTarget validation.
 
     When a RunContext is bound (cycle path), mount the handle on the context only
@@ -279,10 +279,11 @@ def _activate_execution_strategy_runtime(profile: str, *, runtime_target=None):
     global DEFAULT_TREND_POOL_MAX_AGE_DAYS
     global DEFAULT_TREND_POOL_ACCEPTABLE_MODES
 
+    scope_kwargs = {} if validation_scope == "standard" else {"validation_scope": validation_scope}
     activated = (
-        load_strategy_runtime(profile)
+        load_strategy_runtime(profile, **scope_kwargs)
         if runtime_target is None
-        else load_strategy_runtime(profile, runtime_target=runtime_target)
+        else load_strategy_runtime(profile, runtime_target=runtime_target, **scope_kwargs)
     )
     TREND_POOL_SIZE = activated.trend_pool_size
     DEFAULT_LIVE_POOL_LEGACY_PATH = activated.default_local_artifact_path
@@ -866,10 +867,12 @@ def get_tradable_qty(symbol, total_qty, prices, min_bnb_value):
 # ==========================================
 # 3. Core strategy
 # ==========================================
-def build_live_runtime(now_utc=None, *, retain_interval_receipts=False):
+def build_live_runtime(now_utc=None, *, retain_interval_receipts=False, validation_scope: str = "standard"):
     if type(retain_interval_receipts) is not bool:
         raise ValueError("state_session_receipt_flag_invalid")
+    scope_kwargs = {} if validation_scope == "standard" else {"validation_scope": validation_scope}
     runtime = rc_build_live_runtime(
+        **scope_kwargs,
         now_utc=now_utc,
         state_loader=get_trade_state,
         state_writer=set_trade_state,
@@ -878,6 +881,7 @@ def build_live_runtime(now_utc=None, *, retain_interval_receipts=False):
     runtime.strategy_runtime = _activate_execution_strategy_runtime(
         runtime.strategy_profile,
         runtime_target=runtime.runtime_target,
+        **scope_kwargs,
     )
     if not runtime.dry_run and runtime.standard_execution_permitted:
         runtime.bound_state_access = bind_trade_state_access(
@@ -1361,7 +1365,7 @@ def _execute_btc_dca_cycle(
     )
 
 
-def execute_cycle(runtime):
+def execute_cycle(runtime, *, validation_scope: str = "standard"):
     # B09 PR-3: cycle-scoped universe + strategy handle on RunContext.
     # Bind-time seed may copy module defaults once; while bound, resolves never
     # fall back to module STRATEGY_RUNTIME / TREND_UNIVERSE.
@@ -1379,7 +1383,10 @@ def execute_cycle(runtime):
             runtime,
             build_execution_report=build_execution_report,
             ensure_runtime_client=_ensure_runtime_client,
-            load_cycle_execution_settings=rc_load_cycle_execution_settings,
+            load_cycle_execution_settings=(
+                rc_load_cycle_execution_settings if validation_scope == "standard"
+                else lambda: rc_load_cycle_execution_settings(validation_scope=validation_scope)
+            ),
             load_cycle_state=_load_cycle_state,
             append_trend_pool_source_logs=_append_trend_pool_source_logs,
             capture_market_snapshot=_capture_market_snapshot,

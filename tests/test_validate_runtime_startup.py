@@ -6,7 +6,6 @@ import runpy
 import sys
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
-from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -76,14 +75,14 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     from live_risk_authority import config_sha256
     from quant_platform_kit.common.runtime_target import build_runtime_target
     from strategy_runtime import load_research_only_strategy_runtime
-    import strategy_registry
+    from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
     from scripts.validate_runtime_startup import validate_full_cycle
 
     now = datetime(2026, 3, 15, tzinfo=timezone.utc)
     target = build_runtime_target(
         platform_id="binance",
         strategy_profile="crypto_live_pool_rotation",
-        dry_run_only=False,
+        dry_run_only=True,
         deployment_selector="fixture",
         account_selector="fixture-account",
         account_scope="fixture-scope",
@@ -127,19 +126,25 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         "BINANCE_RISK_AUTHORITY_SHA256": hashlib.sha256(raw).hexdigest(),
         "BINANCE_RISK_AUTHORITY_SOURCE_REVISION": "a" * 40,
     }
-    monkeypatch.setattr(
-        strategy_registry,
-        "PLATFORM_POLICY",
-        replace(strategy_registry.PLATFORM_POLICY, enabled_profiles=frozenset({"crypto_live_pool_rotation"})),
-    )
+    target_payload = {
+        "platform_id": target.platform_id,
+        "strategy_profile": target.strategy_profile,
+        "dry_run_only": True,
+        "deployment_selector": "fixture",
+        "account_selector": ["fixture-account"],
+        "account_scope": "fixture-scope",
+        "service_name": "binance-platform",
+    }
+    target_payload["live_continuity"] = {
+        "state": "RECONCILE_ONLY",
+        "baseline_kind": "legacy_authorized",
+        "baseline_id": "synthetic-no-submit",
+        "baseline_target_sha256": runtime_target_fingerprint(target_payload),
+        "captured_at": "2026-03-15",
+    }
     monkeypatch.setenv("RUNTIME_TARGET_ENABLED", "false")
-    monkeypatch.setenv("STRATEGY_PROFILE", "crypto_live_pool_rotation")
-    monkeypatch.setenv("BINANCE_DRY_RUN", "false")
-    monkeypatch.setenv("DEPLOYMENT_SELECTOR", "fixture")
-    monkeypatch.setenv("ACCOUNT_SELECTOR", "fixture-account")
-    monkeypatch.setenv("ACCOUNT_SCOPE", "fixture-scope")
-    monkeypatch.setenv("SERVICE_NAME", "binance-platform")
-    monkeypatch.delenv("RUNTIME_TARGET_JSON", raising=False)
+    monkeypatch.setenv("BINANCE_DRY_RUN", "true")
+    monkeypatch.setenv("RUNTIME_TARGET_JSON", json.dumps(target_payload))
     monkeypatch.setenv("BINANCE_RISK_AUTHORITY_FILE", authority_env["BINANCE_RISK_AUTHORITY_FILE"])
     monkeypatch.setenv("BINANCE_RISK_AUTHORITY_SHA256", authority_env["BINANCE_RISK_AUTHORITY_SHA256"])
     monkeypatch.setenv("BINANCE_RISK_AUTHORITY_SOURCE_REVISION", authority_env["BINANCE_RISK_AUTHORITY_SOURCE_REVISION"])
@@ -160,8 +165,12 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
 
     replay_client.get_historical_klines = historical_klines
 
-    def build():
-        runtime = main.build_live_runtime(now_utc=now)
+    def build(*, validation_scope):
+        assert validation_scope == "full_cycle_no_submit"
+        runtime = main.build_live_runtime(now_utc=now, validation_scope=validation_scope)
+        assert runtime.strategy_runtime.profile == "crypto_live_pool_rotation"
+        assert runtime.runtime_target.live_continuity.state == "RECONCILE_ONLY"
+        assert runtime.standard_execution_permitted is False
         runtime.state_loader = state_store.load
         runtime.trend_pool_payload = replay_runtime.trend_pool_payload
         assert runtime.btc_market_snapshot is None
@@ -192,7 +201,7 @@ def test_full_cycle_without_live_authority_fails_closed(monkeypatch):
     monkeypatch.delenv("BINANCE_RISK_AUTHORITY_SOURCE_REVISION", raising=False)
     runtime = SimpleNamespace(standard_execution_permitted=False, risk_authority=None)
     with pytest.raises(FullCycleValidationError) as error:
-        validate_full_cycle(runtime_builder=lambda: runtime)
+        validate_full_cycle(runtime_builder=lambda **_kwargs: runtime)
     assert error.value.reason_code == "full_cycle_risk_authority_missing"
     assert error.value.failure_stage == "build"
 
@@ -399,7 +408,7 @@ def test_full_cycle_cli_preserves_safe_builder_authority_reason(
         sys.modules,
         "main",
         SimpleNamespace(
-            build_live_runtime=lambda: (_ for _ in ()).throw(
+            build_live_runtime=lambda **_kwargs: (_ for _ in ()).throw(
                 LiveRiskAuthorityError(authority_message)
             )
         ),

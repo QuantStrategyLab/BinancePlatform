@@ -324,7 +324,7 @@ def validate_full_cycle(*, runtime_builder=None, client_connector=None):
         ) from None
 
     try:
-        runtime = (runtime_builder or main.build_live_runtime)()
+        runtime = (runtime_builder or main.build_live_runtime)(validation_scope="full_cycle_no_submit")
     except Exception as exc:
         raise _wrap_full_cycle_error(
             exc, failure_stage="build", fallback_reason="full_cycle_build_failed"
@@ -389,7 +389,7 @@ def validate_full_cycle(*, runtime_builder=None, client_connector=None):
     builtins.__dict__.pop("_qsl_health_monitor", None)
     try:
         try:
-            report = main.execute_cycle(runtime)
+            report = main.execute_cycle(runtime, validation_scope="full_cycle_no_submit")
         except Exception as exc:
             raise _wrap_full_cycle_error(
                 exc, failure_stage="cycle", fallback_reason="full_cycle_cycle_failed"

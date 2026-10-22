@@ -149,3 +149,90 @@ def test_no_submit_broker_rejects_order_cancel_and_funding_calls(method):
     with pytest.raises(RuntimeError, match="full_cycle_broker_method_forbidden"):
         getattr(broker, method)()
     assert raw_client.mock_calls == []
+
+
+def test_real_cli_forwards_scope_through_builder_activation_and_loader(target_env, monkeypatch, capsys):
+    import runpy
+    import sys
+    from pathlib import Path
+    import main
+
+    # No risk authority or broker: successful admission must reach the next
+    # existing guard, without replacing any builder, resolver or loader.
+    connector = Mock(side_effect=AssertionError("broker must not be reached"))
+    monkeypatch.setattr(main, "qpk_connect_client", connector)
+    monkeypatch.setattr(sys, "argv", ["validate_runtime_startup.py", "--full-cycle"])
+    script = Path(__file__).resolve().parents[1] / "scripts/validate_runtime_startup.py"
+    with pytest.raises(SystemExit) as error:
+        runpy.run_path(str(script), run_name="__main__")
+    assert error.value.code == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["reason_code"] == "full_cycle_risk_authority_missing"
+    assert main.STRATEGY_RUNTIME.profile == "crypto_live_pool_rotation"
+    connector.assert_not_called()
+
+
+def test_real_default_and_startup_entries_cannot_use_scoped_collection(target_env, monkeypatch):
+    import main
+    from scripts.validate_runtime_startup import validate_startup
+    from strategy_loader import load_strategy_entrypoint_for_profile
+    from strategy_runtime import load_strategy_runtime
+
+    monkeypatch.setenv("VALIDATION_SCOPE", FULL_CYCLE_NO_SUBMIT)
+    target = build_runtime_target(**target_env, continuity_fingerprint_payload=target_env)
+    for call in (
+        lambda: main.build_live_runtime(),
+        validate_startup,
+        lambda: main._activate_execution_strategy_runtime(target.strategy_profile, runtime_target=target),
+        lambda: load_strategy_runtime(target.strategy_profile, runtime_target=target),
+        lambda: load_strategy_entrypoint_for_profile(target.strategy_profile, runtime_target=target),
+    ):
+        with pytest.raises(ValueError, match="Unsupported STRATEGY_PROFILE"):
+            call()
+
+
+@pytest.mark.parametrize("scope", [FULL_CYCLE_NO_SUBMIT, "dry_run"])
+def test_loader_cannot_apply_scope_without_explicit_target(scope):
+    from strategy_runtime import load_strategy_runtime
+
+    with pytest.raises(ValueError, match="requires_runtime_target|unsupported_strategy_validation_scope"):
+        load_strategy_runtime("crypto_live_pool_rotation", validation_scope=scope)
+
+
+def test_main_builder_rejects_unknown_scope_or_live_target(target_env, monkeypatch):
+    import main
+
+    with pytest.raises(ValueError, match="unsupported_strategy_validation_scope"):
+        main.build_live_runtime(validation_scope="dry_run")
+    payload = dry_run_target_payload(dry_run_only=False)
+    monkeypatch.setenv("RUNTIME_TARGET_JSON", json.dumps(payload))
+    monkeypatch.setenv("BINANCE_DRY_RUN", "false")
+    with pytest.raises(ValueError, match="requires_dry_run_target"):
+        main.build_live_runtime(validation_scope=FULL_CYCLE_NO_SUBMIT)
+
+
+def test_pinned_crypto_dependency_exposes_separate_collection():
+    import tomllib
+    from pathlib import Path
+    from crypto_strategies.runtime_allowlist import DRY_RUN_RUNTIME_ALLOWLIST, RUNTIME_SELECTABLE_ALLOWLIST_V1
+
+    root = Path(__file__).resolve().parents[1]
+    project = tomllib.loads((root / "pyproject.toml").read_text())
+    lock = tomllib.loads((root / "uv.lock").read_text())
+    revision = "0a75437bac99fe8953526c054c2c5bbe68269a84"
+    requirement = next(item for item in project["project"]["dependencies"] if item.startswith("crypto-strategies @"))
+    assert requirement.endswith("@" + revision)
+    package = next(item for item in lock["package"] if item["name"] == "crypto-strategies")
+    assert package["source"]["git"].endswith("?rev=" + revision + "#" + revision)
+    assert DRY_RUN_RUNTIME_ALLOWLIST == frozenset({"crypto_live_pool_rotation"})
+    assert RUNTIME_SELECTABLE_ALLOWLIST_V1 == frozenset()
+
+
+def test_default_cycle_does_not_inherit_scope_from_built_runtime(target_env):
+    import main
+
+    runtime = main.build_live_runtime(validation_scope=FULL_CYCLE_NO_SUBMIT)
+    with pytest.raises(ValueError, match="Unsupported STRATEGY_PROFILE"):
+        main.execute_cycle(runtime)
+    with pytest.raises(ValueError, match="unsupported_strategy_validation_scope"):
+        main.execute_cycle(runtime, validation_scope="dry_run")

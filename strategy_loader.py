@@ -9,6 +9,7 @@ from quant_platform_kit.common.strategy_contracts import StrategyEntrypoint
 from crypto_strategies import get_platform_runtime_adapter
 from strategy_registry import (
     BINANCE_PLATFORM,
+    FULL_CYCLE_NO_SUBMIT,
     resolve_research_strategy_definition,
     resolve_strategy_definition,
     resolve_runtime_target_strategy,
@@ -22,13 +23,19 @@ def load_strategy_definition(raw_profile: str | None) -> StrategyDefinition:
     )
 
 
-def load_strategy_entrypoint_for_profile(raw_profile: str | None, *, runtime_target=None) -> StrategyEntrypoint:
+def load_strategy_entrypoint_for_profile(
+    raw_profile: str | None, *, runtime_target=None, validation_scope: str = "standard",
+) -> StrategyEntrypoint:
+    if validation_scope not in {"standard", FULL_CYCLE_NO_SUBMIT}:
+        raise ValueError("unsupported_strategy_validation_scope")
     if runtime_target is None:
+        if validation_scope != "standard":
+            raise ValueError("full_cycle_no_submit_requires_runtime_target")
         definition = load_strategy_definition(raw_profile)
     else:
         if raw_profile != runtime_target.strategy_profile:
             raise ValueError("runtime_strategy_target_mismatch")
-        _, definition = resolve_runtime_target_strategy(runtime_target)
+        _, definition = resolve_runtime_target_strategy(runtime_target, validation_scope=validation_scope)
     runtime_adapter = get_platform_runtime_adapter(
         definition.profile,
         platform_id=BINANCE_PLATFORM,
