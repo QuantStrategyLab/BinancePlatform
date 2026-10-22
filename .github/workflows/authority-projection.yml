@@ -1,0 +1,37 @@
+name: Read-only authority projection
+run-name: Read-only authority projection
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: Runtime-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  project:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    environment: binance-runtime
+    steps:
+      - name: Checkout dispatched main revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Project schema-checked authority metadata
+        shell: bash
+        env:
+          BINANCE_RISK_AUTHORITY_JSON: ${{ secrets.BINANCE_RISK_AUTHORITY_JSON }}
+          BINANCE_RISK_AUTHORITY_SHA256: ${{ vars.BINANCE_RISK_AUTHORITY_SHA256 }}
+          BINANCE_RISK_AUTHORITY_SOURCE_REVISION: ${{ vars.BINANCE_RISK_AUTHORITY_SOURCE_REVISION }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python3 scripts/project_binance_authority.py
