@@ -18,6 +18,7 @@ from quant_platform_kit.common.strategies import (
 )
 
 BINANCE_PLATFORM = "binance"
+FULL_CYCLE_NO_SUBMIT = "full_cycle_no_submit"
 
 
 DEFAULT_STRATEGY_PROFILE = "crypto_live_pool_rotation"
@@ -117,12 +118,39 @@ def resolve_strategy_metadata(
     return get_catalog_strategy_metadata(STRATEGY_CATALOG, definition.profile)
 
 
-def resolve_runtime_target_strategy(runtime_target):
-    """Resolve this account's committed legacy recovery, or the normal catalog.
+def resolve_runtime_target_strategy(runtime_target, *, validation_scope: str = "standard"):
+    """Resolve an explicitly scoped validation, recovery, or production profile.
 
+    Only full_cycle_no_submit may use the separate dry-run allowlist.
     A target flag is not a recovery grant. Re-read the private committed control
     and verify its full binding before loading a non-selectable legacy profile.
     """
+    if validation_scope == FULL_CYCLE_NO_SUBMIT:
+        from crypto_strategies.runtime_allowlist import DRY_RUN_RUNTIME_ALLOWLIST
+
+        if runtime_target.dry_run_only is not True:
+            raise ValueError("full_cycle_no_submit_requires_dry_run_target")
+        if runtime_target.strategy_profile not in DRY_RUN_RUNTIME_ALLOWLIST:
+            raise ValueError("full_cycle_no_submit_profile_not_allowed")
+        # This policy is local to validation; production policy stays untouched.
+        dry_run_policy = PlatformStrategyPolicy(
+            platform_id=BINANCE_PLATFORM,
+            supported_domains=PLATFORM_SUPPORTED_DOMAINS[BINANCE_PLATFORM],
+            enabled_profiles=ELIGIBLE_STRATEGY_PROFILES & DRY_RUN_RUNTIME_ALLOWLIST,
+            default_profile=DEFAULT_STRATEGY_PROFILE,
+            rollback_profile=ROLLBACK_STRATEGY_PROFILE,
+        )
+        definition = resolve_platform_strategy_definition(
+            runtime_target.strategy_profile,
+            platform_id=runtime_target.platform_id,
+            strategy_catalog=STRATEGY_CATALOG,
+            policy=dry_run_policy,
+        )
+        # Do not activate recovery controls or change continuity for validation.
+        return runtime_target, definition
+    if validation_scope != "standard":
+        raise ValueError("unsupported_strategy_validation_scope")
+
     from dataclasses import replace
     from application.reconciliation_recovery import load_activated_target
 
