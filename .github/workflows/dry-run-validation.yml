@@ -1,0 +1,267 @@
+name: Isolated dry-run validation
+run-name: Isolated dry-run · ${{ inputs.dry_run_full_cycle && 'full_cycle_no_submit' || 'not requested' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run_full_cycle:
+        description: "Explicitly run one isolated paper full_cycle_no_submit validation from merged main"
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+# Serialize with the existing Runtime workflow on the same ref/account.
+concurrency:
+  group: Runtime-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run_full_cycle == true && github.ref == 'refs/heads/main' }}
+    # Keep the existing authority App key off the persistent trading host.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: binance-runtime
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      # Only this job: never read enabled/dry-run defaults from production.
+      RUNTIME_TARGET_ENABLED: "false"
+      BINANCE_DRY_RUN: "true"
+    steps:
+      - name: Checkout dispatched main revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify merged source and existing cloud identity
+        shell: bash
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main
+          test -z "$(git status --porcelain --untracked-files=no)"
+          readonly expected="68e87a5dc1bbe2e41af33d526514034246c6487fb7b716596cc75fe1c739a6b9"
+          actual="$(printf '%s\0%s\0%s' "$GCP_PROJECT_ID" "$GCP_WORKLOAD_IDENTITY_PROVIDER" "$GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT" | sha256sum | cut -d' ' -f1)"
+          test "$actual" = "$expected"
+          echo "Verified merged main source ${GITHUB_SHA}; no production release pin was changed."
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9
+        with:
+          enable-cache: false
+
+      - name: Install frozen dependencies in isolated environment
+        shell: bash
+        run: |
+          set -euo pipefail
+          export UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/binance-dry-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "UV_PROJECT_ENVIRONMENT=$UV_PROJECT_ENVIRONMENT" >> "$GITHUB_ENV"
+          uv sync --frozen --no-dev --python 3.11
+
+      - name: Authenticate with existing read-input identity
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+          create_credentials_file: true
+          export_environment_variables: true
+          cleanup_credentials: true
+
+      # Reuse the existing configuration-reader App without changing its permissions.
+      # Never expose a private target through vars expressions in step env/run/with:
+      # the runner prints those before an add-mask command could protect them.
+      - name: Mint existing read-only configuration token
+        id: config-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.BINANCE_AUTHORITY_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BINANCE_AUTHORITY_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-environments: read
+          permission-metadata: read
+        env:
+          INPUT_PERMISSION-ACTIONS-VARIABLES: read
+
+      - name: Run isolated full-cycle validator
+        shell: bash
+        env:
+          CONFIG_READ_TOKEN: ${{ steps.config-token.outputs.token }}
+          BINANCE_RISK_AUTHORITY_JSON: ${{ secrets.BINANCE_RISK_AUTHORITY_JSON }}
+          BINANCE_RISK_AUTHORITY_SHA256: ${{ vars.BINANCE_RISK_AUTHORITY_SHA256 }}
+          BINANCE_RISK_AUTHORITY_SOURCE_REVISION: ${{ vars.BINANCE_RISK_AUTHORITY_SOURCE_REVISION }}
+          BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON: ${{ vars.BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON }}
+          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
+          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}
+          STRATEGY_ARTIFACT_FILE: ${{ vars.STRATEGY_ARTIFACT_FILE }}
+          STRATEGY_ARTIFACT_MANIFEST_FILE: ${{ vars.STRATEGY_ARTIFACT_MANIFEST_FILE }}
+          STRATEGY_ARTIFACT_FIRESTORE_COLLECTION: ${{ vars.STRATEGY_ARTIFACT_FIRESTORE_COLLECTION }}
+          STRATEGY_ARTIFACT_FIRESTORE_DOCUMENT: ${{ vars.STRATEGY_ARTIFACT_FIRESTORE_DOCUMENT }}
+          STRATEGY_ARTIFACT_MAX_AGE_DAYS: ${{ vars.STRATEGY_ARTIFACT_MAX_AGE_DAYS }}
+          STRATEGY_ARTIFACT_ACCEPTABLE_MODES: ${{ vars.STRATEGY_ARTIFACT_ACCEPTABLE_MODES }}
+          STRATEGY_ARTIFACT_EXPECTED_SIZE: ${{ vars.STRATEGY_ARTIFACT_EXPECTED_SIZE }}
+          STRATEGY_ARTIFACT_ALLOW_NEW_ENTRIES_ON_DEGRADED: ${{ vars.STRATEGY_ARTIFACT_ALLOW_NEW_ENTRIES_ON_DEGRADED }}
+          BTC_WEIGHT: ${{ vars.BTC_WEIGHT }}
+          TREND_WEIGHT: ${{ vars.TREND_WEIGHT }}
+          DYNAMIC_MODE: ${{ vars.DYNAMIC_MODE }}
+          DYNAMIC_REGIME_MODE: ${{ vars.DYNAMIC_REGIME_MODE }}
+          DYNAMIC_REGIME_OFF_CUT: ${{ vars.DYNAMIC_REGIME_OFF_CUT }}
+          DYNAMIC_HARD_SMA200_RATIO: ${{ vars.DYNAMIC_HARD_SMA200_RATIO }}
+          DYNAMIC_HARD_MA200_SLOPE: ${{ vars.DYNAMIC_HARD_MA200_SLOPE }}
+          DYNAMIC_SOFT_SMA200_RATIO: ${{ vars.DYNAMIC_SOFT_SMA200_RATIO }}
+          DYNAMIC_HARD_BTC_WEIGHT: ${{ vars.DYNAMIC_HARD_BTC_WEIGHT }}
+          DYNAMIC_HARD_TREND_WEIGHT: ${{ vars.DYNAMIC_HARD_TREND_WEIGHT }}
+          DYNAMIC_SOFT_BTC_WEIGHT: ${{ vars.DYNAMIC_SOFT_BTC_WEIGHT }}
+          DYNAMIC_SOFT_TREND_WEIGHT: ${{ vars.DYNAMIC_SOFT_TREND_WEIGHT }}
+          ROTATION_TOP_N: ${{ vars.ROTATION_TOP_N }}
+          TARGET_VOL: ${{ vars.TARGET_VOL }}
+          CIRCUIT_BREAKER_ENABLED: ${{ vars.CIRCUIT_BREAKER_ENABLED }}
+          ZSCORE_EXIT_RISK_REDUCED_EXPOSURE: ${{ vars.ZSCORE_EXIT_RISK_REDUCED_EXPOSURE }}
+          ZSCORE_EXIT_RISK_OFF_EXPOSURE: ${{ vars.ZSCORE_EXIT_RISK_OFF_EXPOSURE }}
+          ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW: ${{ vars.ZSCORE_EXIT_ALLOW_OUTSIDE_EXECUTION_WINDOW }}
+        run: |
+          set -euo pipefail
+          uv run --no-sync python - <<'PYTHON'
+          import copy
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+          import urllib.error
+          import urllib.request
+
+          from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
+          from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
+
+          # Private target and authority stay in memory or a mode-0600 temp file.
+          # Only fixed metadata and the validator's safe final projection are retained.
+          result = {
+              "status": "failed", "reason_code": "isolated_input_invalid",
+              "validation_scope": "full_cycle_no_submit", "execution_mode": "paper",
+              "dry_run_only": True, "runtime_target_enabled": False,
+              "continuity_state": "RECONCILE_ONLY", "production_config_written": False,
+              "cron_written": False, "validator_invoked": False,
+              "workflow_sha": os.environ["GITHUB_SHA"],
+              "uv_lock_sha256": hashlib.sha256(Path("uv.lock").read_bytes()).hexdigest(),
+          }
+          authority_file = None
+          config_token = os.environ.pop("CONFIG_READ_TOKEN", "")
+
+          def read_variable(name, *, optional=False):
+              # GET only, in memory. Neither the response nor token reaches logs/artifacts
+              # or the business subprocess. Preserve environment-over-repository precedence.
+              value = None
+              for prefix in ("actions/variables", "environments/binance-runtime/variables"):
+                  request = urllib.request.Request(
+                      f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/{prefix}/{name}",
+                      headers={"Authorization": "Bearer " + config_token,
+                               "Accept": "application/vnd.github+json"}, method="GET",
+                  )
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          value = json.load(response)["value"]
+                  except urllib.error.HTTPError as exc:
+                      if exc.code != 404:
+                          raise
+              if value is None and not optional:
+                  raise ValueError("private_configuration_missing")
+              return value or ""
+
+          exit_code = 1
+          try:
+              if not config_token:
+                  raise ValueError("private_configuration_reader_missing")
+              original = json.loads(read_variable("RUNTIME_TARGET_JSON"))
+              # Validate the original baseline before deriving a separate process target.
+              resolve_runtime_target_from_env(
+                  env={"RUNTIME_TARGET_JSON": json.dumps(original)}, expected_platform_id="binance",
+              )
+              if original["live_continuity"]["state"] != "RECONCILE_ONLY":
+                  raise ValueError("continuity_required")
+              target = copy.deepcopy(original)
+              target["dry_run_only"] = True
+              target["execution_mode"] = "paper"
+              # Rebind only the copy's fingerprint; never change continuity state/grant.
+              target["live_continuity"]["baseline_target_sha256"] = runtime_target_fingerprint(target)
+              os.environ["RUNTIME_TARGET_JSON"] = json.dumps(target, sort_keys=True)
+              os.environ["RUNTIME_TARGET_ENABLED"] = "false"
+              os.environ["BINANCE_DRY_RUN"] = "true"
+              resolved = resolve_runtime_target_from_env(env=os.environ, expected_platform_id="binance")
+              if not resolved.dry_run_only or resolved.live_continuity.permits_standard_execution:
+                  raise ValueError("isolated_target_invalid")
+              os.environ["STRATEGY_PROFILE"] = resolved.strategy_profile
+              authority = os.environ.pop("BINANCE_RISK_AUTHORITY_JSON", "")
+              configured = read_variable("BINANCE_RISK_AUTHORITY_FILE", optional=True)
+              if authority and configured:
+                  raise ValueError("duplicate_authority")
+              if authority:
+                  fd, authority_file = tempfile.mkstemp(prefix="binance-dry-run-authority-", dir=os.environ["RUNNER_TEMP"])
+                  with os.fdopen(fd, "w") as handle:
+                      handle.write(authority)
+                  os.environ["BINANCE_RISK_AUTHORITY_FILE"] = authority_file
+              elif configured:
+                  os.environ["BINANCE_RISK_AUTHORITY_FILE"] = configured
+              else:
+                  os.environ.pop("BINANCE_RISK_AUTHORITY_FILE", None)
+              result["reason_code"] = "validator_output_invalid"
+              result["validator_invoked"] = True
+              # This is the sole business entry: no main.py/recovery/migration fallback.
+              process = subprocess.run(
+                  [sys.executable, "scripts/validate_runtime_startup.py", "--full-cycle"],
+                  capture_output=True, text=True, check=False,
+              )
+              # Do not publish raw stdout/stderr, target JSON, balances or authority.
+              projection = json.loads(process.stdout.strip().splitlines()[-1])
+              if projection.get("status") == "passed" and process.returncode == 0:
+                  if (projection.get("validation_scope") != "full_cycle_no_submit"
+                          or projection.get("cycle_complete") is not True
+                          or projection.get("execution_permitted") is not False):
+                      raise ValueError("validator_result_invalid")
+                  for key in ("cycle_complete", "risk_outcome", "broker_read_count",
+                              "suppressed_side_effect_count", "suppressed_strategy_record_count",
+                              "execution_permitted"):
+                      result[key] = projection[key]
+                  result.update(status="passed", reason_code="full_cycle_complete", executed_call_count=0)
+                  exit_code = 0
+              else:
+                  # The existing CLI emits only fixed reason/stage/error codes.
+                  for key in ("reason_code", "stage", "failure_stage", "error_type"):
+                      if key in projection:
+                          result[key] = projection[key]
+              result["validator_exit_code"] = process.returncode
+          except Exception:
+              # Never expose exception/provider text or private input values.
+              pass
+          finally:
+              if authority_file is not None:
+                  Path(authority_file).unlink(missing_ok=True)
+              output = Path(os.environ["RUNNER_TEMP"]) / f"binance-dry-run-result-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}.json"
+              output.write_text(json.dumps(result, sort_keys=True) + "\n")
+              print(json.dumps(result, sort_keys=True))
+          raise SystemExit(exit_code)
+          PYTHON
+
+      - name: Retain safe validation result
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: binance-dry-run-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/binance-dry-run-result-${{ github.run_id }}-${{ github.run_attempt }}.json
+          if-no-files-found: warn
+          retention-days: 7
