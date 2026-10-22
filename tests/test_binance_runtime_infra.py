@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import Mock, call
 
 from infra.binance_runtime import (
     ensure_asset_available_runtime,
@@ -91,83 +92,81 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
         self.assertEqual(indicators["ETHUSDT"]["symbol"], "ETHUSDT")
         self.assertEqual(indicators["SOLUSDT"]["symbol"], "SOLUSDT")
 
-    def test_ensure_asset_available_runtime_redeems_from_earn_when_spot_short(self):
-        class Client:
-            def get_asset_balance(self, *, asset):
-                return {"free": "3.001" if observed["calls"] else "2.0"}
+    def test_ensure_asset_available_runtime_checks_only_spot_free(self):
+        for dry_run in (False, True):
+            for spot_free, expected in (("0", False), ("2", False), ("3", True), ("4", True)):
+                with self.subTest(dry_run=dry_run, spot_free=spot_free):
+                    client = Mock()
+                    client.get_asset_balance.return_value = {"free": spot_free, "locked": "100"}
+                    client.get_simple_earn_flexible_product_position.return_value = {
+                        "rows": [{"productId": "earn-1", "totalAmount": "90",
+                                  "canRedeem": True, "collateralAmount": "0"}],
+                    }
+                    report = {"redemption_subscription_intents": []}
+                    effects = Mock()
 
-            def get_simple_earn_flexible_product_position(self, *, asset):
-                return {"rows": [{"productId": "earn-1", "totalAmount": "5.0", "canRedeem": True, "collateralAmount": "0"}]}
+                    available = ensure_asset_available_runtime(
+                        SimpleNamespace(client=client, dry_run=dry_run), report, "ETH", 3.0, [],
+                        runtime_call_client_fn=effects.runtime_call_client,
+                        append_log_fn=effects.append_log,
+                        runtime_notify_fn=effects.runtime_notify,
+                        translate_fn=effects.translate,
+                        sleep_fn=effects.sleep,
+                    )
 
-        runtime = SimpleNamespace(client=Client(), dry_run=False)
-        report = {"redemption_subscription_intents": []}
-        observed = {"calls": [], "logs": [], "notifications": [], "sleep": []}
+                    self.assertIs(available, expected)
+                    self.assertEqual(client.mock_calls, [call.get_asset_balance(asset="ETH")])
+                    client.get_simple_earn_flexible_product_position.assert_not_called()
+                    client.redeem_simple_earn_flexible_product.assert_not_called()
+                    client.subscribe_simple_earn_flexible_product.assert_not_called()
+                    self.assertEqual(report, {"redemption_subscription_intents": []})
+                    self.assertEqual(effects.mock_calls, [])
 
-        available = ensure_asset_available_runtime(
-            runtime,
-            report,
-            "ETH",
-            3.0,
-            [],
-            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type, accounting_asset: observed["calls"].append(
-                (method_name, payload, effect_type)
-            ),
-            append_log_fn=lambda _buffer, message: observed["logs"].append(message),
-            runtime_notify_fn=lambda _runtime, _report, text: observed["notifications"].append(text),
-            translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
-            sleep_fn=lambda seconds: observed["sleep"].append(seconds),
-        )
+    def test_manage_usdt_earn_buffer_runtime_is_noop(self):
+        for dry_run in (False, True):
+            for spot_free in ("0", "50", "100", "150"):
+                for override in (None, 0.0, 150.0):
+                    with self.subTest(dry_run=dry_run, spot_free=spot_free, override=override):
+                        client = Mock()
+                        client.get_asset_balance.return_value = {"free": spot_free}
+                        client.get_simple_earn_flexible_product_list.return_value = {
+                            "rows": [{"productId": "earn-1"}],
+                        }
+                        client.get_simple_earn_flexible_product_position.return_value = {
+                            "rows": [{"productId": "earn-1", "totalAmount": "90",
+                                      "canRedeem": True, "collateralAmount": "0"}],
+                        }
+                        report = {"redemption_subscription_intents": []}
+                        log_buffer = []
+                        effects = Mock()
 
-        self.assertTrue(available)
-        self.assertEqual(report["redemption_subscription_intents"][0]["action"], "redeem")
-        self.assertEqual(observed["calls"][0][0], "redeem_simple_earn_flexible_product")
-        self.assertEqual(observed["sleep"], [3])
-        self.assertEqual(observed["notifications"], [])
-        self.assertEqual(len(observed["logs"]), 1)
+                        result = manage_usdt_earn_buffer_runtime(
+                            SimpleNamespace(client=client, dry_run=dry_run), report, 100.0, log_buffer,
+                            runtime_call_client_fn=effects.runtime_call_client,
+                            append_log_fn=effects.append_log,
+                            translate_fn=effects.translate,
+                            spot_free_override=override,
+                        )
 
-    def test_manage_usdt_earn_buffer_runtime_subscribes_excess_spot(self):
-        class Client:
-            def get_asset_balance(self, *, asset):
-                return {"free": "100.0" if observed["calls"] else "150.0"}
+                        self.assertIsNone(result)
+                        self.assertEqual(client.mock_calls, [])
+                        client.redeem_simple_earn_flexible_product.assert_not_called()
+                        client.subscribe_simple_earn_flexible_product.assert_not_called()
+                        self.assertEqual(effects.mock_calls, [])
+                        self.assertEqual(report, {"redemption_subscription_intents": []})
+                        self.assertEqual(log_buffer, [])
 
-            def get_simple_earn_flexible_product_list(self, *, asset):
-                return {"rows": [{"productId": "earn-1"}]}
-
-        runtime = SimpleNamespace(client=Client(), dry_run=False)
-        report = {"redemption_subscription_intents": []}
-        observed = {"calls": [], "logs": []}
-
-        manage_usdt_earn_buffer_runtime(
-            runtime,
-            report,
-            100.0,
-            [],
-            runtime_call_client_fn=lambda _runtime, _report, method_name, payload, effect_type, accounting_asset: observed["calls"].append(
-                (method_name, payload, effect_type)
-            ),
-            append_log_fn=lambda _buffer, message: observed["logs"].append(message),
-            translate_fn=lambda key, **kwargs: f"{key}:{kwargs}" if kwargs else key,
-        )
-
-        self.assertEqual(report["redemption_subscription_intents"][0]["action"], "subscribe")
-        self.assertEqual(report["redemption_subscription_intents"][0]["amount"], 50.0)
-        self.assertEqual(observed["calls"][0][0], "subscribe_simple_earn_flexible_product")
-        self.assertEqual(len(observed["logs"]), 1)
-
-    def test_earn_integrity_errors_are_not_swallowed(self):
+    def test_asset_balance_integrity_errors_are_not_swallowed(self):
         failure = ExecutionIntegrityError("order_reconciliation_uncertain")
         observed = {"notifications": [], "logs": [], "sleeps": []}
 
-        class RedemptionClient:
+        class Client:
             def get_asset_balance(self, *, asset):
-                return {"free": "2.0"}
+                raise failure
 
-            def get_simple_earn_flexible_product_position(self, *, asset):
-                return {"rows": [{"productId": "earn-1", "totalAmount": "5.0", "canRedeem": True, "collateralAmount": "0"}]}
-
-        with self.assertRaises(ExecutionIntegrityError):
+        with self.assertRaises(ExecutionIntegrityError) as raised:
             ensure_asset_available_runtime(
-                SimpleNamespace(client=RedemptionClient(), dry_run=False),
+                SimpleNamespace(client=Client(), dry_run=False),
                 {"redemption_subscription_intents": []},
                 "ETH",
                 3.0,
@@ -179,24 +178,7 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
                 sleep_fn=lambda seconds: observed["sleeps"].append(seconds),
             )
 
-        class SubscriptionClient:
-            def get_asset_balance(self, *, asset):
-                return {"free": "150.0"}
-
-            def get_simple_earn_flexible_product_list(self, *, asset):
-                return {"rows": [{"productId": "earn-1"}]}
-
-        with self.assertRaises(ExecutionIntegrityError):
-            manage_usdt_earn_buffer_runtime(
-                SimpleNamespace(client=SubscriptionClient()),
-                {"redemption_subscription_intents": []},
-                100.0,
-                [],
-                runtime_call_client_fn=lambda *_args, **_kwargs: (_ for _ in ()).throw(failure),
-                append_log_fn=lambda _buffer, message: observed["logs"].append(message),
-                translate_fn=lambda key, **_kwargs: key,
-            )
-
+        self.assertIs(raised.exception, failure)
         self.assertEqual(observed, {"notifications": [], "logs": [], "sleeps": []})
 
     def test_ensure_runtime_client_marks_report_aborted_after_retries(self):
@@ -224,7 +206,7 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
         self.assertEqual(len(observed["notifications"]), 1)
         self.assertNotIn("SENSITIVE_PROVIDER_SENTINEL", str(report) + str(observed))
 
-    def test_asset_and_earn_errors_use_safe_messages(self):
+    def test_asset_errors_use_safe_messages(self):
         sentinel = "SENSITIVE_PROVIDER_SENTINEL"
         class Client:
             def get_asset_balance(self, **kwargs):
@@ -235,25 +217,26 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
             ensure_asset_available_runtime(runtime, report, "ETH", 3.0, [], runtime_call_client_fn=lambda **kwargs: None,
                 append_log_fn=lambda *args: None, runtime_notify_fn=lambda *args: None,
                 translate_fn=lambda key, **kwargs: key, sleep_fn=lambda *args: None)
-        with self.assertRaisesRegex(ExecutionIntegrityError, "earn_buffer_maintenance_failed") as second:
-            manage_usdt_earn_buffer_runtime(runtime, report, 100.0, [], runtime_call_client_fn=lambda **kwargs: None,
-                append_log_fn=lambda *args: None, translate_fn=lambda key, **kwargs: key)
-        self.assertNotIn(sentinel, str(first.exception) + str(second.exception) + str(report))
+        self.assertNotIn(sentinel, str(first.exception) + str(report))
 
 
 if __name__ == "__main__":
     unittest.main()
 
 
-def test_earn_success_with_stale_or_nonfinite_spot_read_does_not_continue():
+def test_asset_availability_rejects_invalid_spot_or_required_amount():
     import pytest
-    from unittest.mock import Mock
-    for fresh in ('150', 'NaN', 'Infinity'):
+    for spot_free, required in (('NaN', 3), ('Infinity', 3), ('-1', 3),
+                                ('2', float('nan')), ('2', float('inf')), ('2', 0), ('2', -1)):
         client = Mock()
-        client.get_asset_balance.side_effect = [{'free': '150'}, {'free': fresh}]
-        client.get_simple_earn_flexible_product_list.return_value = {'rows': [{'productId': 'synthetic'}]}
+        client.get_asset_balance.return_value = {'free': spot_free}
         runtime = SimpleNamespace(client=client, dry_run=False)
-        with pytest.raises(ExecutionIntegrityError, match='earn_reconciliation_pending'):
-            manage_usdt_earn_buffer_runtime(runtime, {'redemption_subscription_intents': []}, 100, [],
-                runtime_call_client_fn=lambda *args, **kwargs: {'success': True, 'purchaseId': 1},
-                append_log_fn=lambda *args: None, translate_fn=lambda key, **kwargs: key)
+        effects = Mock()
+        report = {'redemption_subscription_intents': []}
+        with pytest.raises(ExecutionIntegrityError, match='asset_availability_failed'):
+            ensure_asset_available_runtime(runtime, report, 'ETH', required, [],
+                runtime_call_client_fn=effects.runtime_call_client, append_log_fn=effects.append_log,
+                runtime_notify_fn=effects.runtime_notify, translate_fn=effects.translate, sleep_fn=effects.sleep)
+        assert client.mock_calls == [call.get_asset_balance(asset='ETH')]
+        assert effects.mock_calls == []
+        assert report == {'redemption_subscription_intents': []}

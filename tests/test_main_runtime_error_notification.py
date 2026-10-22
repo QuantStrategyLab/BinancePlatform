@@ -4,7 +4,7 @@ import types
 import unittest
 import tempfile
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 
 def install_test_stubs():
@@ -263,29 +263,50 @@ class MainRuntimeErrorNotificationTests(unittest.TestCase):
 
         self.assertNotIn(sentinel, str(log_buffer))
 
-    def test_earn_redeem_maintenance_errors_use_fixed_safe_reasons(self):
-        sentinel = "SENSITIVE_PROVIDER_SENTINEL"
-        messages = []
+    def test_get_total_balance_includes_flexible_earn(self):
+        client = Mock()
+        client.get_asset_balance.return_value = {"asset": "USDT", "free": "10", "locked": "0"}
+        client.get_simple_earn_flexible_product_position.return_value = {
+            "total": 1,
+            "rows": [{"asset": "USDT", "productId": "earn-1", "totalAmount": "90"}],
+        }
+
+        self.assertEqual(main.get_total_balance(client, "USDT", log_buffer=[]), 100.0)
+        self.assertEqual(client.mock_calls, [
+            call.get_asset_balance(asset="USDT"),
+            call.get_simple_earn_flexible_product_position(asset="USDT", current=1, size=100),
+        ])
+
+    def test_manage_usdt_earn_buffer_is_noop(self):
+        client = Mock()
         log_buffer = []
+        with patch("quant_platform_kit.binance.manage_usdt_earn_buffer") as manage_earn, \
+             patch.object(main, "qpk_manage_usdt_earn_buffer", manage_earn, create=True), \
+             patch.object(main, "send_tg_msg") as notify:
+            self.assertIsNone(main.manage_usdt_earn_buffer(client, 100.0, "token", "chat", log_buffer))
 
-        def fail_redeem(_client, _asset, _required_amount, **kwargs):
-            kwargs["on_error"](RuntimeError(sentinel))
-            return False
+        manage_earn.assert_not_called()
+        notify.assert_not_called()
+        self.assertEqual(client.mock_calls, [])
+        self.assertEqual(log_buffer, [])
 
-        def fail_maintenance(_client, _target_buffer, **kwargs):
-            kwargs["on_error"](RuntimeError(sentinel))
+    def test_ensure_asset_available_never_touches_earn(self):
+        client = Mock()
+        client.get_asset_balance.return_value = {"free": "0"}
 
-        with patch.object(main, "qpk_ensure_asset_available", fail_redeem):
-            with patch.object(main, "send_tg_msg", lambda _token, _chat_id, text: messages.append(text)):
-                self.assertFalse(main.ensure_asset_available(object(), "USDT", 10.0, "token", "chat"))
+        self.assertFalse(main.ensure_asset_available(client, "USDT", 10.0, "token", "chat"))
 
-        with patch.object(main, "qpk_manage_usdt_earn_buffer", fail_maintenance):
-            main.manage_usdt_earn_buffer(object(), 100.0, "token", "chat", log_buffer)
+        client.get_simple_earn_flexible_product_position.assert_not_called()
+        client.get_simple_earn_flexible_product_list.assert_not_called()
 
-        rendered = str(messages) + str(log_buffer)
-        self.assertIn("earn_redeem_failed", str(messages))
-        self.assertIn("earn_maintenance_failed", str(log_buffer))
-        self.assertNotIn(sentinel, rendered)
+    def test_ensure_asset_available_uses_spot_free(self):
+        client = Mock()
+        client.get_asset_balance.return_value = {"free": "10"}
+
+        self.assertTrue(main.ensure_asset_available(client, "USDT", 10.0, "token", "chat"))
+
+        client.get_simple_earn_flexible_product_position.assert_not_called()
+        client.get_simple_earn_flexible_product_list.assert_not_called()
 
     def test_btc_daily_fetch_failure_log_is_sanitized(self):
         sentinel = "SENSITIVE_PROVIDER_SENTINEL"
