@@ -340,6 +340,32 @@ def test_full_cycle_failure_projection_preserves_safe_daily_state_reason_code():
     assert _full_cycle_failure_reason(report) == "full_cycle_cycle_error"
 
 
+@pytest.mark.parametrize("reason", [
+    "earn_checkpoint_required_for_receipt", "earn_forward_accounting_unverified",
+    "balance_change_unexplained", "external_cash_flow_reconciliation_uncertain",
+    "daily_accounting_unverifiable", "daily_trend_accounting_migration_unverifiable",
+    "daily_trend_accounting_unverifiable", "external_cash_flow_cursor_missing",
+    "external_cash_flow_late_completion", "external_cash_flow_balance_mismatch",
+    "external_withdrawal_accounting_unsupported", "external_cash_flow_scope_unsupported",
+])
+def test_full_cycle_preserves_fixed_daily_integrity_reason(reason):
+    from scripts.validate_runtime_startup import _full_cycle_failure_reason
+    report = {"status": "error", "diagnostics": {"cycle_failure": {
+        "stage": "daily_state", "error_type": "execution_integrity_error", "reason_code": reason,
+    }}}
+    assert _full_cycle_failure_reason(report) == reason
+    report["diagnostics"]["cycle_failure"]["stage"] = "market_snapshot"
+    assert _full_cycle_failure_reason(report) == "full_cycle_broker_read_failed"
+
+
+@pytest.mark.parametrize("reason", ["PRIVATE_ACCOUNT", "custom_error", {}, [], None, False])
+def test_full_cycle_unknown_daily_reason_stays_generic(reason):
+    from scripts.validate_runtime_startup import _full_cycle_failure_reason
+    assert _full_cycle_failure_reason({"status": "error", "diagnostics": {"cycle_failure": {
+        "stage": "daily_state", "reason_code": reason,
+    }}}) == "full_cycle_cycle_error"
+
+
 @pytest.mark.parametrize('message, expected', [
     ('runtime_recovery_not_active', 'runtime_recovery_not_active'),
     ('recovery_control_state_invalid', 'recovery_control_state_invalid'),

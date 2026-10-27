@@ -21,7 +21,19 @@ _SAFE_STARTUP_REASONS = {
     "full_cycle_state_loader_missing": "full_cycle_state_loader_missing",
 }
 
-_EARN_FORWARD_REASON_CODES = frozenset({
+_DAILY_STATE_REASON_CODES = frozenset({
+    "earn_checkpoint_required_for_receipt",
+    "earn_forward_accounting_unverified",
+    "balance_change_unexplained",
+    "external_cash_flow_reconciliation_uncertain",
+    "daily_accounting_unverifiable",
+    "daily_trend_accounting_migration_unverifiable",
+    "daily_trend_accounting_unverifiable",
+    "external_cash_flow_cursor_missing",
+    "external_cash_flow_late_completion",
+    "external_cash_flow_balance_mismatch",
+    "external_withdrawal_accounting_unsupported",
+    "external_cash_flow_scope_unsupported",
     "earn_checkpoint_invalid",
     "earn_checkpoint_time_invalid",
     "earn_checkpoint_scope_changed",
@@ -176,7 +188,7 @@ def _full_cycle_failure_reason(report):
     failure = report.get("diagnostics", {}).get("cycle_failure", {})
     stage = failure.get("stage")
     reason_code = failure.get("reason_code")
-    if stage == "daily_state" and reason_code in _EARN_FORWARD_REASON_CODES:
+    if stage == "daily_state" and type(reason_code) is str and reason_code in _DAILY_STATE_REASON_CODES:
         return reason_code
     if stage in {"client_connect", "market_snapshot"}:
         return "full_cycle_broker_read_failed"

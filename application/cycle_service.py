@@ -28,6 +28,18 @@ from runtime_support import (
     OrderReconciliationError, ClientCallError,
 )
 
+_DAILY_INTEGRITY_REASONS = frozenset({
+    "earn_checkpoint_required_for_receipt", "earn_forward_accounting_unverified",
+    "balance_change_unexplained", "external_cash_flow_reconciliation_uncertain",
+    "daily_accounting_unverifiable", "daily_trend_accounting_migration_unverifiable",
+    "daily_trend_accounting_unverifiable",
+})
+_DAILY_DIAGNOSTIC_REASONS = EARN_FORWARD_REASON_CODES | frozenset({
+    "external_cash_flow_cursor_missing", "external_cash_flow_late_completion",
+    "external_cash_flow_balance_mismatch", "external_withdrawal_accounting_unsupported",
+    "external_cash_flow_scope_unsupported",
+})
+
 
 def try_record_platform_execution(
     profile_id, execution_result, *, domain="", decision=None, stream_id="",
@@ -517,11 +529,18 @@ def execute_strategy_cycle(
             RuntimeError: "runtime_error",
         }.get(type(exc), "unclassified_error")
         failure_metadata = {"stage": failure_stage, "error_type": error_type}
-        if failure_stage == "daily_state":
-            earn_diagnostics = report.get("diagnostics", {}).get("earn_accrual", {})
-            reason_code = earn_diagnostics.get("reason_code") if isinstance(earn_diagnostics, Mapping) else None
-            if reason_code in EARN_FORWARD_REASON_CODES:
-                failure_metadata["reason_code"] = reason_code
+        if failure_stage == "daily_state" and type(exc) is ExecutionIntegrityError:
+            for surface in ("earn_accrual", "external_cash_flow", "balance_change"):
+                diagnostic = report.get("diagnostics", {}).get(surface, {})
+                reason_code = diagnostic.get("reason_code") if isinstance(diagnostic, Mapping) else None
+                if type(reason_code) is str and reason_code in _DAILY_DIAGNOSTIC_REASONS:
+                    failure_metadata["reason_code"] = reason_code
+                    break
+            else:
+                # Exact application codes only; never expose exception/provider text.
+                reason_code = str(exc)
+                if reason_code in _DAILY_INTEGRITY_REASONS:
+                    failure_metadata["reason_code"] = reason_code
         report.setdefault("diagnostics", {})["cycle_failure"] = failure_metadata
         log_buffer.append(f"cycle_execution_failed stage={failure_stage} error_type={error_type}")
         append_report_error(report, "cycle_execution_failed", stage="execute_cycle")
