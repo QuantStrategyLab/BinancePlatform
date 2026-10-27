@@ -40,6 +40,32 @@ operator action can leave files or processes on the runner and affect a later
 job. GitHub explicitly recommends ephemeral self-hosted runners for autoscaling
 and does not recommend persistent runners for that purpose.
 
+## Protected production inputs
+
+`main.yml` remains the dispatch entry and owns the unchanged runtime concurrency
+lock. It calls `runtime-protected.yml` locally at the same reviewed workflow
+revision. The existing runtime job, environment, release selector, OIDC identity,
+broker-credential scope and execution guards remain in that called workflow.
+Private target JSON, GCS locations, digest-store target and Telegram destination
+are passed as reusable-workflow secrets. GitHub therefore registers masking
+before any runner step header, rather than exposing a repository variable before
+a later `add-mask` command can run. No new stored secret, permission or private
+configuration copy is created, and no configuration-reader App key enters the
+persistent runner.
+
+These private variable values have the repository as their configuration source;
+`binance-runtime` currently has no variable overrides. Any future override needs
+an explicit input-source migration before use. Environment broker secrets still
+resolve in the existing `binance-runtime` job, including the existing secret
+fallbacks for digest locations.
+
+The `validate_only` + `full_cycle` candidate path still invokes the sole existing
+`validate_runtime_startup.py --full-cycle` entry. The workflow captures its child
+stdout and stderr in memory and emits only fixed reason/stage codes and validated
+nonnegative counters. Unexpected child output fails validation without exposing
+provider text, account values or private configuration. This protection changes
+neither the production application/workflow pins nor the disabled trading switch.
+
 ## Phase 2 decision gate
 
 Do not select Cloud Run merely because the runtime uses Google Cloud for state.

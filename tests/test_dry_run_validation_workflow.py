@@ -76,10 +76,10 @@ def test_only_explicit_main_dispatch_can_start_isolated_job():
 
 
 def test_production_defaults_and_entry_remain_separate():
-    production = (ROOT / '.github/workflows/main.yml').read_text()
+    production = (ROOT / '.github/workflows/runtime-protected.yml').read_text()
     assert "RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED || 'false' }}" in production
     assert "BINANCE_DRY_RUN: ${{ vars.BINANCE_DRY_RUN || 'true' }}" in production
-    assert 'RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}' in production
+    assert 'RUNTIME_TARGET_JSON: ${{ secrets.PRIVATE_RUNTIME_TARGET_JSON }}' in production
     assert 'dry_run_full_cycle' not in production
     assert '"$VENV_PATH/bin/python" main.py' in production
     isolated = WORKFLOW.read_text()
