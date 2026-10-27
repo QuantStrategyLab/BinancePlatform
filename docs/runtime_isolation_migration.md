@@ -40,6 +40,32 @@ operator action can leave files or processes on the runner and affect a later
 job. GitHub explicitly recommends ephemeral self-hosted runners for autoscaling
 and does not recommend persistent runners for that purpose.
 
+## Protected production inputs
+
+`main.yml` remains the dispatch entry and owns the unchanged runtime concurrency
+lock. It calls `runtime-protected.yml` locally at the same reviewed workflow
+revision. The existing runtime job, environment, release selector, OIDC identity,
+broker-credential scope and execution guards remain in that called workflow.
+Private target JSON, GCS locations, digest-store target and Telegram destination
+are passed as reusable-workflow secrets. GitHub therefore registers masking
+before any runner step header, rather than exposing a repository variable before
+a later `add-mask` command can run. No new stored secret, permission or private
+configuration copy is created, and no configuration-reader App key enters the
+persistent runner.
+
+These private variable values have the repository as their configuration source;
+`binance-runtime` currently has no variable overrides. Any future override needs
+an explicit input-source migration before use. Environment broker secrets still
+resolve in the existing `binance-runtime` job, including the existing secret
+fallbacks for digest locations.
+
+The `validate_only` + `full_cycle` candidate path still invokes the sole existing
+`validate_runtime_startup.py --full-cycle` entry. The workflow captures its child
+stdout and stderr in memory and emits only fixed reason/stage codes and validated
+nonnegative counters. Unexpected child output fails validation without exposing
+provider text, account values or private configuration. This protection changes
+neither the production application/workflow pins nor the disabled trading switch.
+
 ## Phase 2 decision gate
 
 Do not select Cloud Run merely because the runtime uses Google Cloud for state.
@@ -435,3 +461,13 @@ permission to bypass a triggered circuit breaker or expand the live envelope.
 - [Cloud Run Job service identity](https://cloud.google.com/run/docs/configuring/jobs/service-identity)
 - [Cloud Run static outbound IP](https://cloud.google.com/run/docs/configuring/static-outbound-ip)
 - [Workload Identity Federation for deployment pipelines](https://cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines)
+
+
+The existing manual host-profile workflow has a default-off
+`check_binance_public_api` input. It makes one unauthenticated request to the
+[official Spot connectivity endpoint](https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#test-connectivity)
+on the actual runner, preserving its configured network route and without redirects or retries. The report preserves
+HTTP status and fixed DNS/TLS/timeout categories without response bodies or
+addresses. Public reachability does not verify API credentials, IP allowlisting,
+account permissions, risk authority or a complete trading cycle. It does not
+change the runtime release, scheduler or trading switches.

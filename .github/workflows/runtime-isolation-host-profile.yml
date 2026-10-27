@@ -2,6 +2,12 @@ name: Runtime Isolation Host Profile
 
 on:
   workflow_dispatch:
+    inputs:
+      check_binance_public_api:
+        description: "One unauthenticated public ping from the actual runner; no account reads or writes"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -16,12 +22,17 @@ jobs:
 
       - name: Collect redacted host, egress, and secret-boundary profile
         env:
+          CHECK_BINANCE_PUBLIC_API: ${{ inputs.check_binance_public_api }}
           RUNTIME_EGRESS_CHECK_URL: ${{ vars.BINANCE_RUNTIME_EGRESS_CHECK_URL }}
           RUNTIME_EXPECTED_EGRESS_SHA256: ${{ vars.BINANCE_RUNTIME_EGRESS_SHA256 }}
         run: |
           set -euo pipefail
-          python3 scripts/runtime_isolation_host_probe.py \
-            --workflow .github/workflows/main.yml \
+          args=()
+          if [[ "$CHECK_BINANCE_PUBLIC_API" == "true" ]]; then
+            args+=(--check-binance-public-api)
+          fi
+          python3 scripts/runtime_isolation_host_probe.py "${args[@]}" \
+            --workflow .github/workflows/runtime-protected.yml \
             --output reports/runtime_isolation_host_profile.json
 
       - name: Upload redacted host profile

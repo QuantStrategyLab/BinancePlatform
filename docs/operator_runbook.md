@@ -169,6 +169,15 @@ The monthly execution pool is locked to the accepted upstream `version` / `as_of
 - Repository variable changes are consumed by the next externally scheduled dispatch; they do not reconfigure the VPS scheduler cadence.
 - Avoid overlapping dispatches from multiple schedulers or from a second manual run while the current runtime job is still in progress.
 
+`Runner Scheduler Diagnostics` runs the existing read-only scheduler probe with
+`--diagnose-reason`. It adds a fixed reason code for an absent dispatch script,
+an unreadable crontab, a missing or unrecognized schedule, or an unavailable cron
+daemon check. It never prints cron contents, host identifiers or credentials and
+does not install, enable or dispatch the runtime. The default probe output and
+the runtime's scheduler-state interface remain unchanged. `unknown` stays
+unavailable evidence; a successful diagnostic workflow does not mean trading is
+enabled.
+
 ### Optional native account facts: separate manual capability
 
 The automatic `Runtime` workflow does not attach the optional native

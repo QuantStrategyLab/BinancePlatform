@@ -9,6 +9,10 @@ import os
 import platform
 import re
 import urllib.request
+import urllib.error
+import socket
+import ssl
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -103,7 +107,51 @@ def check_egress(*, check_url: str, expected_sha256: str) -> dict[str, Any]:
     }
 
 
-def build_report(*, workflow_path: Path, egress_check_url: str, expected_egress_sha256: str) -> dict[str, Any]:
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def check_binance_public_api() -> dict[str, Any]:
+    """One unauthenticated ping on this host; no redirect, retry or body output."""
+    result = {"status": "unknown", "reason": "request_failed", "http_status": None,
+              "request_attempts": 1, "authenticated": False,
+              "observed_at": datetime.now(timezone.utc).isoformat()}
+    opener = urllib.request.build_opener(_NoRedirect())
+    request = urllib.request.Request("https://api.binance.com/api/v3/ping", method="GET",
+                                     headers={"User-Agent": "binance-runtime-isolation-probe/1"})
+    try:
+        with opener.open(request, timeout=10) as response:
+            result["http_status"] = response.status
+            body = response.read(257)
+            if response.status == 200 and len(body) <= 256 and json.loads(body) == {}:
+                result.update(status="reachable", reason="public_ping_passed")
+            else:
+                result.update(status="failed", reason="unexpected_response")
+    except urllib.error.HTTPError as exc:
+        result["http_status"] = exc.code
+        result.update(status="failed", reason={
+            451: "http_451", 403: "http_403", 429: "rate_limited",
+        }.get(exc.code, "redirect_rejected" if 300 <= exc.code < 400 else "http_error"))
+        exc.close()
+    except (TimeoutError, socket.timeout):
+        result["reason"] = "request_timeout"
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, socket.gaierror):
+            result["reason"] = "dns_failed"
+        elif isinstance(exc.reason, ssl.SSLError):
+            result["reason"] = "tls_failed"
+        elif isinstance(exc.reason, TimeoutError):
+            result["reason"] = "request_timeout"
+    except (ValueError, UnicodeError):
+        result.update(status="failed", reason="unexpected_response")
+    except (OSError, ssl.SSLError):
+        pass
+    return result
+
+
+def build_report(*, workflow_path: Path, egress_check_url: str, expected_egress_sha256: str,
+                 check_public_api: bool = False) -> dict[str, Any]:
     dmi = {name: value for name, path in DMI_FIELDS.items() if (value := _read_field(path))}
     egress = check_egress(
         check_url=egress_check_url,
@@ -118,7 +166,7 @@ def build_report(*, workflow_path: Path, egress_check_url: str, expected_egress_
         and secret_boundary["broker_secret_scope"] == "strategy_step_only"
         else "PARTIAL"
     )
-    return {
+    report = {
         "schema_version": "runtime_isolation_host_profile.v1",
         "status": status,
         "no_order": True,
@@ -137,6 +185,9 @@ def build_report(*, workflow_path: Path, egress_check_url: str, expected_egress_
         "network_egress": egress,
         "secret_boundary": secret_boundary,
     }
+    if check_public_api:
+        report["binance_public_api"] = check_binance_public_api()
+    return report
 
 
 def parse_args() -> argparse.Namespace:
@@ -153,6 +204,8 @@ def parse_args() -> argparse.Namespace:
         default=os.getenv("RUNTIME_EXPECTED_EGRESS_SHA256", "").strip().lower(),
         help="Expected SHA-256 of the allowlisted public IP; the raw IP is never emitted.",
     )
+    parser.add_argument("--check-binance-public-api", action="store_true",
+                        help="One fixed unauthenticated Binance ping; no broker account data.")
     return parser.parse_args()
 
 
@@ -164,6 +217,7 @@ def main() -> None:
         workflow_path=args.workflow,
         egress_check_url=args.egress_check_url,
         expected_egress_sha256=args.expected_egress_sha256,
+        check_public_api=args.check_binance_public_api,
     )
     if report["network_egress"]["status"] == "MISMATCHED":
         raise SystemExit("Observed egress does not match the configured allowlist fingerprint")
