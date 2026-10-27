@@ -550,6 +550,18 @@ jobs:
                     "validation_scope": "full_cycle_no_submit", "execution_permitted": False}
           process = None
           allowed_reasons = {
+              "earn_checkpoint_required_for_receipt",
+              "earn_forward_accounting_unverified",
+              "balance_change_unexplained",
+              "external_cash_flow_reconciliation_uncertain",
+              "daily_accounting_unverifiable",
+              "daily_trend_accounting_migration_unverifiable",
+              "daily_trend_accounting_unverifiable",
+              "external_cash_flow_cursor_missing",
+              "external_cash_flow_late_completion",
+              "external_cash_flow_balance_mismatch",
+              "external_withdrawal_accounting_unsupported",
+              "external_cash_flow_scope_unsupported",
               "earn_accounted_changes_missing",
               "earn_cash_cursor_mismatch",
               "earn_cash_flow_invalid",

@@ -69,6 +69,10 @@ when it exactly matches the finite set of types already emitted by the pinned
 validator; missing, malformed or unknown types become `unknown`. Exception
 messages, provider responses and arbitrary type names remain private. A failure
 stage alone does not establish an API, network or accounting root cause.
+The same finite projection accepts the validator's exact daily-state integrity
+and cash-flow reason codes. It never adds exception messages or turns a failure
+into a complete cycle. Adopting a new application revision still requires its
+independent exact authority runner binding; these codes grant no execution rights.
 Neither the production application pin, risk authority nor the enabled switch
 is changed by this workflow transport update.
 

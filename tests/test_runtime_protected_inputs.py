@@ -197,6 +197,27 @@ def test_accounting_failure_keeps_existing_fixed_reason(capsys):
     assert result["failure_stage"] == "daily_state"
 
 
+@pytest.mark.parametrize("reason", [
+    "earn_checkpoint_required_for_receipt", "earn_forward_accounting_unverified",
+    "balance_change_unexplained", "external_cash_flow_reconciliation_uncertain",
+    "daily_accounting_unverifiable", "daily_trend_accounting_migration_unverifiable",
+    "daily_trend_accounting_unverifiable", "external_cash_flow_cursor_missing",
+    "external_cash_flow_late_completion", "external_cash_flow_balance_mismatch",
+    "external_withdrawal_accounting_unsupported", "external_cash_flow_scope_unsupported",
+])
+def test_daily_integrity_failure_keeps_only_fixed_reason(capsys, reason):
+    code, result = run_projection(capsys, "PRIVATE_PROVIDER_MESSAGE\n" + json.dumps({
+        "status": "failed", "reason_code": reason, "failure_stage": "daily_state",
+        "error_type": "execution_integrity_error", "message": "PRIVATE_ACCOUNT",
+    }))
+    assert code == 1 and result["status"] == "failed"
+    assert result["reason_code"] == reason
+    assert result["failure_stage"] == "daily_state"
+    assert result["error_type"] == "execution_integrity_error"
+    assert "message" not in result
+    assert "executed_call_count" not in result
+
+
 @pytest.mark.parametrize("changes,allowed", [
     ({}, True),
     ({"RUNTIME_TARGET_ENABLED": "true"}, False),
