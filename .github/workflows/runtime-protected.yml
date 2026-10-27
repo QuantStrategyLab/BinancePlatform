@@ -536,17 +536,19 @@ jobs:
             fi
             if [ "${FULL_CYCLE:-false}" = "true" ]; then
               RUNTIME_TARGET_ENABLED=false "$VENV_PATH/bin/python" - <<'SAFE_VALIDATION'
+          import contextlib
+          import copy
+          import io
+          import logging
           import json
+          import os
           import subprocess
           import sys
 
           # Capture the sole existing validator. Child/provider diagnostics never reach logs.
-          result = {"status": "failed", "reason_code": "validator_output_invalid",
+          result = {"status": "failed", "reason_code": "validation_input_invalid",
                     "validation_scope": "full_cycle_no_submit", "execution_permitted": False}
-          process = subprocess.run(
-              [sys.executable, "scripts/validate_runtime_startup.py", "--full-cycle"],
-              capture_output=True, text=True, check=False,
-          )
+          process = None
           allowed_reasons = {
               "earn_accounted_changes_missing",
               "earn_cash_cursor_mismatch",
@@ -644,6 +646,62 @@ jobs:
                             "status_notification", "state_persistence", "state_owner_claim",
                             "state_owner_release"}
           try:
+              from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
+              from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
+
+              if os.environ.get("RUNTIME_TARGET_ENABLED") != "false":
+                  raise ValueError("disabled_validation_required")
+              original = json.loads(os.environ["RUNTIME_TARGET_JSON"])
+              source_target = resolve_runtime_target_from_env(
+                  env={"RUNTIME_TARGET_JSON": json.dumps(original)}, expected_platform_id="binance",
+              )
+              if original["live_continuity"]["state"] != "RECONCILE_ONLY":
+                  raise ValueError("reconciliation_continuity_required")
+              legacy_profile = os.environ.get("STRATEGY_PROFILE", "").strip()
+              if legacy_profile and legacy_profile != source_target.strategy_profile:
+                  raise ValueError("source_profile_conflict")
+              legacy_dry = os.environ.get("BINANCE_DRY_RUN", "").strip().lower()
+              if legacy_dry not in {"true", "false"} or (legacy_dry == "true") != source_target.dry_run_only:
+                  raise ValueError("source_dry_run_conflict")
+              # Verify the original LIVE recovery/source/authority contract before
+              # deriving a diagnostic copy. The existing builder has no client or
+              # write ports unless explicitly supplied; this call supplies none.
+              result["reason_code"] = "source_binding_invalid"
+              previous_logging_disable = logging.root.manager.disable
+              try:
+                  logging.disable(logging.CRITICAL)
+                  with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                      from runtime_config_support import build_live_runtime as build_source_runtime
+                      source_runtime = build_source_runtime()
+              finally:
+                  logging.disable(previous_logging_disable)
+              if (source_runtime.dry_run is not False
+                      or source_runtime.standard_execution_permitted is not False
+                      or source_runtime.risk_authority is None
+                      or source_runtime.runtime_target.live_continuity.state != "ACTIVE_LKG"
+                      or any(getattr(source_runtime, port, None) is not None for port in (
+                          "client", "state_loader", "state_writer", "notifier",
+                          "state_owner_claim", "state_owner_release"))):
+                  raise ValueError("disabled_live_source_required")
+              # Reuse the existing isolated validator's process-only paper target.
+              # Keep account identity, continuity and LIVE authority/source bindings intact.
+              target = copy.deepcopy(original)
+              target["dry_run_only"] = True
+              target["execution_mode"] = "paper"
+              target["live_continuity"]["baseline_target_sha256"] = runtime_target_fingerprint(target)
+              child_env = dict(os.environ)
+              child_env["RUNTIME_TARGET_JSON"] = json.dumps(target, sort_keys=True)
+              child_env["RUNTIME_TARGET_ENABLED"] = "false"
+              child_env["BINANCE_DRY_RUN"] = "true"
+              resolved = resolve_runtime_target_from_env(env=child_env, expected_platform_id="binance")
+              if not resolved.dry_run_only or resolved.live_continuity.permits_standard_execution:
+                  raise ValueError("validation_target_invalid")
+              child_env["STRATEGY_PROFILE"] = resolved.strategy_profile
+              result["reason_code"] = "validator_output_invalid"
+              process = subprocess.run(
+                  [sys.executable, "scripts/validate_runtime_startup.py", "--full-cycle"],
+                  capture_output=True, text=True, check=False, env=child_env,
+              )
               candidate = json.loads(process.stdout.strip().splitlines()[-1])
               if candidate.get("status") == "passed" and process.returncode == 0:
                   if (candidate.get("validation_scope") != "full_cycle_no_submit"
@@ -667,7 +725,8 @@ jobs:
                       result["failure_stage"] = candidate["failure_stage"]
           except Exception:
               pass
-          result["validator_exit_code"] = process.returncode
+          if process is not None:
+              result["validator_exit_code"] = process.returncode
           print(json.dumps(result, sort_keys=True))
           raise SystemExit(0 if result["status"] == "passed" else 1)
           SAFE_VALIDATION

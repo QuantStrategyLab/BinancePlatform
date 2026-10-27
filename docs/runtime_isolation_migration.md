@@ -51,8 +51,19 @@ repository-variable source; existing environment authority bindings and broker
 secrets retain their normal job scope. No new stored secret, permission or
 configuration copy is created.
 
-Full-cycle validation still invokes only the existing no-submit validator. Its
-child stdout/stderr is captured in memory and only fixed diagnostic codes and
+Full-cycle validation first runs the existing standard configuration builder on
+the unchanged LIVE target. This verifies the effective private recovery control
+and original authority/source bindings while the external switch remains false;
+the builder receives no broker, state-write, owner or notification ports. Legacy
+profile/dry-run flags are also checked before any diagnostic copy is derived. It reuses the isolated validator's in-memory paper
+copy: only the child process receives dry-run mode and the copy's recalculated
+fingerprint. Account identity, RECONCILE_ONLY continuity and the existing LIVE
+authority file/digest/source bindings remain intact; the original environment
+and stored target are never rewritten. The candidate application keeps its
+requirement that full-cycle input is paper/dry-run.
+
+The workflow still invokes only the existing no-submit validator. Its child
+stdout/stderr is captured in memory and only fixed diagnostic codes and
 validated counters reach logs. Neither the production application pin, risk
 authority nor the enabled switch is changed by this workflow transport update.
 
