@@ -645,6 +645,13 @@ jobs:
                             "post_trade_allocation", "btc_execution", "earn_execution",
                             "status_notification", "state_persistence", "state_owner_claim",
                             "state_owner_release"}
+          # Exact types already emitted by the pinned validator; never provider text.
+          allowed_error_types = {
+              "state_persistence_error", "order_reconciliation_error", "execution_integrity_error",
+              "client_call_error", "timeout_error", "connection_error", "permission_error",
+              "io_error", "value_error", "type_error", "key_error", "runtime_error",
+              "unclassified_error", "ValueError", "KeyError", "TypeError", "OSError", "RuntimeError",
+          }
           try:
               from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
               from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
@@ -723,6 +730,10 @@ jobs:
                                            else "validator_failed")
                   if candidate.get("failure_stage") in allowed_stages:
                       result["failure_stage"] = candidate["failure_stage"]
+                  error_type = candidate.get("error_type")
+                  result["error_type"] = (error_type
+                                          if type(error_type) is str and error_type in allowed_error_types
+                                          else "unknown")
           except Exception:
               pass
           if process is not None:

@@ -125,7 +125,40 @@ def test_known_failure_retains_fixed_diagnostic_without_provider_output(capsys):
     assert code == 1
     assert result["reason_code"] == "full_cycle_broker_connect_failed"
     assert result["failure_stage"] == "connect"
+    assert result["error_type"] == "unknown"
     assert "provider_response" not in result
+
+
+@pytest.mark.parametrize("error_type", [
+    "state_persistence_error", "order_reconciliation_error", "execution_integrity_error",
+    "client_call_error", "timeout_error", "connection_error", "permission_error",
+    "io_error", "value_error", "type_error", "key_error", "runtime_error",
+    "unclassified_error", "ValueError", "KeyError", "TypeError", "OSError", "RuntimeError",
+])
+def test_failed_child_retains_only_known_error_type(capsys, error_type):
+    code, result = run_projection(capsys, "PRIVATE_PROVIDER_MESSAGE\n" + json.dumps({
+        "status": "failed", "reason_code": "full_cycle_cycle_error",
+        "failure_stage": "daily_state", "error_type": error_type,
+        "message": "PRIVATE_ACCOUNT_AND_BALANCE",
+    }))
+    assert code == 1 and result["status"] == "failed"
+    assert result["reason_code"] == "full_cycle_cycle_error"
+    assert result["failure_stage"] == "daily_state"
+    assert result["error_type"] == error_type
+    assert "message" not in result
+
+
+@pytest.mark.parametrize("error_type", [
+    "PRIVATE_ACCOUNT", "custom_error", "RuntimeError: PRIVATE_BALANCE", "",
+    None, False, 1, ["PRIVATE_ACCOUNT"], {"account": "PRIVATE_ACCOUNT"},
+])
+def test_unknown_child_error_type_is_fixed_unknown(capsys, error_type):
+    code, result = run_projection(capsys, json.dumps({
+        "status": "failed", "reason_code": "full_cycle_cycle_error",
+        "failure_stage": "daily_state", "error_type": error_type,
+    }))
+    assert code == 1 and result["status"] == "failed"
+    assert result["error_type"] == "unknown"
 
 
 def passed():
@@ -135,9 +168,11 @@ def passed():
 
 
 def test_success_requires_complete_read_only_contract(capsys):
-    code, result = run_projection(capsys, "PRIVATE_DETAILS\n" + json.dumps(passed()), 0)
+    code, result = run_projection(capsys, "PRIVATE_DETAILS\n" + json.dumps(
+        passed() | {"error_type": "PRIVATE_ACCOUNT"}), 0)
     assert code == 0 and result["status"] == "passed"
     assert result["executed_call_count"] == 0 and result["execution_permitted"] is False
+    assert "error_type" not in result
 
 
 @pytest.mark.parametrize("override", [

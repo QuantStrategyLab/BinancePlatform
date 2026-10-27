@@ -64,8 +64,13 @@ requirement that full-cycle input is paper/dry-run.
 
 The workflow still invokes only the existing no-submit validator. Its child
 stdout/stderr is captured in memory and only fixed diagnostic codes and
-validated counters reach logs. Neither the production application pin, risk
-authority nor the enabled switch is changed by this workflow transport update.
+validated counters reach logs. Failed child results retain `error_type` only
+when it exactly matches the finite set of types already emitted by the pinned
+validator; missing, malformed or unknown types become `unknown`. Exception
+messages, provider responses and arbitrary type names remain private. A failure
+stage alone does not establish an API, network or accounting root cause.
+Neither the production application pin, risk authority nor the enabled switch
+is changed by this workflow transport update.
 
 ## Phase 2 decision gate
 
