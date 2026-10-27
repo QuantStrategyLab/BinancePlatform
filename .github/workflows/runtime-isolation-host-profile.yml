@@ -32,7 +32,7 @@ jobs:
             args+=(--check-binance-public-api)
           fi
           python3 scripts/runtime_isolation_host_probe.py "${args[@]}" \
-            --workflow .github/workflows/main.yml \
+            --workflow .github/workflows/runtime-protected.yml \
             --output reports/runtime_isolation_host_profile.json
 
       - name: Upload redacted host profile
