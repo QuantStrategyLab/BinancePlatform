@@ -435,3 +435,13 @@ permission to bypass a triggered circuit breaker or expand the live envelope.
 - [Cloud Run Job service identity](https://cloud.google.com/run/docs/configuring/jobs/service-identity)
 - [Cloud Run static outbound IP](https://cloud.google.com/run/docs/configuring/static-outbound-ip)
 - [Workload Identity Federation for deployment pipelines](https://cloud.google.com/iam/docs/workload-identity-federation-with-deployment-pipelines)
+
+
+The existing manual host-profile workflow has a default-off
+`check_binance_public_api` input. It makes one unauthenticated request to the
+[official Spot connectivity endpoint](https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#test-connectivity)
+on the actual runner, preserving its configured network route and without redirects or retries. The report preserves
+HTTP status and fixed DNS/TLS/timeout categories without response bodies or
+addresses. Public reachability does not verify API credentials, IP allowlisting,
+account permissions, risk authority or a complete trading cycle. It does not
+change the runtime release, scheduler or trading switches.
