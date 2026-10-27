@@ -582,6 +582,8 @@ class CycleServiceTests(unittest.TestCase):
 
         self.assertEqual(report["status"], "error")
         self.assertEqual(reset_calls, [])
+        self.assertEqual(report["diagnostics"]["cycle_failure"]["reason_code"],
+                         "external_cash_flow_history_read_failed")
         self.assertEqual(state["daily_equity_base"], 100.0)
         self.assertEqual(state["last_reset_date"], "2026-09-11")
 
@@ -605,6 +607,67 @@ class CycleServiceTests(unittest.TestCase):
                 "reason_code": "earn_counter_reset",
             },
         )
+
+    def test_daily_state_native_integrity_reasons_stop_without_writes(self):
+        reasons = (
+            "earn_checkpoint_required_for_receipt", "earn_forward_accounting_unverified",
+            "balance_change_unexplained", "external_cash_flow_reconciliation_uncertain",
+            "daily_accounting_unverifiable", "daily_trend_accounting_migration_unverifiable",
+            "daily_trend_accounting_unverifiable",
+        )
+        for reason in reasons:
+            with self.subTest(reason=reason):
+                runtime = ExecutionRuntime(dry_run=True, client=Mock(), state_writer=Mock(),
+                    state_owner_claim=Mock(), state_owner_release=Mock())
+                state = {"synthetic": "unchanged"}
+                def fail(*_args):
+                    raise ExecutionIntegrityError(reason)
+                report, events = self._run_funds_cycle(True, runtime=runtime, state=state,
+                                                       rebase_fn=fail)
+                self.assertEqual(report["diagnostics"]["cycle_failure"], {
+                    "stage": "daily_state", "error_type": "execution_integrity_error",
+                    "reason_code": reason,
+                })
+                self.assertEqual(report["status"], "error")
+                self.assertEqual(report["state_write_intents"], [])
+                self.assertEqual(state, {"synthetic": "unchanged"})
+                self.assertEqual(events, [])
+                self.assertEqual(runtime.client.mock_calls, [])
+                runtime.state_writer.assert_not_called()
+                runtime.state_owner_claim.assert_not_called()
+                runtime.state_owner_release.assert_not_called()
+
+    def test_daily_state_reuses_fixed_diagnostics_before_generic_integrity_reason(self):
+        for surface, reason in (
+            ("earn_accrual", "earn_counter_reset"),
+            ("external_cash_flow", "external_cash_flow_history_read_failed"),
+            ("balance_change", "external_cash_flow_cursor_missing"),
+        ):
+            with self.subTest(surface=surface):
+                def fail(*args):
+                    args[2]["diagnostics"] = {surface: {"reason_code": reason}}
+                    raise ExecutionIntegrityError("external_cash_flow_reconciliation_uncertain")
+                report, events = self._run_funds_cycle(True, rebase_fn=fail)
+                self.assertEqual(report["diagnostics"]["cycle_failure"]["reason_code"], reason)
+                self.assertEqual(report["status"], "error")
+                self.assertEqual(events, [])
+
+    def test_daily_state_unknown_exceptions_and_free_text_stay_generic(self):
+        class CustomIntegrityError(ExecutionIntegrityError):
+            pass
+        for error in (ExecutionIntegrityError("PRIVATE_ACCOUNT"),
+                      CustomIntegrityError("balance_change_unexplained"),
+                      RuntimeError("balance_change_unexplained")):
+            for diagnostic in ("PRIVATE_ACCOUNT", "custom_error", ["PRIVATE_ACCOUNT"], {}):
+                with self.subTest(error_type=type(error).__name__, diagnostic=diagnostic):
+                    def fail(*args):
+                        args[2]["diagnostics"] = {"external_cash_flow": {"reason_code": diagnostic}}
+                        raise error
+                    report, events = self._run_funds_cycle(True, rebase_fn=fail)
+                    failure = report["diagnostics"]["cycle_failure"]
+                    self.assertNotIn("reason_code", failure)
+                    self.assertEqual(report["status"], "error")
+                    self.assertEqual(events, [])
 
     def test_pure_daily_state_prepare_failure_releases_this_cycle_owner(self):
         release = Mock(return_value=True)
