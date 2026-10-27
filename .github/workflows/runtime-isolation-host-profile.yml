@@ -21,7 +21,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/runtime_isolation_host_probe.py \
-            --workflow .github/workflows/main.yml \
+            --workflow .github/workflows/runtime-protected.yml \
             --output reports/runtime_isolation_host_profile.json
 
       - name: Upload redacted host profile

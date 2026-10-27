@@ -40,6 +40,22 @@ operator action can leave files or processes on the runner and affect a later
 job. GitHub explicitly recommends ephemeral self-hosted runners for autoscaling
 and does not recommend persistent runners for that purpose.
 
+## Protected production inputs
+
+`main.yml` owns the existing dispatch inputs and runtime concurrency lock. Its
+original production job runs in the local `runtime-protected.yml` workflow at
+the same reviewed revision. Existing private target JSON, storage locations,
+digest target and Telegram destination are passed as reusable-workflow secrets,
+so masking is registered before step headers. These private values retain their
+repository-variable source; existing environment authority bindings and broker
+secrets retain their normal job scope. No new stored secret, permission or
+configuration copy is created.
+
+Full-cycle validation still invokes only the existing no-submit validator. Its
+child stdout/stderr is captured in memory and only fixed diagnostic codes and
+validated counters reach logs. Neither the production application pin, risk
+authority nor the enabled switch is changed by this workflow transport update.
+
 ## Phase 2 decision gate
 
 Do not select Cloud Run merely because the runtime uses Google Cloud for state.
