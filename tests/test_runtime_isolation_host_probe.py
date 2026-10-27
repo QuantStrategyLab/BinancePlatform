@@ -11,7 +11,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 PROBE = ROOT / "scripts" / "runtime_isolation_host_probe.py"
-MAIN_WORKFLOW = ROOT / ".github" / "workflows" / "main.yml"
+RUNTIME_WORKFLOW = ROOT / ".github" / "workflows" / "runtime-protected.yml"
 
 
 def load_probe():
@@ -29,7 +29,7 @@ class RuntimeIsolationHostProbeTests(unittest.TestCase):
         cls.probe = load_probe()
 
     def test_current_secret_source_is_github_environment_and_step_scoped(self) -> None:
-        result = self.probe.inspect_secret_source(MAIN_WORKFLOW)
+        result = self.probe.inspect_secret_source(RUNTIME_WORKFLOW)
 
         self.assertEqual(result["source"], "github_actions_environment_secrets")
         self.assertEqual(result["environment_name"], "binance-runtime")
@@ -44,7 +44,7 @@ class RuntimeIsolationHostProbeTests(unittest.TestCase):
             return self.probe.inspect_secret_source(path)
 
     def test_strategy_secret_boundary_requires_unique_adjacent_step_markers(self) -> None:
-        workflow = MAIN_WORKFLOW.read_text(encoding="utf-8")
+        workflow = RUNTIME_WORKFLOW.read_text(encoding="utf-8")
         start = "      - name: 4. Run trading strategy"
         end = "      - name: Remove protected LIVE risk authority source"
         variants = {
@@ -62,7 +62,7 @@ class RuntimeIsolationHostProbeTests(unittest.TestCase):
                 self.assertFalse(result["secret_values_read"])
 
     def test_cross_step_secret_references_are_not_claimed_strategy_only(self) -> None:
-        workflow = MAIN_WORKFLOW.read_text(encoding="utf-8")
+        workflow = RUNTIME_WORKFLOW.read_text(encoding="utf-8")
         key = "          BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}"
         secret = "          BINANCE_API_SECRET: ${{ secrets.BINANCE_API_SECRET }}"
         later_step = "\n      - name: Other synthetic step\n        env:\n" + key + "\n" + secret + "\n"
@@ -116,8 +116,8 @@ class RuntimeIsolationHostProbeTests(unittest.TestCase):
 
     def test_unconfigured_egress_is_partial_not_ready(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            workflow = Path(temp_dir) / "main.yml"
-            workflow.write_text(MAIN_WORKFLOW.read_text(encoding="utf-8"), encoding="utf-8")
+            workflow = Path(temp_dir) / "runtime-protected.yml"
+            workflow.write_text(RUNTIME_WORKFLOW.read_text(encoding="utf-8"), encoding="utf-8")
             with mock.patch.object(self.probe, "DMI_FIELDS", {}):
                 report = self.probe.build_report(
                     workflow_path=workflow,

@@ -156,7 +156,7 @@ def test_flags_off_transport_receipts_and_http_calls_match_main(monkeypatch, fla
 @pytest.mark.parametrize("locale", ["zh", "en"])
 def test_flags_off_workflow_failure_script_matches_main_sends(monkeypatch, tmp_path, flag, locale):
     root = Path(__file__).resolve().parents[1]
-    current = (root / ".github/workflows/main.yml").read_text().split(
+    current = (root / ".github/workflows/runtime-protected.yml").read_text().split(
         "      - name: 6. Notify Telegram on runtime workflow failure", 1)[1]
     current = current.split("        run: |\n", 1)[1].split("        env:\n", 1)[0]
     current = "\n".join(line[10:] if line.startswith("          ") else line for line in current.splitlines())

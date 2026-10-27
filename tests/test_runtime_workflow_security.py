@@ -6,7 +6,7 @@ import textwrap
 import pytest
 
 
-WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "main.yml"
+WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "runtime-protected.yml"
 WATCHDOG_WORKFLOW = WORKFLOW.with_name("watchdog.yml")
 HEARTBEAT_WORKFLOW = WORKFLOW.with_name("runtime-heartbeat.yml")
 LIFECYCLE_WORKFLOW = WORKFLOW.with_name("runtime-target-lifecycle.yml")
@@ -35,7 +35,7 @@ def test_runtime_never_uploads_full_execution_report_or_publishes_logs_branch() 
     assert "publish-execution-log:" not in workflow
     assert 'LOGS_BRANCH="logs"' not in workflow
     assert "contents: write" not in workflow
-    assert "EXECUTION_REPORT_GCS_URI: ${{ vars.EXECUTION_REPORT_GCS_URI }}" in workflow
+    assert "EXECUTION_REPORT_GCS_URI: ${{ secrets.PRIVATE_EXECUTION_REPORT_GCS_URI }}" in workflow
 
 
 def test_manual_native_reader_remains_fail_closed_without_report_artifact() -> None:
@@ -67,7 +67,7 @@ def test_manual_native_reader_remains_fail_closed_without_report_artifact() -> N
 
 
 def test_runtime_keeps_workflow_lock_after_optional_reader_detachment() -> None:
-    workflow = WORKFLOW.read_text(encoding="utf-8")
+    workflow = WORKFLOW.with_name("main.yml").read_text(encoding="utf-8")
     before_jobs = workflow.split("\njobs:\n", 1)[0]
     assert workflow.startswith("name: Runtime\n")
     assert (
@@ -76,6 +76,7 @@ def test_runtime_keeps_workflow_lock_after_optional_reader_detachment() -> None:
         "  cancel-in-progress: false\n"
     ) in before_jobs
     assert "\n    concurrency:\n" not in workflow
+    assert "\nconcurrency:\n" not in WORKFLOW.read_text(encoding="utf-8")
 
 
 def test_manual_native_facts_entry_remains_opt_in_and_source_bound() -> None:
@@ -308,7 +309,7 @@ def test_strategy_step_passes_and_revalidates_runtime_controls_before_main() -> 
     )[0]
 
     assert "RUNTIME_TARGET_ENABLED: ${{ env.RUNTIME_TARGET_ENABLED }}" in strategy
-    assert "RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}" in strategy
+    assert "RUNTIME_TARGET_JSON: ${{ secrets.PRIVATE_RUNTIME_TARGET_JSON }}" in strategy
     assert (
         'if [ -z "${RUNTIME_TARGET_JSON:-}" ]; then'
         in strategy
@@ -664,7 +665,7 @@ def test_recovery_credentials_are_scoped_to_explicit_recovery_actions():
     sync_token_line = next(
         line
         for line in workflow.splitlines()
-        if line.strip().startswith("RECONCILIATION_RECOVERY_SYNC_TOKEN:")
+        if line.startswith("          RECONCILIATION_RECOVERY_SYNC_TOKEN:")
     )
     assert "inputs.recovery_action == 'prepare'" in sync_token_line
     assert "inputs.accounting_migration_action == 'scope-preview'" in sync_token_line
@@ -686,8 +687,8 @@ def test_recovery_credentials_are_scoped_to_explicit_recovery_actions():
 
 
 def test_accounting_migration_has_explicit_preview_and_apply_inputs():
-    workflow = WORKFLOW.read_text()
-    inputs = workflow[workflow.index("    inputs:") : workflow.index("permissions:")]
+    entry = WORKFLOW.with_name("main.yml").read_text()
+    inputs = entry[entry.index("    inputs:") : entry.index("permissions:")]
 
     assert "accounting_migration_action:" in inputs
     assert "options: [none, inspect, quiesce, earn-forward-diagnose, audit, preview, scope-preview, cash-flow-preview, rebase-proposal, rebase-apply, prospective-rebase-apply, release-stale-owner, apply]" in inputs
@@ -863,7 +864,7 @@ def test_encryption_certificate_is_isolated_to_rebase_proposal(
 
 def test_approved_prospective_secret_only_reaches_explicit_migration_step():
     from pathlib import Path
-    text = Path('.github/workflows/main.yml').read_text()
+    text = Path('.github/workflows/runtime-protected.yml').read_text()
     lines = [line for line in text.splitlines() if 'secrets.BINANCE_APPROVED_PROSPECTIVE_OPENING' in line]
     assert len(lines) == 1
     assert "inputs.accounting_migration_action == 'prospective-rebase-apply'" in lines[0]
