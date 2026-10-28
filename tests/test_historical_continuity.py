@@ -80,6 +80,47 @@ def _empty_history_client(*, reward_rows_by_window=None, page_full_surface=None)
     return SimpleNamespace(_request_margin_api=read), calls
 
 
+@pytest.mark.parametrize('entry', ['collect_historical_continuity_diagnosis',
+                                 'collect_historical_continuity_source'])
+def test_partial_reward_diagnostics_do_not_allow_main_diagnosis_or_enrollment(monkeypatch,entry):
+    from application import rebased_recovery as recovery
+
+    ledger, archive, _ = _material(monkeypatch)
+    ledger = _evolve_ledger_without_daily_loss(ledger,observed_at=NOW_BEYOND)
+    before = copy.deepcopy((ledger,archive))
+    history = dict(history_complete_for_requested_surfaces=False,
+                   reason_code='balance_history_unapproved_reward_product',chunk_count=3,
+                   reward_product_classification_counts={'product_mapping_ambiguous':1,
+                       'opening_approved':False,'PRIVATE_ASSET':123},amount='PRIVATE')
+    monkeypatch.setattr(recovery,'diagnose_chunked_balance_flows',lambda *_a,**_k:history)
+    monkeypatch.setattr(recovery,'evaluate_broker_reconciliation_baseline_enrollment',
+                        lambda *_a,**_k:pytest.fail('rejected history reached enrollment'))
+    with pytest.raises(ValueError,match='^historical_continuity_unapproved_reward_product$') as caught:
+        getattr(recovery,entry)(client=ProspectiveClient(),runtime_target=_target(),
+            legacy_expected={'account_scope_sha256':digest({'account_uid':'synthetic'})},
+            ledger=ledger,archive=archive,symbols=('BNBUSDT',),
+            source_run=dict(id=400,head_sha='b'*40,head_branch='main',
+                            event='workflow_dispatch',path='.github/workflows/main.yml'),
+            migration_run=dict(id=34690695663,head_sha='a3ef5660e6d25fcfd5a7dedd10536a32eedde203',
+                               head_branch='main',event='workflow_dispatch',path='.github/workflows/main.yml'),
+            now=NOW_BEYOND,clock=lambda:LATER_BEYOND)
+    error = caught.value
+    assert error.chunk_count == 3 and error.classification_counts['product_mapping_ambiguous'] == 1
+    assert error.classification_counts['opening_approved'] is None
+    assert len(error.classification_counts) == 6 and 'PRIVATE' not in str(vars(error))
+    assert (ledger,archive) == before
+
+
+def test_partial_reward_diagnostic_carrier_never_supplies_missing_counts():
+    from application.rebased_recovery import _HistoricalRewardProductBlocked
+    for history in ({}, {'chunk_count':False,'reward_product_classification_counts':[]},
+                    {'chunk_count':-1,'reward_product_classification_counts':{'opening_approved':'PRIVATE'}}):
+        error = _HistoricalRewardProductBlocked(history)
+        assert error.chunk_count is None
+        assert all(value is None for value in error.classification_counts.values())
+        assert str(error) == 'historical_continuity_unapproved_reward_product'
+
+
 def test_chunked_balance_flows_accepts_explicit_span_beyond_max_history_when_complete():
     from application.broker_reconciliation import diagnose_chunked_balance_flows
     from application.rebased_recovery import MAX_HISTORY

@@ -206,6 +206,98 @@ def test_projection_never_exposes_free_keys_values_or_unknown_counts():
         assert diagnostic.project_result(value|changes,exit_code=0)['status'] == 'blocked'
 
 
+@pytest.mark.parametrize('case,classification', [
+    ('missing_identity', 'lifecycle_evidence_incomplete'),
+    ('out_of_scope', 'out_of_scope_asset'),
+    ('missing_subscription', 'lifecycle_evidence_incomplete'),
+])
+def test_actual_rejected_history_preserves_only_partial_classification(monkeypatch,case,classification):
+    args, client = collector_args(monkeypatch)
+    before = copy.deepcopy((args['ledger'], args['archive']))
+    original = client.history._request_margin_api
+    def read(method,path,**kwargs):
+        if path.endswith('/rewardsRecord'):
+            row = dict(asset='BNB',projectId='PRIVATE_PRODUCT',type='REALTIME',rewards='0.01',
+                       time=kwargs['data']['startTime'] + 1)
+            if case == 'missing_identity':
+                row.pop('projectId')
+            elif case == 'out_of_scope':
+                row['asset'] = 'PRIVATE_ASSET'
+            return {'rows':[row], 'total':1}
+        return original(method,path,**kwargs)
+    monkeypatch.setattr(client.history,'_request_margin_api',read)
+    result = recovery.collect_historical_continuity_readonly(**args,tool_revision='b'*40)
+    assert result['status'] == 'blocked'
+    assert result['reason_code'] == 'historical_continuity_unapproved_reward_product'
+    assert result['classification_scope'] == 'partial_history'
+    assert result['reward_product_classification_counts'][classification] == 1
+    assert type(result['chunk_count']) is int and result['chunk_count'] > 0
+    assert result['no_order'] is True and result['write_performed'] is False
+    assert result['execution_authority_granted'] is False
+    assert 'PRIVATE' not in json.dumps(result) and 'candidate' not in result
+    assert (args['ledger'],args['archive']) == before
+
+
+@pytest.mark.parametrize('changed', [None,'ledger','control','archive','owner'])
+def test_partial_failure_still_checks_final_source_and_has_no_writes(active_setup,monkeypatch,changed):
+    docs,before,writes = active_setup
+    def rejected(**kwargs):
+        if changed:
+            key = {'ledger':'MULTI_ASSET_STATE','control':migration.CONTROL_DOCUMENT,
+                   'archive':recovery.PROSPECTIVE_ARCHIVE_DOCUMENT,
+                   'owner':'MULTI_ASSET_STATE__owner'}[changed]
+            docs[key].snapshot.update_time = '2026-09-12T10:02:00Z'
+            if changed == 'owner':
+                docs[key].snapshot.exists = True
+        raise recovery._HistoricalRewardProductBlocked(dict(chunk_count=2,
+            reward_product_classification_counts={'product_mapping_ambiguous':1}))
+    monkeypatch.setattr(recovery,'_collect_historical_continuity_observations',rejected)
+    if changed:
+        with pytest.raises(migration.MigrationBlocked,match='historical_readonly_source_changed'):
+            diagnostic.run(now=NOW_BEYOND,clock=lambda:LATER_BEYOND)
+    else:
+        result = diagnostic.run(now=NOW_BEYOND,clock=lambda:LATER_BEYOND)
+        output = diagnostic.project_result(result,exit_code=2)
+        assert output['status'] == 'blocked' and output['execution_permitted'] is False
+        assert output['classification_scope'] == 'partial_history' and output['chunk_count'] == 2
+        assert output['reward_product_classification_counts']['product_mapping_ambiguous'] == 1
+        assert output['reward_product_classification_counts']['opening_approved'] is None
+    assert not writes and {key:ref.snapshot.value for key,ref in docs.items()} == before
+
+
+def test_blocked_projection_requires_partial_contract_and_sanitizes_counts():
+    value = dict(status='blocked',reason_code='historical_continuity_unapproved_reward_product',
+                 source_kind='historical_continuity',classification_scope='partial_history',
+                 no_order=True,write_performed=False,execution_authority_granted=False,
+                 historical_difference_unresolved=True,ledger_unchanged=True,
+                 control_unchanged=True,archive_unchanged=True,owner_absent=True,
+                 chunk_count=True,reward_product_classification_counts={
+                     'lifecycle_evidence_incomplete':1,'opening_approved':False,
+                     'lifecycle_subscription_proven':-1,'out_of_scope_asset':10000001,
+                     'product_mapping_ambiguous':'PRIVATE','123456789':3},
+                 asset='PRIVATE',amount='PRIVATE',time='PRIVATE')
+    result = diagnostic.project_result(value,exit_code=2)
+    assert result['chunk_count'] is None and result['classification_scope'] == 'partial_history'
+    counts = result['reward_product_classification_counts']
+    assert counts['lifecycle_evidence_incomplete'] == 1
+    assert all(v is None for k,v in counts.items() if k != 'lifecycle_evidence_incomplete')
+    assert len(counts) == 6 and 'PRIVATE' not in json.dumps(result) and '123456789' not in json.dumps(result)
+    for key,wrong in dict(source_kind='PRIVATE',classification_scope='PRIVATE',no_order=False,
+                          write_performed=True,execution_authority_granted=True,
+                          historical_difference_unresolved=False,ledger_unchanged=False,
+                          control_unchanged=False,archive_unchanged=False,owner_absent=False).items():
+        assert 'classification_scope' not in diagnostic.project_result(value|{key:wrong},exit_code=2)
+    for exit_code in (0,1):
+        assert 'classification_scope' not in diagnostic.project_result(value,exit_code=exit_code)
+    for key in ('chunk_count','reward_product_classification_counts'):
+        missing = {k:v for k,v in value.items() if k != key}
+        output = diagnostic.project_result(missing,exit_code=2)
+        if key == 'chunk_count':
+            assert output[key] is None
+        else:
+            assert all(v is None for v in output[key].values())
+
+
 @pytest.mark.parametrize('changes', [
     {'head_branch':'main'}, {'head_sha':'e' * 40}, {'status':'completed'},
     {'event':'push'}, {'path':'.github/workflows/other.yml'},
@@ -249,6 +341,7 @@ def test_dedicated_context_rejects_main_wrong_pin_and_other_modes(monkeypatch):
     ("value", "PRIVATE_BALANCE_123456789", "historical_readonly_failed"),
     ("type", "PRIVATE_ACCOUNT_123456789", "migration_blocked"),
     ("type", "historical_readonly_owned", "migration_blocked"),
+    ("partial", "", None),
     ("success", "", None),
 ])
 def test_real_script_entry_preserves_only_fixed_diagnostic_errors(tmp_path,monkeypatch,exception,reason,expected):
@@ -272,6 +365,13 @@ def test_real_script_entry_preserves_only_fixed_diagnostic_errors(tmp_path,monke
         f"    kind, reason = {exception!r}, {reason!r}\n"
         "    if kind == 'success':\n"
         "        return dict(status='diagnosed', no_order=True, write_performed=False, execution_authority_granted=False)\n"
+        "    if kind == 'partial':\n"
+        "        return dict(status='blocked',reason_code='historical_continuity_unapproved_reward_product',\n"
+        "            source_kind='historical_continuity',classification_scope='partial_history',\n"
+        "            no_order=True,write_performed=False,execution_authority_granted=False,\n"
+        "            historical_difference_unresolved=True,ledger_unchanged=True,control_unchanged=True,\n"
+        "            archive_unchanged=True,owner_absent=True,chunk_count=2,\n"
+        "            reward_product_classification_counts={'lifecycle_evidence_incomplete':1})\n"
         "    error = {'blocked':diagnostic.migration.MigrationBlocked, 'value':ValueError, 'type':TypeError}[kind]\n"
         "    raise error(reason)\n"
         "diagnostic.run = synthetic_result\n"
@@ -284,7 +384,14 @@ def test_real_script_entry_preserves_only_fixed_diagnostic_errors(tmp_path,monke
     assert result.stderr == '' and 'PRIVATE' not in result.stdout and '123456789' not in result.stdout
     output = json.loads(result.stdout)
     assert output['no_order'] is True
-    if expected is None:
+    if exception == 'partial':
+        assert result.returncode == 2 and output['status'] == 'blocked'
+        projection = diagnostic.project_result(output,exit_code=result.returncode)
+        assert projection['status'] == 'blocked' and projection['execution_permitted'] is False
+        assert projection['classification_scope'] == 'partial_history' and projection['chunk_count'] == 2
+        assert projection['reward_product_classification_counts']['lifecycle_evidence_incomplete'] == 1
+        assert projection['reward_product_classification_counts']['opening_approved'] is None
+    elif expected is None:
         assert result.returncode == 0 and output['status'] == 'diagnosed'
         assert output['write_performed'] is False and output['execution_authority_granted'] is False
     else:

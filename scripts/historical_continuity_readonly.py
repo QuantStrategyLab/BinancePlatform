@@ -142,6 +142,15 @@ def run(*, now=None, clock=None):
         raise migration.MigrationBlocked(reason if reason in REASONS else "historical_readonly_failed") from None
 
 
+def _project_classification_counts(value):
+    from application.broker_reconciliation import _REWARD_PRODUCT_CLASSIFICATION_CODES
+    raw = value.get("reward_product_classification_counts")
+    return {
+        key: raw[key] if isinstance(raw, Mapping) and type(raw.get(key)) is int and 0 <= raw[key] <= 10000000 else None
+        for key in _REWARD_PRODUCT_CLASSIFICATION_CODES
+    }
+
+
 def project_result(value, *, exit_code):
     """Only fixed codes and validated aggregate counters may reach workflow logs."""
     result = dict(status="blocked", reason_code="historical_readonly_failed",
@@ -152,6 +161,19 @@ def project_result(value, *, exit_code):
         reason = value.get("reason_code")
         if type(reason) is str and reason in REASONS:
             result["reason_code"] = reason
+        if (reason == "historical_continuity_unapproved_reward_product" and exit_code == 2
+                and value.get("source_kind") == "historical_continuity"
+                and value.get("classification_scope") == "partial_history"
+                and all(value.get(key) is expected for key, expected in dict(
+                    no_order=True, write_performed=False, execution_authority_granted=False,
+                    historical_difference_unresolved=True, ledger_unchanged=True,
+                    control_unchanged=True, archive_unchanged=True, owner_absent=True).items())):
+            count = value.get("chunk_count")
+            result.update(
+                classification_scope="partial_history",
+                chunk_count=count if type(count) is int and 0 < count <= 1000000 else None,
+                reward_product_classification_counts=_project_classification_counts(value),
+            )
         return result
     if (exit_code != 0 or value.get("status") != "diagnosed"
             or value.get("source_kind") != "historical_continuity"):
@@ -167,10 +189,5 @@ def project_result(value, *, exit_code):
     result.update(status="diagnosed", reason_code="historical_readonly_complete", chunk_count=count,
                   historical_difference_unresolved=True)
     # This projection never supplies zero for a missing upstream count.
-    from application.broker_reconciliation import _REWARD_PRODUCT_CLASSIFICATION_CODES
-    raw = value.get("reward_product_classification_counts")
-    result["reward_product_classification_counts"] = {
-        key: raw[key] if isinstance(raw, Mapping) and type(raw.get(key)) is int and 0 <= raw[key] <= 10000000 else None
-        for key in _REWARD_PRODUCT_CLASSIFICATION_CODES
-    }
+    result["reward_product_classification_counts"] = _project_classification_counts(value)
     return result
