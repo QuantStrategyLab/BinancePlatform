@@ -175,7 +175,11 @@ jobs:
                 exit 1
               fi
               ;;
-            earn-forward-diagnose)
+            earn-forward-diagnose|historical-continuity-diagnose)
+              if [ "$ACCOUNTING_MIGRATION_ACTION_INPUT" = "historical-continuity-diagnose" ] && [ "${GITHUB_REF:-}" != "refs/heads/runtime-production" ]; then
+                echo "::error::Historical read-only diagnosis requires the production Runtime ref."
+                exit 1
+              fi
               case "${GITHUB_REF:-}" in
                 refs/heads/main|refs/heads/runtime-production) ;;
                 *) echo "::error::Earn diagnosis requires the trusted Runtime ref."; exit 1 ;;
@@ -344,7 +348,7 @@ jobs:
         run: |
           set -euo pipefail
           source_kind=runtime_release
-          if [ "$ACCOUNTING_MIGRATION_ACTION" = "earn-forward-diagnose" ]; then
+          if [ "$ACCOUNTING_MIGRATION_ACTION" = "earn-forward-diagnose" ] || [ "$ACCOUNTING_MIGRATION_ACTION" = "historical-continuity-diagnose" ]; then
             # This fixed read-only maintenance tool uses the already approved
             # workflow tree; it neither selects nor adopts a trading candidate.
             if [ -z "${BINANCE_RUNTIME_WORKFLOW_SHA:-}" ]; then
@@ -353,6 +357,7 @@ jobs:
             fi
             selected="$(python3 scripts/select_runtime_release_sha.py --verify-workflow)"
             source_kind=earn_readonly
+            if [ "$ACCOUNTING_MIGRATION_ACTION" = "historical-continuity-diagnose" ]; then source_kind=historical_readonly; fi
           else
             selected="$(python3 scripts/select_runtime_release_sha.py)"
           fi
@@ -362,8 +367,8 @@ jobs:
           fi
           echo "sha=$selected" >> "$GITHUB_OUTPUT"
           echo "source_kind=$source_kind" >> "$GITHUB_OUTPUT"
-          if [ "$source_kind" = "earn_readonly" ]; then
-            echo "Selected read-only Earn tool SHA ${selected} (workflow github.sha=${GITHUB_SHA:-unknown})."
+          if [ "$source_kind" = "earn_readonly" ] || [ "$source_kind" = "historical_readonly" ]; then
+            echo "Selected read-only tool SHA ${selected} (workflow github.sha=${GITHUB_SHA:-unknown})."
           else
             echo "Selected runtime release SHA ${selected} (workflow github.sha=${GITHUB_SHA:-unknown} is not used as the application execution identity)."
           fi
@@ -511,7 +516,9 @@ jobs:
             echo "::error::GITHUB_SHA is invalid for runtime identity."
             exit 1
           fi
-          if [ "${{ steps.runtime-release.outputs.source_kind }}" = "earn_readonly" ]; then
+          if [ "${{ steps.runtime-release.outputs.source_kind }}" = "historical_readonly" ]; then
+            echo "readonly_historical_identity workflow_sha=${GITHUB_SHA} tool_sha=${{ steps.runtime-release.outputs.sha }} uv_lock_sha256=${CURR_HASH} uv_version=${UV_VERSION_TEXT} python_version=${CURR_PYTHON_VERSION}"
+          elif [ "${{ steps.runtime-release.outputs.source_kind }}" = "earn_readonly" ]; then
             echo "readonly_earn_identity workflow_sha=${GITHUB_SHA} tool_sha=${{ steps.runtime-release.outputs.sha }} uv_lock_sha256=${CURR_HASH} uv_version=${UV_VERSION_TEXT} python_version=${CURR_PYTHON_VERSION}"
           else
             echo "runtime_identity workflow_sha=${GITHUB_SHA} release_sha=${{ steps.runtime-release.outputs.sha }} uv_lock_sha256=${CURR_HASH} uv_version=${UV_VERSION_TEXT} python_version=${CURR_PYTHON_VERSION}"
@@ -793,7 +800,7 @@ jobs:
             exit 0
           fi
           if [ "${RECONCILE_ONLY:-false}" = "true" ]; then
-            if [ "${ACCOUNTING_MIGRATION_ACTION:-none}" = "earn-forward-diagnose" ]; then
+            if [ "${ACCOUNTING_MIGRATION_ACTION:-none}" = "earn-forward-diagnose" ] || [ "${ACCOUNTING_MIGRATION_ACTION:-none}" = "historical-continuity-diagnose" ]; then
               "$VENV_PATH/bin/python" - <<'SAFE_EARN_DIAGNOSIS'
           import json
           import os
@@ -805,16 +812,25 @@ jobs:
           process = None
           try:
               from scripts.migrate_daily_accounting_state import project_earn_diagnosis
+              action = "earn-forward-diagnose"
+              projector = project_earn_diagnosis
+              if os.environ.get("ACCOUNTING_MIGRATION_ACTION") == "historical-continuity-diagnose":
+                  result = {"status": "blocked", "reason_code": "historical_readonly_failed",
+                            "diagnostic_scope": "historical_continuity_readonly", "execution_permitted": False}
+                  from scripts.historical_continuity_readonly import project_result
+                  action = "historical-continuity-diagnose"
+                  projector = project_result
+                  result = projector(None, exit_code=1)
               child_env = dict(os.environ)
               for key in ("BINANCE_RISK_AUTHORITY_FILE", "BINANCE_RISK_AUTHORITY_JSON",
                           "BINANCE_RISK_AUTHORITY_SHA256", "BINANCE_RISK_AUTHORITY_SOURCE_REVISION"):
                   child_env.pop(key, None)
               process = subprocess.run(
-                  [sys.executable, "scripts/migrate_daily_accounting_state.py", "earn-forward-diagnose"],
+                  [sys.executable, "scripts/migrate_daily_accounting_state.py", action],
                   capture_output=True, text=True, check=False, env=child_env,
               )
               value = json.loads(process.stdout.strip().splitlines()[-1])
-              result = project_earn_diagnosis(value, exit_code=process.returncode)
+              result = projector(value, exit_code=process.returncode)
           except Exception:
               pass
           if process is not None:
@@ -864,7 +880,7 @@ jobs:
           RECOVERY_ID: ${{ inputs.recovery_id }}
           RECONCILIATION_RECOVERY_SYNC_TOKEN: ${{ (inputs.recovery_action == 'prepare' || inputs.accounting_migration_action == 'scope-preview') && secrets.RECONCILIATION_RECOVERY_SYNC_TOKEN || '' }}
           RECONCILIATION_RECOVERY_CONTROLLER_TOKEN: ${{ (inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.RECONCILIATION_RECOVERY_CONTROLLER_TOKEN || '' }}
-          GITHUB_TOKEN: ${{ (inputs.recovery_action == 'diagnose' || inputs.recovery_action == 'prepare' || inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.GITHUB_TOKEN || '' }}
+          GITHUB_TOKEN: ${{ (inputs.accounting_migration_action == 'historical-continuity-diagnose' || inputs.recovery_action == 'diagnose' || inputs.recovery_action == 'prepare' || inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.GITHUB_TOKEN || '' }}
           BINANCE_RECOVERY_CONTROL_ENABLED: ${{ vars.BINANCE_RECOVERY_CONTROL_ENABLED || 'false' }}
           BINANCE_APPROVED_PROSPECTIVE_OPENING: ${{ inputs.accounting_migration_action == 'prospective-rebase-apply' && secrets.BINANCE_APPROVED_PROSPECTIVE_OPENING || '' }}
           BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}

@@ -626,7 +626,14 @@ def validate_historical_continuity_material(
     }
 
 
-def _collect_historical_continuity_private(
+def _collect_historical_continuity_private(*, source_run, **kwargs):
+    # Existing diagnosis and candidate enrollment retain their main-only source.
+    if not _valid_run(source_run):
+        raise ValueError("historical_continuity_source_run_invalid")
+    return _collect_historical_continuity_observations(**kwargs)
+
+
+def _collect_historical_continuity_observations(
     *,
     client: object,
     runtime_target: object,
@@ -634,7 +641,6 @@ def _collect_historical_continuity_private(
     ledger: Mapping[str, object],
     archive: Mapping[str, object],
     symbols: Sequence[str],
-    source_run: Mapping[str, object],
     migration_run: Mapping[str, object],
     now: datetime | None = None,
     clock=None,
@@ -647,8 +653,6 @@ def _collect_historical_continuity_private(
     opening_at = material["opening_at"]
     if not opening_at < observed_at:
         raise ValueError("historical_continuity_window_invalid")
-    if not _valid_run(source_run):
-        raise ValueError("historical_continuity_source_run_invalid")
     if not _valid_run(migration_run) or (
         migration_run["id"] != binding["run_id"]
         or migration_run["head_sha"] != binding["head_sha"]
@@ -1277,6 +1281,28 @@ def collect_historical_continuity_diagnosis(**kwargs) -> dict[str, object]:
     if isinstance(counts, Mapping):
         result["reward_product_classification_counts"] = dict(counts)
     return result
+
+
+def collect_historical_continuity_readonly(*, source_run, tool_revision, **kwargs):
+    """Diagnose only: real production provenance cannot enroll a recovery candidate."""
+    if (
+        not isinstance(source_run, Mapping) or set(source_run) != _RUN_KEYS
+        or type(source_run.get("id")) is not int or source_run["id"] <= 0
+        or source_run.get("head_branch") != "runtime-production"
+        or source_run.get("event") != "workflow_dispatch"
+        or source_run.get("path") != ".github/workflows/main.yml"
+        or not isinstance(tool_revision, str) or re.fullmatch(r"[0-9a-f]{40}", tool_revision) is None
+        or source_run.get("head_sha") != tool_revision
+    ):
+        raise ValueError("historical_continuity_source_run_invalid")
+    private = _collect_historical_continuity_observations(**kwargs)
+    return {
+        "status": "diagnosed", "source_kind": HISTORICAL_CONTINUITY_KIND,
+        "historical_difference_unresolved": True,
+        "chunk_count": private["proof"]["chunk_count"],
+        "reward_product_classification_counts": private["proof"].get("reward_product_classification_counts"),
+        "no_order": True, "write_performed": False, "execution_authority_granted": False,
+    }
 
 
 def collect_historical_continuity_source(**kwargs) -> dict[str, object]:

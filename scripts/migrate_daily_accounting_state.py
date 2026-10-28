@@ -147,18 +147,21 @@ def _candidate_digest(candidate: Mapping[str, object]) -> str:
 
 def require_runtime_context(action: str | None = None) -> None:
     readonly_ref = os.environ.get("GITHUB_REF")
+    readonly_kinds = {"earn-forward-diagnose": "earn_readonly",
+                      "historical-continuity-diagnose": "historical_readonly"}
     readonly = (
-        action == "earn-forward-diagnose"
+        action in readonly_kinds
+        and (action != "historical-continuity-diagnose" or readonly_ref == "refs/heads/runtime-production")
         and readonly_ref in {"refs/heads/main", "refs/heads/runtime-production"}
         and os.environ.get("GITHUB_WORKFLOW_REF")
         == f"{REPOSITORY}/.github/workflows/main.yml@{readonly_ref}"
         and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-        and os.environ.get("RUNTIME_SOURCE_KIND") == "earn_readonly"
+        and os.environ.get("RUNTIME_SOURCE_KIND") == readonly_kinds[action]
         and os.environ.get("BINANCE_RUNTIME_WORKFLOW_SHA") == os.environ.get("GITHUB_SHA")
     )
     if (
         os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
-        or (action == "earn-forward-diagnose" and not readonly)
+        or (action in readonly_kinds and not readonly)
         or (not readonly and (
             os.environ.get("GITHUB_REF") != "refs/heads/main"
             or os.environ.get("GITHUB_WORKFLOW_REF")
@@ -3004,10 +3007,13 @@ def _quiesce_control(refs):
 
 
 def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
-    if action == "earn-forward-diagnose":
+    if action in {"earn-forward-diagnose", "historical-continuity-diagnose"}:
         require_runtime_context(action)
     else:
         require_runtime_context()
+    if action == "historical-continuity-diagnose":
+        from scripts.historical_continuity_readonly import run as diagnose_history
+        return diagnose_history(now=now)
     if action == "inspect":
         return inspect_control(_refs())
     if action == "quiesce":
@@ -3193,6 +3199,7 @@ def main(argv=None) -> int:
             "inspect",
             "quiesce",
             "earn-forward-diagnose",
+            "historical-continuity-diagnose",
             "audit",
             "preview",
             "scope-preview",

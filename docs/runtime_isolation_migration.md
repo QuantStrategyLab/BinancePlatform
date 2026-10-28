@@ -96,6 +96,26 @@ Missing or invalid counts remain null. `diagnosed` means the read completed,
 not that accounting is verified or trading is authorized. This route performs
 no ledger, owner or control writes and never activates recovery or trading.
 
+The explicit `historical-continuity-diagnose` action is also read-only and
+remains off when the accounting action is `none`. It is restricted to the
+production Runtime ref with the same disabled/exclusive mode checks and exact
+workflow tool pin. It verifies the real in-progress production run and the
+original successful main migration run separately; it never substitutes a main
+ref for the current run. The existing main-only recovery and candidate
+provenance checks are unchanged.
+
+This action follows the existing ledger marker to its immutable archive and
+validates the complete archive/approval binding before any broker sampling.
+It requires no owner, verifies the existing ACTIVE_LKG or RECONCILE_ONLY control
+binding, and reads back ledger/control/owner/archive without changes. Its client
+exposes only the existing GET operations. The shared accounting collector keeps
+the same adjacent windows of at most seven days, pagination, event deduplication,
+account/product identity and conservation checks. Only fixed reasons and typed
+aggregate counts are logged; missing counts stay null. It never creates a
+candidate, enrolls a source, changes accounting/control or grants trading
+permission. A separate, reviewed workflow-pin adoption and explicit diagnostic
+run are still required before this code can supply production evidence.
+
 ## Phase 2 decision gate
 
 Do not select Cloud Run merely because the runtime uses Google Cloud for state.
