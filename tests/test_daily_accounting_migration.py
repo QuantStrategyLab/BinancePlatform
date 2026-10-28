@@ -545,6 +545,47 @@ def test_runtime_context_requires_disabled_main_reconcile_only(monkeypatch):
             require_runtime_context()
 
 
+def test_production_context_allows_only_pinned_readonly_earn_tool(monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+    import subprocess
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=migration.ROOT, text=True).strip()
+    valid = {
+        "GITHUB_REPOSITORY": migration.REPOSITORY,
+        "GITHUB_REF": "refs/heads/runtime-production",
+        "GITHUB_WORKFLOW_REF": f"{migration.REPOSITORY}/.github/workflows/main.yml@refs/heads/runtime-production",
+        "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_SHA": head,
+        "BINANCE_RUNTIME_WORKFLOW_SHA": head, "RUNTIME_SOURCE_KIND": "earn_readonly",
+        "RUNTIME_TARGET_ENABLED": "false", "RECONCILE_ONLY": "true",
+    }
+    monkeypatch.setattr(migration.os, "environ", valid)
+    migration.require_runtime_context("earn-forward-diagnose")
+    with monkeypatch.context() as patch:
+        patch.setitem(migration.os.environ, "GITHUB_REF", "refs/heads/main")
+        patch.setitem(migration.os.environ, "GITHUB_WORKFLOW_REF",
+                      f"{migration.REPOSITORY}/.github/workflows/main.yml@refs/heads/main")
+        migration.require_runtime_context("earn-forward-diagnose")
+        patch.setitem(migration.os.environ, "RUNTIME_SOURCE_KIND", "runtime_release")
+        with pytest.raises(ValueError):
+            migration.require_runtime_context("earn-forward-diagnose")
+    for action in (None, "inspect", "quiesce", "preview", "scope-preview", "cash-flow-preview",
+                   "rebase-proposal", "rebase-apply", "prospective-rebase-apply", "release-stale-owner", "apply"):
+        with pytest.raises(ValueError, match="migration_requires_disabled_main_runtime"):
+            migration.require_runtime_context(action)
+    for key, value in (
+        ("GITHUB_EVENT_NAME", "push"), ("RUNTIME_SOURCE_KIND", "runtime_release"),
+        ("GITHUB_WORKFLOW_REF", f"{migration.REPOSITORY}/.github/workflows/other.yml@refs/heads/runtime-production"),
+        ("RUNTIME_TARGET_ENABLED", "true"), ("RECONCILE_ONLY", "false"),
+        ("GITHUB_REPOSITORY", "other/repository"), ("BINANCE_RUNTIME_WORKFLOW_SHA", "0" * 40),
+    ):
+        monkeypatch.setattr(migration.os, "environ", {**valid, key: value})
+        with pytest.raises(ValueError):
+            migration.require_runtime_context("earn-forward-diagnose")
+    monkeypatch.setattr(migration.os, "environ", {**valid, "GITHUB_SHA": "1" * 40,
+                                               "BINANCE_RUNTIME_WORKFLOW_SHA": "1" * 40})
+    with pytest.raises(ValueError, match="earn_diagnosis_tool_revision_mismatch"):
+        migration.require_runtime_context("earn-forward-diagnose")
+
+
 def test_strict_balance_snapshot_sums_every_flexible_earn_row():
     from scripts.migrate_daily_accounting_state import _strict_balance_snapshot
 

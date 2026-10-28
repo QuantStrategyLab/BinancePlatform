@@ -145,17 +145,100 @@ def _candidate_digest(candidate: Mapping[str, object]) -> str:
     )
 
 
-def require_runtime_context() -> None:
+def require_runtime_context(action: str | None = None) -> None:
+    readonly_ref = os.environ.get("GITHUB_REF")
+    readonly = (
+        action == "earn-forward-diagnose"
+        and readonly_ref in {"refs/heads/main", "refs/heads/runtime-production"}
+        and os.environ.get("GITHUB_WORKFLOW_REF")
+        == f"{REPOSITORY}/.github/workflows/main.yml@{readonly_ref}"
+        and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+        and os.environ.get("RUNTIME_SOURCE_KIND") == "earn_readonly"
+        and os.environ.get("BINANCE_RUNTIME_WORKFLOW_SHA") == os.environ.get("GITHUB_SHA")
+    )
     if (
         os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
-        or os.environ.get("GITHUB_REF") != "refs/heads/main"
-        or os.environ.get("GITHUB_WORKFLOW_REF")
-        != f"{REPOSITORY}/.github/workflows/main.yml@refs/heads/main"
+        or (action == "earn-forward-diagnose" and not readonly)
+        or (not readonly and (
+            os.environ.get("GITHUB_REF") != "refs/heads/main"
+            or os.environ.get("GITHUB_WORKFLOW_REF")
+            != f"{REPOSITORY}/.github/workflows/main.yml@refs/heads/main"
+        ))
         or os.environ.get("RUNTIME_TARGET_ENABLED", "").lower() != "false"
         or os.environ.get("RECONCILE_ONLY", "").lower() != "true"
         or not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", ""))
     ):
         raise ValueError("migration_requires_disabled_main_runtime")
+    if readonly:
+        actual = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        if actual != os.environ["GITHUB_SHA"]:
+            raise ValueError("earn_diagnosis_tool_revision_mismatch")
+
+
+def project_earn_diagnosis(value, *, exit_code: int) -> dict:
+    """Project only fixed classifications; source names and observations stay private."""
+    output = {"status": "blocked", "reason_code": "earn_diagnosis_output_invalid",
+              "diagnostic_scope": "earn_forward_readonly", "execution_permitted": False}
+    if not isinstance(value, Mapping):
+        return output
+    reasons = {
+        "earn_diagnosis_account_scope_mismatch", "earn_diagnosis_account_scope_missing",
+        "earn_diagnosis_asset_scope_invalid", "earn_diagnosis_checkpoint_account_scope_mismatch",
+        "earn_diagnosis_checkpoint_asset_missing", "earn_diagnosis_checkpoint_invalid",
+        "earn_diagnosis_checkpoint_missing", "earn_diagnosis_checkpoint_unavailable",
+        "earn_diagnosis_checkpoint_window_invalid", "earn_diagnosis_control_invalid",
+        "earn_diagnosis_cursor_mismatch", "earn_diagnosis_cursor_missing",
+        "earn_diagnosis_external_flow_unavailable", "earn_diagnosis_history_incomplete",
+        "earn_diagnosis_ledger_missing", "earn_diagnosis_net_changes_missing",
+        "earn_diagnosis_numeric_input_invalid", "earn_diagnosis_reward_history_invalid",
+        "earn_diagnosis_state_changed_during_read", "earn_diagnosis_symbols_missing",
+        "earn_diagnosis_trade_asset_out_of_scope", "earn_diagnosis_trade_history_unavailable",
+        "earn_diagnosis_trade_symbol_invalid", "expected_account_scope_missing",
+        "reconciliation_symbols_missing", "runtime_target_not_reconcile_only", "migration_blocked",
+    }
+    if value.get("status") == "blocked":
+        reason = value.get("reason_code")
+        output["reason_code"] = reason if type(reason) is str and reason in reasons else "earn_diagnosis_failed"
+        return output
+    if (exit_code != 0 or value.get("status") != "diagnosed"
+            or value.get("stage") != "earn_forward_accounting_diagnosis"):
+        return output
+    for key, expected in {"owner_unchanged": True, "ledger_unchanged": True,
+                          "control_unchanged": True, "account_scope_verified": True,
+                          "no_order": True, "write_performed": False,
+                          "activation_allowed": False, "causal_reconciliation": False,
+                          "execution_authority_granted": False,
+                          "forward_accounting_write_permitted": False}.items():
+        if value.get(key) is not expected:
+            return output
+    classifications = {
+        "product_lifecycle_changed", "counter_reset", "trade_net_unmatched",
+        "external_flow_unsupported", "residual_zero_after_realtime_counter",
+        "residual_matches_bonus_records", "quantity_unexplained", "unknown",
+    }
+    assets = value.get("assets")
+    if (not isinstance(assets, Mapping) or not 0 < len(assets) <= 32
+            or any(not isinstance(item, Mapping) for item in assets.values())):
+        return output
+    counts = {key: 0 for key in sorted(classifications)}
+    for item in assets.values():
+        label = item.get("classification")
+        counts[label if type(label) is str and label in classifications else "unknown"] += 1
+    output.update(status="diagnosed", reason_code="earn_diagnosis_complete",
+                  classification_counts=counts)
+    for key in ("sampling_stable", "sampling_second_read_available", "sampling_request_timing_stable",
+                "sampling_components_stable", "sampling_residual_stable",
+                "checkpoint_window_within_seven_days", "order_state_known", "diagnostic_restricted",
+                "bnb_wallet_activity_checked", "bnb_wallet_activity_complete", "forward_accounting_eligible"):
+        item = value.get(key)
+        output[key] = item if type(item) is bool else None
+    for key in ("open_order_count", "unsupported_external_flow_count", "changed_withdrawal_count"):
+        item = value.get(key)
+        output[key] = item if type(item) is int and 0 <= item <= 10000000 else None
+    return output
 
 
 def _validate_safe_order_state(ledger: Mapping[str, object]) -> str:
@@ -2918,7 +3001,10 @@ def _quiesce_control(refs):
 
 
 def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
-    require_runtime_context()
+    if action == "earn-forward-diagnose":
+        require_runtime_context(action)
+    else:
+        require_runtime_context()
     if action == "inspect":
         return inspect_control(_refs())
     if action == "quiesce":

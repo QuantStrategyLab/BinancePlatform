@@ -411,3 +411,116 @@ def test_real_source_or_authority_failure_cannot_be_hidden_by_paper_copy(real_so
     assert source.env['RUNTIME_TARGET_JSON'] == before_target
     assert source.authority_path.read_bytes() == before_authority
     assert source.observed['writes'] == source.observed['broker_submits'] == 0
+
+
+def mode_guard():
+    source = PROTECTED.read_text().split("      - name: 0. Validate runtime target control", 1)[1]
+    return textwrap.dedent(source.split("        run: |\n", 1)[1].split(
+        '          case "${RUNTIME_TARGET_ENABLED,,}"', 1)[0])
+
+
+@pytest.mark.parametrize("changes,allowed", [
+    ({}, True),
+    ({"GITHUB_REF": "refs/heads/main"}, True),
+    ({"GITHUB_REF": "refs/heads/untrusted"}, False),
+    *[({key: value}, False) for key, value in (
+        ("RUNTIME_TARGET_ENABLED", "true"), ("RECONCILE_ONLY_INPUT", "false"),
+        ("VALIDATE_ONLY_INPUT", "true"), ("FULL_CYCLE_INPUT", "true"),
+        ("DIAGNOSE_BALANCES_INPUT", "true"), ("RECONCILE_PERSIST_INPUT", "true"),
+        ("RECOVERY_ACTION_INPUT", "diagnose"), ("CANDIDATE_RELEASE_SHA_INPUT", "a" * 40),
+        ("ACCOUNTING_MIGRATION_PREVIEW_RUN_ID", "123"),
+        ("ACCOUNTING_MIGRATION_EXPECTED_DIGEST", "a" * 64),
+        ("PROPOSAL_RECIPIENT_CERTIFICATE", "synthetic"),
+        ("BALANCE_HISTORY_START", "synthetic"),
+    )],
+    *[({"ACCOUNTING_MIGRATION_ACTION_INPUT": action}, False) for action in (
+        "inspect", "quiesce", "audit", "preview", "scope-preview", "cash-flow-preview",
+        "rebase-proposal", "rebase-apply", "prospective-rebase-apply", "release-stale-owner", "apply",
+    )],
+])
+def test_production_earn_route_is_readonly_and_mode_exclusive(changes, allowed):
+    env = dict(PATH=os.environ.get("PATH", ""), GITHUB_REF="refs/heads/runtime-production",
+               RUNTIME_TARGET_ENABLED="false", RECONCILE_ONLY_INPUT="true",
+               VALIDATE_ONLY_INPUT="false", FULL_CYCLE_INPUT="false",
+               DIAGNOSE_BALANCES_INPUT="false", RECONCILE_PERSIST_INPUT="false",
+               RECOVERY_ACTION_INPUT="none", ACCOUNTING_MIGRATION_ACTION_INPUT="earn-forward-diagnose")
+    result = subprocess.run(["bash", "-c", mode_guard()], env=env | changes,
+                            capture_output=True, text=True)
+    assert (result.returncode == 0) is allowed
+
+
+@pytest.mark.parametrize("action,pin,expected", [
+    ("earn-forward-diagnose", "actual", "actual"),
+    ("earn-forward-diagnose", "", None),
+    ("earn-forward-diagnose", "a" * 40, None),
+    ("none", "actual", "release"),
+    ("cash-flow-preview", "actual", "release"),
+])
+def test_tool_source_uses_only_verified_workflow_pin(tmp_path, action, pin, expected):
+    actual = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    release = "fbf06dc627628d1681ae0e7404bb90a52d1d2f49"
+    output = tmp_path / "output"
+    source = PROTECTED.read_text().split("      - name: Resolve approved runtime release SHA", 1)[1]
+    block = textwrap.dedent(source.split("        run: |\n", 1)[1].split("\n      - name:", 1)[0])
+    env = dict(PATH=os.environ.get("PATH", ""), GITHUB_SHA=actual,
+               BINANCE_RUNTIME_RELEASE_SHA=release, CANDIDATE_RELEASE_SHA="",
+               BINANCE_RUNTIME_WORKFLOW_SHA=actual if pin == "actual" else pin,
+               ACCOUNTING_MIGRATION_ACTION=action, RUNTIME_TARGET_ENABLED="false",
+               RECONCILE_ONLY="true", VALIDATE_ONLY="false", FULL_CYCLE="false",
+               GITHUB_OUTPUT=str(output))
+    result = subprocess.run(["bash", "-c", block], env=env, cwd=ROOT, capture_output=True, text=True)
+    if expected is None:
+        assert result.returncode != 0 and not output.exists()
+    else:
+        assert result.returncode == 0
+        values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+        assert values == {"sha": actual if expected == "actual" else release,
+                          "source_kind": "earn_readonly" if expected == "actual" else "runtime_release"}
+
+
+def earn_diagnosis_result():
+    return dict(status="diagnosed", stage="earn_forward_accounting_diagnosis",
+                owner_unchanged=True, ledger_unchanged=True, control_unchanged=True,
+                account_scope_verified=True, no_order=True, write_performed=False,
+                activation_allowed=False, causal_reconciliation=False,
+                execution_authority_granted=False, forward_accounting_write_permitted=False,
+                assets={"123456789": {"classification": "counter_reset", "amount": "PRIVATE_AMOUNT"}},
+                open_order_count=0, sampling_stable=True, reason_code="PRIVATE_REASON",
+                account="PRIVATE_ACCOUNT", observed_at="PRIVATE_DATE")
+
+
+@pytest.mark.parametrize("output,exit_code,success", [
+    (earn_diagnosis_result(), 0, True),
+    (earn_diagnosis_result(), 1, False),
+    ({"status": "blocked", "reason_code": "earn_diagnosis_checkpoint_missing"}, 2, False),
+    ({"status": "blocked", "reason_code": "PRIVATE_REASON"}, 2, False),
+    ({"status": "diagnosed", "stage": "PRIVATE_STAGE"}, 0, False),
+    ("PRIVATE_INVALID_JSON", 1, False),
+])
+def test_actual_earn_child_projection_captures_logs_and_removes_live_authority(capsys, output, exit_code, success):
+    # Import before mocking subprocess so module imports cannot affect the call assertion.
+    from scripts import migrate_daily_accounting_state  # noqa: F401
+    source = PROTECTED.read_text().split("<<'SAFE_EARN_DIAGNOSIS'\n", 1)[1]
+    code = compile(textwrap.dedent(source.split("          SAFE_EARN_DIAGNOSIS", 1)[0]), str(PROTECTED), "exec")
+    raw = json.dumps(output) if isinstance(output, dict) else output
+    process = SimpleNamespace(stdout="PRIVATE_PREAMBLE\n" + raw, stderr="PRIVATE_STDERR", returncode=exit_code)
+    private_keys = ("BINANCE_RISK_AUTHORITY_FILE", "BINANCE_RISK_AUTHORITY_JSON",
+                    "BINANCE_RISK_AUTHORITY_SHA256", "BINANCE_RISK_AUTHORITY_SOURCE_REVISION")
+    env = {key: "PRIVATE_AUTHORITY" for key in private_keys} | {"RUNTIME_SOURCE_KIND": "earn_readonly"}
+    with patch.dict(os.environ, env, clear=True), patch("subprocess.run", return_value=process) as child:
+        with pytest.raises(SystemExit) as stopped:
+            exec(code, {})
+        assert dict(os.environ) == env
+    args, kwargs = child.call_args
+    assert args[0][1:] == ["scripts/migrate_daily_accounting_state.py", "earn-forward-diagnose"]
+    assert kwargs == dict(capture_output=True, text=True, check=False, env={"RUNTIME_SOURCE_KIND": "earn_readonly"})
+    captured = capsys.readouterr()
+    assert captured.err == "" and "PRIVATE" not in captured.out and "123456789" not in captured.out
+    result = json.loads(captured.out)
+    assert stopped.value.code == (0 if success else 1)
+    assert result["execution_permitted"] is False
+    assert result["diagnostic_exit_code"] == exit_code
+    if success:
+        assert result["classification_counts"]["counter_reset"] == 1
+        assert result["unsupported_external_flow_count"] is None
+        assert "assets" not in result and "account" not in result

@@ -76,6 +76,26 @@ independent exact authority runner binding; these codes grant no execution right
 Neither the production application pin, risk authority nor the enabled switch
 is changed by this workflow transport update.
 
+The existing `earn-forward-diagnose` accounting action has a separate read-only
+route on `Runtime@runtime-production`, using the existing `binance-runtime`
+identity and provider policy. It requires the runtime to remain disabled,
+`reconcile_only=true`, and all validation, persistence, recovery, candidate and
+artifact inputs to be absent or false. Other accounting and recovery actions
+retain their existing main-only restrictions.
+
+Only this action checks out the exact explicit `BINANCE_RUNTIME_WORKFLOW_SHA`
+after the normal workflow-pin verification. Its CLI also checks the triggering
+workflow/ref, source kind and actual checkout HEAD. It logs `readonly_earn_identity`
+with the tool revision; it does not select or adopt a trading candidate or load
+LIVE trading authority. The relevant accounting code and dependency lock remain
+on the frozen production baseline apart from this entry and output projection.
+The fixed child command captures stdout/stderr in memory. Logs expose only
+finite reason codes, aggregate classification counts and typed booleans/counts;
+asset names, financial values, timestamps and provider text stay private.
+Missing or invalid counts remain null. `diagnosed` means the read completed,
+not that accounting is verified or trading is authorized. This route performs
+no ledger, owner or control writes and never activates recovery or trading.
+
 ## Phase 2 decision gate
 
 Do not select Cloud Run merely because the runtime uses Google Cloud for state.
