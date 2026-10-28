@@ -28,6 +28,7 @@ from application.broker_reconciliation import (
     diagnose_balance_flows,
     diagnose_chunked_balance_flows,
     _add_reward_quantity,
+    _REWARD_PRODUCT_CLASSIFICATION_CODES,
 )
 from application.earn_accrual import (
     EarnCheckpointUnavailable,
@@ -55,6 +56,20 @@ MIGRATION_RUN_ID = 34606795875
 MIGRATION_RUN_SHA = "ed7ee6e96cea0addb292f3f45338652095d0da58"
 QUANTITY_PRECISION = 8
 MAX_HISTORY = timedelta(days=7)
+
+
+class _HistoricalRewardProductBlocked(ValueError):
+    """Keep partial, finite diagnostics without changing existing rejection semantics."""
+    def __init__(self, history):
+        super().__init__("historical_continuity_unapproved_reward_product")
+        count = history.get("chunk_count")
+        self.chunk_count = count if type(count) is int and 0 < count <= 1000000 else None
+        raw = history.get("reward_product_classification_counts")
+        self.classification_counts = {
+            key: raw[key] if isinstance(raw, Mapping) and type(raw.get(key)) is int
+            and 0 <= raw[key] <= 10000000 else None
+            for key in _REWARD_PRODUCT_CLASSIFICATION_CODES
+        }
 
 # Exact roots from the user-approved prospective migration.  This separate
 # path is diagnosis-only; the existing recovery candidate and activation path
@@ -721,7 +736,7 @@ def _collect_historical_continuity_observations(
         if reason == "balance_history_duplicate_event":
             raise ValueError("historical_continuity_duplicate_event")
         if reason == "balance_history_unapproved_reward_product":
-            raise ValueError("historical_continuity_unapproved_reward_product")
+            raise _HistoricalRewardProductBlocked(history)
         raise ValueError("historical_continuity_history_incomplete")
     counts = history.get("history_counts")
     if not isinstance(counts, Mapping):
@@ -1295,7 +1310,18 @@ def collect_historical_continuity_readonly(*, source_run, tool_revision, **kwarg
         or source_run.get("head_sha") != tool_revision
     ):
         raise ValueError("historical_continuity_source_run_invalid")
-    private = _collect_historical_continuity_observations(**kwargs)
+    try:
+        private = _collect_historical_continuity_observations(**kwargs)
+    except _HistoricalRewardProductBlocked as error:
+        return {
+            "status": "blocked", "reason_code": str(error),
+            "source_kind": HISTORICAL_CONTINUITY_KIND,
+            "classification_scope": "partial_history",
+            "historical_difference_unresolved": True,
+            "chunk_count": error.chunk_count,
+            "reward_product_classification_counts": error.classification_counts,
+            "no_order": True, "write_performed": False, "execution_authority_granted": False,
+        }
     return {
         "status": "diagnosed", "source_kind": HISTORICAL_CONTINUITY_KIND,
         "historical_difference_unresolved": True,
