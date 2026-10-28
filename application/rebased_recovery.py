@@ -29,6 +29,7 @@ from application.broker_reconciliation import (
     diagnose_chunked_balance_flows,
     _add_reward_quantity,
     _REWARD_PRODUCT_CLASSIFICATION_CODES,
+    _REWARD_PRODUCT_FAILURE_STAGES,
 )
 from application.earn_accrual import (
     EarnCheckpointUnavailable,
@@ -70,6 +71,8 @@ class _HistoricalRewardProductBlocked(ValueError):
             and 0 <= raw[key] <= 10000000 else None
             for key in _REWARD_PRODUCT_CLASSIFICATION_CODES
         }
+        stage = history.get("reward_product_failure_stage")
+        self.failure_stage = stage if type(stage) is str and stage in _REWARD_PRODUCT_FAILURE_STAGES else None
 
 # Exact roots from the user-approved prospective migration.  This separate
 # path is diagnosis-only; the existing recovery candidate and activation path
@@ -1317,6 +1320,7 @@ def collect_historical_continuity_readonly(*, source_run, tool_revision, **kwarg
             "status": "blocked", "reason_code": str(error),
             "source_kind": HISTORICAL_CONTINUITY_KIND,
             "classification_scope": "partial_history",
+            "reward_product_failure_stage": error.failure_stage,
             "historical_difference_unresolved": True,
             "chunk_count": error.chunk_count,
             "reward_product_classification_counts": error.classification_counts,

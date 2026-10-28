@@ -166,6 +166,7 @@ def test_actual_active_control_binding_and_all_source_readbacks_stay_unchanged(a
     output = diagnostic.project_result(result,exit_code=0)
     assert output['status'] == 'diagnosed' and output['execution_permitted'] is False
     assert 'current_ledger_sha256' not in output
+    assert 'reward_product_failure_stage' not in output
 
 
 @pytest.mark.parametrize('change', ['owner','control','archive','readback'])
@@ -195,9 +196,11 @@ def test_projection_never_exposes_free_keys_values_or_unknown_counts():
                  historical_difference_unresolved=True,ledger_unchanged=True,
                  control_unchanged=True,archive_unchanged=True,owner_absent=True,chunk_count=3,
                  reward_product_classification_counts={'123456789':'PRIVATE','opening_approved':False},
+                 reward_product_failure_stage='reward_identity_missing',
                  amount='PRIVATE',observed_at='PRIVATE',asset='123456789')
     result = diagnostic.project_result(value,exit_code=0)
     assert result['status'] == 'diagnosed'
+    assert 'reward_product_failure_stage' not in result
     assert all(v is None for v in result['reward_product_classification_counts'].values())
     assert 'PRIVATE' not in json.dumps(result) and '123456789' not in json.dumps(result)
     for reason in ['PRIVATE', {'account':'PRIVATE'}, [], None, 123456789]:
@@ -206,12 +209,12 @@ def test_projection_never_exposes_free_keys_values_or_unknown_counts():
         assert diagnostic.project_result(value|changes,exit_code=0)['status'] == 'blocked'
 
 
-@pytest.mark.parametrize('case,classification', [
-    ('missing_identity', 'lifecycle_evidence_incomplete'),
-    ('out_of_scope', 'out_of_scope_asset'),
-    ('missing_subscription', 'lifecycle_evidence_incomplete'),
+@pytest.mark.parametrize('case,classification,stage', [
+    ('missing_identity', 'lifecycle_evidence_incomplete', 'reward_identity_missing'),
+    ('out_of_scope', 'out_of_scope_asset', None),
+    ('missing_subscription', 'lifecycle_evidence_incomplete', 'lifecycle_conservation_unverified'),
 ])
-def test_actual_rejected_history_preserves_only_partial_classification(monkeypatch,case,classification):
+def test_actual_rejected_history_preserves_only_partial_classification(monkeypatch,case,classification,stage):
     args, client = collector_args(monkeypatch)
     before = copy.deepcopy((args['ledger'], args['archive']))
     original = client.history._request_margin_api
@@ -231,6 +234,7 @@ def test_actual_rejected_history_preserves_only_partial_classification(monkeypat
     assert result['reason_code'] == 'historical_continuity_unapproved_reward_product'
     assert result['classification_scope'] == 'partial_history'
     assert result['reward_product_classification_counts'][classification] == 1
+    assert result['reward_product_failure_stage'] == stage
     assert type(result['chunk_count']) is int and result['chunk_count'] > 0
     assert result['no_order'] is True and result['write_performed'] is False
     assert result['execution_authority_granted'] is False
@@ -282,6 +286,15 @@ def test_blocked_projection_requires_partial_contract_and_sanitizes_counts():
     assert counts['lifecycle_evidence_incomplete'] == 1
     assert all(v is None for k,v in counts.items() if k != 'lifecycle_evidence_incomplete')
     assert len(counts) == 6 and 'PRIVATE' not in json.dumps(result) and '123456789' not in json.dumps(result)
+    assert 'reward_product_failure_stage' not in result
+    for stage in ('reward_identity_missing','lifecycle_conservation_unverified'):
+        marked = value|{'reward_product_failure_stage':stage}
+        assert diagnostic.project_result(marked,exit_code=2)['reward_product_failure_stage'] == stage
+        for changes in ({'reason_code':'historical_readonly_failed'}, {'owner_absent':False}):
+            assert 'reward_product_failure_stage' not in diagnostic.project_result(marked|changes,exit_code=2)
+    for stage in ('PRIVATE','123456789',{},[],None,1,False):
+        marked = value|{'reward_product_failure_stage':stage}
+        assert 'reward_product_failure_stage' not in diagnostic.project_result(marked,exit_code=2)
     for key,wrong in dict(source_kind='PRIVATE',classification_scope='PRIVATE',no_order=False,
                           write_performed=True,execution_authority_granted=True,
                           historical_difference_unresolved=False,ledger_unchanged=False,
@@ -296,6 +309,33 @@ def test_blocked_projection_requires_partial_contract_and_sanitizes_counts():
             assert output[key] is None
         else:
             assert all(v is None for v in output[key].values())
+
+
+@pytest.mark.parametrize('stage', ['reward_identity_missing','lifecycle_conservation_unverified'])
+def test_known_failure_stage_requires_final_source_checks_before_projection(active_setup,monkeypatch,stage):
+    docs,before,writes = active_setup
+    def rejected(**kwargs):
+        raise recovery._HistoricalRewardProductBlocked(dict(chunk_count=1,
+            reward_product_failure_stage=stage,
+            reward_product_classification_counts={'lifecycle_evidence_incomplete':1}))
+    monkeypatch.setattr(recovery,'_collect_historical_continuity_observations',rejected)
+    result = diagnostic.run(now=NOW_BEYOND,clock=lambda:LATER_BEYOND)
+    output = diagnostic.project_result(result,exit_code=2)
+    assert output['status'] == 'blocked' and output['execution_permitted'] is False
+    assert output['reward_product_failure_stage'] == stage
+    assert not writes and {key:ref.snapshot.value for key,ref in docs.items()} == before
+    original = migration._read_earn_diagnosis_source
+    reads = []
+    def changed(refs):
+        value = original(refs)
+        reads.append(True)
+        if len(reads) == 2:
+            value['owner_exists'] = True
+        return value
+    monkeypatch.setattr(migration,'_read_earn_diagnosis_source',changed)
+    with pytest.raises(migration.MigrationBlocked,match='historical_readonly_source_changed'):
+        diagnostic.run(now=NOW_BEYOND,clock=lambda:LATER_BEYOND)
+    assert not writes
 
 
 @pytest.mark.parametrize('changes', [
@@ -367,6 +407,7 @@ def test_real_script_entry_preserves_only_fixed_diagnostic_errors(tmp_path,monke
         "        return dict(status='diagnosed', no_order=True, write_performed=False, execution_authority_granted=False)\n"
         "    if kind == 'partial':\n"
         "        return dict(status='blocked',reason_code='historical_continuity_unapproved_reward_product',\n"
+        "            reward_product_failure_stage='reward_identity_missing',\n"
         "            source_kind='historical_continuity',classification_scope='partial_history',\n"
         "            no_order=True,write_performed=False,execution_authority_granted=False,\n"
         "            historical_difference_unresolved=True,ledger_unchanged=True,control_unchanged=True,\n"
@@ -389,6 +430,7 @@ def test_real_script_entry_preserves_only_fixed_diagnostic_errors(tmp_path,monke
         projection = diagnostic.project_result(output,exit_code=result.returncode)
         assert projection['status'] == 'blocked' and projection['execution_permitted'] is False
         assert projection['classification_scope'] == 'partial_history' and projection['chunk_count'] == 2
+        assert projection['reward_product_failure_stage'] == 'reward_identity_missing'
         assert projection['reward_product_classification_counts']['lifecycle_evidence_incomplete'] == 1
         assert projection['reward_product_classification_counts']['opening_approved'] is None
     elif expected is None:
