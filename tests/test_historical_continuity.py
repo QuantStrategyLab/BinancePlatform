@@ -3424,7 +3424,7 @@ def test_reward_shape_summary_only_after_all_pages_and_without_values():
         if path.endswith('/rewardsRecord'):
             pages.append(data['current'])
             assert data['type'] == 'ALL' and 'productId' not in data
-            rows = [dict(asset='PRIVATE', type='BONUS', rewards='1', time=data['startTime']+i, productId='SECRET') for i in range(100)]
+            rows = [dict(asset='PRIVATE', type='BONUS', rewards='1', time=data['startTime']+i, productId='SECRET', projectId=None) for i in range(100)]
             if data['current'] == 1:
                 return dict(rows=rows, total=101)
             return dict(rows=[dict(asset='PRIVATE', type='REALTIME', rewards='1', time=data['startTime']+101, projectId='SECRET', productId='SECRET')], total=101)
@@ -3435,10 +3435,11 @@ def test_reward_shape_summary_only_after_all_pages_and_without_values():
     assert pages == [1,2]
     shape = result['reward_field_shapes']
     assert shape == {'scope':'complete_reward_surface_in_failed_chunk', 'product_filter':'absent',
-                     'combinations':[['BONUS','missing','string','unavailable'],['REALTIME','string','string','equal']],
-                     'trigger':['BONUS','missing','string','unavailable']}
+                     'combinations':[['BONUS','null','string','unavailable'],['REALTIME','string','string','equal']],
+                     'trigger':['BONUS','null','string','unavailable']}
     assert 'SECRET' not in str(shape) and 'PRIVATE' not in str(shape)
-    assert result['reward_identity_issue'] == 'project_missing'
+    assert result['reward_product_failure_stage'] == 'reward_identity_missing'
+    assert 'reward_identity_issue' not in result
     assert result['history_complete_for_requested_surfaces'] is False
 
     def incomplete(method, path, **kwargs):
@@ -3452,3 +3453,81 @@ def test_reward_shape_summary_only_after_all_pages_and_without_values():
         managed_reward_assets=('BNB',),approved_reward_products={('BNB','BNB001')})
     assert 'reward_field_shapes' not in blocked
     assert blocked['reason_code'] == 'balance_history_incomplete'
+
+
+@pytest.mark.parametrize('fields', [
+    {'productId':'BNB001'}, {'projectId':'BNB001'},
+    {'productId':'BNB001', 'projectId':'BNB001'},
+])
+@pytest.mark.parametrize('kind', ['BONUS', 'REALTIME'])
+def test_reward_product_id_shapes_preserve_product_and_history_checks(fields, kind):
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    def read(method, path, **kwargs):
+        if path.startswith('capital/'):
+            return []
+        if path.endswith('/rewardsRecord'):
+            row = dict(asset='BNB',type=kind,rewards='0.01',time=kwargs['data']['startTime']+1, **fields)
+            return {'rows':[row], 'total':1}
+        return {'rows':[], 'total':0}
+    end = OPENING_AT + timedelta(days=1)
+    def diagnose(approved):
+        return diagnose_chunked_balance_flows(SimpleNamespace(_request_margin_api=read),
+            start=OPENING_AT,end=end,now=end,managed_reward_assets=('BNB',),
+            approved_reward_products=approved)
+    result = diagnose({('BNB','BNB001')})
+    assert result['history_complete_for_requested_surfaces'] is True
+    assert result['reward_quantity_totals']['BNB'][kind] == '0.01'
+    assert result['execution_authority_granted'] is False
+    unapproved = diagnose({('BNB','OTHER')})
+    assert unapproved['reason_code'] == 'balance_history_unapproved_reward_product'
+    assert unapproved['history_complete_for_requested_surfaces'] is False
+
+
+@pytest.mark.parametrize('fields', [
+    {}, {'productId':None}, {'productId':''}, {'productId':'  '}, {'productId':7},
+    {'projectId':'BNB001','productId':'DIFFERENT'},
+    {'projectId':'BNB001','productId':None}, {'projectId':None,'productId':'BNB001'},
+])
+def test_reward_product_invalid_never_admits_approved_asset(fields):
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    def read(method, path, **kwargs):
+        if path.startswith('capital/'):
+            return []
+        if path.endswith('/rewardsRecord'):
+            return {'rows':[dict(asset='BNB',type='BONUS',rewards='0.01',
+                                 time=kwargs['data']['startTime']+1,**fields)], 'total':1}
+        return {'rows':[], 'total':0}
+    end = OPENING_AT + timedelta(days=1)
+    result = diagnose_chunked_balance_flows(SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,end=end,now=end,managed_reward_assets=('BNB',),
+        approved_reward_products={('BNB','BNB001')})
+    assert result['reason_code'] == 'balance_history_unapproved_reward_product'
+    assert result['history_complete_for_requested_surfaces'] is False
+    assert result['execution_authority_granted'] is False
+
+
+def test_reward_duplicate_across_pages_with_different_identifier_fields_is_rejected():
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    stamp = int(OPENING_AT.timestamp()*1000)
+    pages = []
+    def read(method, path, **kwargs):
+        if path.startswith('capital/'):
+            return []
+        if path.endswith('/rewardsRecord'):
+            page = kwargs['data']['current']
+            pages.append(page)
+            if page == 1:
+                rows = [dict(asset='BNB', type='REALTIME', rewards='0.01',
+                             projectId='BNB001', time=stamp+i) for i in range(100)]
+            else:
+                rows = [dict(asset='BNB',type='REALTIME',rewards='0.01',
+                             productId='BNB001',time=stamp)]
+            return {'rows':rows,'total':101}
+        return {'rows':[], 'total':0}
+    end = OPENING_AT + timedelta(days=1)
+    result = diagnose_chunked_balance_flows(SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,end=end,now=end,managed_reward_assets=('BNB',),
+        approved_reward_products={('BNB','BNB001')})
+    assert pages == [1,2]
+    assert result['reason_code'] in {'balance_history_duplicate_event','balance_history_reward_validation_failed'}
+    assert result['history_complete_for_requested_surfaces'] is False

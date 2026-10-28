@@ -1093,6 +1093,18 @@ def build_reconciliation_candidate(
     )
 
 
+def _reward_product_id(row: Mapping[str, object], *, optional: bool = False) -> str | None:
+    """Resolve only explicit flexible reward identifiers; never infer from asset."""
+    fields = [row[key] for key in ("projectId", "productId") if key in row]
+    if optional and "productId" not in row and (not fields or fields == [None] or fields == [""]):
+        return None
+    if not fields or any(not isinstance(value, str) or not value.strip() for value in fields):
+        raise ValueError("reward_product_invalid")
+    if len(fields) == 2 and fields[0] != fields[1]:
+        raise ValueError("reward_product_invalid")
+    return fields[0]
+
+
 def diagnose_bonus_reward_balance(
     account: Mapping[str, object], *, rewards: Sequence[Mapping[str, object]],
     expected_digests: Mapping[str, str], start: datetime, end: datetime,
@@ -1138,10 +1150,11 @@ def diagnose_bonus_reward_balance(
                 failure_code = "reward_row_invalid"
                 if not isinstance(row, Mapping):
                     raise ValueError
-                asset, project, kind, timestamp = (row.get(k) for k in ("asset", "projectId", "type", "time"))
+                asset, kind, timestamp = (row.get(k) for k in ("asset", "type", "time"))
+                failure_code = "reward_project_invalid"
+                project = _reward_product_id(row, optional=True)
                 checks = (
                     ("reward_asset_invalid", isinstance(asset, str) and bool(asset.strip())),
-                    ("reward_project_invalid", project is None or isinstance(project, str)),
                     ("reward_type_invalid", isinstance(kind, str) and kind in counts),
                     ("reward_timestamp_type_invalid", type(timestamp) is int),
                     ("reward_timestamp_outside_window", type(timestamp) is int and start_ms <= timestamp <= end_ms),
@@ -1528,6 +1541,11 @@ def diagnose_balance_flows(
                     asset, kind = row.get("asset"), row.get("type")
                     timestamp = row.get("time")
                     project = row.get("projectId")
+                    if _approved_reward_products is not None:
+                        try:
+                            project = _reward_product_id(row)
+                        except ValueError:
+                            project = None
                     identity = (asset, kind, project, timestamp)
                     # Cross-chunk duplicates must be detected before window checks:
                     # a later chunk may re-emit an earlier identity outside its bounds.
@@ -1556,15 +1574,18 @@ def diagnose_balance_flows(
                             result["reward_product_failure_stage"] = "reward_identity_missing"
                             if not isinstance(asset, str):
                                 issue = "asset_missing" if "asset" not in row else "asset_null" if asset is None else "asset_non_string"
+                            elif "productId" in row:
+                                issue = None
                             elif "projectId" not in row:
                                 issue = "project_missing"
-                            elif project is None:
+                            elif row["projectId"] is None:
                                 issue = "project_null"
-                            elif not isinstance(project, str):
+                            elif not isinstance(row["projectId"], str):
                                 issue = "project_non_string"
                             else:
                                 issue = "project_empty"
-                            result["reward_identity_issue"] = issue
+                            if issue is not None:
+                                result["reward_identity_issue"] = issue
                             result["reward_field_shapes"] = _reward_shape_summary(rows, parameters, row)
                             raise ValueError("unapproved_reward_product")
                         if managed_assets is not None and asset not in managed_assets:
