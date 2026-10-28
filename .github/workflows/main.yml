@@ -52,7 +52,7 @@ on:
         type: choice
         required: false
         default: none
-        options: [none, inspect, quiesce, earn-forward-diagnose, audit, preview, scope-preview, cash-flow-preview, rebase-proposal, rebase-apply, prospective-rebase-apply, release-stale-owner, apply]
+        options: [none, inspect, quiesce, earn-forward-diagnose, historical-continuity-diagnose, audit, preview, scope-preview, cash-flow-preview, rebase-proposal, rebase-apply, prospective-rebase-apply, release-stale-owner, apply]
       proposal_recipient_certificate:
         description: "Public X.509 encryption certificate for rebase-proposal only; never provide a private key"
         type: string

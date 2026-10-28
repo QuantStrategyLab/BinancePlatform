@@ -438,12 +438,15 @@ def mode_guard():
         "rebase-proposal", "rebase-apply", "prospective-rebase-apply", "release-stale-owner", "apply",
     )],
 ])
-def test_production_earn_route_is_readonly_and_mode_exclusive(changes, allowed):
+@pytest.mark.parametrize("action", ["earn-forward-diagnose", "historical-continuity-diagnose"])
+def test_production_earn_route_is_readonly_and_mode_exclusive(changes, allowed, action):
     env = dict(PATH=os.environ.get("PATH", ""), GITHUB_REF="refs/heads/runtime-production",
                RUNTIME_TARGET_ENABLED="false", RECONCILE_ONLY_INPUT="true",
                VALIDATE_ONLY_INPUT="false", FULL_CYCLE_INPUT="false",
                DIAGNOSE_BALANCES_INPUT="false", RECONCILE_PERSIST_INPUT="false",
-               RECOVERY_ACTION_INPUT="none", ACCOUNTING_MIGRATION_ACTION_INPUT="earn-forward-diagnose")
+               RECOVERY_ACTION_INPUT="none", ACCOUNTING_MIGRATION_ACTION_INPUT=action)
+    if action == "historical-continuity-diagnose" and changes.get("GITHUB_REF") == "refs/heads/main":
+        allowed = False
     result = subprocess.run(["bash", "-c", mode_guard()], env=env | changes,
                             capture_output=True, text=True)
     assert (result.returncode == 0) is allowed
@@ -453,6 +456,9 @@ def test_production_earn_route_is_readonly_and_mode_exclusive(changes, allowed):
     ("earn-forward-diagnose", "actual", "actual"),
     ("earn-forward-diagnose", "", None),
     ("earn-forward-diagnose", "a" * 40, None),
+    ("historical-continuity-diagnose", "actual", "historical"),
+    ("historical-continuity-diagnose", "", None),
+    ("historical-continuity-diagnose", "a" * 40, None),
     ("none", "actual", "release"),
     ("cash-flow-preview", "actual", "release"),
 ])
@@ -474,8 +480,8 @@ def test_tool_source_uses_only_verified_workflow_pin(tmp_path, action, pin, expe
     else:
         assert result.returncode == 0
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
-        assert values == {"sha": actual if expected == "actual" else release,
-                          "source_kind": "earn_readonly" if expected == "actual" else "runtime_release"}
+        assert values == {"sha": actual if expected in {"actual", "historical"} else release,
+                          "source_kind": {"actual": "earn_readonly", "historical": "historical_readonly"}.get(expected, "runtime_release")}
 
 
 def earn_diagnosis_result():
@@ -524,3 +530,36 @@ def test_actual_earn_child_projection_captures_logs_and_removes_live_authority(c
         assert result["classification_counts"]["counter_reset"] == 1
         assert result["unsupported_external_flow_count"] is None
         assert "assets" not in result and "account" not in result
+
+
+@pytest.mark.parametrize('exit_code,valid', [(0,True),(1,True),(0,False)])
+def test_historical_route_executes_only_fixed_child_and_safe_projection(capsys,exit_code,valid):
+    import sys
+    from scripts import historical_continuity_readonly  # noqa: F401
+    output = dict(status='diagnosed',source_kind='historical_continuity',no_order=True,
+                  write_performed=False,execution_authority_granted=False,
+                  historical_difference_unresolved=True,ledger_unchanged=True,
+                  control_unchanged=True,archive_unchanged=True,owner_absent=True,
+                  chunk_count=3,asset='123456789',amount='PRIVATE_AMOUNT')
+    if not valid:
+        output['owner_absent'] = False
+    source = PROTECTED.read_text().split("<<'SAFE_EARN_DIAGNOSIS'\n",1)[1]
+    code = compile(textwrap.dedent(source.split('          SAFE_EARN_DIAGNOSIS',1)[0]),str(PROTECTED),'exec')
+    env = dict(ACCOUNTING_MIGRATION_ACTION='historical-continuity-diagnose',
+               BINANCE_RISK_AUTHORITY_FILE='PRIVATE',BINANCE_RISK_AUTHORITY_JSON='PRIVATE',
+               BINANCE_RISK_AUTHORITY_SHA256='PRIVATE',BINANCE_RISK_AUTHORITY_SOURCE_REVISION='PRIVATE')
+    process = SimpleNamespace(stdout='PRIVATE_PREAMBLE\n'+json.dumps(output),stderr='PRIVATE_STDERR',returncode=exit_code)
+    with patch.dict(os.environ,env,clear=True),patch('subprocess.run',return_value=process) as child:
+        with pytest.raises(SystemExit) as stopped:
+            exec(code,{})
+        assert dict(os.environ) == env
+    args,kwargs = child.call_args
+    assert args == ([sys.executable,'scripts/migrate_daily_accounting_state.py','historical-continuity-diagnose'],)
+    assert kwargs == dict(capture_output=True,text=True,check=False,
+                          env={'ACCOUNTING_MIGRATION_ACTION':'historical-continuity-diagnose'})
+    captured = capsys.readouterr()
+    assert captured.err == '' and 'PRIVATE' not in captured.out and '123456789' not in captured.out
+    result = json.loads(captured.out)
+    assert stopped.value.code == (0 if valid and exit_code == 0 else 1)
+    assert result['diagnostic_scope'] == 'historical_continuity_readonly'
+    assert result['execution_permitted'] is False
