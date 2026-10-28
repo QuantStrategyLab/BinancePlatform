@@ -175,7 +175,17 @@ jobs:
                 exit 1
               fi
               ;;
-            inspect|quiesce|earn-forward-diagnose|audit|preview|scope-preview|cash-flow-preview|rebase-proposal|rebase-apply|prospective-rebase-apply|release-stale-owner|apply)
+            earn-forward-diagnose)
+              case "${GITHUB_REF:-}" in
+                refs/heads/main|refs/heads/runtime-production) ;;
+                *) echo "::error::Earn diagnosis requires the trusted Runtime ref."; exit 1 ;;
+              esac
+              if [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$FULL_CYCLE_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ] || [ "${RECOVERY_ACTION_INPUT:-none}" != "none" ] || [ -n "${CANDIDATE_RELEASE_SHA_INPUT:-}${ACCOUNTING_MIGRATION_PREVIEW_RUN_ID:-}${ACCOUNTING_MIGRATION_EXPECTED_DIGEST:-}${PROPOSAL_RECIPIENT_CERTIFICATE:-}" ]; then
+                echo "::error::Earn diagnosis requires disabled reconcile_only without other validation, recovery, persistence or artifact inputs."
+                exit 1
+              fi
+              ;;
+            inspect|quiesce|audit|preview|scope-preview|cash-flow-preview|rebase-proposal|rebase-apply|prospective-rebase-apply|release-stale-owner|apply)
               if [ "${RECOVERY_ACTION_INPUT:-none}" != "none" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
                 echo "::error::Accounting migration requires disabled main runtime, reconcile_only, and no other recovery or diagnostic mode."
                 exit 1
@@ -329,15 +339,34 @@ jobs:
           FULL_CYCLE: ${{ inputs.full_cycle || 'false' }}
           RUNTIME_TARGET_ENABLED: ${{ env.RUNTIME_TARGET_ENABLED }}
           RECONCILE_ONLY: ${{ inputs.reconcile_only || 'false' }}
+          ACCOUNTING_MIGRATION_ACTION: ${{ inputs.accounting_migration_action || 'none' }}
+          BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA }}
         run: |
           set -euo pipefail
-          selected="$(python3 scripts/select_runtime_release_sha.py)"
+          source_kind=runtime_release
+          if [ "$ACCOUNTING_MIGRATION_ACTION" = "earn-forward-diagnose" ]; then
+            # This fixed read-only maintenance tool uses the already approved
+            # workflow tree; it neither selects nor adopts a trading candidate.
+            if [ -z "${BINANCE_RUNTIME_WORKFLOW_SHA:-}" ]; then
+              echo "::error::Earn diagnosis requires an explicit workflow pin."
+              exit 1
+            fi
+            selected="$(python3 scripts/select_runtime_release_sha.py --verify-workflow)"
+            source_kind=earn_readonly
+          else
+            selected="$(python3 scripts/select_runtime_release_sha.py)"
+          fi
           if [[ ! "$selected" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::Release selection returned an invalid SHA."
             exit 1
           fi
           echo "sha=$selected" >> "$GITHUB_OUTPUT"
-          echo "Selected runtime release SHA ${selected} (workflow github.sha=${GITHUB_SHA:-unknown} is not used as the application execution identity)."
+          echo "source_kind=$source_kind" >> "$GITHUB_OUTPUT"
+          if [ "$source_kind" = "earn_readonly" ]; then
+            echo "Selected read-only Earn tool SHA ${selected} (workflow github.sha=${GITHUB_SHA:-unknown})."
+          else
+            echo "Selected runtime release SHA ${selected} (workflow github.sha=${GITHUB_SHA:-unknown} is not used as the application execution identity)."
+          fi
 
       - name: 1. Checkout approved runtime release
         if: ${{ env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true' || github.event.inputs.validate_only == 'true' }}
@@ -482,7 +511,11 @@ jobs:
             echo "::error::GITHUB_SHA is invalid for runtime identity."
             exit 1
           fi
-          echo "runtime_identity workflow_sha=${GITHUB_SHA} release_sha=${{ steps.runtime-release.outputs.sha }} uv_lock_sha256=${CURR_HASH} uv_version=${UV_VERSION_TEXT} python_version=${CURR_PYTHON_VERSION}"
+          if [ "${{ steps.runtime-release.outputs.source_kind }}" = "earn_readonly" ]; then
+            echo "readonly_earn_identity workflow_sha=${GITHUB_SHA} tool_sha=${{ steps.runtime-release.outputs.sha }} uv_lock_sha256=${CURR_HASH} uv_version=${UV_VERSION_TEXT} python_version=${CURR_PYTHON_VERSION}"
+          else
+            echo "runtime_identity workflow_sha=${GITHUB_SHA} release_sha=${{ steps.runtime-release.outputs.sha }} uv_lock_sha256=${CURR_HASH} uv_version=${UV_VERSION_TEXT} python_version=${CURR_PYTHON_VERSION}"
+          fi
 
       - name: Download approved accounting migration preview
         if: ${{ inputs.accounting_migration_action == 'apply' }}
@@ -760,6 +793,37 @@ jobs:
             exit 0
           fi
           if [ "${RECONCILE_ONLY:-false}" = "true" ]; then
+            if [ "${ACCOUNTING_MIGRATION_ACTION:-none}" = "earn-forward-diagnose" ]; then
+              "$VENV_PATH/bin/python" - <<'SAFE_EARN_DIAGNOSIS'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          result = {"status": "blocked", "reason_code": "earn_diagnosis_output_invalid",
+                    "diagnostic_scope": "earn_forward_readonly", "execution_permitted": False}
+          process = None
+          try:
+              from scripts.migrate_daily_accounting_state import project_earn_diagnosis
+              child_env = dict(os.environ)
+              for key in ("BINANCE_RISK_AUTHORITY_FILE", "BINANCE_RISK_AUTHORITY_JSON",
+                          "BINANCE_RISK_AUTHORITY_SHA256", "BINANCE_RISK_AUTHORITY_SOURCE_REVISION"):
+                  child_env.pop(key, None)
+              process = subprocess.run(
+                  [sys.executable, "scripts/migrate_daily_accounting_state.py", "earn-forward-diagnose"],
+                  capture_output=True, text=True, check=False, env=child_env,
+              )
+              value = json.loads(process.stdout.strip().splitlines()[-1])
+              result = project_earn_diagnosis(value, exit_code=process.returncode)
+          except Exception:
+              pass
+          if process is not None:
+              result["diagnostic_exit_code"] = process.returncode
+          print(json.dumps(result, sort_keys=True))
+          raise SystemExit(0 if result["status"] == "diagnosed" else 1)
+          SAFE_EARN_DIAGNOSIS
+              exit 0
+            fi
             if [ "${ACCOUNTING_MIGRATION_ACTION:-none}" != "none" ]; then
               args=("$ACCOUNTING_MIGRATION_ACTION")
               if [ "$ACCOUNTING_MIGRATION_ACTION" = "apply" ]; then
@@ -794,6 +858,8 @@ jobs:
           "$VENV_PATH/bin/python" -c "from runtime_config_support import assert_standard_execution_entry_permitted; assert_standard_execution_entry_permitted(); print('runtime_control_ok')"
           "$VENV_PATH/bin/python" main.py
         env:
+          RUNTIME_SOURCE_KIND: ${{ steps.runtime-release.outputs.source_kind }}
+          BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA }}
           RECOVERY_ACTION: ${{ inputs.recovery_action || 'none' }}
           RECOVERY_ID: ${{ inputs.recovery_id }}
           RECONCILIATION_RECOVERY_SYNC_TOKEN: ${{ (inputs.recovery_action == 'prepare' || inputs.accounting_migration_action == 'scope-preview') && secrets.RECONCILIATION_RECOVERY_SYNC_TOKEN || '' }}

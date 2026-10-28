@@ -736,3 +736,66 @@ def test_diagnosis_output_contains_no_amounts_uids_or_raw_rows(monkeypatch):
     assert "held" not in output
     assert "BTC001" not in output
     assert "cumulativeRealTimeRewards" not in output
+
+
+def test_readonly_diagnosis_runs_under_real_production_guard_without_write_ports(monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+    import subprocess
+    head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=migration.ROOT, text=True).strip()
+    refs = source()
+    refs["control_ref"].snapshot.value["state"] = "ACTIVE_LKG"
+    before = {name: copy.deepcopy(ref.snapshot.value) for name, ref in refs.items()}
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("read-only diagnosis must not invoke a write or LIVE authority loader")
+    for ref in refs.values():
+        for name in ("set", "create", "update", "delete"):
+            monkeypatch.setattr(ref, name, forbidden, raising=False)
+    install_read_stubs(monkeypatch, migration, refs)
+    monkeypatch.setattr(migration, "connect_client", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("live_risk_authority.load_live_risk_authority", forbidden)
+    monkeypatch.setattr(migration, "resolve_runtime_target_from_env", lambda **_kwargs: SimpleNamespace(
+        live_continuity=SimpleNamespace(state="RECONCILE_ONLY")))
+    monkeypatch.setattr(migration.os, "environ", {
+        "GITHUB_REPOSITORY": migration.REPOSITORY, "GITHUB_REF": "refs/heads/runtime-production",
+        "GITHUB_WORKFLOW_REF": f"{migration.REPOSITORY}/.github/workflows/main.yml@refs/heads/runtime-production",
+        "GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_SHA": head,
+        "BINANCE_RUNTIME_WORKFLOW_SHA": head, "RUNTIME_SOURCE_KIND": "earn_readonly",
+        "RUNTIME_TARGET_ENABLED": "false", "RECONCILE_ONLY": "true",
+        "BINANCE_API_KEY": "synthetic", "BINANCE_API_SECRET": "synthetic",
+    })
+    result = migration.run("earn-forward-diagnose", now=NOW)
+    assert result["write_performed"] is False and result["no_order"] is True
+    assert {name: ref.snapshot.value for name, ref in refs.items()} == before
+    projected = migration.project_earn_diagnosis(result, exit_code=0)
+    assert projected["status"] == "diagnosed"
+    assert "assets" not in projected and "sampling_observed_at" not in projected
+
+
+@pytest.mark.parametrize("value", ["PRIVATE_ACCOUNT", "custom_reason", [], {}, None, False, 12345])
+def test_earn_projection_unknown_reasons_are_fixed_and_never_stringified(value):
+    from scripts.migrate_daily_accounting_state import project_earn_diagnosis
+    result = project_earn_diagnosis({"status": "blocked", "reason_code": value}, exit_code=2)
+    assert result["status"] == "blocked" and result["reason_code"] == "earn_diagnosis_failed"
+    assert "PRIVATE" not in json.dumps(result) and "12345" not in json.dumps(result)
+
+
+def test_projection_keeps_unknown_counts_null_and_numeric_asset_names_private(monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+    refs = source()
+    install_read_stubs(monkeypatch, migration, refs)
+    raw = migration.diagnose_earn_forward(refs, client=object(), expected={"account_scope_sha256": SCOPE}, now=NOW)
+    raw["assets"] = {"123456789": {"classification": "PRIVATE_ASSET_CLASS", "amount": "PRIVATE_AMOUNT"}}
+    raw["open_order_count"] = "123456789"
+    raw.pop("changed_withdrawal_count")
+    raw["unsupported_external_flow_count"] = False
+    result = migration.project_earn_diagnosis(raw, exit_code=0)
+    assert result["status"] == "diagnosed"
+    assert result["classification_counts"]["unknown"] == 1
+    assert all(result[key] is None for key in (
+        "open_order_count", "changed_withdrawal_count", "unsupported_external_flow_count"))
+    assert "PRIVATE" not in json.dumps(result) and "123456789" not in json.dumps(result)
+    for key in ("no_order", "ledger_unchanged", "write_performed", "activation_allowed"):
+        changed = copy.deepcopy(raw)
+        changed[key] = not changed[key]
+        assert migration.project_earn_diagnosis(changed, exit_code=0)["status"] == "blocked"
+    assert migration.project_earn_diagnosis(raw, exit_code=1)["status"] == "blocked"
