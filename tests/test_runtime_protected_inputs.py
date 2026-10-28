@@ -493,6 +493,8 @@ def earn_diagnosis_result():
     (earn_diagnosis_result(), 0, True),
     (earn_diagnosis_result(), 1, False),
     ({"status": "blocked", "reason_code": "earn_diagnosis_checkpoint_missing"}, 2, False),
+    ({"status": "blocked", "reason_code": "earn_diagnosis_checkpoint_not_in_past"}, 2, False),
+    ({"status": "blocked", "reason_code": "earn_diagnosis_checkpoint_window_exceeded"}, 2, False),
     ({"status": "blocked", "reason_code": "PRIVATE_REASON"}, 2, False),
     ({"status": "diagnosed", "stage": "PRIVATE_STAGE"}, 0, False),
     ("PRIVATE_INVALID_JSON", 1, False),
@@ -520,6 +522,8 @@ def test_actual_earn_child_projection_captures_logs_and_removes_live_authority(c
     assert stopped.value.code == (0 if success else 1)
     assert result["execution_permitted"] is False
     assert result["diagnostic_exit_code"] == exit_code
+    if isinstance(output, dict) and output.get("reason_code", "").startswith("earn_diagnosis_checkpoint_"):
+        assert result["reason_code"] == output["reason_code"]
     if success:
         assert result["classification_counts"]["counter_reset"] == 1
         assert result["unsupported_external_flow_count"] is None
