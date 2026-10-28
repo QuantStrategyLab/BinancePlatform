@@ -3012,8 +3012,14 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
     else:
         require_runtime_context()
     if action == "historical-continuity-diagnose":
-        from scripts.historical_continuity_readonly import run as diagnose_history
-        return diagnose_history(now=now)
+        from scripts.historical_continuity_readonly import REASONS, run as diagnose_history
+        try:
+            return diagnose_history(now=now)
+        except ValueError as error:
+            # The script entry is __main__; imported helpers use the named module.
+            # Normalize only fixed reasons into this entry's own exception class.
+            reason = str(error)
+            raise MigrationBlocked(reason if reason in REASONS else "historical_readonly_failed") from None
     if action == "inspect":
         return inspect_control(_refs())
     if action == "quiesce":
