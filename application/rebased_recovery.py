@@ -30,6 +30,7 @@ from application.broker_reconciliation import (
     _add_reward_quantity,
     _REWARD_PRODUCT_CLASSIFICATION_CODES,
     _REWARD_PRODUCT_FAILURE_STAGES,
+    _REWARD_IDENTITY_ISSUES,
 )
 from application.earn_accrual import (
     EarnCheckpointUnavailable,
@@ -73,6 +74,8 @@ class _HistoricalRewardProductBlocked(ValueError):
         }
         stage = history.get("reward_product_failure_stage")
         self.failure_stage = stage if type(stage) is str and stage in _REWARD_PRODUCT_FAILURE_STAGES else None
+        issue = history.get("reward_identity_issue")
+        self.identity_issue = issue if self.failure_stage == "reward_identity_missing" and type(issue) is str and issue in _REWARD_IDENTITY_ISSUES else None
 
 # Exact roots from the user-approved prospective migration.  This separate
 # path is diagnosis-only; the existing recovery candidate and activation path
@@ -1321,6 +1324,7 @@ def collect_historical_continuity_readonly(*, source_run, tool_revision, **kwarg
             "source_kind": HISTORICAL_CONTINUITY_KIND,
             "classification_scope": "partial_history",
             "reward_product_failure_stage": error.failure_stage,
+            "reward_identity_issue": error.identity_issue,
             "historical_difference_unresolved": True,
             "chunk_count": error.chunk_count,
             "reward_product_classification_counts": error.classification_counts,
