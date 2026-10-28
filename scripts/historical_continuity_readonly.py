@@ -181,6 +181,10 @@ def project_result(value, *, exit_code):
             issue = value.get("reward_identity_issue")
             if stage == "reward_identity_missing" and type(issue) is str and issue in _REWARD_IDENTITY_ISSUES:
                 result["reward_identity_issue"] = issue
+                from application.broker_reconciliation import _validated_reward_shape_summary
+                shapes = _validated_reward_shape_summary(value.get("reward_field_shapes"))
+                if shapes is not None:
+                    result["reward_field_shapes"] = shapes
         return result
     if (exit_code != 0 or value.get("status") != "diagnosed"
             or value.get("source_kind") != "historical_continuity"):

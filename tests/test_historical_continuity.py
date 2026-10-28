@@ -3412,3 +3412,42 @@ def test_chunked_failure_classification_excludes_prior_success_counts():
     assert counts["opening_approved"] == 0
     assert counts.get("lifecycle_evidence_incomplete", 0) >= 1
     assert "reward_quantity_totals" not in result
+
+
+def test_reward_shape_summary_only_after_all_pages_and_without_values():
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    pages = []
+    def read(method, path, **kwargs):
+        data = kwargs['data']
+        if path.startswith('capital/'):
+            return []
+        if path.endswith('/rewardsRecord'):
+            pages.append(data['current'])
+            assert data['type'] == 'ALL' and 'productId' not in data
+            rows = [dict(asset='PRIVATE', type='BONUS', rewards='1', time=data['startTime']+i, productId='SECRET') for i in range(100)]
+            if data['current'] == 1:
+                return dict(rows=rows, total=101)
+            return dict(rows=[dict(asset='PRIVATE', type='REALTIME', rewards='1', time=data['startTime']+101, projectId='SECRET', productId='SECRET')], total=101)
+        return dict(rows=[],total=0)
+    result = diagnose_chunked_balance_flows(SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,end=OPENING_AT+timedelta(days=1),now=OPENING_AT+timedelta(days=1),
+        managed_reward_assets=('BNB',),approved_reward_products={('BNB','BNB001')})
+    assert pages == [1,2]
+    shape = result['reward_field_shapes']
+    assert shape == {'scope':'complete_reward_surface_in_failed_chunk', 'product_filter':'absent',
+                     'combinations':[['BONUS','missing','string','unavailable'],['REALTIME','string','string','equal']]}
+    assert 'SECRET' not in str(shape) and 'PRIVATE' not in str(shape)
+    assert result['reward_identity_issue'] == 'project_missing'
+    assert result['history_complete_for_requested_surfaces'] is False
+
+    def incomplete(method, path, **kwargs):
+        if path.startswith('capital/'):
+            return []
+        if path.endswith('/rewardsRecord'):
+            return dict(rows=[], total=1)
+        return dict(rows=[],total=0)
+    blocked = diagnose_chunked_balance_flows(SimpleNamespace(_request_margin_api=incomplete),
+        start=OPENING_AT,end=OPENING_AT+timedelta(days=1),now=OPENING_AT+timedelta(days=1),
+        managed_reward_assets=('BNB',),approved_reward_products={('BNB','BNB001')})
+    assert 'reward_field_shapes' not in blocked
+    assert blocked['reason_code'] == 'balance_history_incomplete'

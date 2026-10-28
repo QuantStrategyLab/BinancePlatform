@@ -1185,6 +1185,57 @@ def diagnose_bonus_reward_balance(
     return result
 
 
+_REWARD_SHAPES = frozenset({"missing", "null", "empty", "string", "other"})
+_REWARD_KINDS = frozenset({"BONUS", "REALTIME", "REWARDS", "other"})
+
+
+def _reward_field_shape(row, key):
+    if key not in row:
+        return "missing"
+    value = row[key]
+    if value is None:
+        return "null"
+    if not isinstance(value, str):
+        return "other"
+    return "string" if value else "empty"
+
+
+def _reward_shape_summary(rows, parameters):
+    # rows arrive only after the existing full-page/total checks succeeded.
+    combinations = set()
+    for row in rows:
+        kind = row.get("type")
+        kind = kind if isinstance(kind, str) and kind in _REWARD_KINDS else "other"
+        project = _reward_field_shape(row, "projectId")
+        product = _reward_field_shape(row, "productId")
+        equality = ("equal" if row["projectId"] == row["productId"] else "different") if project == product == "string" else "unavailable"
+        combinations.add((kind, project, product, equality))
+    return {"scope": "complete_reward_surface_in_failed_chunk", "product_filter": "present" if "productId" in parameters else "absent",
+            "combinations": [list(item) for item in sorted(combinations)]}
+
+
+def _validated_reward_shape_summary(value):
+    if not isinstance(value, Mapping) or set(value) != {"scope", "product_filter", "combinations"}:
+        return None
+    if (value["scope"] != "complete_reward_surface_in_failed_chunk"
+            or type(value["product_filter"]) is not str or value["product_filter"] not in {"present", "absent"}):
+        return None
+    combinations = value["combinations"]
+    if not isinstance(combinations, list) or len(combinations) > 300:
+        return None
+    out = []
+    for row in combinations:
+        if not isinstance(row, list) or len(row) != 4 or any(type(x) is not str for x in row):
+            return None
+        kind, project, product, equality = row
+        if kind not in _REWARD_KINDS or project not in _REWARD_SHAPES or product not in _REWARD_SHAPES:
+            return None
+        if equality not in ({"equal", "different"} if project == product == "string" else {"unavailable"}):
+            return None
+        out.append(row[:])
+    return {"scope": value["scope"], "product_filter": value["product_filter"], "combinations": out}
+
+
 def diagnose_balance_flows(
     client: Any, *, start: datetime, end: datetime, now: datetime | None = None,
     account: Mapping[str, object] | None = None, expected_digests: Mapping[str, str] | None = None,
@@ -1509,6 +1560,7 @@ def diagnose_balance_flows(
                             else:
                                 issue = "project_empty"
                             result["reward_identity_issue"] = issue
+                            result["reward_field_shapes"] = _reward_shape_summary(rows, parameters)
                             raise ValueError("unapproved_reward_product")
                         if managed_assets is not None and asset not in managed_assets:
                             if classification_counts is not None:
