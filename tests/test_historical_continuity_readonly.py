@@ -236,6 +236,10 @@ def test_actual_rejected_history_preserves_only_partial_classification(monkeypat
     assert result['reward_product_classification_counts'][classification] == 1
     assert result['reward_product_failure_stage'] == stage
     assert result['reward_identity_issue'] == ('project_missing' if case == 'missing_identity' else None)
+    if case == 'missing_identity':
+        assert result['reward_field_shapes'] == {'scope':'complete_reward_surface_in_failed_chunk',
+            'product_filter':'absent','combinations':[['REALTIME','missing','missing','unavailable']],
+            'trigger':['REALTIME','missing','missing','unavailable']}
     assert type(result['chunk_count']) is int and result['chunk_count'] > 0
     assert result['no_order'] is True and result['write_performed'] is False
     assert result['execution_authority_granted'] is False
@@ -296,6 +300,13 @@ def test_blocked_projection_requires_partial_contract_and_sanitizes_counts():
     marked = value | {'reward_product_failure_stage': 'reward_identity_missing',
                       'reward_identity_issue': 'project_missing'}
     assert diagnostic.project_result(marked, exit_code=2)['reward_identity_issue'] == 'project_missing'
+    shapes = {'scope':'complete_reward_surface_in_failed_chunk','product_filter':'absent',
+              'combinations':[['BONUS','missing','string','unavailable']], 'trigger':['BONUS','missing','string','unavailable']}
+    assert diagnostic.project_result(marked | {'reward_field_shapes': shapes}, exit_code=2)['reward_field_shapes'] == shapes
+    for bad in ({'scope':'PRIVATE','product_filter':'absent','combinations':[]},
+                shapes | {'combinations': [['BONUS','missing','SECRET','unavailable']]},
+                shapes | {'product_filter': []}):
+        assert 'reward_field_shapes' not in diagnostic.project_result(marked | {'reward_field_shapes': bad}, exit_code=2)
     for issue in ('PRIVATE', 123456789, None, {}, False):
         assert 'reward_identity_issue' not in diagnostic.project_result(marked | {'reward_identity_issue': issue}, exit_code=2)
     assert 'reward_identity_issue' not in diagnostic.project_result(marked | {'reward_product_failure_stage': 'lifecycle_conservation_unverified'}, exit_code=2)
