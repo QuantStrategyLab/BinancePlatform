@@ -189,7 +189,8 @@ def project_earn_diagnosis(value, *, exit_code: int) -> dict:
         "earn_diagnosis_asset_scope_invalid", "earn_diagnosis_checkpoint_account_scope_mismatch",
         "earn_diagnosis_checkpoint_asset_missing", "earn_diagnosis_checkpoint_invalid",
         "earn_diagnosis_checkpoint_missing", "earn_diagnosis_checkpoint_unavailable",
-        "earn_diagnosis_checkpoint_window_invalid", "earn_diagnosis_control_invalid",
+        "earn_diagnosis_checkpoint_window_invalid", "earn_diagnosis_checkpoint_not_in_past",
+        "earn_diagnosis_checkpoint_window_exceeded", "earn_diagnosis_control_invalid",
         "earn_diagnosis_cursor_mismatch", "earn_diagnosis_cursor_missing",
         "earn_diagnosis_external_flow_unavailable", "earn_diagnosis_history_incomplete",
         "earn_diagnosis_ledger_missing", "earn_diagnosis_net_changes_missing",
@@ -1778,10 +1779,12 @@ def diagnose_earn_forward(refs, *, client, expected, now):
         raise MigrationBlocked("earn_diagnosis_account_scope_missing")
     if checkpoint.get("account_scope_sha256") != expected_scope:
         raise MigrationBlocked("earn_diagnosis_checkpoint_account_scope_mismatch")
-    if not isinstance(now, datetime) or now.tzinfo is None or not checkpoint_at < now:
+    if not isinstance(now, datetime) or now.tzinfo is None:
         raise MigrationBlocked("earn_diagnosis_checkpoint_window_invalid")
+    if not checkpoint_at < now:
+        raise MigrationBlocked("earn_diagnosis_checkpoint_not_in_past")
     if now - checkpoint_at > timedelta(days=7):
-        raise MigrationBlocked("earn_diagnosis_checkpoint_window_invalid")
+        raise MigrationBlocked("earn_diagnosis_checkpoint_window_exceeded")
 
     assets = tuple(sorted(checkpoint["assets"]))
     if "USDT" not in assets or not 0 < len(assets) <= 32:

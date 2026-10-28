@@ -78,6 +78,30 @@ def source(*, owner=True, checkpoint_value=None):
     }
 
 
+@pytest.mark.parametrize(
+    ("observed_at", "reason"),
+    [
+        ("2026-09-13T10:00:00+00:00", "earn_diagnosis_checkpoint_not_in_past"),
+        ("2026-09-13T10:01:00+00:00", "earn_diagnosis_checkpoint_not_in_past"),
+        ("2026-09-06T09:59:59+00:00", "earn_diagnosis_checkpoint_window_exceeded"),
+    ],
+)
+def test_checkpoint_window_classification_is_safe_and_read_only(observed_at, reason):
+    from scripts import migrate_daily_accounting_state as migration
+
+    refs = source(checkpoint_value=checkpoint(observed_at=observed_at))
+    before = {name: copy.deepcopy(ref.snapshot.value) for name, ref in refs.items()}
+    with pytest.raises(migration.MigrationBlocked, match=f"^{reason}$"):
+        migration.diagnose_earn_forward(
+            refs, client=object(), expected={"account_scope_sha256": SCOPE}, now=NOW
+        )
+    assert {name: ref.snapshot.value for name, ref in refs.items()} == before
+    projected = migration.project_earn_diagnosis({"status": "blocked", "reason_code": reason}, exit_code=2)
+    assert projected["reason_code"] == reason
+    assert observed_at not in json.dumps(projected)
+    assert projected["execution_permitted"] is False
+
+
 def install_read_stubs(monkeypatch, migration, refs, *, current=None, history=None, observations=None, flows=None):
     current = current or checkpoint(
         observed_at="2026-09-13T10:00:00+00:00", quantity="1.1", reward="0"
@@ -124,6 +148,18 @@ def install_read_stubs(monkeypatch, migration, refs, *, current=None, history=No
     monkeypatch.setattr(migration, "collect_read_only_reconciliation_observations", lambda *a, **k: observations)
     monkeypatch.setattr(migration, "diagnose_balance_flows", lambda *a, **k: copy.deepcopy(history))
     return current, history
+
+
+def test_checkpoint_exactly_seven_days_remains_eligible_for_diagnosis(monkeypatch):
+    from scripts import migrate_daily_accounting_state as migration
+
+    refs = source(checkpoint_value=checkpoint(observed_at="2026-09-06T10:00:00+00:00"))
+    install_read_stubs(monkeypatch, migration, refs)
+    result = migration.diagnose_earn_forward(
+        refs, client=object(), expected={"account_scope_sha256": SCOPE}, now=NOW
+    )
+    assert result["write_performed"] is False
+    assert result["checkpoint_window_within_seven_days"] is True
 
 
 def test_existing_owner_is_reported_but_does_not_block_read_only_diagnosis(monkeypatch):
