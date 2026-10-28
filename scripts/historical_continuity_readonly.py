@@ -174,6 +174,10 @@ def project_result(value, *, exit_code):
                 chunk_count=count if type(count) is int and 0 < count <= 1000000 else None,
                 reward_product_classification_counts=_project_classification_counts(value),
             )
+            from application.broker_reconciliation import _REWARD_PRODUCT_FAILURE_STAGES
+            stage = value.get("reward_product_failure_stage")
+            if type(stage) is str and stage in _REWARD_PRODUCT_FAILURE_STAGES:
+                result["reward_product_failure_stage"] = stage
         return result
     if (exit_code != 0 or value.get("status") != "diagnosed"
             or value.get("source_kind") != "historical_continuity"):

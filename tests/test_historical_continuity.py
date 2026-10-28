@@ -90,6 +90,7 @@ def test_partial_reward_diagnostics_do_not_allow_main_diagnosis_or_enrollment(mo
     before = copy.deepcopy((ledger,archive))
     history = dict(history_complete_for_requested_surfaces=False,
                    reason_code='balance_history_unapproved_reward_product',chunk_count=3,
+                   reward_product_failure_stage='reward_identity_missing',
                    reward_product_classification_counts={'product_mapping_ambiguous':1,
                        'opening_approved':False,'PRIVATE_ASSET':123},amount='PRIVATE')
     monkeypatch.setattr(recovery,'diagnose_chunked_balance_flows',lambda *_a,**_k:history)
@@ -106,6 +107,7 @@ def test_partial_reward_diagnostics_do_not_allow_main_diagnosis_or_enrollment(mo
             now=NOW_BEYOND,clock=lambda:LATER_BEYOND)
     error = caught.value
     assert error.chunk_count == 3 and error.classification_counts['product_mapping_ambiguous'] == 1
+    assert error.failure_stage == 'reward_identity_missing'
     assert error.classification_counts['opening_approved'] is None
     assert len(error.classification_counts) == 6 and 'PRIVATE' not in str(vars(error))
     assert (ledger,archive) == before
@@ -119,6 +121,59 @@ def test_partial_reward_diagnostic_carrier_never_supplies_missing_counts():
         assert error.chunk_count is None
         assert all(value is None for value in error.classification_counts.values())
         assert str(error) == 'historical_continuity_unapproved_reward_product'
+        assert error.failure_stage is None
+
+
+@pytest.mark.parametrize('stage', ['PRIVATE','123456789',{},[],1,False,None])
+def test_partial_failure_stage_never_infers_or_preserves_free_values(stage):
+    from application.rebased_recovery import _HistoricalRewardProductBlocked
+    error = _HistoricalRewardProductBlocked(dict(reward_product_failure_stage=stage,
+        failed_surface='earn_rewards',reward_product_classification_counts={'lifecycle_evidence_incomplete':1}))
+    assert error.failure_stage is None
+    assert 'PRIVATE' not in str(vars(error)) and '123456789' not in str(vars(error))
+
+
+@pytest.mark.parametrize('days', [1,8])
+@pytest.mark.parametrize('case,expected_stage', [
+    ('missing_asset','reward_identity_missing'), ('missing_product','reward_identity_missing'),
+    ('empty_product','reward_identity_missing'), ('nonstring_product','reward_identity_missing'),
+    ('no_subscription','lifecycle_conservation_unverified'), ('invalid_time',None),
+    ('out_of_scope',None),
+])
+def test_real_history_failure_stage_reports_only_the_executed_guard(days,case,expected_stage):
+    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    def read(method,path,**kwargs):
+        assert method == 'get'
+        if path.startswith('capital/'):
+            return []
+        if path.endswith('/rewardsRecord'):
+            row = dict(asset='BNB',projectId='synthetic_new_product',type='REALTIME',
+                       rewards='0.01',time=kwargs['data']['startTime']+1)
+            if case == 'missing_asset':
+                row.pop('asset')
+            elif case == 'missing_product':
+                row.pop('projectId')
+            elif case == 'empty_product':
+                row['projectId'] = ''
+            elif case == 'nonstring_product':
+                row['projectId'] = 123456789
+            elif case == 'invalid_time':
+                row['time'] = None
+            elif case == 'out_of_scope':
+                row['asset'] = 'PRIVATE'
+            return dict(rows=[row],total=1)
+        return dict(rows=[],total=0)
+    result = diagnose_chunked_balance_flows(SimpleNamespace(_request_margin_api=read),
+        start=OPENING_AT,end=OPENING_AT+timedelta(days=days),now=OPENING_AT+timedelta(days=days),
+        managed_reward_assets=('BNB',),approved_reward_products={('BNB','BNB001')})
+    assert result.get('reward_product_failure_stage') == expected_stage
+    assert result['execution_authority_granted'] is False
+    assert result['history_complete_for_requested_surfaces'] is False
+    if expected_stage:
+        assert result['reason_code'] == 'balance_history_unapproved_reward_product'
+        assert result['reward_product_classification_counts']['lifecycle_evidence_incomplete'] == 1
+        assert result['chunk_count'] == (2 if days==8 and case=='no_subscription' else 1)
+        assert 'PRIVATE' not in str(result) and '123456789' not in str(result)
 
 
 def test_chunked_balance_flows_accepts_explicit_span_beyond_max_history_when_complete():

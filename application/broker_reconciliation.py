@@ -50,6 +50,10 @@ _REWARD_PRODUCT_CLASSIFICATION_CODES = (
     "product_mapping_ambiguous",
     "unexplained_managed_impact",
 )
+_REWARD_PRODUCT_FAILURE_STAGES = frozenset({
+    "reward_identity_missing",
+    "lifecycle_conservation_unverified",
+})
 
 
 class BinanceReconciliationReadError(RuntimeError):
@@ -1489,6 +1493,7 @@ def diagnose_balance_flows(
                         if not isinstance(asset, str) or not isinstance(project, str) or not project:
                             if classification_counts is not None:
                                 classification_counts["lifecycle_evidence_incomplete"] += 1
+                            result["reward_product_failure_stage"] = "reward_identity_missing"
                             raise ValueError("unapproved_reward_product")
                         if managed_assets is not None and asset not in managed_assets:
                             if classification_counts is not None:
@@ -1772,7 +1777,7 @@ def diagnose_chunked_balance_flows(
                 if code == "unapproved_reward_product"
                 else "balance_history_incomplete"
             )
-            return {
+            failure = {
                 "reason_code": reason,
                 "history_complete_for_requested_surfaces": False,
                 "history_counts": counts,
@@ -1782,6 +1787,9 @@ def diagnose_chunked_balance_flows(
                 "baseline_rows_available": False,
                 "execution_authority_granted": False,
             }
+            if code == "unapproved_reward_product" and classification_counts["lifecycle_evidence_incomplete"] > 0:
+                failure["reward_product_failure_stage"] = "lifecycle_conservation_unverified"
+            return failure
 
     result = {
         "reason_code": "balance_history_activity_summary",
