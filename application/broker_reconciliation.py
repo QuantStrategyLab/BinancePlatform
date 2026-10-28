@@ -54,6 +54,10 @@ _REWARD_PRODUCT_FAILURE_STAGES = frozenset({
     "reward_identity_missing",
     "lifecycle_conservation_unverified",
 })
+_REWARD_IDENTITY_ISSUES = frozenset({
+    "asset_missing", "asset_null", "asset_non_string", "project_missing",
+    "project_null", "project_empty", "project_non_string",
+})
 
 
 class BinanceReconciliationReadError(RuntimeError):
@@ -1494,6 +1498,17 @@ def diagnose_balance_flows(
                             if classification_counts is not None:
                                 classification_counts["lifecycle_evidence_incomplete"] += 1
                             result["reward_product_failure_stage"] = "reward_identity_missing"
+                            if not isinstance(asset, str):
+                                issue = "asset_missing" if "asset" not in row else "asset_null" if asset is None else "asset_non_string"
+                            elif "projectId" not in row:
+                                issue = "project_missing"
+                            elif project is None:
+                                issue = "project_null"
+                            elif not isinstance(project, str):
+                                issue = "project_non_string"
+                            else:
+                                issue = "project_empty"
+                            result["reward_identity_issue"] = issue
                             raise ValueError("unapproved_reward_product")
                         if managed_assets is not None and asset not in managed_assets:
                             if classification_counts is not None:

@@ -235,6 +235,7 @@ def test_actual_rejected_history_preserves_only_partial_classification(monkeypat
     assert result['classification_scope'] == 'partial_history'
     assert result['reward_product_classification_counts'][classification] == 1
     assert result['reward_product_failure_stage'] == stage
+    assert result['reward_identity_issue'] == ('project_missing' if case == 'missing_identity' else None)
     assert type(result['chunk_count']) is int and result['chunk_count'] > 0
     assert result['no_order'] is True and result['write_performed'] is False
     assert result['execution_authority_granted'] is False
@@ -292,6 +293,12 @@ def test_blocked_projection_requires_partial_contract_and_sanitizes_counts():
         assert diagnostic.project_result(marked,exit_code=2)['reward_product_failure_stage'] == stage
         for changes in ({'reason_code':'historical_readonly_failed'}, {'owner_absent':False}):
             assert 'reward_product_failure_stage' not in diagnostic.project_result(marked|changes,exit_code=2)
+    marked = value | {'reward_product_failure_stage': 'reward_identity_missing',
+                      'reward_identity_issue': 'project_missing'}
+    assert diagnostic.project_result(marked, exit_code=2)['reward_identity_issue'] == 'project_missing'
+    for issue in ('PRIVATE', 123456789, None, {}, False):
+        assert 'reward_identity_issue' not in diagnostic.project_result(marked | {'reward_identity_issue': issue}, exit_code=2)
+    assert 'reward_identity_issue' not in diagnostic.project_result(marked | {'reward_product_failure_stage': 'lifecycle_conservation_unverified'}, exit_code=2)
     for stage in ('PRIVATE','123456789',{},[],None,1,False):
         marked = value|{'reward_product_failure_stage':stage}
         assert 'reward_product_failure_stage' not in diagnostic.project_result(marked,exit_code=2)

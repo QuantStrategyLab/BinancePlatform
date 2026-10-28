@@ -136,6 +136,7 @@ def test_partial_failure_stage_never_infers_or_preserves_free_values(stage):
 @pytest.mark.parametrize('days', [1,8])
 @pytest.mark.parametrize('case,expected_stage', [
     ('missing_asset','reward_identity_missing'), ('missing_product','reward_identity_missing'),
+    ('null_asset','reward_identity_missing'), ('null_product','reward_identity_missing'),
     ('empty_product','reward_identity_missing'), ('nonstring_product','reward_identity_missing'),
     ('no_subscription','lifecycle_conservation_unverified'), ('invalid_time',None),
     ('out_of_scope',None),
@@ -151,8 +152,12 @@ def test_real_history_failure_stage_reports_only_the_executed_guard(days,case,ex
                        rewards='0.01',time=kwargs['data']['startTime']+1)
             if case == 'missing_asset':
                 row.pop('asset')
+            elif case == 'null_asset':
+                row['asset'] = None
             elif case == 'missing_product':
                 row.pop('projectId')
+            elif case == 'null_product':
+                row['projectId'] = None
             elif case == 'empty_product':
                 row['projectId'] = ''
             elif case == 'nonstring_product':
@@ -167,6 +172,10 @@ def test_real_history_failure_stage_reports_only_the_executed_guard(days,case,ex
         start=OPENING_AT,end=OPENING_AT+timedelta(days=days),now=OPENING_AT+timedelta(days=days),
         managed_reward_assets=('BNB',),approved_reward_products={('BNB','BNB001')})
     assert result.get('reward_product_failure_stage') == expected_stage
+    expected_issue = {'missing_asset': 'asset_missing', 'null_asset': 'asset_null',
+                      'missing_product': 'project_missing', 'null_product': 'project_null',
+                      'empty_product': 'project_empty', 'nonstring_product': 'project_non_string'}.get(case)
+    assert result.get('reward_identity_issue') == expected_issue
     assert result['execution_authority_granted'] is False
     assert result['history_complete_for_requested_surfaces'] is False
     if expected_stage:
