@@ -178,3 +178,21 @@ def test_optional_project_label_is_not_required_for_exact_balance_math(project):
     payload["balances"][1]["free"] = "10.1"
     result = bonus_diagnosis(payload, [reward(projectId=project)])
     assert result["historical_balance_hashes_match"] is True
+
+
+def test_bonus_reward_product_id_is_used_for_in_memory_duplicate_detection():
+    payload = account()
+    payload['balances'][1]['free'] = '10.1'
+    row = reward()
+    project = row.pop('projectId')
+    row['productId'] = project
+    assert bonus_diagnosis(payload, [row])['historical_balance_hashes_match'] is True
+    duplicate = dict(row, projectId=project)
+    result = bonus_diagnosis(payload, [row, duplicate])
+    assert result['validation_failure_code'] == 'reward_record_duplicate'
+
+
+def test_bonus_reward_conflicting_product_fields_are_rejected():
+    result = bonus_diagnosis(account(), [reward(productId='different')])
+    assert result['validation_failure_code'] == 'reward_project_invalid'
+    assert result['historical_balance_hashes_match'] is False
