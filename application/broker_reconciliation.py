@@ -1200,22 +1200,24 @@ def _reward_field_shape(row, key):
     return "string" if value else "empty"
 
 
-def _reward_shape_summary(rows, parameters):
+def _reward_shape_tuple(row):
+    kind = row.get("type")
+    kind = kind if isinstance(kind, str) and kind in _REWARD_KINDS else "other"
+    project = _reward_field_shape(row, "projectId")
+    product = _reward_field_shape(row, "productId")
+    equality = ("equal" if row["projectId"] == row["productId"] else "different") if project == product == "string" else "unavailable"
+    return kind, project, product, equality
+
+
+def _reward_shape_summary(rows, parameters, trigger):
     # rows arrive only after the existing full-page/total checks succeeded.
-    combinations = set()
-    for row in rows:
-        kind = row.get("type")
-        kind = kind if isinstance(kind, str) and kind in _REWARD_KINDS else "other"
-        project = _reward_field_shape(row, "projectId")
-        product = _reward_field_shape(row, "productId")
-        equality = ("equal" if row["projectId"] == row["productId"] else "different") if project == product == "string" else "unavailable"
-        combinations.add((kind, project, product, equality))
+    combinations = {_reward_shape_tuple(row) for row in rows}
     return {"scope": "complete_reward_surface_in_failed_chunk", "product_filter": "present" if "productId" in parameters else "absent",
-            "combinations": [list(item) for item in sorted(combinations)]}
+            "combinations": [list(item) for item in sorted(combinations)], "trigger": list(_reward_shape_tuple(trigger))}
 
 
 def _validated_reward_shape_summary(value):
-    if not isinstance(value, Mapping) or set(value) != {"scope", "product_filter", "combinations"}:
+    if not isinstance(value, Mapping) or set(value) != {"scope", "product_filter", "combinations", "trigger"}:
         return None
     if (value["scope"] != "complete_reward_surface_in_failed_chunk"
             or type(value["product_filter"]) is not str or value["product_filter"] not in {"present", "absent"}):
@@ -1233,7 +1235,10 @@ def _validated_reward_shape_summary(value):
         if equality not in ({"equal", "different"} if project == product == "string" else {"unavailable"}):
             return None
         out.append(row[:])
-    return {"scope": value["scope"], "product_filter": value["product_filter"], "combinations": out}
+    trigger = value["trigger"]
+    if not isinstance(trigger, list) or trigger not in out:
+        return None
+    return {"scope": value["scope"], "product_filter": value["product_filter"], "combinations": out, "trigger": trigger[:]}
 
 
 def diagnose_balance_flows(
@@ -1560,7 +1565,7 @@ def diagnose_balance_flows(
                             else:
                                 issue = "project_empty"
                             result["reward_identity_issue"] = issue
-                            result["reward_field_shapes"] = _reward_shape_summary(rows, parameters)
+                            result["reward_field_shapes"] = _reward_shape_summary(rows, parameters, row)
                             raise ValueError("unapproved_reward_product")
                         if managed_assets is not None and asset not in managed_assets:
                             if classification_counts is not None:

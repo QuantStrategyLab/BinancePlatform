@@ -3435,7 +3435,8 @@ def test_reward_shape_summary_only_after_all_pages_and_without_values():
     assert pages == [1,2]
     shape = result['reward_field_shapes']
     assert shape == {'scope':'complete_reward_surface_in_failed_chunk', 'product_filter':'absent',
-                     'combinations':[['BONUS','missing','string','unavailable'],['REALTIME','string','string','equal']]}
+                     'combinations':[['BONUS','missing','string','unavailable'],['REALTIME','string','string','equal']],
+                     'trigger':['BONUS','missing','string','unavailable']}
     assert 'SECRET' not in str(shape) and 'PRIVATE' not in str(shape)
     assert result['reward_identity_issue'] == 'project_missing'
     assert result['history_complete_for_requested_surfaces'] is False
