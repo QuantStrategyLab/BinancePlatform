@@ -1,6 +1,7 @@
 """Production provenance stays diagnostic-only, with actual accounting replay."""
 import copy
 import json
+import os
 import subprocess
 from types import SimpleNamespace
 
@@ -238,3 +239,54 @@ def test_dedicated_context_rejects_main_wrong_pin_and_other_modes(monkeypatch):
         with pytest.raises(ValueError,match='tool_revision_mismatch'):
             migration.require_runtime_context(diagnostic.ACTION)
     assert head
+
+
+@pytest.mark.parametrize("exception,reason,expected", [
+    ("blocked", "historical_readonly_owned", "historical_readonly_owned"),
+    ("blocked", "historical_continuity_archive_invalid", "historical_continuity_archive_invalid"),
+    ("blocked", "historical_continuity_history_incomplete", "historical_continuity_history_incomplete"),
+    ("blocked", "PRIVATE_ACCOUNT_123456789", "historical_readonly_failed"),
+    ("value", "PRIVATE_BALANCE_123456789", "historical_readonly_failed"),
+    ("type", "PRIVATE_ACCOUNT_123456789", "migration_blocked"),
+    ("type", "historical_readonly_owned", "migration_blocked"),
+    ("success", "", None),
+])
+def test_real_script_entry_preserves_only_fixed_diagnostic_errors(tmp_path,monkeypatch,exception,reason,expected):
+    # Importing the helper creates the named MigrationBlocked class. Running the
+    # actual CLI then creates __main__.MigrationBlocked: do not replace this with
+    # an imported main() call, which would miss the production launcher defect.
+    install_production_context(monkeypatch)
+    attempted = tmp_path / "unexpected-network"
+    startup = tmp_path / "sitecustomize.py"
+    startup.write_text(
+        "from scripts import historical_continuity_readonly as diagnostic\n"
+        "import socket\n"
+        "from pathlib import Path\n"
+        "class NoNetwork(socket.socket):\n"
+        "    def connect(self, *args, **kwargs):\n"
+        f"        Path({str(attempted)!r}).touch()\n"
+        "        raise AssertionError('external connection forbidden')\n"
+        "    connect_ex = connect\n"
+        "socket.socket = NoNetwork\n"
+        "def synthetic_result(**kwargs):\n"
+        f"    kind, reason = {exception!r}, {reason!r}\n"
+        "    if kind == 'success':\n"
+        "        return dict(status='diagnosed', no_order=True, write_performed=False, execution_authority_granted=False)\n"
+        "    error = {'blocked':diagnostic.migration.MigrationBlocked, 'value':ValueError, 'type':TypeError}[kind]\n"
+        "    raise error(reason)\n"
+        "diagnostic.run = synthetic_result\n"
+    )
+    env = dict(os.environ, PYTHONPATH=str(tmp_path)+os.pathsep+str(migration.ROOT))
+    result = subprocess.run([str(migration.ROOT/'.venv/bin/python'),
+                             'scripts/migrate_daily_accounting_state.py',diagnostic.ACTION],
+                            cwd=migration.ROOT,env=env,capture_output=True,text=True,check=False)
+    assert not attempted.exists()
+    assert result.stderr == '' and 'PRIVATE' not in result.stdout and '123456789' not in result.stdout
+    output = json.loads(result.stdout)
+    assert output['no_order'] is True
+    if expected is None:
+        assert result.returncode == 0 and output['status'] == 'diagnosed'
+        assert output['write_performed'] is False and output['execution_authority_granted'] is False
+    else:
+        assert result.returncode == 2 and output['status'] == 'blocked'
+        assert output['reason_code'] == expected
