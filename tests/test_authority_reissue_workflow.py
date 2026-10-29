@@ -52,7 +52,7 @@ def test_app_token_is_scoped_and_wired_before_authority_materialization() -> Non
 
 def test_manual_inputs_and_existing_stop_contract_remain() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
-    docs = (WORKFLOW.parents[2] / "docs" / "authority_reissue.md").read_text(encoding="utf-8")
+    docs = (WORKFLOW.parents[2] / "docs" / "authority-reissue.md").read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
     assert "options: [plan, apply]" in workflow

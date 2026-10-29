@@ -1,7 +1,7 @@
 # OCI JIT shadow deployment preflight
 
 This directory is the first implementation batch for the disposable Oracle
-Cloud Compute runner selected in `docs/runtime_isolation_migration.md`. It is a
+Cloud Compute runner selected in `docs/runtime-isolation-migration.md`. It is a
 **non-applying control-plane contract**. It does not call OCI, register a GitHub
 runner, read a secret, change the Binance allowlist, or alter the current live
 runner.
