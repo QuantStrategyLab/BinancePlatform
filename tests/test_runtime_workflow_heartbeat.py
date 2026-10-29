@@ -85,7 +85,7 @@ class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
         self.assertIn("source-id: binance.runtime-target-lifecycle", workflow)
         self.assertIn("EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}", workflow)
         self.assertTrue(action_lines)
-        self.assertTrue(all("@" in line and len(line.rsplit("@", 1)[1].split()[0]) == 40 for line in action_lines))
+        self.assertTrue(all(line == "uses: ./.github/workflows/runtime-protected.yml" or ("@" in line and len(line.rsplit("@", 1)[1].split()[0]) == 40) for line in action_lines))
 
     def test_runtime_heartbeat_workflow_passes_notification_locale(self) -> None:
         workflow = (
