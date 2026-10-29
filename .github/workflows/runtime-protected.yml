@@ -4,10 +4,22 @@ on:
   workflow_call:
     inputs:
       runtime_daily_only:
-        description: Read existing reports and publish the scheduled daily projection only
+        description: Run only the protected daily projection or its read-only checks
         type: boolean
         required: false
         default: false
+      runtime_daily_compare_nonce:
+        type: string
+        required: false
+        default: ""
+      runtime_daily_preflight_only:
+        type: boolean
+        required: false
+        default: true
+      runtime_daily_business_date:
+        type: string
+        required: false
+        default: ""
       validate_only:
         description: "Validate actual configuration, recovery control and strategy startup without broker credentials or execution"
         required: false
@@ -126,7 +138,7 @@ env:
 
 jobs:
   runtime-daily:
-    if: ${{ inputs.runtime_daily_only && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
+    if: ${{ inputs.runtime_daily_only && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
     runs-on: ubuntu-latest
     environment: binance-runtime
     timeout-minutes: 15
@@ -145,6 +157,8 @@ jobs:
       EXECUTION_EVIDENCE_SYNC_URL: ${{ vars.EXECUTION_EVIDENCE_SYNC_URL }}
       EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}
       RUNTIME_TARGET_JSON: ${{ secrets.PRIVATE_RUNTIME_TARGET_JSON }}
+      RUNTIME_DAILY_COMPARE_NONCE: ${{ inputs.runtime_daily_compare_nonce }}
+      RUNTIME_DAILY_BUSINESS_DATE: ${{ inputs.runtime_daily_business_date }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -153,12 +167,24 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --frozen --no-dev
       - name: Authenticate existing report reader
+        if: ${{ github.event_name == 'schedule' || (inputs.runtime_daily_compare_nonce == '' && !inputs.runtime_daily_preflight_only) }}
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+        if: ${{ github.event_name == 'schedule' || (inputs.runtime_daily_compare_nonce == '' && !inputs.runtime_daily_preflight_only) }}
+      - name: Compare protected source without publication
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_daily_compare_nonce != '' }}
+        run: PYTHONPATH=. uv run --no-sync python -m scripts.compare_daily_source
+      - name: Check existing receiver authentication without data writes
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_daily_compare_nonce == '' && inputs.runtime_daily_preflight_only }}
+        run: PYTHONPATH=. uv run --no-sync python -m scripts.publish_runtime_daily --preflight
+      - name: Publish one protected projection
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.runtime_daily_compare_nonce == '' && !inputs.runtime_daily_preflight_only }}
+        run: PYTHONPATH=. uv run --no-sync python -m scripts.publish_runtime_daily
       - name: Publish current business day's existing reports
+        if: ${{ github.event_name == 'schedule' }}
         continue-on-error: true
         run: |
           RUNTIME_DAILY_BUSINESS_DATE="$(TZ=America/New_York date +%F)"
