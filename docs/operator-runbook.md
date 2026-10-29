@@ -111,7 +111,7 @@ passes after the existing cycle reaches `cycle_complete` with a real risk
 result. Missing or invalid source material fails closed before broker reads.
 
 Maintenance-only authority version reissue (strategy + runner fields, matching
-SHA256, and source revision) is documented in `docs/authority_reissue.md`. That
+SHA256, and source revision) is documented in `docs/authority-reissue.md`. That
 entry never enables `RUNTIME_TARGET_ENABLED`, never changes `RECONCILE_ONLY` or
 mandate values, and never dispatches Runtime or full-cycle validation.
 
@@ -576,7 +576,7 @@ The broker job has repository read permission only. Successful execution reports
 
 The staged replacement architecture, no-order shadow proof, deployment preflight,
 and rollback fence are documented in
-[`runtime_isolation_migration.md`](runtime_isolation_migration.md). That plan is
+[`runtime-isolation-migration.md`](runtime-isolation-migration.md). That plan is
 informational until a separately reviewed live cutover is approved; the current
 runtime remains authoritative.
 

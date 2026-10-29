@@ -50,7 +50,7 @@ No baseline is enrolled, inferred from current observations, or rewritten.
 
 Pass the emitted `observation.json` to the companion repository's
 `scripts/offline_reconciliation_console.mjs`. See that repository's
-`docs/offline_reconciliation_observation.md` for the loopback page and read APIs.
+`docs/offline-reconciliation-observation.md` for the loopback page and read APIs.
 The separate historical section retains the provided recovery fixture exactly,
 including its original stale status. No production endpoint is updated.
 
