@@ -3,6 +3,10 @@ name: Publish one Binance runtime daily projection
 on:
   workflow_dispatch:
     inputs:
+      compare_nonce:
+        description: Optional 64-hex nonce for protected source comparison only
+        type: string
+        required: false
       preflight_only:
         description: Check authentication only; do not read or publish reports
         type: boolean
@@ -24,6 +28,7 @@ jobs:
   publish:
     if: ${{ github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
     runs-on: ubuntu-latest
+    environment: binance-runtime
     timeout-minutes: 15
     env:
       GCP_PROJECT_ID: ${{ vars.BINANCE_MONITOR_GCP_PROJECT_ID }}
@@ -32,11 +37,11 @@ jobs:
       RUNTIME_HEARTBEAT_REPORT_PLATFORM: binance
       RUNTIME_HEARTBEAT_STRATEGY_PROFILE: crypto_live_pool_rotation
       BINANCE_ACCOUNT_FACTS_BINDING_JSON: ${{ secrets.BINANCE_ACCOUNT_FACTS_BINDING_JSON }}
-      BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON: ${{ vars.BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON }}
       BINANCE_ACCOUNT_FACTS_READER_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION }}
       EXECUTION_REPORT_GCS_URI: ${{ vars.EXECUTION_REPORT_GCS_URI || secrets.EXECUTION_REPORT_GCS_URI }}
       EXECUTION_EVIDENCE_SYNC_URL: ${{ vars.EXECUTION_EVIDENCE_SYNC_URL }}
       EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}
+      RUNTIME_DAILY_COMPARE_NONCE: ${{ inputs.compare_nonce }}
       RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}
       RUNTIME_DAILY_BUSINESS_DATE: ${{ inputs.business_date }}
     steps:
@@ -47,16 +52,19 @@ jobs:
       - name: Install locked dependencies
         run: uv sync --frozen --no-dev
       - name: Authenticate existing report reader
-        if: ${{ !inputs.preflight_only }}
+        if: ${{ inputs.compare_nonce == '' && !inputs.preflight_only }}
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       - uses: google-github-actions/setup-gcloud@v3
-        if: ${{ !inputs.preflight_only }}
+        if: ${{ inputs.compare_nonce == '' && !inputs.preflight_only }}
+      - name: Compare protected source without publication
+        if: ${{ inputs.compare_nonce != '' }}
+        run: PYTHONPATH=. uv run --no-sync python -m scripts.compare_daily_source
       - name: Check existing receiver authentication without data writes
-        if: ${{ inputs.preflight_only }}
+        if: ${{ inputs.compare_nonce == '' && inputs.preflight_only }}
         run: PYTHONPATH=. uv run --no-sync python -m scripts.publish_runtime_daily --preflight
       - name: Publish one protected projection
-        if: ${{ !inputs.preflight_only }}
+        if: ${{ inputs.compare_nonce == '' && !inputs.preflight_only }}
         run: PYTHONPATH=. uv run --no-sync python -m scripts.publish_runtime_daily

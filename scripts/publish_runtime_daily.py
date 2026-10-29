@@ -24,7 +24,7 @@ class _NoRedirect(HTTPRedirectHandler):
 
 def _binding(env, target):
     raw = env.get("BINANCE_ACCOUNT_FACTS_BINDING_JSON") or ""
-    scope = reader._expected_scope(env.get("BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON") or "")
+    scope = reader._bound_scope(raw)
     revision = env.get("BINANCE_ACCOUNT_FACTS_READER_REVISION") or ""
     binding = reader._binding(raw, target, scope, revision)
     return binding["account_key"], scope, binding["source_binding"]["id"]
