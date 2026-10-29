@@ -6,6 +6,20 @@ on:
     - cron: "47 * * * *"
 
 jobs:
+  runtime-daily:
+    name: Publish scheduled runtime daily projection
+    if: ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/runtime-protected.yml
+    with:
+      runtime_daily_only: true
+    secrets:
+      PRIVATE_RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}
+      PRIVATE_EXECUTION_REPORT_GCS_URI: ${{ vars.EXECUTION_REPORT_GCS_URI || secrets.EXECUTION_REPORT_GCS_URI }}
+      EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}
+
   observe-scheduler:
     name: Observe Binance scheduler
     if: ${{ github.ref == 'refs/heads/main' }}

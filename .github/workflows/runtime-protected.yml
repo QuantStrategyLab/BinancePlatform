@@ -3,6 +3,11 @@ name: Protected Runtime
 on:
   workflow_call:
     inputs:
+      runtime_daily_only:
+        description: Read existing reports and publish the scheduled daily projection only
+        type: boolean
+        required: false
+        default: false
       validate_only:
         description: "Validate actual configuration, recovery control and strategy startup without broker credentials or execution"
         required: false
@@ -81,6 +86,8 @@ on:
         required: false
       BINANCE_API_SECRET:
         required: false
+      BINANCE_ACCOUNT_FACTS_BINDING_JSON:
+        required: false
       BINANCE_APPROVED_PROSPECTIVE_OPENING:
         required: false
       BINANCE_DIGEST_OPAQUE_ACCOUNT_UID:
@@ -118,7 +125,48 @@ env:
   RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED || 'false' }}
 
 jobs:
+  runtime-daily:
+    if: ${{ inputs.runtime_daily_only && github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
+    runs-on: ubuntu-latest
+    environment: binance-runtime
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ vars.BINANCE_MONITOR_GCP_PROJECT_ID }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.BINANCE_MONITOR_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.BINANCE_MONITOR_GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      RUNTIME_HEARTBEAT_REPORT_PLATFORM: binance
+      RUNTIME_HEARTBEAT_STRATEGY_PROFILE: crypto_live_pool_rotation
+      BINANCE_ACCOUNT_FACTS_BINDING_JSON: ${{ secrets.BINANCE_ACCOUNT_FACTS_BINDING_JSON }}
+      BINANCE_ACCOUNT_FACTS_READER_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION }}
+      EXECUTION_REPORT_GCS_URI: ${{ secrets.PRIVATE_EXECUTION_REPORT_GCS_URI }}
+      EXECUTION_EVIDENCE_SYNC_URL: ${{ vars.EXECUTION_EVIDENCE_SYNC_URL }}
+      EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}
+      RUNTIME_TARGET_JSON: ${{ secrets.PRIVATE_RUNTIME_TARGET_JSON }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9
+      - name: Install locked dependencies
+        run: uv sync --frozen --no-dev
+      - name: Authenticate existing report reader
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3
+      - name: Publish current business day's existing reports
+        continue-on-error: true
+        run: |
+          RUNTIME_DAILY_BUSINESS_DATE="$(TZ=America/New_York date +%F)"
+          export RUNTIME_DAILY_BUSINESS_DATE
+          PYTHONPATH=. uv run --no-sync python -m scripts.publish_runtime_daily
+
   deploy:
+    if: ${{ !inputs.runtime_daily_only }}
     runs-on: self-hosted
     timeout-minutes: 60
     environment: binance-runtime

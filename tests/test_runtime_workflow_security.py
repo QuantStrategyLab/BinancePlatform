@@ -23,6 +23,7 @@ def test_runtime_does_not_automatically_run_optional_account_facts() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     jobs = workflow.split("\njobs:\n", 1)[1]
     assert re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.MULTILINE) == [
+        "runtime-daily",
         "deploy",
     ]
     assert "account-facts-readonly:" not in jobs
@@ -453,7 +454,7 @@ def test_lifecycle_workflow_is_read_only_and_uses_pinned_actions() -> None:
     action_lines = [line.strip() for line in workflow.splitlines() if "uses:" in line]
 
     assert action_lines
-    assert all(FULL_SHA_ACTION.fullmatch(line) for line in action_lines)
+    assert all(FULL_SHA_ACTION.fullmatch(line) or line == "uses: ./.github/workflows/runtime-protected.yml" for line in action_lines)
     assert "BINANCE_API_KEY" not in workflow
     assert "BINANCE_API_SECRET" not in workflow
     assert "contents: write" not in workflow
