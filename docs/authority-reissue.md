@@ -125,3 +125,20 @@ coordinate before `apply`.
 2. Run existing `validate_only=true` + `full_cycle=true` with runtime disabled.
 3. Only `cycle_complete` + real risk `APPROVE` counts; do not auto-enable
    `RUNTIME_TARGET_ENABLED`.
+
+## Read-only authority projection
+
+The read-only authority projection reports its schema-checked metadata and an
+`authority-observation/v1` observation with the local process clock's UTC time;
+clock accuracy is not independently verified. The fixed interval timing is
+`within_declared_fixed_interval` only when the declared start is at or before
+the observation time and the declared expiry is later.
+Other results are `not_yet_effective`, `expired`, or `invalid_interval`.
+For an until-revoked mandate, `after_effective_revocation_unknown` means only
+that its declared start has passed; the projection cannot verify revocation.
+
+The target comparison is `unavailable`: this projection does not independently
+read the runtime target. Timing and schema observations do not establish target
+binding, current strategy or runner approval, installed revisions, configuration
+binding, running state, risk approval, or trading authority. A `projected`
+status does not mean that the current strategy is authorized to trade.

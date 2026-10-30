@@ -11,7 +11,7 @@ import json
 import math
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 _FIELDS = {
     "decision", "authority_scope", "runtime_target", "strategy_revision",
@@ -118,7 +118,23 @@ def _validate_schema(payload: object) -> None:
         _require(mandate["validity_mode"] in ("fixed_expiry", "until_revoked"))
 
 
-def project(raw_text: str, expected_digest: str, source_revision: str) -> dict[str, str]:
+def _timing_observation(mandate: dict, now_utc: datetime) -> str:
+    effective = datetime.fromisoformat(mandate["effective_at"].replace("Z", "+00:00"))
+    mode = mandate.get("validity_mode", "fixed_expiry")
+    if mode == "until_revoked":
+        return "not_yet_effective" if now_utc < effective else "after_effective_revocation_unknown"
+    expires = datetime.fromisoformat(mandate["expires_at"].replace("Z", "+00:00"))
+    if expires <= effective:
+        return "invalid_interval"
+    if now_utc < effective:
+        return "not_yet_effective"
+    if now_utc >= expires:
+        return "expired"
+    return "within_declared_fixed_interval"
+
+
+def project(raw_text: str, expected_digest: str, source_revision: str, *,
+            now_utc: datetime | None = None) -> dict[str, str]:
     raw = raw_text.encode("utf-8")
     _require(0 < len(raw) <= 65_536)
     _hex(expected_digest, 64)
@@ -128,6 +144,8 @@ def project(raw_text: str, expected_digest: str, source_revision: str) -> dict[s
     payload = json.loads(raw, object_pairs_hook=_pairs, parse_float=_finite_float,
                          parse_constant=_invalid_constant)
     _validate_schema(payload)
+    now = datetime.now(timezone.utc) if now_utc is None else now_utc
+    _require(isinstance(now, datetime) and now.tzinfo is not None and now.utcoffset() == timedelta(0))
     return {
         "status": "projected",
         "strategy_revision": payload["strategy_revision"],
@@ -135,6 +153,10 @@ def project(raw_text: str, expected_digest: str, source_revision: str) -> dict[s
         "config_sha256": payload["config_sha256"],
         "authority_sha256": digest,
         "authority_source_revision": source_revision,
+        "observation_version": "authority-observation/v1",
+        "observed_at": now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "mandate_timing": _timing_observation(payload["mandate"], now),
+        "target_comparison": "unavailable",
     }
 
 
