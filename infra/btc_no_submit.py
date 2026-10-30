@@ -2,6 +2,7 @@
 
 from collections.abc import Mapping
 from math import isclose, isfinite
+from decimal import Decimal
 
 
 def _number(value):
@@ -10,7 +11,7 @@ def _number(value):
     return float(value)
 
 
-def approved_buy_amount(decision, account_metrics):
+def approved_buy_amount(decision, account_metrics, *, usdt_parts):
     """Validate the planned increment; callers must first enforce risk approval.
 
     This is a validation proposal, not an order or an execution simulation.
@@ -25,6 +26,7 @@ def approved_buy_amount(decision, account_metrics):
     amount = _number(diagnostics.get("planned_investment_usd"))
     equity = _number(account_metrics.get("total_equity"))
     current = _number(account_metrics.get("dca_value"))
+    managed_usdt = _number(account_metrics.get("cash_usdt"))
     ratio = _number(diagnostics.get("btc_target_ratio"))
     reported_current = _number(diagnostics.get("btc_value_usd"))
     reported_target = _number(diagnostics.get("target_btc_value_usd"))
@@ -52,6 +54,23 @@ def approved_buy_amount(decision, account_metrics):
             or not isclose(equity * ratio, current + amount, rel_tol=1e-9, abs_tol=1e-6)
             or (("no_execute" in decision.risk_flags) != (amount == 0.0))):
         raise ValueError("btc_validation_plan_invalid")
+    if Decimal(str(amount)) > Decimal(str(managed_usdt)):
+        raise ValueError("btc_validation_insufficient_managed_usdt")
+    if amount > 0:
+        from infra.btc_attribution import AttributionBlocked, _amount
+
+        if not isinstance(usdt_parts, Mapping) or set(usdt_parts) != {"spot_free", "spot_locked", "earn", "managed_total"}:
+            raise ValueError("btc_validation_usdt_split_unavailable")
+        try:
+            free = _amount(usdt_parts["spot_free"])
+            _amount(usdt_parts["spot_locked"])
+            _amount(usdt_parts["earn"])
+            if _number(usdt_parts["managed_total"]) != managed_usdt:
+                raise ValueError("btc_validation_usdt_split_unavailable")
+        except (AttributionBlocked, OverflowError):
+            raise ValueError("btc_validation_usdt_split_unavailable") from None
+        if Decimal(str(amount)) > free:
+            raise ValueError("btc_validation_insufficient_spot_usdt")
     return amount
 
 

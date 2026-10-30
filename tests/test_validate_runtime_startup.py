@@ -76,6 +76,12 @@ def test_startup_validation_rejects_broker_credentials(monkeypatch):
     ("crypto_live_pool_rotation", "runner_revision_mismatch"),
     ("crypto_live_pool_rotation", "malformed_strategy_revision"),
     ("crypto_btc_dca", "ordinary_buy"),
+    ("crypto_btc_dca", "spot_insufficient"),
+    ("crypto_btc_dca", "locked_only"),
+    ("crypto_btc_dca", "earn_only"),
+    ("crypto_btc_dca", "spot_exact"),
+    ("crypto_btc_dca", "spot_decimal"),
+    ("crypto_btc_dca", "checkpoint_missing_split"),
     ("crypto_btc_dca", "exit_valid"),
     ("crypto_btc_dca", "exit_missing"),
     ("crypto_btc_dca", "exit_unsettled"),
@@ -154,6 +160,12 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
                                  base_investment_usd=0.0)
         if scenario == "insufficient_cash":
             btc_overrides["cash_reserve_usd"] = 1000.0
+        if scenario == "spot_decimal":
+            btc_overrides.update(base_investment_usd=0.1, min_investment_usd=0.01)
+        if scenario == "spot_exact":
+            # With smart multiplication off, a small explicit base is below
+            # this fixture's risk/target cap and produces an exact boundary.
+            btc_overrides["base_investment_usd"] = 10.0
         import strategy_runtime
 
         build_loaded = strategy_runtime._build_loaded_strategy_runtime
@@ -262,6 +274,49 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     replay_runtime, replay_client, state_store, _ = run_cycle_replay.build_replay_runtime(
         run_id="full-cycle-live-builder-fixture", dry_run=True, now_utc=now,
     )
+    spot_scenarios = {"spot_insufficient", "locked_only", "earn_only", "spot_exact", "spot_decimal"}
+    if scenario in spot_scenarios:
+        free = {"spot_insufficient": "1", "locked_only": "0", "earn_only": "0", "spot_exact": "10", "spot_decimal": "0.1"}[scenario]
+        locked = {"spot_insufficient": "199", "locked_only": "200", "spot_decimal": "0.2"}.get(scenario, "0")
+        earn = {"earn_only": "200", "spot_exact": "190"}.get(scenario, "0")
+        replay_client.account_snapshot["spot_balances"]["USDT"] = {"free": free, "locked": locked}
+        replay_client.account_snapshot["earn_positions"]["USDT"] = {"rows": (
+            [{"asset": "USDT", "productId": "fixture-usdt", "totalAmount": earn}] if earn != "0" else []
+        )}
+    balance_reads = []
+    original_balance_read = replay_client.get_asset_balance
+
+    def count_balance_reads(*, asset):
+        balance_reads.append(asset)
+        return original_balance_read(asset=asset)
+
+    replay_client.get_asset_balance = count_balance_reads
+    checkpoint_calls = []
+    expected_checkpoint_assets = []
+    if scenario == "checkpoint_missing_split":
+        import application.earn_accrual as earn_accrual
+
+        original_load = main._load_cycle_state
+
+        def load_with_checkpoint(*args, **kwargs):
+            result = original_load(*args, **kwargs)
+            state, _, universe, _ = result
+            assets = {"USDT", "BTC", "BNB"} | {item["base_asset"] for item in universe.values()}
+            expected_checkpoint_assets.append(assets)
+            state["earn_accrual_checkpoint"] = {
+                "assets": {asset: {} for asset in assets}, "account_scope_sha256": "a" * 64,
+            }
+            return result
+
+        def checkpoint(_client, *, assets, observed_at, expected_account_scope_sha256):
+            checkpoint_calls.append((set(assets), expected_account_scope_sha256))
+            quantities = {"USDT": "1000", "BTC": "0", "BNB": "0.1"}
+            return {"observed_at": now.isoformat(), "assets": {
+                asset: {"quantity": quantities.get(asset, "0")} for asset in assets
+            }}
+
+        monkeypatch.setattr(main, "_load_cycle_state", load_with_checkpoint)
+        monkeypatch.setattr(earn_accrual, "collect_earn_checkpoint", checkpoint)
     exit_scenarios = {"exit_valid", "exit_missing", "exit_unsettled", "exit_other_account", "exit_spot_earn_mismatch"}
     if scenario in exit_scenarios:
         replay_client.account_snapshot["spot_balances"]["BTC"]["free"] = "0.01"
@@ -387,14 +442,31 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         return runtime
 
     reports = []
+    buy_checks = []
+    if scenario in spot_scenarios | {"checkpoint_missing_split"}:
+        import infra.btc_no_submit as btc_no_submit
+
+        approve_buy = btc_no_submit.approved_buy_amount
+
+        def observe_buy(decision, metrics, *, usdt_parts):
+            planned = decision.diagnostics["planned_investment_usd"]
+            try:
+                result = approve_buy(decision, metrics, usdt_parts=usdt_parts)
+            except ValueError as exc:
+                buy_checks.append((dict(metrics), dict(usdt_parts or {}), str(exc), planned))
+                raise
+            buy_checks.append((dict(metrics), dict(usdt_parts or {}), None, planned))
+            return result
+
+        monkeypatch.setattr(btc_no_submit, "approved_buy_amount", observe_buy)
     observed_exit_plans = []
     if scenario == "synthetic_smart":
         import infra.btc_no_submit as btc_no_submit
 
         approve_amount = btc_no_submit.approved_buy_amount
 
-        def capture_exit_plan(decision, metrics):
-            amount = approve_amount(decision, metrics)
+        def capture_exit_plan(decision, metrics, *, usdt_parts):
+            amount = approve_amount(decision, metrics, usdt_parts=usdt_parts)
             exit_plan = decision.diagnostics["zscore_exit"]
             observed_exit_plans.append((exit_plan["route"], exit_plan["applied"]))
             return amount
@@ -416,6 +488,28 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         try:
             result = validate_full_cycle(runtime_builder=build, client_connector=lambda *_args, **_kwargs: replay_client)
         except FullCycleValidationError as exc:
+            if scenario in {"spot_insufficient", "locked_only", "earn_only", "checkpoint_missing_split"}:
+                assert exc.reason_code == "full_cycle_cycle_error"
+                assert exc.failure_stage == "portfolio_allocation"
+                assert balance_reads.count("USDT") == (0 if scenario == "checkpoint_missing_split" else 1)
+                expected_reason = ("btc_validation_usdt_split_unavailable" if scenario == "checkpoint_missing_split"
+                                   else "btc_validation_insufficient_spot_usdt")
+                assert len(buy_checks) == 1 and buy_checks[0][2] == expected_reason
+                if scenario == "checkpoint_missing_split":
+                    assert buy_checks[0][1] == {}
+                    assert len(checkpoint_calls) == 1
+                    assets, account_scope_hash = checkpoint_calls[0]
+                    assert len(expected_checkpoint_assets) == 1
+                    assert assets == expected_checkpoint_assets[0]
+                    assert {"USDT", "BTC", "BNB"} <= assets
+                    assert account_scope_hash == "a" * 64
+                else:
+                    assert buy_checks[0][0]["cash_usdt"] == 200
+                    assert buy_checks[0][1]["managed_total"] == 200
+                    assert buy_checks[0][3] > float(buy_checks[0][1]["spot_free"])
+                assert replay_client.side_effect_calls == []
+                assert state_store.write_calls == []
+                return
             if scenario in {"exit_missing", "exit_unsettled", "exit_other_account", "exit_spot_earn_mismatch"}:
                 assert exc.reason_code == "full_cycle_cycle_error"
                 assert exc.failure_stage == "portfolio_allocation"
@@ -444,7 +538,8 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
                 pytrace=False,
             )
 
-    if scenario in {"exit_missing", "exit_unsettled", "exit_other_account", "exit_spot_earn_mismatch",
+    if scenario in {"spot_insufficient", "locked_only", "earn_only", "checkpoint_missing_split",
+                    "exit_missing", "exit_unsettled", "exit_other_account", "exit_spot_earn_mismatch",
                     "missing_smart_input", "future_cycle_input", "stale_cycle_input",
                     "conflicting_cycle_input", "missing_flags", "invalid_smart_flag", "invalid_cycle_flag",
                     "stale_btc_history", "malformed_btc_history",
@@ -464,11 +559,19 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
             assert proposals[0] == {"action": "sell", "symbol": "BTCUSDT", "quantity": "0.005",
                                     "proposal_only": True, "execution_ready": False,
                                     "source_authenticated": False, "completeness_authenticated": False}
-        elif scenario in {"ordinary_buy", "synthetic_smart", "snapshot_removed", "smart_without_cycle"}:
+        elif scenario in {"ordinary_buy", "synthetic_smart", "snapshot_removed", "smart_without_cycle", "spot_exact", "spot_decimal"}:
             assert len(proposals) == 1
             assert proposals[0]["action"] == "buy"
             assert proposals[0]["proposal_only"] is True
             assert proposals[0]["budget"] > 0
+            if scenario in {"spot_exact", "spot_decimal"}:
+                expected_budget = 10.0 if scenario == "spot_exact" else 0.1
+                assert proposals[0]["budget"] == expected_budget
+                assert balance_reads.count("USDT") == 1
+                assert buy_checks and all(
+                    check[2] is None and check[3] == expected_budget
+                    and float(check[1]["spot_free"]) == expected_budget for check in buy_checks
+                )
             if scenario in {"synthetic_smart", "snapshot_removed"}:
                 # Pre/post allocation and both real trend-plan evaluations use the same input.
                 assert len(consumed_inputs) >= 4

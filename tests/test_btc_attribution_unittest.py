@@ -57,6 +57,24 @@ class AttributionTests(unittest.TestCase):
         self.assertEqual(calls, ["spot", "earn"])
         self.assertEqual(parts, {"spot_free": "0", "spot_locked": "0", "earn": "0.69"})
 
+    def test_usdt_parts_use_existing_reads_and_preserve_locked_and_earn(self):
+        calls = []
+        class Broker:
+            def get_asset_balance(self, **kwargs):
+                calls.append(("spot", kwargs["asset"]))
+                return {"free": "50", "locked": "25"}
+            def get_simple_earn_flexible_product_position(self, **kwargs):
+                calls.append(("earn", kwargs["asset"]))
+                return {"rows": [{"totalAmount": "125"}]}
+        def existing_read(client, asset, *, log_buffer):
+            client.get_asset_balance(asset=asset)
+            client.get_simple_earn_flexible_product_position(asset=asset, current=1, size=100)
+            return 200.0
+        parts = {}
+        self.assertEqual(read_btc_balance_with_parts(existing_read, Broker(), "USDT", log_buffer=[], output=parts), 200)
+        self.assertEqual(calls, [("spot", "USDT"), ("earn", "USDT")])
+        self.assertEqual(parts, {"spot_free": "50", "spot_locked": "25", "earn": "125", "managed_total": 200.0})
+
     def test_missing_duplicate_unknown_and_conservation_block(self):
         for mutation in ({"complete": False}, {"unsettled_orders": [{"id": "unknown"}]},
                          {"opening_spot_btc": None}, {"observed_spot_free_btc": "0.55"},
