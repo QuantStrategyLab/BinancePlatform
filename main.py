@@ -949,13 +949,21 @@ def _append_trend_pool_source_logs(log_buffer, trend_pool_resolution, allow_new_
     )
 
 
-def _capture_market_snapshot(runtime, report, runtime_trend_universe, log_buffer, *, validation_scope="standard"):
+def _capture_market_snapshot(runtime, report, runtime_trend_universe, log_buffer, *, validation_scope="standard",
+                             btc_balance_parts=None):
+    get_balance = get_total_balance
+    if validation_scope == "full_cycle_no_submit" and runtime.strategy_profile == "crypto_btc_dca":
+        from infra.btc_attribution import read_btc_balance_with_parts
+
+        def get_balance(client, asset, *, log_buffer):
+            return read_btc_balance_with_parts(get_total_balance, client, asset, log_buffer=log_buffer,
+                                               output=btc_balance_parts if btc_balance_parts is not None else {})
     return ms_capture_market_snapshot(
         runtime,
         report,
         runtime_trend_universe,
         log_buffer,
-        get_total_balance_fn=get_total_balance,
+        get_total_balance_fn=get_balance,
         resolve_btc_snapshot_fn=(resolve_runtime_btc_snapshot if validation_scope == "standard"
                                  else lambda *args: resolve_runtime_btc_snapshot(
                                      *args, validation_scope=validation_scope)),
@@ -1085,7 +1093,7 @@ def _resolve_strategy_plan(
     return strategy_plan
 
 
-def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, prices, u_total, fuel_val, state, trend_indicators, btc_snapshot, *, validation_scope="standard", btc_input_cache=None):
+def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, prices, u_total, fuel_val, state, trend_indicators, btc_snapshot, *, validation_scope="standard", btc_input_cache=None, btc_attribution_evidence=None, btc_balance_parts=None):
     evaluation_as_of = None
     if validation_scope == "full_cycle_no_submit" and runtime.strategy_profile == "crypto_btc_dca":
         from copy import deepcopy
@@ -1146,7 +1154,27 @@ def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, pri
             and allocation["execution_permitted"]):
         from infra.btc_no_submit import approved_buy_amount
 
-        amount = approved_buy_amount(evaluation.decision, evaluation.account_metrics)
+        if btc_input_cache is not None:
+            btc_input_cache.pop("exit_proposal", None)
+        exit_info = evaluation.decision.diagnostics.get("zscore_exit")
+        if isinstance(exit_info, Mapping) and exit_info.get("route") in {"risk_reduced", "risk_off"}:
+            from infra.btc_no_submit import approved_exit_proposal
+
+            target = runtime.runtime_target
+            selectors = getattr(target, "account_selector", ())
+            if not isinstance(selectors, tuple) or len(selectors) != 1:
+                raise ValueError("btc_validation_exit_unsupported")
+            proposal = approved_exit_proposal(
+                evaluation.decision, evaluation.account_metrics, price=prices["BTCUSDT"],
+                account_btc=balances["BTCUSDT"], evidence=btc_attribution_evidence, as_of=evaluation_as_of,
+                account_scope=getattr(target, "account_scope", None), account_selector=selectors[0],
+                broker_parts=btc_balance_parts,
+            )
+            if btc_input_cache is not None:
+                btc_input_cache["exit_proposal"] = proposal
+            amount = 0.0
+        else:
+            amount = approved_buy_amount(evaluation.decision, evaluation.account_metrics)
         allocation["dca_usdt_pool"] = amount
         allocation["btc_base_order_usdt"] = amount
     return allocation
@@ -1432,7 +1460,7 @@ def _execute_btc_dca_cycle(
     )
 
 
-def execute_cycle(runtime, *, validation_scope: str = "standard"):
+def execute_cycle(runtime, *, validation_scope: str = "standard", btc_attribution_evidence=None):
     # B09 PR-3: cycle-scoped universe + strategy handle on RunContext.
     # Bind-time seed may copy module defaults once; while bound, resolves never
     # fall back to module STRATEGY_RUNTIME / TREND_UNIVERSE.
@@ -1440,6 +1468,8 @@ def execute_cycle(runtime, *, validation_scope: str = "standard"):
     if mounted_strategy is None:
         raise RuntimeError("execute_cycle_missing_strategy_runtime")
     btc_validation = validation_scope == "full_cycle_no_submit" and runtime.strategy_profile == "crypto_btc_dca"
+    if btc_attribution_evidence is not None and not btc_validation:
+        raise ValueError("btc_validation_scope_invalid")
     if btc_validation and (runtime.dry_run is not True
                            or runtime.standard_execution_permitted is not False
                            or getattr(runtime.runtime_target, "dry_run_only", None) is not True):
@@ -1450,7 +1480,10 @@ def execute_cycle(runtime, *, validation_scope: str = "standard"):
         dca_usdt_pool, _dca_val, _btc_snapshot, _btc_target_ratio,
         _btc_base_order_usdt, _today_id_str, _log_buffer,
     ):
-        if dca_usdt_pool > 0:
+        proposal = btc_cycle_inputs.get("exit_proposal")
+        if proposal is not None:
+            report["btc_dca_intents"].append(dict(proposal))
+        elif dca_usdt_pool > 0:
             report["btc_dca_intents"].append({
                 "action": "buy", "symbol": "BTCUSDT", "budget": dca_usdt_pool,
                 "proposal_only": True,
@@ -1458,10 +1491,15 @@ def execute_cycle(runtime, *, validation_scope: str = "standard"):
         return u_total
 
     btc_cycle_inputs = {}
+    btc_balance_parts = {}
+    if btc_attribution_evidence is not None:
+        from copy import deepcopy
+        btc_attribution_evidence = deepcopy(btc_attribution_evidence)
 
     def compute_btc_validation_allocation(*args):
         return _compute_portfolio_allocation(
             *args, validation_scope=validation_scope, btc_input_cache=btc_cycle_inputs,
+            btc_attribution_evidence=btc_attribution_evidence, btc_balance_parts=btc_balance_parts,
         )
 
     def execute_btc_validation_trend(*args, **kwargs):
@@ -1486,7 +1524,8 @@ def execute_cycle(runtime, *, validation_scope: str = "standard"):
             append_trend_pool_source_logs=_append_trend_pool_source_logs,
             capture_market_snapshot=(_capture_market_snapshot if validation_scope == "standard"
                                      else lambda *args: _capture_market_snapshot(
-                                         *args, validation_scope=validation_scope)),
+                                         *args, validation_scope=validation_scope,
+                                         **({"btc_balance_parts": btc_balance_parts} if btc_validation else {}))),
             top_up_bnb_fuel=_top_up_bnb_fuel,
             compute_portfolio_allocation=(
                 compute_btc_validation_allocation if btc_validation else _compute_portfolio_allocation

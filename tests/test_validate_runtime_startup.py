@@ -76,6 +76,11 @@ def test_startup_validation_rejects_broker_credentials(monkeypatch):
     ("crypto_live_pool_rotation", "runner_revision_mismatch"),
     ("crypto_live_pool_rotation", "malformed_strategy_revision"),
     ("crypto_btc_dca", "ordinary_buy"),
+    ("crypto_btc_dca", "exit_valid"),
+    ("crypto_btc_dca", "exit_missing"),
+    ("crypto_btc_dca", "exit_unsettled"),
+    ("crypto_btc_dca", "exit_other_account"),
+    ("crypto_btc_dca", "exit_spot_earn_mismatch"),
     ("crypto_btc_dca", "stale_btc_history"),
     ("crypto_btc_dca", "malformed_btc_history"),
     ("crypto_btc_dca", "invalid_last_btc_close"),
@@ -144,6 +149,9 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
             btc_overrides["cycle_indicator_enabled"] = "true"
         if scenario == "smart_without_cycle":
             btc_overrides.update(smart_multiplier_enabled=True, cycle_indicator_enabled=False)
+        if scenario in {"exit_valid", "exit_missing", "exit_unsettled", "exit_other_account", "exit_spot_earn_mismatch"}:
+            btc_overrides.update(zscore_exit_enabled=True, zscore_exit_context={"route": "risk_reduced"},
+                                 base_investment_usd=0.0)
         if scenario == "insufficient_cash":
             btc_overrides["cash_reserve_usd"] = 1000.0
         import strategy_runtime
@@ -254,6 +262,26 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     replay_runtime, replay_client, state_store, _ = run_cycle_replay.build_replay_runtime(
         run_id="full-cycle-live-builder-fixture", dry_run=True, now_utc=now,
     )
+    exit_scenarios = {"exit_valid", "exit_missing", "exit_unsettled", "exit_other_account", "exit_spot_earn_mismatch"}
+    if scenario in exit_scenarios:
+        replay_client.account_snapshot["spot_balances"]["BTC"]["free"] = "0.01"
+        if scenario == "exit_spot_earn_mismatch":
+            replay_client.account_snapshot["spot_balances"]["BTC"]["free"] = "0"
+            replay_client.account_snapshot["earn_positions"]["BTC"]["rows"] = [
+                {"asset": "BTC", "productId": "synthetic", "totalAmount": "0.01"}]
+    exit_evidence = {
+        "contract_version": "btc-attribution/v1", "account_scope": "fixture-scope",
+        "account_selector": "fixture-account", "strategy_profile": "crypto_btc_dca",
+        "source": "synthetic-only", "source_version": "v1", "complete": True,
+        "opening_at": (now - timedelta(days=1)).isoformat(), "observed_through": now.isoformat(),
+        "available_at": now.isoformat(), "opening_spot_btc": "0.01", "opening_earn_btc": "0",
+        "fills": [], "transfers": [], "unsettled_orders": [], "observed_spot_free_btc": "0.01",
+        "observed_earn_btc": "0",
+    }
+    if scenario == "exit_unsettled":
+        exit_evidence["unsettled_orders"] = [{"id": "unknown"}]
+    if scenario == "exit_other_account":
+        exit_evidence["account_selector"] = "other-account"
     historical_calls = []
 
     def historical_klines(symbol, interval, lookback):
@@ -375,6 +403,8 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     execute_cycle = main.execute_cycle
 
     def capture_cycle(*args, **kwargs):
+        if scenario in exit_scenarios and scenario != "exit_missing":
+            kwargs["btc_attribution_evidence"] = exit_evidence
         report = execute_cycle(*args, **kwargs)
         reports.append(report)
         return report
@@ -386,6 +416,12 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         try:
             result = validate_full_cycle(runtime_builder=build, client_connector=lambda *_args, **_kwargs: replay_client)
         except FullCycleValidationError as exc:
+            if scenario in {"exit_missing", "exit_unsettled", "exit_other_account", "exit_spot_earn_mismatch"}:
+                assert exc.reason_code == "full_cycle_cycle_error"
+                assert exc.failure_stage == "portfolio_allocation"
+                assert replay_client.side_effect_calls == []
+                assert state_store.write_calls == []
+                return
             if scenario in {"missing_smart_input", "future_cycle_input", "stale_cycle_input",
                             "conflicting_cycle_input", "missing_flags", "invalid_smart_flag", "invalid_cycle_flag"}:
                 assert exc.failure_stage == "portfolio_allocation"
@@ -408,7 +444,8 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
                 pytrace=False,
             )
 
-    if scenario in {"missing_smart_input", "future_cycle_input", "stale_cycle_input",
+    if scenario in {"exit_missing", "exit_unsettled", "exit_other_account", "exit_spot_earn_mismatch",
+                    "missing_smart_input", "future_cycle_input", "stale_cycle_input",
                     "conflicting_cycle_input", "missing_flags", "invalid_smart_flag", "invalid_cycle_flag",
                     "stale_btc_history", "malformed_btc_history",
                     "invalid_last_btc_close", "uncomputable_last_btc_indicators", "injected_btc_snapshot"}:
@@ -422,7 +459,12 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     if profile == "crypto_btc_dca":
         assert ("BTCUSDT", "1d", "700 days ago UTC") in historical_calls
         proposals = reports[0]["btc_dca_intents"]
-        if scenario in {"ordinary_buy", "synthetic_smart", "snapshot_removed", "smart_without_cycle"}:
+        if scenario == "exit_valid":
+            assert len(proposals) == 1
+            assert proposals[0] == {"action": "sell", "symbol": "BTCUSDT", "quantity": "0.005",
+                                    "proposal_only": True, "execution_ready": False,
+                                    "source_authenticated": False, "completeness_authenticated": False}
+        elif scenario in {"ordinary_buy", "synthetic_smart", "snapshot_removed", "smart_without_cycle"}:
             assert len(proposals) == 1
             assert proposals[0]["action"] == "buy"
             assert proposals[0]["proposal_only"] is True
