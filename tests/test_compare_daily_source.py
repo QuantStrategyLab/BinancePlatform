@@ -1,5 +1,6 @@
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +33,7 @@ def test_same_wallet_target_produces_only_nonce_digest_without_old_reconciliatio
                 "source_binding_id": source, "target_id": "synthetic-target"},
                 "domain": "qsl.binance-daily-binding.v1", "nonce": "c" * 64}
     assert result == hashlib.sha256(json.dumps(expected, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+    assert result == "518747e23ea953d8be51c1133c48bb37ed31348099faed4ffd5b38a18df9b700"
     assert "synthetic-account" not in result and source not in result
 
 
@@ -61,15 +63,55 @@ def test_status_only_checks_binding_without_disclosing_digest(monkeypatch, capsy
     assert source not in output and binding["account_selector"] not in output
 
 
-def test_status_only_failure_is_generic(monkeypatch, capsys):
-    env, binding, _ = fixture()
-    binding["source_binding"]["id"] = "0" * 64
+@pytest.mark.parametrize("nonce", [None, ""])
+def test_status_only_validates_without_nonce_or_digest(monkeypatch, capsys, nonce):
+    env, binding, source = fixture()
+    env["RUNTIME_DAILY_COMPARE_STATUS_ONLY"] = "true"
+    if nonce is None:
+        env.pop("RUNTIME_DAILY_COMPARE_NONCE")
+        monkeypatch.delenv("RUNTIME_DAILY_COMPARE_NONCE", raising=False)
+    else:
+        env["RUNTIME_DAILY_COMPARE_NONCE"] = nonce
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr(module, "hashlib", SimpleNamespace(sha256=lambda *_: pytest.fail("digest was computed")))
+    assert module.main() == 0
+    output = capsys.readouterr().out
+    assert json.loads(output) == {"status": "verified"}
+    assert source not in output and binding["account_selector"] not in output and "digest" not in output
+
+
+@pytest.mark.parametrize("nonce", [None, "", "A" * 64, "c" * 63])
+def test_digest_mode_requires_lowercase_64_hex_nonce(nonce):
+    env, _, _ = fixture()
+    if nonce is None:
+        env.pop("RUNTIME_DAILY_COMPARE_NONCE")
+    else:
+        env["RUNTIME_DAILY_COMPARE_NONCE"] = nonce
+    with pytest.raises(ValueError, match="nonce_invalid"):
+        module.compare_source(env)
+
+
+@pytest.mark.parametrize("case", ["wrong_binding", "wrong_selector", "missing_target_service", "wrong_reader_revision"])
+def test_status_only_failure_is_generic(monkeypatch, capsys, case):
+    env, binding, source = fixture()
+    if case == "wrong_binding": binding["source_binding"]["id"] = "0" * 64
+    if case == "wrong_selector": binding["account_selector"] = "other"
+    if case == "wrong_reader_revision": env["BINANCE_ACCOUNT_FACTS_READER_REVISION"] = "d" * 40
+    if case == "missing_target_service":
+        target = json.loads(env["RUNTIME_TARGET_JSON"])
+        target["service_name"] = ""
+        env["RUNTIME_TARGET_JSON"] = json.dumps(target)
     env["BINANCE_ACCOUNT_FACTS_BINDING_JSON"] = json.dumps(binding)
     env["RUNTIME_DAILY_COMPARE_STATUS_ONLY"] = "true"
+    env.pop("RUNTIME_DAILY_COMPARE_NONCE")
+    monkeypatch.delenv("RUNTIME_DAILY_COMPARE_NONCE", raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     assert module.main() == 1
-    assert json.loads(capsys.readouterr().out) == {"status": "unavailable"}
+    output = capsys.readouterr().out
+    assert json.loads(output) == {"status": "unavailable"}
+    assert source not in output and binding["account_selector"] not in output and "digest" not in output
 
 
 def test_default_comparison_still_emits_digest(monkeypatch, capsys):
