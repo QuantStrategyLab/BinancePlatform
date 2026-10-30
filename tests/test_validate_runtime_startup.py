@@ -162,6 +162,10 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
             btc_overrides["cash_reserve_usd"] = 1000.0
         if scenario == "spot_decimal":
             btc_overrides.update(base_investment_usd=0.1, min_investment_usd=0.01)
+        if scenario == "spot_exact":
+            # With smart multiplication off, a small explicit base is below
+            # this fixture's risk/target cap and produces an exact boundary.
+            btc_overrides["base_investment_usd"] = 10.0
         import strategy_runtime
 
         build_loaded = strategy_runtime._build_loaded_strategy_runtime
@@ -272,9 +276,9 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     )
     spot_scenarios = {"spot_insufficient", "locked_only", "earn_only", "spot_exact", "spot_decimal"}
     if scenario in spot_scenarios:
-        free = {"spot_insufficient": "99", "locked_only": "0", "earn_only": "0", "spot_exact": "100", "spot_decimal": "0.1"}[scenario]
-        locked = {"spot_insufficient": "101", "locked_only": "200", "spot_decimal": "0.2"}.get(scenario, "0")
-        earn = {"earn_only": "200", "spot_exact": "100"}.get(scenario, "0")
+        free = {"spot_insufficient": "1", "locked_only": "0", "earn_only": "0", "spot_exact": "10", "spot_decimal": "0.1"}[scenario]
+        locked = {"spot_insufficient": "199", "locked_only": "200", "spot_decimal": "0.2"}.get(scenario, "0")
+        earn = {"earn_only": "200", "spot_exact": "190"}.get(scenario, "0")
         replay_client.account_snapshot["spot_balances"]["USDT"] = {"free": free, "locked": locked}
         replay_client.account_snapshot["earn_positions"]["USDT"] = {"rows": (
             [{"asset": "USDT", "productId": "fixture-usdt", "totalAmount": earn}] if earn != "0" else []
@@ -445,12 +449,13 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         approve_buy = btc_no_submit.approved_buy_amount
 
         def observe_buy(decision, metrics, *, usdt_parts):
+            planned = decision.diagnostics["planned_investment_usd"]
             try:
                 result = approve_buy(decision, metrics, usdt_parts=usdt_parts)
             except ValueError as exc:
-                buy_checks.append((dict(metrics), dict(usdt_parts or {}), str(exc)))
+                buy_checks.append((dict(metrics), dict(usdt_parts or {}), str(exc), planned))
                 raise
-            buy_checks.append((dict(metrics), dict(usdt_parts or {}), None))
+            buy_checks.append((dict(metrics), dict(usdt_parts or {}), None, planned))
             return result
 
         monkeypatch.setattr(btc_no_submit, "approved_buy_amount", observe_buy)
@@ -501,6 +506,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
                 else:
                     assert buy_checks[0][0]["cash_usdt"] == 200
                     assert buy_checks[0][1]["managed_total"] == 200
+                    assert buy_checks[0][3] > float(buy_checks[0][1]["spot_free"])
                 assert replay_client.side_effect_calls == []
                 assert state_store.write_calls == []
                 return
@@ -559,9 +565,13 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
             assert proposals[0]["proposal_only"] is True
             assert proposals[0]["budget"] > 0
             if scenario in {"spot_exact", "spot_decimal"}:
-                assert proposals[0]["budget"] == (100 if scenario == "spot_exact" else 0.1)
+                expected_budget = 10.0 if scenario == "spot_exact" else 0.1
+                assert proposals[0]["budget"] == expected_budget
                 assert balance_reads.count("USDT") == 1
-                assert buy_checks and all(check[2] is None for check in buy_checks)
+                assert buy_checks and all(
+                    check[2] is None and check[3] == expected_budget
+                    and float(check[1]["spot_free"]) == expected_budget for check in buy_checks
+                )
             if scenario in {"synthetic_smart", "snapshot_removed"}:
                 # Pre/post allocation and both real trend-plan evaluations use the same input.
                 assert len(consumed_inputs) >= 4
