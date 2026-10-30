@@ -1082,9 +1082,12 @@ with declared spot-free and Earn balances blocks the preview. Only internal
 spot/Earn transfers are supported. The existing BTC balance read captures broker spot free, locked and Earn separately
 without additional broker calls; missing split observations, nonzero locked BTC, or
 a split that differs from the declared strategy ledger blocks the preview. The
-declared account's entire BTC balance and strategy decision's current BTC value must also match the reconstructed
-strategy holdings; a mismatch blocks rather than treating shared account BTC as
-strategy property.
+existing managed-balance reader returns a float, so the preview binds its total to
+the float captured from that same read. It separately compares the original Spot
+and Earn quantities against the reconstructed ledger as exact decimals; it does
+not reconstruct 18-digit quantities from the float. The decision's current BTC
+value must also match the reconstructed holdings. A mismatch blocks rather than
+treating shared account BTC as strategy property.
 
 A matching, risk-approved reduction yields a sell proposal only. Its quantity is
 rounded down to 18 decimal places, never up; exchange step size, minimums and

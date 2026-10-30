@@ -55,7 +55,7 @@ class AttributionTests(unittest.TestCase):
         total = read_btc_balance_with_parts(existing_read, Broker(), "BTC", log_buffer=[], output=parts)
         self.assertEqual(total, 0.69)
         self.assertEqual(calls, ["spot", "earn"])
-        self.assertEqual(parts, {"spot_free": "0", "spot_locked": "0", "earn": "0.69"})
+        self.assertEqual(parts, {"spot_free": "0", "spot_locked": "0", "earn": "0.69", "managed_total": 0.69})
 
     def test_usdt_parts_use_existing_reads_and_preserve_locked_and_earn(self):
         calls = []
@@ -95,9 +95,9 @@ class ExitProposalTests(unittest.TestCase):
             budgets=(SimpleNamespace(name="btc_dca_pool", symbol="BTCUSDT", amount=0),), risk_flags=())
 
     def test_exit_is_only_a_preview_and_must_match_account(self):
-        params = dict(price=1000, account_btc="0.69", evidence=ledger(), as_of=NOW,
+        params = dict(price=1000, account_btc=0.69, evidence=ledger(), as_of=NOW,
                       account_scope="fixture", account_selector="account",
-                      broker_parts={"spot_free": "0.54", "spot_locked": "0", "earn": "0.15"})
+                      broker_parts={"spot_free": "0.54", "spot_locked": "0", "earn": "0.15", "managed_total": 0.69})
         proposal = approved_exit_proposal(self.decision(), {"total_equity": 1000, "dca_value": 690}, **params)
         self.assertEqual(proposal["quantity"], "0.345")
         self.assertFalse(proposal["execution_ready"])
@@ -108,21 +108,55 @@ class ExitProposalTests(unittest.TestCase):
         oversized_exit.positions[0].target_weight = .1
         with self.assertRaises(ValueError):
             approved_exit_proposal(oversized_exit, {"total_equity": 1000, "dca_value": 690}, **params)
-        for update in ({"evidence": None}, {"account_btc": "0.70"}, {"price": 999},
+        for update in ({"evidence": None}, {"account_btc": 0.70}, {"price": 999},
                        {"broker_parts": None},
-                       {"broker_parts": {"spot_free": "0", "spot_locked": "0", "earn": "0.69"}}):
+                       {"broker_parts": {"spot_free": "0", "spot_locked": "0", "earn": "0.69", "managed_total": 0.69}}):
             with self.subTest(update=update), self.assertRaises(ValueError):
                 approved_exit_proposal(self.decision(), {"total_equity": 1000, "dca_value": 690},
                                        **{**params, **update})
+
+    def test_exact_parts_survive_managed_balance_float_rounding(self):
+        evidence = ledger()
+        evidence.update(opening_spot_btc="0.100000000000000001", opening_earn_btc="0.023456789123456788",
+                        fills=[], transfers=[], observed_spot_free_btc="0.100000000000000001",
+                        observed_earn_btc="0.023456789123456788")
+        candidate = self.decision()
+        candidate.diagnostics.update(btc_value_usd=123.45678912345679,
+                                     target_btc_value_usd=23.45678912345679,
+                                     btc_target_ratio=0.02345678912345679)
+        candidate.positions[0].target_weight = 0.02345678912345679
+        total = float("0.123456789123456789")
+        params = dict(price=1000, account_btc=total, evidence=evidence, as_of=NOW,
+                      account_scope="fixture", account_selector="account",
+                      broker_parts={"spot_free": "0.100000000000000001", "spot_locked": "0",
+                                    "earn": "0.023456789123456788", "managed_total": total})
+        proposal = approved_exit_proposal(candidate, {"total_equity": 1000, "dca_value": 123.45678912345679},
+                                          **params)
+        self.assertEqual(proposal["quantity"], "0.1")
+        self.assertFalse(proposal["source_authenticated"])
+        self.assertFalse(proposal["completeness_authenticated"])
+        for changes in (
+            {"account_btc": total + 0.001},
+            {"account_btc": True}, {"account_btc": float("nan")},
+            {"broker_parts": {**params["broker_parts"], "managed_total": total + 0.001}},
+            {"broker_parts": {**params["broker_parts"], "managed_total": True}},
+            {"broker_parts": {**params["broker_parts"], "managed_total": float("inf")}},
+            {"broker_parts": {**params["broker_parts"], "spot_locked": "0.000000000000000001"}},
+            {"broker_parts": {**params["broker_parts"], "spot_free": "0.100000000000000002"}},
+            {"broker_parts": {**params["broker_parts"], "earn": "0.023456789123456787"}},
+        ):
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, "btc_validation_exit_unsupported"):
+                approved_exit_proposal(candidate, {"total_equity": 1000, "dca_value": 123.45678912345679},
+                                       **{**params, **changes})
 
     def test_non_terminating_quantity_rounds_down(self):
         candidate = self.decision()
         candidate.diagnostics["target_btc_value_usd"] = 344
         candidate.diagnostics["btc_target_ratio"] = .344
         candidate.positions[0].target_weight = .344
-        params = dict(price=1000, account_btc="0.69", evidence=ledger(), as_of=NOW,
+        params = dict(price=1000, account_btc=0.69, evidence=ledger(), as_of=NOW,
                       account_scope="fixture", account_selector="account",
-                      broker_parts={"spot_free": "0.54", "spot_locked": "0", "earn": "0.15"})
+                      broker_parts={"spot_free": "0.54", "spot_locked": "0", "earn": "0.15", "managed_total": 0.69})
         # Non-divisible value using a different account price must not round upward.
         from decimal import Decimal
         params["price"] = 999
