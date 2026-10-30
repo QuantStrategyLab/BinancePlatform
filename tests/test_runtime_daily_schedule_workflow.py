@@ -1,6 +1,25 @@
 from pathlib import Path
 
 
+def test_daily_callers_pass_binding_to_declared_optional_secret() -> None:
+    workflows = Path(__file__).resolve().parents[1] / ".github/workflows"
+    lifecycle = (workflows / "runtime-target-lifecycle.yml").read_text()
+    manual = (workflows / "publish-runtime-daily-once.yml").read_text()
+    protected = (workflows / "runtime-protected.yml").read_text()
+    call = lifecycle.split("  runtime-daily:\n", 1)[1].split("  observe-scheduler:\n", 1)[0]
+    declared = protected.split("    secrets:\n", 1)[1].split("\njobs:\n", 1)[0]
+    daily = protected.split("  runtime-daily:\n", 1)[1].split("  deploy:\n", 1)[0]
+    binding = "BINANCE_ACCOUNT_FACTS_BINDING_JSON"
+    mapping = f"{binding}: ${{{{ secrets.{binding} }}}}"
+
+    assert f"      {binding}:\n        required: false" in declared
+    assert f"      {mapping}" in call
+    assert f"      {mapping}" in daily
+    assert "uses: ./.github/workflows/runtime-protected.yml" in manual
+    assert "runtime_daily_only: true" in manual
+    assert f"      {mapping}" in manual
+
+
 def test_natural_daily_is_read_only_and_separate_from_runtime() -> None:
     workflows = Path(__file__).resolve().parents[1] / ".github/workflows"
     lifecycle = (workflows / "runtime-target-lifecycle.yml").read_text()
