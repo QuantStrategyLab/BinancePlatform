@@ -13,6 +13,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import stat
 import subprocess
 from collections.abc import Mapping
@@ -357,6 +358,19 @@ def canonical_input_digest(value: Any) -> str:
         raise _error("input cannot be canonically encoded") from None
     return hashlib.sha256(encoded).hexdigest()
 
+
+def _version_binding_observation(payload: Mapping[str, Any], strategy: str, runner: str) -> dict[str, str | None]:
+    def safe(value: Any) -> str | None:
+        return value if type(value) is str and re.fullmatch(r"[0-9a-f]{40}", value) else None
+
+    return {
+        "declared_strategy_revision": safe(payload.get("strategy_revision")),
+        "observed_strategy_revision": safe(strategy),
+        "declared_runner_revision": safe(payload.get("runner_revision")),
+        "observed_runner_revision": safe(runner),
+    }
+
+
 def load_live_risk_authority(
     *,
     env: Mapping[str, str] | None = None,
@@ -365,6 +379,7 @@ def load_live_risk_authority(
     runner_revision: str | None = None,
     config_sha256: str | None = None,
     now_utc: datetime | None = None,
+    version_diagnostics: bool = False,
 ) -> LiveRiskAuthority | None:
     source = os.environ if env is None else env
     values = {name: str(source.get(name) or "").strip() for name in (AUTHORITY_FILE_ENV, AUTHORITY_SHA256_ENV, AUTHORITY_SOURCE_REVISION_ENV)}
@@ -392,9 +407,15 @@ def load_live_risk_authority(
     runner_revision = _revision(runner_revision or resolve_runner_revision(), field="runner revision")
     config_sha256 = _digest((config_sha256 or "").lower(), field="config SHA-256")
     if payload.get("strategy_revision") != strategy_revision:
-        raise _error("strategy revision mismatch")
+        error = _error("strategy revision mismatch")
+        if version_diagnostics is True:
+            error.version_binding_observation = _version_binding_observation(payload, strategy_revision, runner_revision)
+        raise error
     if payload.get("runner_revision") != runner_revision:
-        raise _error("runner revision mismatch")
+        error = _error("runner revision mismatch")
+        if version_diagnostics is True:
+            error.version_binding_observation = _version_binding_observation(payload, strategy_revision, runner_revision)
+        raise error
     if payload.get("config_sha256") != config_sha256:
         raise _error("config digest mismatch")
     now = now_utc or datetime.now(timezone.utc)

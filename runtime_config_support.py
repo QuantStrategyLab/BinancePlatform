@@ -179,7 +179,7 @@ def _resolve_runtime_target(*, validation_scope: str = "standard"):
     return runtime_target, strategy_definition
 
 
-def _load_live_risk_authority(runtime_target, strategy_profile: str, now_utc: datetime):
+def _load_live_risk_authority(runtime_target, strategy_profile: str, now_utc: datetime, *, version_diagnostics: bool = False):
     authority_env_names = (
         "BINANCE_RISK_AUTHORITY_FILE",
         "BINANCE_RISK_AUTHORITY_SHA256",
@@ -205,6 +205,7 @@ def _load_live_risk_authority(runtime_target, strategy_profile: str, now_utc: da
         runner_revision=None,
         config_sha256=config_sha256(effective_config),
         now_utc=now_utc,
+        version_diagnostics=version_diagnostics,
     )
 
 
@@ -222,6 +223,7 @@ def build_live_runtime(
         cycle_settings.runtime_target,
         cycle_settings.strategy_profile,
         runtime_now,
+        version_diagnostics=validation_scope == "full_cycle_no_submit",
     )
     return ExecutionRuntime(
         dry_run=cycle_settings.runtime_target.dry_run_only,
