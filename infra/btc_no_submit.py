@@ -106,9 +106,16 @@ def approved_exit_proposal(decision, account_metrics, *, price, account_btc, evi
     equity = decimal_number(account_metrics.get("total_equity"))
     ratio = decimal_number(diag.get("btc_target_ratio"))
     price = decimal_number(price)
-    balance = decimal_number(account_btc)
-    if not isinstance(broker_parts, Mapping) or set(broker_parts) != {"spot_free", "spot_locked", "earn"}:
+    decimal_number(account_btc)
+    if not isinstance(broker_parts, Mapping) or set(broker_parts) != {
+        "spot_free", "spot_locked", "earn", "managed_total"
+    }:
         raise ValueError("btc_validation_exit_unsupported")
+    try:
+        balance = _number(account_btc)
+        captured_total = _number(broker_parts["managed_total"])
+    except (ValueError, OverflowError):
+        raise ValueError("btc_validation_exit_unsupported") from None
     broker_free = decimal_number(broker_parts["spot_free"])
     broker_locked = decimal_number(broker_parts["spot_locked"])
     broker_earn = decimal_number(broker_parts["earn"])
@@ -121,7 +128,7 @@ def approved_exit_proposal(decision, account_metrics, *, price, account_btc, evi
             or abs(decimal_number(account_metrics.get("dca_value")) - current) > Decimal("0.000001")
             or abs(equity * ratio - target) > Decimal("0.000001")
             or broker_locked != 0 or broker_free != owned.spot or broker_earn != owned.earn
-            or balance != broker_free + broker_locked + broker_earn
+            or balance != captured_total
             or abs((owned.spot + owned.earn) * price - current) > Decimal("0.000001")):
         raise ValueError("btc_validation_exit_unsupported")
     try:

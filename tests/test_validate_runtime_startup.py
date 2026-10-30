@@ -83,6 +83,7 @@ def test_startup_validation_rejects_broker_credentials(monkeypatch):
     ("crypto_btc_dca", "spot_decimal"),
     ("crypto_btc_dca", "checkpoint_missing_split"),
     ("crypto_btc_dca", "exit_valid"),
+    ("crypto_btc_dca", "exit_precise"),
     ("crypto_btc_dca", "exit_missing"),
     ("crypto_btc_dca", "exit_unsettled"),
     ("crypto_btc_dca", "exit_other_account"),
@@ -155,7 +156,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
             btc_overrides["cycle_indicator_enabled"] = "true"
         if scenario == "smart_without_cycle":
             btc_overrides.update(smart_multiplier_enabled=True, cycle_indicator_enabled=False)
-        if scenario in {"exit_valid", "exit_missing", "exit_unsettled", "exit_other_account", "exit_spot_earn_mismatch"}:
+        if scenario in {"exit_valid", "exit_precise", "exit_missing", "exit_unsettled", "exit_other_account", "exit_spot_earn_mismatch"}:
             btc_overrides.update(zscore_exit_enabled=True, zscore_exit_context={"route": "risk_reduced"},
                                  base_investment_usd=0.0)
         if scenario == "insufficient_cash":
@@ -317,9 +318,11 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
 
         monkeypatch.setattr(main, "_load_cycle_state", load_with_checkpoint)
         monkeypatch.setattr(earn_accrual, "collect_earn_checkpoint", checkpoint)
-    exit_scenarios = {"exit_valid", "exit_missing", "exit_unsettled", "exit_other_account", "exit_spot_earn_mismatch"}
+    exit_scenarios = {"exit_valid", "exit_precise", "exit_missing", "exit_unsettled", "exit_other_account", "exit_spot_earn_mismatch"}
     if scenario in exit_scenarios:
-        replay_client.account_snapshot["spot_balances"]["BTC"]["free"] = "0.01"
+        replay_client.account_snapshot["spot_balances"]["BTC"]["free"] = (
+            "0.010000000000000001" if scenario == "exit_precise" else "0.01"
+        )
         if scenario == "exit_spot_earn_mismatch":
             replay_client.account_snapshot["spot_balances"]["BTC"]["free"] = "0"
             replay_client.account_snapshot["earn_positions"]["BTC"]["rows"] = [
@@ -333,6 +336,9 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         "fills": [], "transfers": [], "unsettled_orders": [], "observed_spot_free_btc": "0.01",
         "observed_earn_btc": "0",
     }
+    if scenario == "exit_precise":
+        exit_evidence["opening_spot_btc"] = "0.010000000000000001"
+        exit_evidence["observed_spot_free_btc"] = "0.010000000000000001"
     if scenario == "exit_unsettled":
         exit_evidence["unsettled_orders"] = [{"id": "unknown"}]
     if scenario == "exit_other_account":
@@ -554,7 +560,14 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     if profile == "crypto_btc_dca":
         assert ("BTCUSDT", "1d", "700 days ago UTC") in historical_calls
         proposals = reports[0]["btc_dca_intents"]
-        if scenario == "exit_valid":
+        if scenario == "exit_precise":
+            assert len(proposals) == 1
+            assert proposals[0]["action"] == "sell"
+            assert proposals[0]["proposal_only"] is True
+            assert proposals[0]["execution_ready"] is False
+            assert proposals[0]["source_authenticated"] is False
+            assert proposals[0]["completeness_authenticated"] is False
+        elif scenario == "exit_valid":
             assert len(proposals) == 1
             assert proposals[0] == {"action": "sell", "symbol": "BTCUSDT", "quantity": "0.005",
                                     "proposal_only": True, "execution_ready": False,
@@ -597,6 +610,25 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         assert all(call[2] == "420 days ago UTC" for call in historical_calls if call[0] != "BTCUSDT")
     assert replay_client.side_effect_calls == []
     assert state_store.write_calls == []
+
+
+def test_btc_validation_clears_prior_split_before_next_snapshot(monkeypatch):
+    import main
+
+    runtime = SimpleNamespace(strategy_profile="crypto_btc_dca")
+    btc_parts = {"spot_free": "0.01", "spot_locked": "0", "earn": "0", "managed_total": 0.01}
+    usdt_parts = {"spot_free": "100", "spot_locked": "0", "earn": "0", "managed_total": 100.0}
+
+    # An Earn checkpoint replaces balance reads inside the market snapshot.
+    # The wrapper must discard any parts captured during an earlier snapshot.
+    def checkpoint_snapshot(*_args, **_kwargs):
+        return {"u_total": 100.0}
+
+    monkeypatch.setattr(main, "ms_capture_market_snapshot", checkpoint_snapshot)
+    main._capture_market_snapshot(runtime, {}, {}, [], validation_scope="full_cycle_no_submit",
+                                  btc_balance_parts=btc_parts, usdt_balance_parts=usdt_parts)
+    assert btc_parts == {}
+    assert usdt_parts == {}
 
 
 def test_full_cycle_without_live_authority_fails_closed(monkeypatch):
