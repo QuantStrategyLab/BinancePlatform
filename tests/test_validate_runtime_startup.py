@@ -72,6 +72,9 @@ def test_startup_validation_rejects_broker_credentials(monkeypatch):
 
 @pytest.mark.parametrize(("profile", "scenario"), [
     ("crypto_live_pool_rotation", "default"),
+    ("crypto_live_pool_rotation", "strategy_revision_mismatch"),
+    ("crypto_live_pool_rotation", "runner_revision_mismatch"),
+    ("crypto_live_pool_rotation", "malformed_strategy_revision"),
     ("crypto_btc_dca", "ordinary_buy"),
     ("crypto_btc_dca", "stale_btc_history"),
     ("crypto_btc_dca", "malformed_btc_history"),
@@ -84,7 +87,7 @@ def test_startup_validation_rejects_broker_credentials(monkeypatch):
     ("crypto_btc_dca", "insufficient_cash"),
     ("crypto_trend_rotation", "default"),
 ])
-def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tmp_path, profile, scenario):
+def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tmp_path, capsys, profile, scenario):
     import main
     import run_cycle_replay
     from live_risk_authority import config_sha256
@@ -169,6 +172,12 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
             "allowed_nonzero_assets": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "LTCUSDT", "BCHUSDT"],
         },
     }
+    if scenario == "strategy_revision_mismatch":
+        payload["strategy_revision"] = "c" * 40
+    elif scenario == "runner_revision_mismatch":
+        payload["runner_revision"] = "c" * 40
+    elif scenario == "malformed_strategy_revision":
+        payload["strategy_revision"] = "private-sentinel/account/secret"
     authority_path = tmp_path / "authority.json"
     raw = (json.dumps(payload, sort_keys=True) + "\n").encode()
     authority_path.write_bytes(raw)
@@ -199,6 +208,31 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     monkeypatch.setenv("BINANCE_RISK_AUTHORITY_FILE", authority_env["BINANCE_RISK_AUTHORITY_FILE"])
     monkeypatch.setenv("BINANCE_RISK_AUTHORITY_SHA256", authority_env["BINANCE_RISK_AUTHORITY_SHA256"])
     monkeypatch.setenv("BINANCE_RISK_AUTHORITY_SOURCE_REVISION", authority_env["BINANCE_RISK_AUTHORITY_SOURCE_REVISION"])
+
+    if scenario in {"strategy_revision_mismatch", "runner_revision_mismatch", "malformed_strategy_revision"}:
+        monkeypatch.setattr(sys, "argv", ["validate_runtime_startup.py", "--full-cycle"])
+        script = Path(__file__).resolve().parents[1] / "scripts/validate_runtime_startup.py"
+        with patch("live_risk_authority.resolve_strategy_revision", return_value="d" * 40), \
+             patch("live_risk_authority.resolve_runner_revision", return_value=runner_revision), \
+             pytest.raises(SystemExit) as exit_error:
+            runpy.run_path(str(script), run_name="__main__")
+        assert exit_error.value.code == 1
+        captured = capsys.readouterr()
+        result = json.loads(captured.out)
+        assert result["status"] == "failed" and result["failure_stage"] == "build"
+        assert result["reason_code"] == ("runner_revision_mismatch" if scenario == "runner_revision_mismatch"
+                                         else "strategy_revision_mismatch")
+        assert result["version_binding_observation"] == {
+            "declared_strategy_revision": None if scenario == "malformed_strategy_revision" else payload["strategy_revision"],
+            "observed_strategy_revision": "d" * 40,
+            "declared_runner_revision": payload["runner_revision"],
+            "observed_runner_revision": runner_revision,
+            "interpretation": "comparison_observation_remaining_checks_not_passed",
+        }
+        assert "private-sentinel" not in captured.out + captured.err
+        assert str(authority_path) not in captured.out + captured.err
+        assert payload["config_sha256"] not in captured.out + captured.err
+        return
 
     replay_runtime, replay_client, state_store, _ = run_cycle_replay.build_replay_runtime(
         run_id="full-cycle-live-builder-fixture", dry_run=True, now_utc=now,
@@ -533,6 +567,7 @@ def test_startup_cli_reports_only_exact_safe_reasons_and_still_fails(monkeypatch
     assert error.value.code == 1
     captured = capsys.readouterr()
     assert 'DO_NOT_LOG_THIS_SYNTHETIC_TOKEN' not in captured.out + captured.err
+    assert 'version_binding_observation' not in json.loads(captured.out)
     assert json.loads(captured.out) == {
         'status': 'failed', 'stage': 'runtime_startup_validation',
         'error_type': 'ValueError', 'reason_code': expected,
@@ -587,6 +622,7 @@ def test_full_cycle_cli_preserves_safe_builder_authority_reason(
     assert error.value.code == 1
     captured = capsys.readouterr()
     result = json.loads(captured.out)
+    assert "version_binding_observation" not in result
     assert result == {
         "status": "failed",
         "stage": "full_cycle_validation",
@@ -595,3 +631,14 @@ def test_full_cycle_cli_preserves_safe_builder_authority_reason(
         "reason_code": expected_reason,
     }
     assert authority_message not in captured.out + captured.err
+
+
+def test_revision_observation_is_not_carried_from_other_phases():
+    from live_risk_authority import LiveRiskAuthorityError
+    from scripts.validate_runtime_startup import _wrap_full_cycle_error
+
+    error = LiveRiskAuthorityError("strategy revision mismatch")
+    error.version_binding_observation = {"declared_strategy_revision": "a" * 40}
+    wrapped = _wrap_full_cycle_error(error, failure_stage="cycle", fallback_reason="full_cycle_cycle_failed")
+    assert wrapped.reason_code == "strategy_revision_mismatch"
+    assert not hasattr(wrapped, "version_binding_observation")
