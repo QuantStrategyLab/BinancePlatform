@@ -1051,7 +1051,17 @@ def _resolve_strategy_plan(
     *,
     allow_new_trend_entries,
     allow_pool_refresh,
+    btc_input_cache=None,
 ):
+    evaluation_as_of = None
+    if btc_input_cache is not None:
+        from copy import deepcopy
+
+        if "as_of" not in btc_input_cache or "indicators" not in btc_input_cache:
+            from infra.btc_cycle_input import BtcCycleInputError
+            raise BtcCycleInputError("btc_cycle_input_unavailable")
+        evaluation_as_of = btc_input_cache["as_of"]
+        trend_indicators = deepcopy(btc_input_cache["indicators"])
     evaluation = _resolve_strategy_evaluation(
         runtime,
         state,
@@ -1064,6 +1074,7 @@ def _resolve_strategy_plan(
         fuel_val,
         allow_new_trend_entries=allow_new_trend_entries,
         allow_pool_refresh=allow_pool_refresh,
+        **({"evaluation_as_of": evaluation_as_of} if btc_input_cache is not None else {}),
     )
     strategy_plan = map_decision_to_rotation_plan(evaluation.decision)
     strategy_plan["allocation"] = map_decision_to_allocation(
@@ -1349,6 +1360,8 @@ def _execute_trend_rotation(
     today_id_str,
     allow_new_trend_entries,
     allow_pool_refresh,
+    *,
+    btc_input_cache=None,
 ):
     return app_execute_trend_rotation(
         runtime,
@@ -1365,7 +1378,10 @@ def _execute_trend_rotation(
         today_id_str,
         allow_new_trend_entries,
         allow_pool_refresh,
-        resolve_strategy_plan=lambda *args, **kwargs: _resolve_strategy_plan(runtime, *args, **kwargs),
+        resolve_strategy_plan=lambda *args, **kwargs: _resolve_strategy_plan(
+            runtime, *args, **kwargs,
+            **({"btc_input_cache": btc_input_cache} if btc_input_cache is not None else {}),
+        ),
         append_rotation_summary=_append_rotation_summary,
         execute_trend_sells=_execute_trend_sells,
         execute_trend_buys=_execute_trend_buys,
@@ -1448,6 +1464,9 @@ def execute_cycle(runtime, *, validation_scope: str = "standard"):
             *args, validation_scope=validation_scope, btc_input_cache=btc_cycle_inputs,
         )
 
+    def execute_btc_validation_trend(*args, **kwargs):
+        return _execute_trend_rotation(*args, **kwargs, btc_input_cache=btc_cycle_inputs)
+
     ctx = RunContext(
         trend_universe={symbol: meta.copy() for symbol, meta in TREND_UNIVERSE.items()},
         strategy_runtime=mounted_strategy,
@@ -1478,7 +1497,7 @@ def execute_cycle(runtime, *, validation_scope: str = "standard"):
             compute_daily_pnls=_compute_daily_pnls,
             append_portfolio_report=_append_portfolio_report,
             run_daily_circuit_breaker=_run_daily_circuit_breaker,
-            execute_trend_rotation=_execute_trend_rotation,
+            execute_trend_rotation=(execute_btc_validation_trend if btc_validation else _execute_trend_rotation),
             execute_btc_dca_cycle=(record_btc_validation_proposal if btc_validation else _execute_btc_dca_cycle),
             manage_usdt_earn_buffer_runtime=manage_usdt_earn_buffer_runtime,
             maybe_send_periodic_btc_status_report=maybe_send_periodic_btc_status_report,

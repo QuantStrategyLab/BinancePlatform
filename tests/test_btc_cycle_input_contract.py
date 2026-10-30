@@ -96,6 +96,39 @@ class AssemblyTests(unittest.TestCase):
         scope["resolve_runtime_btc_snapshot"](runtime, 1, [], validation_scope="full_cycle_no_submit")
         self.assertEqual(len(seen), 1)
 
+    def test_isolated_trend_plan_uses_cached_input_twice(self):
+        main_tree = ast.parse(Path("main.py").read_text())
+        service_tree = ast.parse(Path("application/execution_service.py").read_text())
+        names = {"_resolve_strategy_plan", "_execute_trend_rotation"}
+        module = ast.Module(body=[n for n in main_tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+                            + [n for n in service_tree.body if isinstance(n, ast.FunctionDef)
+                               and n.name == "execute_trend_rotation"], type_ignores=[])
+        seen = []
+        def evaluate(*args, **kwargs):
+            seen.append((args[3], kwargs.get("evaluation_as_of")))
+            return SimpleNamespace(decision=object(), account_metrics={})
+        def plan(_decision):
+            return {"active_trend_pool": [], "selected_candidates": {}, "sell_reasons": {},
+                    "eligible_buy_symbols": [], "planned_trend_buys": {}}
+        scope = {"_resolve_strategy_evaluation": evaluate, "map_decision_to_rotation_plan": plan,
+                 "map_decision_to_allocation": lambda *a, **k: {},
+                 "_append_rotation_summary": lambda *a: None, "_execute_trend_sells": lambda *a: a[7],
+                 "_execute_trend_buys": lambda *a: a[8], "_append_trend_symbol_status": lambda *a: None,
+                 "resolve_trend_universe": lambda x: x, "TREND_UNIVERSE": {},
+                 "record_gating_event": lambda *a, **k: None,
+                 "build_trend_candidate_filter_diagnostics": lambda *a: {}}
+        exec(compile(module, "isolated", "exec"), scope)
+        scope["app_execute_trend_rotation"] = scope["execute_trend_rotation"]
+        cache = {"as_of": NOW, "indicators": {"BTCUSDT": {"ahr999": 0.7}}}
+        args = (object(), {"selected_symbols": {}}, {}, {}, {}, {}, {}, {}, 1000, 0, [], "date", True, True)
+        self.assertEqual(scope["_execute_trend_rotation"](*args, btc_input_cache=cache), 1000)
+        self.assertEqual(len(seen), 2)
+        self.assertTrue(all(indicators == cache["indicators"] and clock == NOW for indicators, clock in seen))
+        self.assertTrue(all(indicators is not cache["indicators"] for indicators, _ in seen))
+        seen.clear()
+        scope["_execute_trend_rotation"](*args)
+        self.assertTrue(all(indicators == {} and clock is None for indicators, clock in seen))
+
     def test_isolated_main_function_bodies_reach_crypto_strategy_and_same_clock(self):
         # Extract the unchanged function bodies to avoid importing the platform's
         # unavailable broker/cloud dependencies; evaluate real Crypto logic.

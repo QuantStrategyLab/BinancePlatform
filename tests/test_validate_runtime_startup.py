@@ -428,7 +428,8 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
             assert proposals[0]["proposal_only"] is True
             assert proposals[0]["budget"] > 0
             if scenario in {"synthetic_smart", "snapshot_removed"}:
-                assert consumed_inputs
+                # Pre/post allocation and both real trend-plan evaluations use the same input.
+                assert len(consumed_inputs) >= 4
                 assert all(inputs["BTCUSDT"]["ahr999"] == 0.7 and clock == now
                            for inputs, clock in consumed_inputs)
                 if scenario == "synthetic_smart":
