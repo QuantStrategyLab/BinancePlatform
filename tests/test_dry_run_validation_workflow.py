@@ -180,6 +180,39 @@ def test_authority_rejection_is_failure_without_raw_logs_or_success_claim(monkey
     assert not list(tmp_path.glob('binance-dry-run-authority-*'))
 
 
+@pytest.mark.parametrize('change,expected', [
+    ({}, True),
+    ({'reason_code': 'runner_revision_mismatch'}, True),
+    ({'status': 'passed'}, False),
+    ({'stage': 'runtime_startup_validation'}, False),
+    ({'failure_stage': 'cycle'}, False),
+    ({'reason_code': 'config_digest_mismatch'}, False),
+    ({'returncode': 0}, False),
+    ({'version_binding_observation': ['private-nested']}, False),
+])
+def test_version_observation_projection_is_bounded(monkeypatch, tmp_path, capsys, change, expected):
+    projection = {'status': 'failed', 'stage': 'full_cycle_validation', 'failure_stage': 'build',
+                  'reason_code': 'strategy_revision_mismatch', 'error_type': 'ValueError',
+                  'version_binding_observation': {
+                      'declared_strategy_revision': 'a' * 40,
+                      'observed_strategy_revision': {'secret': 'private-nested'},
+                      'declared_runner_revision': 'B' * 40,
+                      'observed_runner_revision': 'b' * 40,
+                      'interpretation': 'private-interpretation', 'unknown': 'private-extra'}}
+    projection.update({key: value for key, value in change.items() if key != 'returncode'})
+    def process(*_args, **_kwargs):
+        return SimpleNamespace(returncode=change.get('returncode', 1), stdout=json.dumps(projection))
+    code, result, call = run_adapter(monkeypatch, tmp_path, dry_run_target_payload(), process)
+    assert code == 1 and result['status'] == 'failed' and call.call_count == 1
+    assert ('version_binding_observation' in result) is expected
+    if expected:
+        assert result['version_binding_observation'] == {
+            'declared_strategy_revision': 'a' * 40, 'observed_strategy_revision': None,
+            'declared_runner_revision': None, 'observed_runner_revision': 'b' * 40,
+            'interpretation': 'comparison_observation_remaining_checks_not_passed'}
+    assert 'private-' not in json.dumps(result) + capsys.readouterr().out
+
+
 @pytest.mark.parametrize('stdout,returncode', [
     ('private-not-json', 1),
     (json.dumps({'status': 'passed', 'execution_permitted': True}), 0),
