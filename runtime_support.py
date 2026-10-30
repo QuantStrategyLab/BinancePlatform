@@ -432,11 +432,12 @@ def next_order_id(runtime, prefix, symbol):
 
 def runtime_notify(runtime, report, text, *, urgent=True):
     from notifications import unified_notifications as unified
-    if unified.enabled() and not getattr(runtime, "dry_run", False):
+    if not getattr(runtime, "dry_run", False):
         if unified.sending_order():
             return _legacy_runtime_notify(runtime, report, text, urgent=True)
         return unified.runtime_notice(runtime, report, text, urgent=urgent,
-            send=lambda: _legacy_runtime_notify(runtime, report, text, urgent=True))
+            send=lambda: _legacy_runtime_notify(runtime, report, text, urgent=True),
+            send_coverage=lambda: _legacy_runtime_notify(runtime, report, unified._coverage_message(), urgent=True))
     return _legacy_runtime_notify(runtime, report, text, urgent=urgent)
 
 
@@ -1202,8 +1203,26 @@ def _require_filled_order_response(response):
     raise OrderReconciliationError("order_reconciliation_uncertain") from None
 
 
+def _notification_order_identity(*, begin=False, client_order_id=None):
+    """Notification bookkeeping must never change a broker call or its result."""
+    try:
+        from notifications import unified_notifications as unified
+        if begin:
+            unified.begin_order_attempt()
+        else:
+            unified.record_confirmed_order_identity(client_order_id)
+    except Exception:
+        try:
+            unified._ORDER_IDENTITY.set("")
+        except Exception:
+            pass
+        print("notification_order_identity_unavailable", flush=True)
+
+
 def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                         max_retries: int = 3, retry_base_sec: float = 1.0, accounting_asset=None):
+    if str(effect_type or "").startswith("order_"):
+        _notification_order_identity(begin=True)
     if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
         record_side_effect(
             runtime, report, effect_type=effect_type,
@@ -1245,13 +1264,15 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 raise OrderReconciliationError("order_reconciliation_intent_mismatch") from None
             if not runtime.pending_funds:
                 runtime.pending_funds.append({"confirmed": False, "action": association["side"].lower(), "symbol": association["symbol"], "asset": None})
-            return _complete_order_response(
+            result = _complete_order_response(
                 runtime,
                 report,
                 trade_state,
                 reconciled_response,
                 fill_accounting_required=fill_accounting_required,
             )
+            _notification_order_identity(client_order_id=association["client_order_id"])
+            return result
         if submission_status == _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING:
             raise OrderReconciliationError("filled_order_accounting_unverifiable") from None
         if submission_status == _ORDER_SUBMISSION_TERMINAL:
@@ -1383,13 +1404,15 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                     raise
                 if not _reconciled_order_matches_request(reconciled_response, association):
                     raise OrderReconciliationError("order_reconciliation_intent_mismatch") from None
-                return _complete_order_response(
+                result = _complete_order_response(
                     runtime,
                     report,
                     trade_state,
                     reconciled_response,
                     fill_accounting_required=fill_accounting_required,
                 )
+                _notification_order_identity(client_order_id=association["client_order_id"])
+                return result
             if attempt < max_retries:
                 delay = retry_base_sec * (2 ** attempt)
                 time.sleep(delay)
@@ -1399,13 +1422,15 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 target=method_name, payload=dict(client_payload), executed=True,
             )
             if is_order_call:
-                return _complete_order_response(
+                result = _complete_order_response(
                     runtime,
                     report,
                     trade_state,
                     response,
                     fill_accounting_required=fill_accounting_required,
                 )
+                _notification_order_identity(client_order_id=client_payload.get("newClientOrderId"))
+                return result
             return response
     # All retries exhausted — log and raise
     record_side_effect(
@@ -1419,3 +1444,4 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
         record_order_failure(report)
     reason = "order_submission_failed" if is_order_call else "client_call_failed"
     raise ClientCallError(reason) from None
+

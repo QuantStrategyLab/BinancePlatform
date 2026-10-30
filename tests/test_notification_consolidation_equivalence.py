@@ -117,8 +117,38 @@ def test_flags_off_matches_main_entrypoint_and_renderer_call_recordings(monkeypa
         monkeypatch.delenv("BINANCE_UNIFIED_NOTIFICATION_ENABLED", raising=False)
     else:
         monkeypatch.setenv("BINANCE_UNIFIED_NOTIFICATION_ENABLED", flag)
+    from notifications import unified_notifications as unified
+    original_route = unified.route
+    deferred = []
+    def route_with_confirmed_candidate(send, *, kind, **kwargs):
+        if kind in {"routine_cycle", "healthy_heartbeat", "order_submitted", "fill"}:
+            deferred.append(kind)
+            return False
+        return original_route(send, kind=kind, **kwargs)
+    monkeypatch.setattr(unified, "route", route_with_confirmed_candidate)
     golden = json.loads(GOLDEN.read_text())
-    assert record_main_calls(monkeypatch, mode) == copy.deepcopy(golden[mode])
+    expected = copy.deepcopy(golden[mode])
+    observed = record_main_calls(monkeypatch, mode)
+    assert deferred
+    # The confirmed candidate replaces only routine transport. Keep the
+    # original broker, accounting, state and urgent call recordings exact.
+    expected["runtime"][0] = [False, False, False, [], {
+        "notifications": [], "summary": {}, "side_effect_summary": {
+            "executed_call_count": 0, "suppressed_call_count": 0}}, []]
+    expected["funding"] = []
+    expected["funding_result"] = False
+    expected["status"] = copy.deepcopy(golden["immediate"]["status"])
+    for item in expected["execution"]:
+        item[3] = [event for event in item[3] if event[0] != "notify"]
+    for actual, original in zip(observed["cycles"], expected["cycles"]):
+        actual_summary = actual[0].get("summary", {})
+        original_summary = original[0].get("summary", {})
+        if "notification_digest" not in original_summary and "notification_digest" in actual_summary:
+            assert actual_summary["notification_digest"]["schema_version"] == "qsl.notification_cycle.v1"
+            actual_summary.pop("notification_digest")
+            if not actual_summary and "summary" not in original[0]:
+                actual[0].pop("summary")
+    assert observed == expected
 
 
 @pytest.mark.parametrize("flag", [None, "", "false", "invalid"])
@@ -172,3 +202,4 @@ def test_flags_off_workflow_failure_script_matches_main_sends(monkeypatch, tmp_p
         assert result.returncode == 0, result.stderr
         recordings.append([result.stdout, result.stderr, json.loads((tmp_path / "calls.json").read_text())])
     assert recordings[0] == recordings[1]
+

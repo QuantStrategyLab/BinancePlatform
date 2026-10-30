@@ -620,13 +620,9 @@ def log_and_notify(log_buffer, tg_token, tg_chat_id, text):
     external_notice(lambda: send_tg_msg(tg_token, tg_chat_id, text), kind="real_error", reason="runtime_failure")
 
 def _send_routine_tg_message(token, chat_id, text):
-    from notifications.unified_notifications import enabled, external_notice
-    if enabled():
-        return external_notice(lambda: send_tg_msg(token, chat_id, text))
-    from notifications.routing import daily_digest_enabled
-    if daily_digest_enabled():
-        return False
-    return send_tg_msg(token, chat_id, text)
+    from notifications.unified_notifications import _coverage_message, external_notice
+    return external_notice(lambda: send_tg_msg(token, chat_id, text),
+        send_coverage=lambda: send_tg_msg(token, chat_id, _coverage_message()))
 
 
 def _send_failure_tg_message(token, chat_id, text):
@@ -1453,3 +1449,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

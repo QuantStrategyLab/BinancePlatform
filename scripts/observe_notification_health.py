@@ -24,6 +24,14 @@ def observe(workflow, execution):
 
 
 def main():
+    if os.environ.get("DIGEST_PROJECTION_FAILED") == "true":
+        try:
+            receipt = operational.send_configured(operational.message("coverage_failure"))
+            if not (receipt.get("transport_acknowledged") is True if isinstance(receipt, dict) else receipt is True):
+                raise RuntimeError("coverage_notification_not_acknowledged")
+        except Exception:
+            print(json.dumps({"notification_status": "blocked", "reason": "coverage_alert_failed"}))
+            return 1
     if not unified.enabled():
         return 0
     try:
@@ -38,3 +46,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

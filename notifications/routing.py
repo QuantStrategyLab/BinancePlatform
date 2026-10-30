@@ -9,9 +9,7 @@ def daily_digest_enabled(mode=None):
 
 
 def routine_notification(sender, runtime, report, text, *, routine_order=True):
-    if unified.enabled():
-        return unified.routine_notice(sender, runtime, report, text, routine_order=routine_order)
-    return legacy.routine_notification(sender, runtime, report, text, routine_order=routine_order)
+    return unified.routine_notice(sender, runtime, report, text, routine_order=routine_order)
 
 
 def immediate_notification(sender, runtime, report, text, *, reason, kind="real_error", severity=1):
@@ -26,3 +24,4 @@ def immediate_notification(sender, runtime, report, text, *, reason, kind="real_
             severity=severity, runtime=runtime, report=report)
     finally:
         unified._ORDER_SEND.reset(token)
+

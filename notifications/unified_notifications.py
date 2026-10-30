@@ -62,12 +62,14 @@ def identity(env, report=None):
 
 
 def bind_cycle(runtime, report):
-    return _CYCLE.set((runtime, report)) if enabled() else None
+    _ORDER_IDENTITY.set("")
+    return _CYCLE.set((runtime, report))
 
 
 def reset_cycle(token):
     if token is not None:
         _CYCLE.reset(token)
+    _ORDER_IDENTITY.set("")
 
 
 def _note(report, status):
@@ -169,9 +171,16 @@ def immediate_event(event, send, *, report=None, store=None, state="active", sev
 
 def route(send, *, kind, report=None, runtime=None, reason=None, state="active", severity=1,
           env=None, candidate_store=None, marker_store=None, order_digest=None,
-          occurred_at=None, source_run_id=None):
+          occurred_at=None, source_run_id=None, send_coverage=None):
     values = os.environ if env is None else env
-    if not enabled(values):
+    selected = select_notification_route(event_kind=kind, env=values, flag_key=FLAG)
+    def coverage_failure():
+        if send_coverage is not None:
+            try:
+                send_coverage()
+            except Exception:
+                _note(report, "coverage_alert_failed")
+    if selected == "legacy":
         return send()
     context = _CYCLE.get()
     if report is None and context:
@@ -187,16 +196,14 @@ def route(send, *, kind, report=None, runtime=None, reason=None, state="active",
             order_execution_digest=order_digest)
     except Exception:
         _note(report, "candidate_identity_unknown")
-        # No candidate coverage means no suppression of the existing notice.
-        return send()
+        if selected == "digest_candidate":
+            coverage_failure()
+        return send() if selected != "digest_candidate" else False
     from .unified_producer import persist_event
     try:
-        # This consumer keeps all real order/fill confirmations immediate. The
-        # shared historical default remains untouched on the legacy OFF path.
-        selected_env = {**values, "QSL_DIGEST_ROUTINE_ORDERS": "false"}
-        result = route_notification_event(event, env=selected_env, flag_key=FLAG,
+        result = route_notification_event(event, env=values, flag_key=FLAG,
             persist_candidate=lambda fact: persist_event(fact, env=values, report=report, store=candidate_store),
-            legacy=send, immediate=send if kind in {"order_submitted", "fill"} else lambda: immediate_event(
+            legacy=send, immediate=lambda: immediate_event(
                 event, send, report=report, store=marker_store, state=state, severity=severity))
         if not result.candidate_persisted:
             _note(report, "candidate_write_failed")
@@ -206,13 +213,12 @@ def route(send, *, kind, report=None, runtime=None, reason=None, state="active",
         return result.result
     except Exception:
         _note(report, "candidate_write_failed")
-        # Failed routine writes stay visible via the existing immediate path.
-        if select_notification_route(event_kind=kind, env=selected_env, flag_key=FLAG) == "digest_candidate":
-            return send()
+        if selected == "digest_candidate":
+            coverage_failure()
         return False
 
 
-def runtime_notice(runtime, report, text, *, urgent, send):
+def runtime_notice(runtime, report, text, *, urgent, send, send_coverage=None):
     kind, reason, severity = "routine_cycle", None, 1
     if urgent:
         failure = (report.get("diagnostics") or {}).get("cycle_failure") or {}
@@ -226,7 +232,7 @@ def runtime_notice(runtime, report, text, *, urgent, send):
             kind, reason = "real_error", "runtime_failure"
             if failure.get("stage") and failure.get("error_type"):
                 reason = "cycle_" + failure["stage"] + "_" + failure["error_type"]
-    return route(send, kind=kind, reason=reason, severity=severity, runtime=runtime, report=report)
+    return route(send, kind=kind, reason=reason, severity=severity, runtime=runtime, report=report, send_coverage=send_coverage)
 
 
 def routine_notice(sender, runtime, report, text, *, routine_order):
@@ -235,21 +241,41 @@ def routine_notice(sender, runtime, report, text, *, routine_order):
     token = _ORDER_SEND.set(True) if routine_order else None
     try:
         order_digest = current_order_digest(runtime) if routine_order else None
+        def coverage():
+            guard = _ORDER_SEND.set(True)
+            try:
+                return sender(runtime, report, _coverage_message())
+            finally:
+                _ORDER_SEND.reset(guard)
         return route(lambda: sender(runtime, report, text), kind="fill" if routine_order else "routine_cycle",
-            runtime=runtime, report=report, order_digest=order_digest)
+            runtime=runtime, report=report, order_digest=order_digest,
+            send_coverage=coverage)
     finally:
         if token is not None:
             _ORDER_SEND.reset(token)
 
 
 _ORDER_SEND = ContextVar("binance_notification_order_send", default=False)
+_ORDER_IDENTITY = ContextVar("binance_notification_order_identity", default=None)
 
 
 def sending_order():
     return _ORDER_SEND.get()
 
 
+def begin_order_attempt():
+    _ORDER_IDENTITY.set("")
+
+
+def record_confirmed_order_identity(client_order_id):
+    if isinstance(client_order_id, str) and client_order_id:
+        _ORDER_IDENTITY.set(order_identity_digest(client_order_id))
+
+
 def current_order_digest(runtime):
+    current = _ORDER_IDENTITY.get()
+    if current is not None:
+        return current or None
     for effect in reversed(getattr(runtime, "side_effect_log", [])):
         if effect.get("effect_type") in {"order_buy", "order_sell"}:
             raw_id = (effect.get("payload") or {}).get("newClientOrderId")
@@ -257,8 +283,13 @@ def current_order_digest(runtime):
     return None
 
 
-def external_notice(send, *, kind="routine_cycle", reason=None):
-    return route(send, kind=kind, reason=reason)
+def _coverage_message():
+    from .operational import message
+    return message("coverage_failure")
+
+
+def external_notice(send, *, kind="routine_cycle", reason=None, send_coverage=None):
+    return route(send, kind=kind, reason=reason, send_coverage=send_coverage)
 
 
 def recover(event, *, store=None):
@@ -296,13 +327,20 @@ def report_issue(report):
 
 def observe_archived_report(report, *, env=None, store=None, send=None):
     values = os.environ if env is None else env
-    if not enabled(values) or report.get("dry_run") is not False:
+    if report.get("dry_run") is not False:
         return
     try:
         scope = identity(values, report)
         stamp = datetime.fromisoformat(report["started_at"].replace("Z", "+00:00"))
         from .unified_producer import update_window
-        update_window(values, reports=[report], archived=True, store=store)
+        try:
+            if update_window(values, reports=[report], archived=True, store=store) is not True:
+                raise RuntimeError("candidate_write_unconfirmed")
+        except Exception:
+            _note(report, "candidate_write_failed")
+            from .operational import send_configured
+            (send or send_configured)(_coverage_message())
+            return False
         issue = report_issue(report)
         if issue:
             from .operational import message, send_configured
@@ -324,3 +362,10 @@ def observe_archived_report(report, *, env=None, store=None, send=None):
                     source_run_id=report["run_id"], incident_reason=reason), store=store)
     except Exception:
         _note(report, "notification_recovery_unverified")
+        from .operational import send_configured
+        try:
+            (send or send_configured)(_coverage_message())
+        except Exception:
+            _note(report, "coverage_alert_failed")
+        return False
+
