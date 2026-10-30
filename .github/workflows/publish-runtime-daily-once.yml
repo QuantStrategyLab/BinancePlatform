@@ -7,6 +7,10 @@ on:
         description: Optional 64-hex nonce for protected source comparison only
         type: string
         required: false
+      status_only:
+        description: Verify the protected binding without printing its digest
+        type: boolean
+        default: false
       preflight_only:
         description: Check authentication only; do not read or publish reports
         type: boolean
@@ -33,6 +37,7 @@ jobs:
     with:
       runtime_daily_only: true
       runtime_daily_compare_nonce: ${{ inputs.compare_nonce }}
+      runtime_daily_compare_status_only: ${{ inputs.status_only }}
       runtime_daily_preflight_only: ${{ inputs.preflight_only }}
       runtime_daily_business_date: ${{ inputs.business_date }}
     secrets:
