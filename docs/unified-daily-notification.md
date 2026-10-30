@@ -1,19 +1,20 @@
 # Unified daily notification (code only)
 
-`QSL_ROUTINE_NOTIFICATION_MODE` defaults to `immediate`. Exact `daily_digest`
-opts into one central bilingual digest. `QSL_DIGEST_ROUTINE_ORDERS=false` retains
-immediate confirmed order notices. Failed, pending, uncertain, risk, persistence
-and authentication outcomes retain immediate alerts. Healthy idle cycles and
-routine plugin observations do not produce individual pushes.
+Routine cycles and verified order notifications are persisted for the central
+daily digest regardless of legacy flags. Unknown order outcomes, risk, persistence
+and authentication errors remain immediate. A candidate write failure sends a
+standalone coverage error, not the routine message.
+Dry-run previews remain suppressed and are not counted as live trading runs in
+the production digest; their existing local and archived checks remain available.
 
-QPK source reference: `4cc5e55251269923771f90cd661bb62a5cfdf0cd` (notification modules only).
+QPK source reference: `2b04882058666ebc81d1650d93fa2105ec4ba3d8` (notification modules only).
 
 The notification-only QPK source snapshot in `notifications/digest_snapshot/` avoids an
 unrelated trading dependency upgrade. Keep these three modules byte-identical
 to the reviewed QPK notification modules. Existing QPK/strategy pins, order
 execution, funding, risk, account enablement and durable report writes are unchanged.
 
-Before enabling routing, validate the exact active target's private archived
+Before deploying the policy, validate the exact active target's private archived
 report, candidate store and QRS receiver. Existing cloud monitor wiring uses
 `RUNTIME_TARGET_ENABLED=true`, exact protected `RUNTIME_TARGET_JSON`,
 `EXECUTION_REPORT_GCS_URI`, `DIGEST_CANDIDATES_GCS_URI`, `DIGEST_STORE_TARGET`,
@@ -34,3 +35,4 @@ produce an `actually_ran=false` marker without inventing zero trading counts.
 Fill counts require individual execution identifiers. A completed order response
 proves an order completed, not how many fills it received. Missing fill counts
 remain unknown; confirmed routine orders still appear without a false diagnostic.
+

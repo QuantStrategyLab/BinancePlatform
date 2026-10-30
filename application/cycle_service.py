@@ -633,7 +633,7 @@ def execute_strategy_cycle(
         finalize_notification_delivery(report)
         attach_execution_receipt_from_report(report)
         from notifications.routing import daily_digest_enabled
-        if daily_digest_enabled():
+        if daily_digest_enabled("daily_digest"):
             observation = report.get("execution_receipt_observation") or {}
             fields = ("submission_attempted_count", "broker_acknowledged_count", "partially_filled_count",
                       "filled_count", "transport_uncertain_count", "failed_count")
@@ -739,9 +739,17 @@ def run_live_cycle(
         append_report_error(report, "report_persistence_failed", stage="report_persistence")
         output_printer("failed to persist archived execution report: report_persistence_failed")
         persisted_local_path = report_writer(report)
-    from notifications.unified_notifications import enabled, observe_archived_report
-    if enabled() and getattr(locals().get("persisted"), "cloud_uri", None):
+    from notifications.unified_notifications import observe_archived_report
+    if getattr(locals().get("persisted"), "cloud_uri", None):
         observe_archived_report(report)
+    elif not getattr(runtime, "dry_run", False):
+        from notifications.unified_notifications import _coverage_message, _note
+        from runtime_support import _legacy_runtime_notify
+        _note(report, "candidate_archive_unconfirmed")
+        try:
+            _legacy_runtime_notify(runtime, report, _coverage_message(), urgent=True)
+        except Exception:
+            output_printer("notification_report_coverage_alert_failed")
     report_status = _public_cycle_status(report.get("status"))
     status_event = {
         "ok": "strategy_cycle_completed",
@@ -765,3 +773,4 @@ def run_live_cycle(
         exit_fn(1)
 
     return report, persisted_local_path
+

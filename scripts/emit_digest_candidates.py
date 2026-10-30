@@ -112,7 +112,7 @@ def project_digest_candidates(report, *, expected_target, opaque_account_uid, ta
     return {"schema_version": "qsl.digest_candidates.v1", "producer_status": "projected", "runs": [row]}
 
 
-def emit_digest_candidates(env, *, now=None):
+def _legacy_emit_digest_candidates(env, *, now=None):
     from notifications.unified_notifications import enabled
     if enabled(env):
         from notifications.unified_producer import emit_archive
@@ -170,6 +170,11 @@ def emit_digest_candidates(env, *, now=None):
     return {"status": "projected", "uploaded": True, "runs": 1, "counts_unknown": True, "financial_values_included": False}
 
 
+def emit_digest_candidates(env, *, now=None):
+    from notifications.unified_producer import emit_archive
+    return emit_archive(env, now=now)
+
+
 def main():
     try:
         result = emit_digest_candidates(os.environ)
@@ -186,3 +191,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

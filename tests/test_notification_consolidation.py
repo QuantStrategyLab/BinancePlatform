@@ -152,15 +152,15 @@ def test_routine_writes_real_candidate_before_deferral_and_replays_do_not_add_cy
     assert payload["report_date"] == "2026-10-18"
 
 
-def test_failed_candidate_write_retains_immediate_notice_and_unknown_coverage(monkeypatch):
-    env, sends = configure(monkeypatch), []
+def test_failed_candidate_write_sends_only_coverage_error(monkeypatch):
+    env, sends, coverage = configure(monkeypatch), [], []
     class Failed(MemoryStore):
         def compare_and_swap(self, *a):
             raise TimeoutError("example unknown write result")
     report = source()
     assert unified.route(lambda: sends.append(1) or True, kind="routine_cycle", env=env, report=report,
-        candidate_store=Failed()) is True
-    assert sends == [1]
+        candidate_store=Failed(), send_coverage=lambda: coverage.append(1)) is False
+    assert sends == [] and coverage == [1]
     assert report["notifications"][-1]["delivery_status"] == "candidate_write_failed"
 
 
@@ -201,9 +201,9 @@ def test_cold_start_incident_dedupe_ack_recovery_escalation_accounts_and_uncerta
     assert len(sends) == 5
 
 
-@pytest.mark.parametrize("kind", ["order_submitted", "fill", "receipt_missing", "receipt_stale",
+@pytest.mark.parametrize("kind", ["receipt_missing", "receipt_stale",
     "receipt_unacceptable", "auth_failure", "order_status_unknown", "risk_escalation", "blocked_run", "real_error"])
-def test_real_orders_and_all_urgent_classes_remain_immediate_even_with_candidate_failure(monkeypatch, kind):
+def test_urgent_classes_remain_immediate_even_with_candidate_failure(monkeypatch, kind):
     env, sends = configure(monkeypatch), []
     env["QSL_DIGEST_ROUTINE_ORDERS"] = "true"
     class Failed(MemoryStore):
@@ -425,7 +425,7 @@ def test_snapshot_matches_declared_qpk_source_hash_and_new_strings_are_single_la
     root = Path(__file__).resolve().parents[1] / "notifications/digest_snapshot"
     provenance = json.loads((root / "provenance.json").read_text())
     assert hashlib.sha256((root / "unified_contract.py").read_bytes()).hexdigest() == provenance["files"]["unified_contract.py"]["sha256"]
-    assert provenance["snapshot_commit"] == "07e24c0c804a9b47316b6ec3c75bb63820d8f421"
+    assert provenance["snapshot_commit"] == "2b04882058666ebc81d1650d93fa2105ec4ba3d8"
     for locale in ("zh", "en"):
         monkeypatch.setenv("NOTIFY_LANG", locale)
         for category in operational._TEXT[locale]:
@@ -434,3 +434,4 @@ def test_snapshot_matches_declared_qpk_source_hash_and_new_strings_are_single_la
                 assert not any("a" <= ch.lower() <= "z" for ch in text)
             else:
                 assert not any("\u4e00" <= ch <= "\u9fff" for ch in text)
+
