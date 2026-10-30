@@ -134,7 +134,7 @@ For standalone `crypto_btc_dca` in this validation scope, an approved plan is
 checked against the current BTC value and records only its proposed buy amount;
 it does not pass through the legacy BTC executor, submit an order, or simulate a
 fill. A no-action plan records no BTC proposal and retains the existing target.
-Exit plans are unsupported in this path and fail validation. Missing required
+Exit plans without explicitly supplied attribution evidence are unsupported in this path and fail validation. Missing required
 smart or exit inputs remain a failure; synthetic indicator tests do not prove
 that a trustworthy live source is connected. Production selection remains
 separately controlled by the production allowlist and existing guards.
@@ -1048,3 +1048,37 @@ provenance or attest the producer. No source is supplied by this change. The
 ratio called `ahr999` in the existing market snapshot is not used as direct
 AHR input. This does not establish owned BTC inventory or enable exits, orders,
 or production trading. Non-smart BTC evaluation does not require this envelope.
+
+### BTC attribution exit preview in no-submit validation
+
+A caller can explicitly supply synthetic `btc_attribution_evidence` to the
+standalone BTC `full_cycle_no_submit` cycle. The ordinary validator supplies no
+such evidence, so exits remain blocked. This input is not read from a file,
+broker, runtime attribute, or account service. Never supply it to standard or
+production execution.
+
+The `btc-attribution/v1` object declares one account scope and selector, the
+BTC DCA profile, source and source version, opening UTC time and spot/Earn BTC
+quantities, exact observation and availability time at the cycle clock, and a
+complete list of unique fills and internal spot/Earn transfers since opening.
+Each fill has a unique ID, UTC time, side, BTC quantity, fee amount and fee
+asset. BTC fees reduce spot inventory; other fees remain in their original
+units and are not converted to return or P&L. A nonempty unsettled-order list,
+missing coverage, ambiguous event order, negative inventory, or disagreement
+with declared spot-free and Earn balances blocks the preview. Only internal
+spot/Earn transfers are supported. The existing BTC balance read captures broker spot free, locked and Earn separately
+without additional broker calls; missing split observations, nonzero locked BTC, or
+a split that differs from the declared strategy ledger blocks the preview. The
+declared account's entire BTC balance and strategy decision's current BTC value must also match the reconstructed
+strategy holdings; a mismatch blocks rather than treating shared account BTC as
+strategy property.
+
+A matching, risk-approved reduction yields a sell proposal only. Its quantity is
+rounded down to 18 decimal places, never up; exchange step size, minimums and
+all other execution filters remain unverified. The proposal explicitly reports
+`proposal_only=true`, `execution_ready=false`, and source and completeness as
+unauthenticated. Self-declared source, version and completeness do not prove a
+trusted opening balance, complete history, data provenance, account ownership,
+net performance or trading authority. This contract does not enable orders,
+redemptions or live exits; a real source binding and independent reconciliation
+remain necessary.

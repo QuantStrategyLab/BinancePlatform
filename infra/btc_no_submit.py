@@ -53,3 +53,64 @@ def approved_buy_amount(decision, account_metrics):
             or (("no_execute" in decision.risk_flags) != (amount == 0.0))):
         raise ValueError("btc_validation_plan_invalid")
     return amount
+
+
+def approved_exit_proposal(decision, account_metrics, *, price, account_btc, evidence, as_of,
+                           account_scope, account_selector, broker_parts=None):
+    """Build a declared-ledger preview; never grant authority or execution readiness."""
+    from decimal import Decimal, InvalidOperation, ROUND_DOWN
+    from infra.btc_attribution import reconstruct
+
+    def decimal_number(value):
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            raise ValueError("btc_validation_exit_unsupported")
+        try:
+            result = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            raise ValueError("btc_validation_exit_unsupported") from None
+        if not result.is_finite() or result < 0 or result > Decimal("1000000000"):
+            raise ValueError("btc_validation_exit_unsupported")
+        return result
+
+    if evidence is None:
+        raise ValueError("btc_validation_exit_unsupported")
+    owned = reconstruct(evidence, as_of=as_of, account_scope=account_scope, account_selector=account_selector)
+    diag = decision.diagnostics
+    if not isinstance(diag, Mapping) or not isinstance(account_metrics, Mapping):
+        raise ValueError("btc_validation_exit_unsupported")
+    exit_plan = diag.get("zscore_exit")
+    if (not isinstance(exit_plan, Mapping) or exit_plan.get("applied") is not True
+            or exit_plan.get("route") not in {"risk_reduced", "risk_off"} or "no_execute" in decision.risk_flags):
+        raise ValueError("btc_validation_exit_unsupported")
+    current = decimal_number(diag.get("btc_value_usd"))
+    target = decimal_number(diag.get("target_btc_value_usd"))
+    equity = decimal_number(account_metrics.get("total_equity"))
+    ratio = decimal_number(diag.get("btc_target_ratio"))
+    price = decimal_number(price)
+    balance = decimal_number(account_btc)
+    if not isinstance(broker_parts, Mapping) or set(broker_parts) != {"spot_free", "spot_locked", "earn"}:
+        raise ValueError("btc_validation_exit_unsupported")
+    broker_free = decimal_number(broker_parts["spot_free"])
+    broker_locked = decimal_number(broker_parts["spot_locked"])
+    broker_earn = decimal_number(broker_parts["earn"])
+    positions = [position for position in decision.positions if position.symbol == "BTCUSDT"]
+    budgets = [budget for budget in decision.budgets if budget.name == "btc_dca_pool" and budget.symbol == "BTCUSDT"]
+    if (price <= 0 or equity <= 0 or ratio > 1 or not 0 <= target < current or len(positions) != 1
+            or len(budgets) != 1 or decimal_number(budgets[0].amount) != 0
+            or decimal_number(diag.get("planned_investment_usd")) != 0
+            or abs(decimal_number(positions[0].target_weight) - ratio) > Decimal("0.000000001")
+            or abs(decimal_number(account_metrics.get("dca_value")) - current) > Decimal("0.000001")
+            or abs(equity * ratio - target) > Decimal("0.000001")
+            or broker_locked != 0 or broker_free != owned.spot or broker_earn != owned.earn
+            or balance != broker_free + broker_locked + broker_earn
+            or abs((owned.spot + owned.earn) * price - current) > Decimal("0.000001")):
+        raise ValueError("btc_validation_exit_unsupported")
+    try:
+        quantity = ((current - target) / price).quantize(Decimal("0.000000000000000001"), rounding=ROUND_DOWN)
+    except (InvalidOperation, OverflowError, ZeroDivisionError):
+        raise ValueError("btc_validation_exit_unsupported") from None
+    if quantity <= 0 or quantity > owned.spot or quantity * price > current - target:
+        raise ValueError("btc_validation_exit_unsupported")
+    return {"action": "sell", "symbol": "BTCUSDT", "quantity": format(quantity.normalize(), "f"),
+            "proposal_only": True, "execution_ready": False,
+            "source_authenticated": False, "completeness_authenticated": False}
