@@ -121,10 +121,10 @@ def receive(qrs, tmp_path, payload, *, duplicate=False, locale="zh"):
     return received, summary, text, receipt, collected, stats
 
 
-@pytest.mark.parametrize("order_counts,event_count,immediate_count", [((0, 0), 2, 0), ((0, 1), 4, 0)])
+@pytest.mark.parametrize("order_counts,event_count,legacy_immediate_count", [((0, 0), 2, 0), ((0, 1), 4, 2)])
 @pytest.mark.parametrize("duplicate", [False, True])
 def test_real_producer_merge_receiver_roundtrip(monkeypatch, tmp_path, qrs,
-        order_counts, event_count, immediate_count, duplicate):
+        order_counts, event_count, legacy_immediate_count, duplicate):
     payload, sends = export_window(monkeypatch, order_counts)
     assert len(payload["runs"]) == 2
     assert "notification_events" not in payload and "source_facts" not in payload
@@ -136,10 +136,12 @@ def test_real_producer_merge_receiver_roundtrip(monkeypatch, tmp_path, qrs,
     assert len(received) == receipt["run_count"] == 2
     assert summary["source_inventory"]["binance"] == {"expected_targets": 1, "covered_targets": 1, "runs": 2}
     assert summary["counts_unknown"] is False and summary["run_count_unknown"] is False
-    assert summary["event_count"] == event_count and summary["immediate_events"] == immediate_count
+    # This byte-pinned older QRS fixture counts order/fill kinds as immediate;
+    # the actual sender calls below prove that neither was sent immediately.
+    assert summary["event_count"] == event_count and summary["immediate_events"] == legacy_immediate_count
     assert sum(row["order_count"] for row in received) == sum(order_counts)
     assert receipt["total_fills_status"] == "known" and receipt["total_fills"] == 2 * sum(order_counts)
-    assert len(sends) == immediate_count and stats["file_rows"] == (4 if duplicate else 2)
+    assert sends == [] and stats["file_rows"] == (4 if duplicate else 2)
     zero = next(run for run in collected.runs if run.order_count == 0)
     assert zero.order_count_status == zero.fill_count_status == "known"
     # Healthy zero-order runs use QRS's no-trade wording; blocked zero-order

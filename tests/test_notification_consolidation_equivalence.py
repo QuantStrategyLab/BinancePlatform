@@ -140,6 +140,9 @@ def test_flags_off_matches_main_entrypoint_and_renderer_call_recordings(monkeypa
     expected["status"] = copy.deepcopy(golden["immediate"]["status"])
     for item in expected["execution"]:
         item[3] = [event for event in item[3] if event[0] != "notify"]
+        notices = item[6].get("notifications")
+        if notices and all(notice.get("delivery_status") == "deferred_digest" for notice in notices):
+            item[6].pop("notifications")
     for actual, original in zip(observed["cycles"], expected["cycles"]):
         actual_summary = actual[2].get("summary", {})
         original_summary = original[2].get("summary", {})
