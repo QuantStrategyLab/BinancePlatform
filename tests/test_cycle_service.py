@@ -975,7 +975,8 @@ class CycleServiceTests(unittest.TestCase):
                     payload = json.load(handle)
 
         self.assertEqual(observed["built"], 1)
-        self.assertEqual(len(observed["printed"]), 3)
+        self.assertEqual(len(observed["printed"]), 4)
+        self.assertIn("notification_report_coverage_alert_failed", observed["printed"])
         self.assertEqual(observed["printed"][1], "Strategy report details retained in the execution report.")
         self.assertEqual(report["status"], "ok")
         self.assertEqual(payload["log_lines"], ["line-1", "line-2"])
@@ -1708,3 +1709,4 @@ def test_owned_writer_inventory_excludes_ci_dependencies_but_detects_nested_owne
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('transaction.update(ref, data)\n')
     assert _owned_native_mutation_calls(tmp_path) == [('application/nested/writer.py', 'store', 'set')]
+

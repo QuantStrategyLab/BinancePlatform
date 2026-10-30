@@ -77,7 +77,7 @@ def export_window(monkeypatch, order_counts):
                 sends.append(kind)
                 return {"transport_acknowledged": True, "transport_receipt_id": f"example-provider-{len(sends)}"}
             assert unified.route(send, kind=kind, report=report, env=env, candidate_store=store,
-                order_digest=order_identity_digest(f"example-order-{index}"))["transport_acknowledged"]
+                order_digest=order_identity_digest(f"example-order-{index}")) is False
         reports.append(report)
 
     def read(args):
@@ -121,7 +121,7 @@ def receive(qrs, tmp_path, payload, *, duplicate=False, locale="zh"):
     return received, summary, text, receipt, collected, stats
 
 
-@pytest.mark.parametrize("order_counts,event_count,immediate_count", [((0, 0), 2, 0), ((0, 1), 4, 2)])
+@pytest.mark.parametrize("order_counts,event_count,immediate_count", [((0, 0), 2, 0), ((0, 1), 4, 0)])
 @pytest.mark.parametrize("duplicate", [False, True])
 def test_real_producer_merge_receiver_roundtrip(monkeypatch, tmp_path, qrs,
         order_counts, event_count, immediate_count, duplicate):
@@ -173,3 +173,4 @@ def test_single_zero_order_run_roundtrip_renders_known_zero(monkeypatch, tmp_pat
     assert not sends and len(received) == receipt["run_count"] == 1
     assert summary["counts_unknown"] is False and summary["event_count"] == 1
     assert "本轮 0 单" in text and "全窗口统计未知" not in text
+

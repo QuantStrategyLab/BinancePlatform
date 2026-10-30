@@ -141,13 +141,13 @@ def test_flags_off_matches_main_entrypoint_and_renderer_call_recordings(monkeypa
     for item in expected["execution"]:
         item[3] = [event for event in item[3] if event[0] != "notify"]
     for actual, original in zip(observed["cycles"], expected["cycles"]):
-        actual_summary = actual[0].get("summary", {})
-        original_summary = original[0].get("summary", {})
+        actual_summary = actual[2].get("summary", {})
+        original_summary = original[2].get("summary", {})
         if "notification_digest" not in original_summary and "notification_digest" in actual_summary:
             assert actual_summary["notification_digest"]["schema_version"] == "qsl.notification_cycle.v1"
             actual_summary.pop("notification_digest")
-            if not actual_summary and "summary" not in original[0]:
-                actual[0].pop("summary")
+            if not actual_summary and "summary" not in original[2]:
+                actual[2].pop("summary")
     assert observed == expected
 
 
