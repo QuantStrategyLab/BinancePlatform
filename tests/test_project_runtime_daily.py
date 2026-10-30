@@ -38,7 +38,8 @@ def test_publish_once_requires_exact_ack_and_never_retries(monkeypatch):
               "runtime_target": {"execution_mode": "live"}, "account_facts_source_binding_id": "a" * 64,
               "external_cash_flow_interval": {"account_scope_sha256": "a" * 64}}
     monkeypatch.setattr(publisher, "_read_reports", lambda *_args: ([report], None))
-    env = {"RUNTIME_TARGET_JSON": json.dumps({"service_name": "synthetic-service", "strategy_profile": "synthetic-profile", "account_scope": "live"}),
+    env = {"BINANCE_ACCOUNT_FACTS_BINDING_JSON": "synthetic-binding",
+           "RUNTIME_TARGET_JSON": json.dumps({"service_name": "synthetic-service", "strategy_profile": "synthetic-profile", "account_scope": "live"}),
            "EXECUTION_EVIDENCE_SYNC_TOKEN": "synthetic-token", "EXECUTION_EVIDENCE_SYNC_URL": "https://example.test/api/execution-evidence/sync",
            "RUNTIME_DAILY_BUSINESS_DATE": "2026-10-29"}
     class Response:
@@ -69,7 +70,8 @@ def test_matching_ack_is_only_success_and_nested_identity_mismatch_excluded(monk
               "runtime_target": {"execution_mode": "live"}, "account_facts_source_binding_id": "a" * 64,
               "external_cash_flow_interval": {"account_scope_sha256": "a" * 64}}
     monkeypatch.setattr(publisher, "_read_reports", lambda *_args: ([report], None))
-    env = {"RUNTIME_TARGET_JSON": json.dumps({"service_name": "synthetic-service", "strategy_profile": "synthetic-profile", "account_scope": "live"}),
+    env = {"BINANCE_ACCOUNT_FACTS_BINDING_JSON": "synthetic-binding",
+           "RUNTIME_TARGET_JSON": json.dumps({"service_name": "synthetic-service", "strategy_profile": "synthetic-profile", "account_scope": "live"}),
            "EXECUTION_EVIDENCE_SYNC_TOKEN": "synthetic-token", "EXECUTION_EVIDENCE_SYNC_URL": "https://example.test/api/execution-evidence/sync",
            "RUNTIME_DAILY_BUSINESS_DATE": "2026-10-29"}
     now = datetime(2026, 10, 29, 20, tzinfo=timezone.utc)
@@ -102,7 +104,8 @@ def test_no_attributable_runs_or_wrong_origin_never_posts(monkeypatch):
 
     monkeypatch.setattr(publisher, "_binding", lambda _env, _target: ("synthetic-key", "a" * 64, "b" * 64))
     monkeypatch.setattr(publisher, "_FACTS_URL", "https://example.test/api/account-facts/sync")
-    env = {"RUNTIME_TARGET_JSON": json.dumps({"service_name": "synthetic-service", "strategy_profile": "synthetic-profile", "account_scope": "live"}),
+    env = {"BINANCE_ACCOUNT_FACTS_BINDING_JSON": "synthetic-binding",
+           "RUNTIME_TARGET_JSON": json.dumps({"service_name": "synthetic-service", "strategy_profile": "synthetic-profile", "account_scope": "live"}),
            "EXECUTION_EVIDENCE_SYNC_TOKEN": "synthetic-token", "EXECUTION_EVIDENCE_SYNC_URL": "https://example.test/api/execution-evidence/sync",
            "RUNTIME_DAILY_BUSINESS_DATE": "2026-10-29"}
     now = datetime(2026, 10, 29, 20, tzinfo=timezone.utc)
@@ -134,7 +137,8 @@ def test_redirect_is_not_followed_and_unknown_is_not_retried(monkeypatch):
               "runtime_target": {"execution_mode": "live"}, "account_facts_source_binding_id": "a" * 64,
               "external_cash_flow_interval": {"account_scope_sha256": "a" * 64}}
     monkeypatch.setattr(publisher, "_read_reports", lambda *_args: ([report], None))
-    env = {"RUNTIME_TARGET_JSON": json.dumps({"service_name": "synthetic-service", "strategy_profile": "synthetic-profile", "account_scope": "live"}),
+    env = {"BINANCE_ACCOUNT_FACTS_BINDING_JSON": "synthetic-binding",
+           "RUNTIME_TARGET_JSON": json.dumps({"service_name": "synthetic-service", "strategy_profile": "synthetic-profile", "account_scope": "live"}),
            "EXECUTION_EVIDENCE_SYNC_TOKEN": "synthetic-token", "EXECUTION_EVIDENCE_SYNC_URL": "https://example.test/api/execution-evidence/sync",
            "RUNTIME_DAILY_BUSINESS_DATE": "2026-10-29"}
     class Redirect:
@@ -166,3 +170,55 @@ def test_auth_preflight_accepts_only_exact_safe_json_without_retry(monkeypatch):
                                  (403, b'{}', "unavailable"), (302, b'{}', "unavailable")):
         opener = Opener(code, body)
         assert publisher.auth_preflight(env, opener=opener) == expected and opener.calls == 1
+
+
+def test_main_reports_missing_binding_without_read_or_post(monkeypatch, capsys):
+    import sys
+    from scripts import publish_runtime_daily as publisher
+
+    target = json.dumps({"service_name": "synthetic-service", "strategy_profile": "synthetic-profile",
+                         "account_scope": "live"})
+    monkeypatch.setattr(sys, "argv", ["publish_runtime_daily"])
+    monkeypatch.setenv("RUNTIME_TARGET_JSON", target)
+    calls = []
+    def unexpected(*_args, **_kwargs):
+        calls.append(True)
+        raise AssertionError("must not read or post")
+    monkeypatch.setattr(publisher, "_binding", unexpected)
+    monkeypatch.setattr(publisher, "_read_reports", unexpected)
+    monkeypatch.setattr(publisher, "build_opener", unexpected)
+
+    for binding in (None, "", " \t\n"):
+        if binding is None:
+            monkeypatch.delenv("BINANCE_ACCOUNT_FACTS_BINDING_JSON", raising=False)
+        else:
+            monkeypatch.setenv("BINANCE_ACCOUNT_FACTS_BINDING_JSON", binding)
+        assert publisher.main() == 1
+        assert json.loads(capsys.readouterr().out) == {"status": "unavailable", "reason": "binding_missing"}
+        assert calls == []
+
+
+def test_main_other_failures_and_preflight_keep_original_output(monkeypatch, capsys):
+    import sys
+    from scripts import publish_runtime_daily as publisher
+
+    monkeypatch.setattr(sys, "argv", ["publish_runtime_daily"])
+    monkeypatch.setenv("RUNTIME_TARGET_JSON", "invalid-json")
+    monkeypatch.delenv("BINANCE_ACCOUNT_FACTS_BINDING_JSON", raising=False)
+    assert publisher.main() == 1
+    assert json.loads(capsys.readouterr().out) == {"status": "unavailable"}
+
+    def fail(_env):
+        raise ValueError("private-exception-marker")
+    monkeypatch.setattr(publisher, "publish_once", fail)
+    assert publisher.main() == 1
+    assert json.loads(capsys.readouterr().out) == {"status": "unavailable"}
+
+    monkeypatch.setattr(publisher, "publish_once", lambda _env: "published")
+    assert publisher.main() == 0
+    assert json.loads(capsys.readouterr().out) == {"status": "published"}
+
+    monkeypatch.setattr(sys, "argv", ["publish_runtime_daily", "--preflight"])
+    monkeypatch.setattr(publisher, "auth_preflight", lambda _env: "verified")
+    assert publisher.main() == 0
+    assert json.loads(capsys.readouterr().out) == {"status": "verified"}
