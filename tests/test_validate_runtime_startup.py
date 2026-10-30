@@ -77,7 +77,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     from quant_platform_kit.common.runtime_target import build_runtime_target
     from strategy_runtime import load_research_only_strategy_runtime
     from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
-    from scripts.validate_runtime_startup import validate_full_cycle
+    from scripts.validate_runtime_startup import FullCycleValidationError, validate_full_cycle
 
     now = datetime(2026, 3, 15, tzinfo=timezone.utc)
     target = build_runtime_target(
@@ -184,7 +184,14 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     with patch("live_risk_authority.resolve_strategy_revision", return_value="d" * 40), patch(
         "live_risk_authority.resolve_runner_revision", return_value=runner_revision
     ), patch("quant_platform_kit.risk.gate._utc_now", return_value=now):
-        result = validate_full_cycle(runtime_builder=build, client_connector=lambda *_args, **_kwargs: replay_client)
+        try:
+            result = validate_full_cycle(runtime_builder=build, client_connector=lambda *_args, **_kwargs: replay_client)
+        except FullCycleValidationError as exc:
+            pytest.fail(
+                f"synthetic full-cycle failure: reason={exc.reason_code}, "
+                f"stage={exc.failure_stage}, error_type={exc.error_type}",
+                pytrace=False,
+            )
 
     assert result["status"] == "passed"
     assert result["cycle_complete"] is True
@@ -215,7 +222,7 @@ def test_full_cycle_without_live_authority_fails_closed(monkeypatch):
 def test_full_cycle_failure_projection_keeps_reject_and_abort_distinct():
     import main
     import run_cycle_replay
-    from scripts.validate_runtime_startup import _full_cycle_failure_reason
+    from scripts.validate_runtime_startup import _full_cycle_failure_metadata, _full_cycle_failure_reason
 
     risk_rejected = run_cycle_replay.run_replay_cycle(
         run_id="full-cycle-risk-rejected", dry_run=True,
@@ -226,7 +233,9 @@ def test_full_cycle_failure_projection_keeps_reject_and_abort_distinct():
     aborted_runtime.state_loader = lambda *, normalize=False: None
     cycle_aborted = main.execute_cycle(aborted_runtime)
 
-    assert _full_cycle_failure_reason(risk_rejected) == "full_cycle_risk_rejected"
+    assert _full_cycle_failure_reason(risk_rejected) == "full_cycle_risk_rejected", (
+        f"synthetic replay failure metadata: {_full_cycle_failure_metadata(risk_rejected)}"
+    )
     assert _full_cycle_failure_reason(cycle_aborted) == "full_cycle_aborted"
 
 
