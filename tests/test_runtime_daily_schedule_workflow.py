@@ -61,3 +61,20 @@ def test_manual_daily_uses_same_protected_job_and_checks_skip_cloud_auth() -> No
     assert "inputs.runtime_daily_preflight_only" in daily
     assert "github.event_name == 'workflow_dispatch'" in daily
     assert "github.event_name == 'schedule'" in daily
+
+
+def test_status_only_dispatch_cannot_authenticate_or_publish() -> None:
+    workflows = Path(__file__).resolve().parents[1] / ".github/workflows"
+    manual = (workflows / "publish-runtime-daily-once.yml").read_text()
+    protected = (workflows / "runtime-protected.yml").read_text()
+    daily = protected.split("  runtime-daily:\n", 1)[1].split("  deploy:\n", 1)[0]
+    assert "runtime_daily_compare_status_only: ${{ inputs.status_only }}" in manual
+    assert "RUNTIME_DAILY_COMPARE_STATUS_ONLY: ${{ inputs.runtime_daily_compare_status_only }}" in daily
+    for step in ("Authenticate existing report reader", "Check existing receiver authentication without data writes", "Publish one protected projection"):
+        block = daily.split(f"      - name: {step}\n", 1)[1].split("\n      - ", 1)[0]
+        assert "!inputs.runtime_daily_compare_status_only" in block
+    gcloud = daily.split("      - uses: google-github-actions/setup-gcloud", 1)[1].split("\n      - ", 1)[0]
+    assert "!inputs.runtime_daily_compare_status_only" in gcloud
+    comparison = daily.split("      - name: Compare protected source without publication\n", 1)[1].split("\n      - ", 1)[0]
+    assert "inputs.runtime_daily_compare_status_only" in comparison
+    assert "scripts.compare_daily_source" in comparison

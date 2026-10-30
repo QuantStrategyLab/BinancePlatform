@@ -35,7 +35,10 @@ def compare_source(env):
 
 def main():
     try:
-        result = {"status": "verified", "binding_digest": compare_source(os.environ)}
+        digest = compare_source(os.environ)
+        result = {"status": "verified"}
+        if os.environ.get("RUNTIME_DAILY_COMPARE_STATUS_ONLY") != "true":
+            result["binding_digest"] = digest
     except Exception:
         result = {"status": "unavailable"}
     print(json.dumps(result, separators=(",", ":")))

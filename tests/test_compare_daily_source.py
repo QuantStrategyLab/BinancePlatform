@@ -48,3 +48,34 @@ def test_unbound_or_changed_source_is_rejected(case):
     env["BINANCE_ACCOUNT_FACTS_BINDING_JSON"] = json.dumps(binding)
     with pytest.raises(ValueError):
         module.compare_source(env)
+
+
+def test_status_only_checks_binding_without_disclosing_digest(monkeypatch, capsys):
+    env, binding, source = fixture()
+    env["RUNTIME_DAILY_COMPARE_STATUS_ONLY"] = "true"
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert module.main() == 0
+    output = capsys.readouterr().out
+    assert json.loads(output) == {"status": "verified"}
+    assert source not in output and binding["account_selector"] not in output
+
+
+def test_status_only_failure_is_generic(monkeypatch, capsys):
+    env, binding, _ = fixture()
+    binding["source_binding"]["id"] = "0" * 64
+    env["BINANCE_ACCOUNT_FACTS_BINDING_JSON"] = json.dumps(binding)
+    env["RUNTIME_DAILY_COMPARE_STATUS_ONLY"] = "true"
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert module.main() == 1
+    assert json.loads(capsys.readouterr().out) == {"status": "unavailable"}
+
+
+def test_default_comparison_still_emits_digest(monkeypatch, capsys):
+    env, _, _ = fixture()
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("RUNTIME_DAILY_COMPARE_STATUS_ONLY", raising=False)
+    assert module.main() == 0
+    assert json.loads(capsys.readouterr().out) == {"status": "verified", "binding_digest": module.compare_source(env)}
