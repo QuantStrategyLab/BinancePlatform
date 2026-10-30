@@ -109,7 +109,6 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         account_scope="fixture-scope",
         service_name="binance-platform",
     )
-    loaded = load_research_only_strategy_runtime(target.strategy_profile)
     btc_overrides = {}
     if profile == "crypto_btc_dca":
         # Ordinary cases explicitly disable smart and exit inputs; the smart case
@@ -121,7 +120,20 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
             btc_overrides["zscore_exit_context"] = {"route": "normal"}
         if scenario == "insufficient_cash":
             btc_overrides["cash_reserve_usd"] = 1000.0
-        loaded = replace(loaded, runtime_overrides=btc_overrides)
+        import strategy_runtime
+
+        build_loaded = strategy_runtime._build_loaded_strategy_runtime
+
+        def build_with_synthetic_config(entrypoint):
+            actual = build_loaded(entrypoint)
+            if entrypoint.manifest.profile == "crypto_btc_dca":
+                return replace(actual, runtime_overrides=btc_overrides)
+            return actual
+
+        # Both the authority digest and the real gated activation use the same
+        # synthetic config; neither loader nor the authority check is bypassed.
+        monkeypatch.setattr(strategy_runtime, "_build_loaded_strategy_runtime", build_with_synthetic_config)
+    loaded = load_research_only_strategy_runtime(target.strategy_profile)
     runner_revision = "b" * 40
     payload = {
         "decision": "APPROVE",
@@ -214,9 +226,9 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     def build(*, validation_scope):
         assert validation_scope == "full_cycle_no_submit"
         runtime = main.build_live_runtime(now_utc=now, validation_scope=validation_scope)
-        if btc_overrides:
-            runtime.strategy_runtime = replace(runtime.strategy_runtime, runtime_overrides=btc_overrides)
         assert runtime.strategy_runtime.profile == profile
+        if btc_overrides:
+            assert runtime.strategy_runtime.runtime_overrides == btc_overrides
         assert runtime.runtime_target.live_continuity.state == "RECONCILE_ONLY"
         assert runtime.standard_execution_permitted is False
         runtime.state_loader = state_store.load
