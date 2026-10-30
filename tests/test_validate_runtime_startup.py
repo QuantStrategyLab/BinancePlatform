@@ -83,6 +83,14 @@ def test_startup_validation_rejects_broker_credentials(monkeypatch):
     ("crypto_btc_dca", "injected_btc_snapshot"),
     ("crypto_btc_dca", "synthetic_smart"),
     ("crypto_btc_dca", "missing_smart_input"),
+    ("crypto_btc_dca", "future_cycle_input"),
+    ("crypto_btc_dca", "stale_cycle_input"),
+    ("crypto_btc_dca", "conflicting_cycle_input"),
+    ("crypto_btc_dca", "snapshot_removed"),
+    ("crypto_btc_dca", "missing_flags"),
+    ("crypto_btc_dca", "invalid_smart_flag"),
+    ("crypto_btc_dca", "invalid_cycle_flag"),
+    ("crypto_btc_dca", "smart_without_cycle"),
     ("crypto_btc_dca", "outside_window"),
     ("crypto_btc_dca", "insufficient_cash"),
     ("crypto_trend_rotation", "default"),
@@ -123,10 +131,19 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         # Ordinary cases explicitly disable smart and exit inputs; the smart case
         # supplies separate synthetic indicator and normal exit data below.
         btc_overrides = {"smart_multiplier_enabled": False, "zscore_exit_enabled": False}
-        if scenario in {"synthetic_smart", "missing_smart_input"}:
+        if scenario in {"synthetic_smart", "missing_smart_input", "future_cycle_input",
+                         "stale_cycle_input", "conflicting_cycle_input", "snapshot_removed"}:
             btc_overrides["smart_multiplier_enabled"] = True
             btc_overrides["zscore_exit_enabled"] = True
             btc_overrides["zscore_exit_context"] = {"route": "normal"}
+        if scenario == "missing_flags":
+            btc_overrides = {"zscore_exit_enabled": False}
+        if scenario == "invalid_smart_flag":
+            btc_overrides["smart_multiplier_enabled"] = None
+        if scenario == "invalid_cycle_flag":
+            btc_overrides["cycle_indicator_enabled"] = "true"
+        if scenario == "smart_without_cycle":
+            btc_overrides.update(smart_multiplier_enabled=True, cycle_indicator_enabled=False)
         if scenario == "insufficient_cash":
             btc_overrides["cash_reserve_usd"] = 1000.0
         import strategy_runtime
@@ -263,16 +280,67 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         return rows
 
     replay_client.get_historical_klines = historical_klines
-    if scenario == "synthetic_smart":
+    smart_scenarios = {"synthetic_smart", "missing_smart_input", "future_cycle_input",
+                       "stale_cycle_input", "conflicting_cycle_input", "snapshot_removed"}
+    consumed_inputs = []
+    if scenario in smart_scenarios:
+        from crypto_strategies.strategies import crypto_btc_dca
+
+        compute = crypto_btc_dca.compute_signals
+
+        def capture_signals(*args, **kwargs):
+            consumed_inputs.append((kwargs.get("derived_indicators"), kwargs.get("as_of")))
+            if scenario == "snapshot_removed" and len(consumed_inputs) == 1:
+                cycle_path.unlink()
+            return compute(*args, **kwargs)
+
+        monkeypatch.setattr(crypto_btc_dca, "compute_signals", capture_signals)
+        cycle_path = tmp_path / "synthetic-cycle.json"
+        monkeypatch.setenv("BTC_CYCLE_INDICATORS_PATH", str(cycle_path))
+        monkeypatch.setenv("BTC_CYCLE_INPUT_MAX_AGE_SECONDS", "7200")
+        if scenario != "missing_smart_input":
+            observed = now - timedelta(hours=1)
+            available = now - timedelta(minutes=30)
+            if scenario == "future_cycle_input":
+                available = now + timedelta(seconds=1)
+            if scenario == "stale_cycle_input":
+                observed = now - timedelta(hours=3)
+            cycle_path.write_text(json.dumps({
+                "contract_version": "btc-cycle-input/v1", "source": "synthetic-test",
+                "source_version": "fixture-v1", "symbol": "BTCUSDT",
+                "observed_at": observed.isoformat(), "available_at": available.isoformat(), "ahr999": 0.7,
+            }))
+        if scenario == "conflicting_cycle_input":
+            resolve_indicators = main.resolve_runtime_trend_indicators
+
+            def conflicting_indicators(runtime, *, validation_scope="standard"):
+                indicators = resolve_indicators(runtime, validation_scope=validation_scope)
+                indicators["BTCUSDT"] = {"ahr999": 0.8}
+                return indicators
+
+            monkeypatch.setattr(main, "resolve_runtime_trend_indicators", conflicting_indicators)
+
+    if scenario in {"missing_flags", "invalid_smart_flag", "invalid_cycle_flag"}:
+        from crypto_strategies.strategies import crypto_btc_dca
+
+        def unexpected_compute(*args, **kwargs):
+            consumed_inputs.append(True)
+            raise AssertionError("unvalidated BTC input reached strategy")
+
+        monkeypatch.setattr(crypto_btc_dca, "compute_signals", unexpected_compute)
+    if scenario == "smart_without_cycle":
         resolve_indicators = main.resolve_runtime_trend_indicators
 
-        def synthetic_smart_indicators(runtime, *, validation_scope="standard"):
+        def noncycle_indicators(runtime, *, validation_scope="standard"):
             indicators = resolve_indicators(runtime, validation_scope=validation_scope)
-            # Synthetic test data only: this does not establish a real AHR source.
-            indicators["BTCUSDT"] = {"close": 60000.0, "sma200": 55000.0, "ahr999": 0.7}
+            indicators["BTCUSDT"] = {"close": 60000.0, "sma200": 55000.0,
+                                     "high252": 65000.0, "rsi14": 50.0}
             return indicators
 
-        monkeypatch.setattr(main, "resolve_runtime_trend_indicators", synthetic_smart_indicators)
+        monkeypatch.setattr(main, "resolve_runtime_trend_indicators", noncycle_indicators)
+    if scenario in {"missing_flags", "invalid_smart_flag", "invalid_cycle_flag", "smart_without_cycle"}:
+        monkeypatch.setenv("BTC_CYCLE_INDICATORS_PATH", str(tmp_path / "missing-cycle.json"))
+        monkeypatch.delenv("BTC_CYCLE_INPUT_MAX_AGE_SECONDS", raising=False)
 
     def build(*, validation_scope):
         assert validation_scope == "full_cycle_no_submit"
@@ -318,8 +386,12 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         try:
             result = validate_full_cycle(runtime_builder=build, client_connector=lambda *_args, **_kwargs: replay_client)
         except FullCycleValidationError as exc:
-            if scenario == "missing_smart_input":
+            if scenario in {"missing_smart_input", "future_cycle_input", "stale_cycle_input",
+                            "conflicting_cycle_input", "missing_flags", "invalid_smart_flag", "invalid_cycle_flag"}:
                 assert exc.failure_stage == "portfolio_allocation"
+                assert exc.reason_code == "btc_cycle_input_unavailable"
+                assert exc.error_type == "btc_cycle_input_error"
+                assert not consumed_inputs
                 assert ("BTCUSDT", "1d", "700 days ago UTC") in historical_calls
                 assert replay_client.side_effect_calls == []
                 assert state_store.write_calls == []
@@ -336,7 +408,9 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
                 pytrace=False,
             )
 
-    if scenario in {"missing_smart_input", "stale_btc_history", "malformed_btc_history",
+    if scenario in {"missing_smart_input", "future_cycle_input", "stale_cycle_input",
+                    "conflicting_cycle_input", "missing_flags", "invalid_smart_flag", "invalid_cycle_flag",
+                    "stale_btc_history", "malformed_btc_history",
                     "invalid_last_btc_close", "uncomputable_last_btc_indicators", "injected_btc_snapshot"}:
         pytest.fail("expected full-cycle validation rejection", pytrace=False)
     assert result["status"] == "passed"
@@ -348,14 +422,29 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     if profile == "crypto_btc_dca":
         assert ("BTCUSDT", "1d", "700 days ago UTC") in historical_calls
         proposals = reports[0]["btc_dca_intents"]
-        if scenario in {"ordinary_buy", "synthetic_smart"}:
+        if scenario in {"ordinary_buy", "synthetic_smart", "snapshot_removed", "smart_without_cycle"}:
             assert len(proposals) == 1
             assert proposals[0]["action"] == "buy"
             assert proposals[0]["proposal_only"] is True
             assert proposals[0]["budget"] > 0
-            if scenario == "synthetic_smart":
-                assert observed_exit_plans
-                assert all(plan == ("normal", True) for plan in observed_exit_plans)
+            if scenario in {"synthetic_smart", "snapshot_removed"}:
+                # Pre/post allocation and both real trend-plan evaluations use the same input.
+                assert len(consumed_inputs) >= 4
+                assert all(inputs["BTCUSDT"]["ahr999"] == 0.7 and clock == now
+                           for inputs, clock in consumed_inputs)
+                if scenario == "synthetic_smart":
+                    assert observed_exit_plans
+                    assert all(plan == ("normal", True) for plan in observed_exit_plans)
+                if scenario == "snapshot_removed":
+                    assert len(consumed_inputs) >= 2
+                    with pytest.raises(FullCycleValidationError) as error:
+                        with patch("live_risk_authority.resolve_strategy_revision", return_value="d" * 40), patch(
+                            "live_risk_authority.resolve_runner_revision", return_value=runner_revision
+                        ), patch("quant_platform_kit.risk.gate._utc_now", return_value=now):
+                            validate_full_cycle(runtime_builder=build,
+                                                client_connector=lambda *_args, **_kwargs: replay_client)
+                    assert error.value.reason_code == "btc_cycle_input_unavailable"
+                    assert error.value.failure_stage == "portfolio_allocation"
         else:
             assert proposals == []
     if profile == "crypto_live_pool_rotation":
@@ -642,3 +731,17 @@ def test_revision_observation_is_not_carried_from_other_phases():
     wrapped = _wrap_full_cycle_error(error, failure_stage="cycle", fallback_reason="full_cycle_cycle_failed")
     assert wrapped.reason_code == "strategy_revision_mismatch"
     assert not hasattr(wrapped, "version_binding_observation")
+
+
+def test_btc_cycle_input_reason_projection_is_exact_and_scoped():
+    from scripts.validate_runtime_startup import _full_cycle_failure_reason
+
+    failure = {"stage": "portfolio_allocation", "error_type": "btc_cycle_input_error",
+               "reason_code": "btc_cycle_input_unavailable"}
+    def project(**changes):
+        return _full_cycle_failure_reason({"status": "error", "diagnostics": {
+            "cycle_failure": {**failure, **changes}}})
+    assert project() == "btc_cycle_input_unavailable"
+    assert project(stage="market_snapshot") == "full_cycle_broker_read_failed"
+    assert project(error_type="value_error") == "full_cycle_cycle_error"
+    assert project(reason_code="private-provider-message") == "full_cycle_cycle_error"

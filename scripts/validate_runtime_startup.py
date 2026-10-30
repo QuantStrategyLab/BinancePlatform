@@ -76,6 +76,7 @@ _SAFE_CYCLE_FAILURE_STAGES = frozenset({
     "state_owner_release",
 })
 _SAFE_CYCLE_FAILURE_TYPES = frozenset({
+    "btc_cycle_input_error",
     "state_persistence_error",
     "order_reconciliation_error",
     "execution_integrity_error",
@@ -206,6 +207,9 @@ def _full_cycle_failure_reason(report):
     failure = report.get("diagnostics", {}).get("cycle_failure", {})
     stage = failure.get("stage")
     reason_code = failure.get("reason_code")
+    if (stage == "portfolio_allocation" and failure.get("error_type") == "btc_cycle_input_error"
+            and reason_code == "btc_cycle_input_unavailable"):
+        return "btc_cycle_input_unavailable"
     if stage == "daily_state" and type(reason_code) is str and reason_code in _DAILY_STATE_REASON_CODES:
         return reason_code
     if stage in {"client_connect", "market_snapshot"}:

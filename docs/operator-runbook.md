@@ -1018,3 +1018,33 @@ It keeps the existing `<prefix>/binance/<business_day>/<slot>.json` convention;
 no cross-repository token, dependency or new storage service is needed. A
 failed or unknown write is not retried by this producer. Production mapping,
 permissions, activation and a natural daily receipt require separate readback.
+
+
+### Standalone BTC cycle input in no-submit validation
+
+For `full_cycle_no_submit` with the standalone BTC strategy and both smart
+multiplier and cycle indicator enabled, the BTC cycle JSON must be a single
+object with exactly these fields: `contract_version` equal to
+`btc-cycle-input/v1`, nonempty `source` and `source_version`, `symbol` equal to
+`BTCUSDT`, UTC `observed_at` and `available_at`, and a finite positive numeric
+`ahr999`. The `BTC_CYCLE_INDICATORS_PATH` reader retains its existing local and
+GCS path selection; if unset, the existing local fallback paths are searched.
+Supply `BTC_CYCLE_INPUT_MAX_AGE_SECONDS` explicitly as a finite positive number
+for this validation. The observation must be no older than that limit at the
+cycle clock, and observation and availability must both be no later than that
+clock, with availability no earlier than observation. Missing, malformed,
+conflicting, or stale input stops this validation with the fixed reason
+`btc_cycle_input_unavailable` at `portfolio_allocation`.
+
+The smart and cycle switches must be booleans; absent switches retain the
+strategy's enabled defaults. When both are enabled, existing BTC indicator
+entries may contain only price, 200-day average, and direct AHR aliases, and
+any supplied value must agree with the validated input. Other fields are
+rejected for this path. The validated input and cycle clock are captured once
+per cycle and reused for both allocation evaluations; a later cycle revalidates.
+
+This is a declared input contract; its source and version strings do not verify
+provenance or attest the producer. No source is supplied by this change. The
+ratio called `ahr999` in the existing market snapshot is not used as direct
+AHR input. This does not establish owned BTC inventory or enable exits, orders,
+or production trading. Non-smart BTC evaluation does not require this envelope.
