@@ -202,6 +202,7 @@ def execute_strategy_cycle(
     runtime_notify,
     translate_fn,
     traceback_module,
+    validation_scope="standard",
 ):
     circuit_breaker_pct = -0.05
     min_bnb_value, buy_bnb_amount = 10.0, 15.0
@@ -529,6 +530,10 @@ def execute_strategy_cycle(
             RuntimeError: "runtime_error",
         }.get(type(exc), "unclassified_error")
         failure_metadata = {"stage": failure_stage, "error_type": error_type}
+        if validation_scope == "full_cycle_no_submit" and failure_stage == "portfolio_allocation":
+            from infra.btc_cycle_input import cycle_failure_metadata
+
+            failure_metadata.update(cycle_failure_metadata(exc, stage=failure_stage, validation_scope=validation_scope))
         if failure_stage == "daily_state" and type(exc) is ExecutionIntegrityError:
             for surface in ("earn_accrual", "external_cash_flow", "balance_change"):
                 diagnostic = report.get("diagnostics", {}).get(surface, {})

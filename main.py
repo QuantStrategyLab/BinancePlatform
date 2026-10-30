@@ -761,6 +761,9 @@ def resolve_runtime_btc_snapshot(runtime, btc_price, log_buffer, *, validation_s
             delay_seconds=delay_seconds,
         ),
     )
+    # The BTC no-submit path validates its separate cycle envelope at assembly.
+    if validation_scope == "full_cycle_no_submit" and runtime.strategy_profile == "crypto_btc_dca":
+        return snapshot
     # Enrich with pipeline-produced cycle indicators (AHR999, MVRV, Mayer)
     return enrich_btc_snapshot_with_cycle_indicators(snapshot, log_buffer)
 
@@ -994,6 +997,7 @@ def _resolve_strategy_evaluation(
     *,
     allow_new_trend_entries=True,
     allow_pool_refresh=True,
+    evaluation_as_of=None,
 ):
     portfolio_trend_universe_symbols = tuple(runtime_trend_universe)
     strategy_trend_universe_symbols = tuple(
@@ -1019,7 +1023,7 @@ def _resolve_strategy_evaluation(
         state=state,
         translator=t,
         balances=balances,
-        now_utc=runtime.now_utc,
+        now_utc=runtime.now_utc if evaluation_as_of is None else evaluation_as_of,
         allow_new_trend_entries=allow_new_trend_entries,
         allow_rotation_refresh=allow_pool_refresh,
         get_symbol_trade_state_fn=get_symbol_trade_state,
@@ -1070,7 +1074,40 @@ def _resolve_strategy_plan(
     return strategy_plan
 
 
-def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, prices, u_total, fuel_val, state, trend_indicators, btc_snapshot, *, validation_scope="standard"):
+def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, prices, u_total, fuel_val, state, trend_indicators, btc_snapshot, *, validation_scope="standard", btc_input_cache=None):
+    evaluation_as_of = None
+    if validation_scope == "full_cycle_no_submit" and runtime.strategy_profile == "crypto_btc_dca":
+        from copy import deepcopy
+        from infra.btc_cycle_input import BtcCycleInputError, adapt_btc_cycle_input, read_envelope
+
+        cache = btc_input_cache if btc_input_cache is not None else {}
+        if not cache:
+            as_of = runtime.now_utc
+            strategy_runtime = resolve_strategy_runtime(STRATEGY_RUNTIME)
+            config = strategy_runtime.effective_runtime_config
+            try:
+                smart = config.get("smart_multiplier_enabled", True)
+                cycle = config.get("cycle_indicator_enabled", True)
+                if type(smart) is not bool or type(cycle) is not bool:
+                    raise BtcCycleInputError("btc_cycle_input_unavailable")
+                if smart and cycle:
+                    raw_age = os.getenv("BTC_CYCLE_INPUT_MAX_AGE_SECONDS", "")
+                    max_age = float(raw_age)
+                    cycle_path = os.getenv("BTC_CYCLE_INDICATORS_PATH", "")
+                    if not cycle_path:
+                        cycle_path = next((str(path) for path in (
+                            Path("data/output/latest/btc_cycle_indicators.json"),
+                            Path("data/output/btc_cycle_indicators.json"),
+                        ) if path.exists()), "")
+                    trend_indicators = adapt_btc_cycle_input(
+                        trend_indicators, read_envelope(cycle_path), as_of=as_of,
+                        max_age_seconds=max_age, price=prices["BTCUSDT"], ma200=btc_snapshot["ma200"],
+                    )
+                cache.update(as_of=as_of, indicators=deepcopy(trend_indicators))
+            except (BtcCycleInputError, TypeError, ValueError, KeyError, OverflowError):
+                raise BtcCycleInputError("btc_cycle_input_unavailable") from None
+        evaluation_as_of = cache["as_of"]
+        trend_indicators = deepcopy(cache["indicators"])
     evaluation = _resolve_strategy_evaluation(
         runtime,
         state,
@@ -1081,6 +1118,7 @@ def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, pri
         balances,
         u_total,
         fuel_val,
+        **({"evaluation_as_of": evaluation_as_of} if evaluation_as_of is not None else {}),
     )
     allocation = map_decision_to_allocation(
         evaluation.decision,
@@ -1403,6 +1441,13 @@ def execute_cycle(runtime, *, validation_scope: str = "standard"):
             })
         return u_total
 
+    btc_cycle_inputs = {}
+
+    def compute_btc_validation_allocation(*args):
+        return _compute_portfolio_allocation(
+            *args, validation_scope=validation_scope, btc_input_cache=btc_cycle_inputs,
+        )
+
     ctx = RunContext(
         trend_universe={symbol: meta.copy() for symbol, meta in TREND_UNIVERSE.items()},
         strategy_runtime=mounted_strategy,
@@ -1425,8 +1470,7 @@ def execute_cycle(runtime, *, validation_scope: str = "standard"):
                                          *args, validation_scope=validation_scope)),
             top_up_bnb_fuel=_top_up_bnb_fuel,
             compute_portfolio_allocation=(
-                (lambda *args: _compute_portfolio_allocation(*args, validation_scope=validation_scope))
-                if btc_validation else _compute_portfolio_allocation
+                compute_btc_validation_allocation if btc_validation else _compute_portfolio_allocation
             ),
             build_balance_snapshot=_build_balance_snapshot,
             maybe_reset_daily_state=_maybe_reset_daily_state,
@@ -1443,6 +1487,7 @@ def execute_cycle(runtime, *, validation_scope: str = "standard"):
             runtime_notify=runtime_notify,
             translate_fn=t,
             traceback_module=traceback,
+            **({"validation_scope": validation_scope} if btc_validation else {}),
         )
     finally:
         reset_run_context(token)
