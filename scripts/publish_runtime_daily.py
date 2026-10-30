@@ -22,6 +22,10 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
+class _BindingMissing(ValueError):
+    """The daily projection has no account-facts binding configured."""
+
+
 def _binding(env, target):
     raw = env.get("BINANCE_ACCOUNT_FACTS_BINDING_JSON") or ""
     scope = reader._bound_scope(raw)
@@ -100,6 +104,8 @@ def publish_once(env, *, now=None, opener=None):
     if not all(isinstance(v, str) and v for v in (service, profile, scope)):
         raise ValueError("daily_config_invalid")
     target_key = "|".join((service, profile, scope))
+    if not (env.get("BINANCE_ACCOUNT_FACTS_BINDING_JSON") or "").strip():
+        raise _BindingMissing()
     account_key, account_binding, source_binding = _binding(env, target)
     token, origin = _auth_config(env)
     requested_day = env.get("RUNTIME_DAILY_BUSINESS_DATE") or ""
@@ -144,6 +150,9 @@ def main():
             status = publish_once(os.environ)
         else:
             raise ValueError("invalid_mode")
+    except _BindingMissing:
+        print(json.dumps({"status": "unavailable", "reason": "binding_missing"}, separators=(",", ":")))
+        return 1
     except Exception:
         status = "unavailable"
     print(json.dumps({"status": status}, separators=(",", ":")))

@@ -71,6 +71,15 @@ uv run --no-sync python main.py
 Credentials are read from the environment only and are never stored in the
 repository.
 
+## Runtime daily diagnostics
+
+The daily publisher reports `status=unavailable`, `reason=binding_missing` and
+exit code 1 when the runtime target is valid but its account-facts binding is
+missing or blank. This failure happens before archive reads or report delivery;
+it does not expose the binding or establish cloud authentication. Other failures
+retain the generic unavailable status, and successful or preflight output is
+unchanged.
+
 ## Repository layout
 
 ```
