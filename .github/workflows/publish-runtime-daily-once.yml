@@ -17,6 +17,8 @@ on:
         required: true
 
 permissions:
+  # The reusable workflow validates all job permissions, including skipped jobs.
+  actions: read
   contents: read
   id-token: write
 

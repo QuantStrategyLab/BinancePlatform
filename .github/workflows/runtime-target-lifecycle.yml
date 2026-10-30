@@ -10,6 +10,8 @@ jobs:
     name: Publish scheduled runtime daily projection
     if: ${{ github.event_name == 'schedule' && github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
     permissions:
+      # The reusable workflow validates all job permissions, including skipped jobs.
+      actions: read
       contents: read
       id-token: write
     uses: ./.github/workflows/runtime-protected.yml
