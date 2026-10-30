@@ -10,8 +10,9 @@ from scripts import read_binance_account_facts as reader
 
 
 def compare_source(env):
+    status_only = env.get("RUNTIME_DAILY_COMPARE_STATUS_ONLY") == "true"
     nonce = env.get("RUNTIME_DAILY_COMPARE_NONCE") or ""
-    if not re.fullmatch(r"[a-f0-9]{64}", nonce):
+    if not status_only and not re.fullmatch(r"[a-f0-9]{64}", nonce):
         raise ValueError("nonce_invalid")
     target = json.loads(env.get("RUNTIME_TARGET_JSON") or "null")
     if not isinstance(target, dict):
@@ -29,6 +30,8 @@ def compare_source(env):
              "source_binding_id": binding["source_binding"]["id"], "target_id": binding.get("target_id")}
     if not all(isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", item, re.ASCII) for item in value.values()):
         raise ValueError("tuple_invalid")
+    if status_only:
+        return None
     wrapped = {"binding": value, "domain": "qsl.binance-daily-binding.v1", "nonce": nonce}
     return hashlib.sha256(json.dumps(wrapped, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
 
