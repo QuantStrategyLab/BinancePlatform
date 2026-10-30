@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, call
 
@@ -91,6 +92,66 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
         self.assertEqual(observed_symbols, ["ETHUSDT", "SOLUSDT"])
         self.assertEqual(indicators["ETHUSDT"]["symbol"], "ETHUSDT")
         self.assertEqual(indicators["SOLUSDT"]["symbol"], "SOLUSDT")
+
+    def test_no_submit_trend_uses_real_daily_indicators_as_of_for_btc_and_pool(self):
+        from quant_platform_kit.binance import fetch_daily_indicators
+
+        as_of = datetime(2026, 1, 4, tzinfo=timezone.utc)
+        cutoff = int(as_of.timestamp() * 1000)
+        calls = []
+        rows = []
+        for index in range(420):
+            opened = cutoff - (419 - index) * 86400000
+            close = 100.0 + index
+            rows.append([opened, str(close - 1), str(close + 1), str(close - 2),
+                         str(close), "10", opened + 86399999])
+
+        class Client:
+            def get_historical_klines(self, symbol, interval, lookback):
+                calls.append((symbol, interval, lookback))
+                return rows
+
+        universe = ["ETHUSDT", "SOLUSDT"]
+        runtime = SimpleNamespace(client=Client(), trend_indicator_snapshots=None, now_utc=as_of)
+        result = resolve_runtime_trend_indicators(runtime, universe,
+            fetch_daily_indicators_fn=fetch_daily_indicators, closed_bar_validation=True)
+        self.assertEqual(universe, ["ETHUSDT", "SOLUSDT"])
+        self.assertEqual(set(result), {"ETHUSDT", "SOLUSDT", "BTCUSDT"})
+        self.assertEqual(calls, [(symbol, "1d", "420 days ago UTC")
+                                 for symbol in ("ETHUSDT", "SOLUSDT", "BTCUSDT")])
+        self.assertEqual(result["BTCUSDT"]["close"], 518.0)
+        self.assertAlmostEqual(result["BTCUSDT"]["sma200"], sum(range(319, 519)) / 200)
+
+    def test_no_submit_trend_rejects_injected_indicators(self):
+        from infra.closed_daily_bars import ClosedDailyBarsError
+
+        universe = ["ETHUSDT"]
+        supplied = {"ETHUSDT": {"close": 1}, "BTCUSDT": {"close": 2}}
+        runtime = SimpleNamespace(client=None, trend_indicator_snapshots=supplied)
+        with self.assertRaisesRegex(ClosedDailyBarsError, "injected_daily_indicators_forbidden"):
+            resolve_runtime_trend_indicators(runtime, universe,
+                fetch_daily_indicators_fn=lambda *_: self.fail("fixture should not fetch"),
+                closed_bar_validation=True)
+        self.assertEqual(universe, ["ETHUSDT"])
+
+    def test_standard_scope_still_accepts_injected_indicators(self):
+        runtime = SimpleNamespace(client=None, trend_indicator_snapshots={"ETHUSDT": {"close": 1}})
+        result = resolve_runtime_trend_indicators(runtime, ["ETHUSDT"],
+            fetch_daily_indicators_fn=lambda *_: self.fail("fixture should not fetch"))
+        self.assertEqual(result, {"ETHUSDT": {"close": 1}})
+
+    def test_no_submit_trend_insufficient_indicators_fail_closed(self):
+        from infra.closed_daily_bars import ClosedDailyBarsError
+
+        as_of = datetime(2026, 1, 4, tzinfo=timezone.utc)
+        opened = int(as_of.timestamp() * 1000) - 86400000
+        client = Mock()
+        client.get_historical_klines.return_value = [[opened, "1", "2", "1", "2", "1", opened + 86399999]]
+        runtime = SimpleNamespace(client=client, trend_indicator_snapshots=None, now_utc=as_of)
+        with self.assertRaisesRegex(ClosedDailyBarsError, "closed_daily_indicators_unavailable"):
+            resolve_runtime_trend_indicators(runtime, ["ETHUSDT"],
+                fetch_daily_indicators_fn=lambda *_: None, closed_bar_validation=True)
+        self.assertEqual(client.get_historical_klines.call_count, 1)
 
     def test_ensure_asset_available_runtime_checks_only_spot_free(self):
         for dry_run in (False, True):

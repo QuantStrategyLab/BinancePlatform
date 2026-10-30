@@ -69,7 +69,8 @@ def test_startup_validation_rejects_broker_credentials(monkeypatch):
         validate_startup()
 
 
-def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tmp_path):
+@pytest.mark.parametrize("profile", ["crypto_live_pool_rotation", "crypto_btc_dca", "crypto_trend_rotation"])
+def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tmp_path, profile):
     import main
     import run_cycle_replay
     from live_risk_authority import config_sha256
@@ -81,7 +82,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     now = datetime(2026, 3, 15, tzinfo=timezone.utc)
     target = build_runtime_target(
         platform_id="binance",
-        strategy_profile="crypto_live_pool_rotation",
+        strategy_profile=profile,
         dry_run_only=True,
         deployment_selector="fixture",
         account_selector="fixture-account",
@@ -95,7 +96,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         "authority_scope": "LIVE",
         "runtime_target": {
             "platform_id": "binance",
-            "strategy_profile": "crypto_live_pool_rotation",
+            "strategy_profile": profile,
             "account_scope": "fixture-scope",
             "account_selector": ["fixture-account"],
             "deployment_selector": "fixture",
@@ -158,8 +159,11 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         assert interval == "1d"
         historical_calls.append((symbol, interval, lookback))
         days = int(lookback.split()[0])
+        cutoff = int(now.timestamp() * 1000)
         return [
-            [index * 86_400_000, 100 + index, 101 + index, 99 + index, 100 + index, 10]
+            [cutoff - (days - index) * 86_400_000, 100 + index, 101 + index,
+             99 + index, 100 + index, 10,
+             cutoff - (days - index - 1) * 86_400_000 - 1]
             for index in range(days)
         ]
 
@@ -168,7 +172,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     def build(*, validation_scope):
         assert validation_scope == "full_cycle_no_submit"
         runtime = main.build_live_runtime(now_utc=now, validation_scope=validation_scope)
-        assert runtime.strategy_runtime.profile == "crypto_live_pool_rotation"
+        assert runtime.strategy_runtime.profile == profile
         assert runtime.runtime_target.live_continuity.state == "RECONCILE_ONLY"
         assert runtime.standard_execution_permitted is False
         runtime.state_loader = state_store.load
@@ -188,8 +192,10 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     assert result["execution_permitted"] is False
     assert result["broker_read_count"] > 0
     assert result["suppressed_strategy_record_count"] > 0
-    assert ("BTCUSDT", "1d", "700 days ago UTC") in historical_calls
-    assert all(call[2] == "420 days ago UTC" for call in historical_calls if call[0] != "BTCUSDT")
+    if profile == "crypto_live_pool_rotation":
+        assert ("BTCUSDT", "1d", "700 days ago UTC") in historical_calls
+        assert all(call[2] == "420 days ago UTC" for call in historical_calls if call[0] != "BTCUSDT")
+    assert replay_client.side_effect_calls == []
     assert state_store.write_calls == []
 
 

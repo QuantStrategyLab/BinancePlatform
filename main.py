@@ -812,11 +812,15 @@ def enrich_btc_snapshot_with_cycle_indicators(btc_snapshot: dict, log_buffer: li
     return btc_snapshot
 
 
-def resolve_runtime_trend_indicators(runtime):
+def resolve_runtime_trend_indicators(runtime, *, validation_scope="standard"):
+    scope_kwargs = {"closed_bar_validation": True} if (
+        validation_scope == "full_cycle_no_submit" and runtime.strategy_profile == "crypto_trend_rotation"
+    ) else {}
     return infra_resolve_runtime_trend_indicators(
         runtime,
         resolve_trend_universe(TREND_UNIVERSE),
         fetch_daily_indicators_fn=fetch_daily_indicators,
+        **scope_kwargs,
     )
 
 
@@ -940,7 +944,7 @@ def _append_trend_pool_source_logs(log_buffer, trend_pool_resolution, allow_new_
     )
 
 
-def _capture_market_snapshot(runtime, report, runtime_trend_universe, log_buffer):
+def _capture_market_snapshot(runtime, report, runtime_trend_universe, log_buffer, *, validation_scope="standard"):
     return ms_capture_market_snapshot(
         runtime,
         report,
@@ -948,7 +952,9 @@ def _capture_market_snapshot(runtime, report, runtime_trend_universe, log_buffer
         log_buffer,
         get_total_balance_fn=get_total_balance,
         resolve_btc_snapshot_fn=resolve_runtime_btc_snapshot,
-        resolve_trend_indicators_fn=resolve_runtime_trend_indicators,
+        resolve_trend_indicators_fn=(resolve_runtime_trend_indicators if validation_scope == "standard"
+                                     else lambda current: resolve_runtime_trend_indicators(
+                                         current, validation_scope=validation_scope)),
         bnb_fuel_symbol=BNB_FUEL_SYMBOL,
         bnb_fuel_asset=BNB_FUEL_ASSET,
     )
@@ -1385,7 +1391,9 @@ def execute_cycle(runtime, *, validation_scope: str = "standard"):
             ),
             load_cycle_state=_load_cycle_state,
             append_trend_pool_source_logs=_append_trend_pool_source_logs,
-            capture_market_snapshot=_capture_market_snapshot,
+            capture_market_snapshot=(_capture_market_snapshot if validation_scope == "standard"
+                                     else lambda *args: _capture_market_snapshot(
+                                         *args, validation_scope=validation_scope)),
             top_up_bnb_fuel=_top_up_bnb_fuel,
             compute_portfolio_allocation=_compute_portfolio_allocation,
             build_balance_snapshot=_build_balance_snapshot,
