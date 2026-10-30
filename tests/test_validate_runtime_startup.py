@@ -73,7 +73,13 @@ def test_startup_validation_rejects_broker_credentials(monkeypatch):
 @pytest.mark.parametrize(("profile", "scenario"), [
     ("crypto_live_pool_rotation", "default"),
     ("crypto_btc_dca", "ordinary_buy"),
+    ("crypto_btc_dca", "stale_btc_history"),
+    ("crypto_btc_dca", "malformed_btc_history"),
+    ("crypto_btc_dca", "invalid_last_btc_close"),
+    ("crypto_btc_dca", "uncomputable_last_btc_indicators"),
+    ("crypto_btc_dca", "injected_btc_snapshot"),
     ("crypto_btc_dca", "synthetic_smart"),
+    ("crypto_btc_dca", "missing_smart_input"),
     ("crypto_btc_dca", "outside_window"),
     ("crypto_btc_dca", "insufficient_cash"),
     ("crypto_trend_rotation", "default"),
@@ -114,7 +120,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         # Ordinary cases explicitly disable smart and exit inputs; the smart case
         # supplies separate synthetic indicator and normal exit data below.
         btc_overrides = {"smart_multiplier_enabled": False, "zscore_exit_enabled": False}
-        if scenario == "synthetic_smart":
+        if scenario in {"synthetic_smart", "missing_smart_input"}:
             btc_overrides["smart_multiplier_enabled"] = True
             btc_overrides["zscore_exit_enabled"] = True
             btc_overrides["zscore_exit_context"] = {"route": "normal"}
@@ -204,12 +210,23 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         historical_calls.append((symbol, interval, lookback))
         days = int(lookback.split()[0])
         cutoff = int(now.timestamp() * 1000)
-        return [
+        rows = [
             [cutoff - (days - index) * 86_400_000, 100 + index, 101 + index,
              99 + index, 100 + index, 10,
              cutoff - (days - index - 1) * 86_400_000 - 1]
             for index in range(days)
         ]
+        if symbol == "BTCUSDT" and lookback == "700 days ago UTC":
+            if scenario == "stale_btc_history":
+                return rows[:-1]
+            if scenario == "malformed_btc_history":
+                rows[-1][6] -= 1
+            if scenario == "invalid_last_btc_close":
+                rows[-1][4] = float("nan")
+            if scenario == "uncomputable_last_btc_indicators":
+                for row in rows[-200:]:
+                    row[1:5] = [100, 101, 99, 100]
+        return rows
 
     replay_client.get_historical_klines = historical_klines
     if scenario == "synthetic_smart":
@@ -234,6 +251,8 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         runtime.state_loader = state_store.load
         runtime.trend_pool_payload = replay_runtime.trend_pool_payload
         assert runtime.btc_market_snapshot is None
+        if scenario == "injected_btc_snapshot":
+            runtime.btc_market_snapshot = {"ma200": 100.0}
         assert runtime.trend_indicator_snapshots is None
         return runtime
 
@@ -265,12 +284,27 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         try:
             result = validate_full_cycle(runtime_builder=build, client_connector=lambda *_args, **_kwargs: replay_client)
         except FullCycleValidationError as exc:
+            if scenario == "missing_smart_input":
+                assert exc.failure_stage == "portfolio_allocation"
+                assert ("BTCUSDT", "1d", "700 days ago UTC") in historical_calls
+                assert replay_client.side_effect_calls == []
+                assert state_store.write_calls == []
+                return
+            if scenario in {"stale_btc_history", "malformed_btc_history", "invalid_last_btc_close",
+                            "uncomputable_last_btc_indicators", "injected_btc_snapshot"}:
+                assert exc.failure_stage == "market_snapshot"
+                assert replay_client.side_effect_calls == []
+                assert state_store.write_calls == []
+                return
             pytest.fail(
                 f"synthetic full-cycle failure: reason={exc.reason_code}, "
                 f"stage={exc.failure_stage}, error_type={exc.error_type}",
                 pytrace=False,
             )
 
+    if scenario in {"missing_smart_input", "stale_btc_history", "malformed_btc_history",
+                    "invalid_last_btc_close", "uncomputable_last_btc_indicators", "injected_btc_snapshot"}:
+        pytest.fail("expected full-cycle validation rejection", pytrace=False)
     assert result["status"] == "passed"
     assert result["cycle_complete"] is True
     assert result["risk_outcome"] == "APPROVE"
@@ -278,6 +312,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     assert result["broker_read_count"] > 0
     assert result["suppressed_strategy_record_count"] > 0
     if profile == "crypto_btc_dca":
+        assert ("BTCUSDT", "1d", "700 days ago UTC") in historical_calls
         proposals = reports[0]["btc_dca_intents"]
         if scenario in {"ordinary_buy", "synthetic_smart"}:
             assert len(proposals) == 1

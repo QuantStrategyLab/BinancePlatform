@@ -47,6 +47,48 @@ class ClosedDailyBarsTest(unittest.TestCase):
         self.assertEqual(closed_daily_bars([self.bar(1), self.bar(2), self.bar(3)], midday),
                          [self.bar(1), self.bar(2)])
 
+    def test_btc_snapshot_consumer_only_receives_closed_bars(self):
+        stub = ModuleType("runtime_support")
+        stub.ExecutionIntegrityError = type("ExecutionIntegrityError", (Exception,), {})
+        path = Path(__file__).resolve().parents[1] / "infra" / "binance_runtime.py"
+        spec = spec_from_file_location("isolated_btc_runtime", path)
+        module = module_from_spec(spec)
+        with patch.dict("sys.modules", {"runtime_support": stub}):
+            spec.loader.exec_module(module)
+        cutoff = int(self.as_of.timestamp() * 1000)
+        rows = [[cutoff - (700 - i) * 86400000, 100 + i, 101 + i, 99 + i,
+                 100 + i, 10, cutoff - (699 - i) * 86400000 - 1] for i in range(700)]
+        rows.append([cutoff, 9999, 10000, 9998, 9999, 10, cutoff + 86399999])
+        client = Mock()
+        client.get_historical_klines.return_value = rows
+        runtime = SimpleNamespace(client=client, now_utc=self.as_of, btc_market_snapshot=None)
+
+        def provider(source, _price, *, log_buffer):
+            self.assertEqual(source.get_historical_klines("BTCUSDT", "1d", "700 days ago UTC"), rows[:-1])
+            return {"ma200": 1}
+
+        for _ in range(2):
+            self.assertEqual(module.resolve_runtime_btc_snapshot(runtime, 1, [],
+                fetch_btc_market_snapshot_fn=provider, closed_bar_validation=True), {"ma200": 1})
+        self.assertIsNone(runtime.btc_market_snapshot)
+        self.assertEqual(client.get_historical_klines.call_count, 2)
+        malformed = [row[:] for row in rows[:-1]]
+        malformed[-1][6] -= 1
+        invalid_close = [row[:] for row in rows[:-1]]
+        invalid_close[-1][4] = float("nan")
+        constant_tail = [row[:] for row in rows[:-1]]
+        for row in constant_tail[-200:]:
+            row[1:5] = [100, 101, 99, 100]
+        for invalid in (rows[:-2], malformed, invalid_close, constant_tail):
+            client.get_historical_klines.return_value = invalid
+            with self.assertRaises(ClosedDailyBarsError):
+                module.resolve_runtime_btc_snapshot(runtime, 1, [], fetch_btc_market_snapshot_fn=provider,
+                                                    closed_bar_validation=True)
+        runtime.btc_market_snapshot = {"ma200": 1}
+        with self.assertRaisesRegex(ClosedDailyBarsError, "injected_btc_snapshot_forbidden"):
+            module.resolve_runtime_btc_snapshot(runtime, 1, [], fetch_btc_market_snapshot_fn=provider,
+                                                closed_bar_validation=True)
+
     def test_real_infra_fetches_closed_bars_for_btc_and_pool_without_mutation(self):
         stub = ModuleType("runtime_support")
         stub.ExecutionIntegrityError = type("ExecutionIntegrityError", (Exception,), {})
