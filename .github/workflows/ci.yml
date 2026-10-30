@@ -114,6 +114,9 @@ jobs:
             --pin-file /tmp/qpk-pin-guard/QPK_PIN
           uv lock --check
 
+      - name: Check CryptoStrategies pin consistency
+        run: uv run --no-sync python scripts/check_crypto_pin_consistency.py
+
       - name: Run unit tests
         # Pytest also discovers this repository's unittest suites.  Use one
         # runner so reconciliation and recovery tests written in pytest style

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from math import isfinite
 
+from infra.closed_daily_bars import ClosedDailyBarsError, closed_daily_bars
 from runtime_support import ExecutionIntegrityError
 
 
@@ -42,16 +43,47 @@ def resolve_runtime_btc_snapshot(
     return None
 
 
-def resolve_runtime_trend_indicators(runtime, trend_universe_symbols, *, fetch_daily_indicators_fn):
-    if runtime.trend_indicator_snapshots is None:
-        trend_indicators = {}
-        for symbol in trend_universe_symbols:
-            trend_indicators[symbol] = fetch_daily_indicators_fn(runtime.client, symbol)
-        return trend_indicators
-    return {
-        symbol: runtime.trend_indicator_snapshots.get(symbol)
-        for symbol in trend_universe_symbols
-    }
+def resolve_runtime_trend_indicators(runtime, trend_universe_symbols, *, fetch_daily_indicators_fn,
+                                     closed_bar_validation=False):
+    if not closed_bar_validation:
+        if runtime.trend_indicator_snapshots is None:
+            trend_indicators = {}
+            for symbol in trend_universe_symbols:
+                trend_indicators[symbol] = fetch_daily_indicators_fn(runtime.client, symbol)
+            return trend_indicators
+        return {
+            symbol: runtime.trend_indicator_snapshots.get(symbol)
+            for symbol in trend_universe_symbols
+        }
+    if runtime.trend_indicator_snapshots is not None:
+        raise ClosedDailyBarsError("injected_daily_indicators_forbidden")
+    symbols = list(trend_universe_symbols)
+    if "BTCUSDT" not in symbols:
+        symbols.append("BTCUSDT")
+    trend_indicators = {}
+    for symbol in symbols:
+        rows = runtime.client.get_historical_klines(symbol, "1d", "420 days ago UTC")
+        bars = closed_daily_bars(rows, runtime.now_utc)
+
+        class SnapshotClient:
+            def get_historical_klines(self, requested_symbol, interval, lookback):
+                if (requested_symbol, interval, lookback) != (symbol, "1d", "420 days ago UTC"):
+                    raise ClosedDailyBarsError("daily_bar_request_invalid")
+                return bars
+
+        indicators = fetch_daily_indicators_fn(SnapshotClient(), symbol)
+        numeric_keys = ("close", "sma20", "sma60", "sma200", "roc20", "roc60", "roc120",
+                        "vol20", "atr14", "avg_quote_vol_30", "avg_quote_vol_90",
+                        "avg_quote_vol_180", "trend_persist_90", "age_days")
+        if (not isinstance(indicators, dict) or any(
+                isinstance(indicators.get(key), bool) or not isinstance(indicators.get(key), (int, float))
+                or not isfinite(indicators[key]) for key in numeric_keys
+        ) or any(indicators[key] <= 0 for key in ("close", "sma20", "sma60", "sma200", "age_days"))
+                or any(indicators[key] < 0 for key in ("vol20", "atr14", "avg_quote_vol_30",
+                                                       "avg_quote_vol_90", "avg_quote_vol_180"))):
+            raise ClosedDailyBarsError("closed_daily_indicators_unavailable")
+        trend_indicators[symbol] = indicators
+    return trend_indicators
 
 
 def ensure_asset_available_runtime(

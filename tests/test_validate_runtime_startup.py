@@ -6,6 +6,7 @@ import runpy
 import sys
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -69,25 +70,69 @@ def test_startup_validation_rejects_broker_credentials(monkeypatch):
         validate_startup()
 
 
-def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tmp_path):
+@pytest.mark.parametrize(("profile", "scenario"), [
+    ("crypto_live_pool_rotation", "default"),
+    ("crypto_btc_dca", "ordinary_buy"),
+    ("crypto_btc_dca", "synthetic_smart"),
+    ("crypto_btc_dca", "outside_window"),
+    ("crypto_btc_dca", "insufficient_cash"),
+    ("crypto_trend_rotation", "default"),
+])
+def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tmp_path, profile, scenario):
     import main
     import run_cycle_replay
     from live_risk_authority import config_sha256
     from quant_platform_kit.common.runtime_target import build_runtime_target
     from strategy_runtime import load_research_only_strategy_runtime
     from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
-    from scripts.validate_runtime_startup import validate_full_cycle
+    from scripts.validate_runtime_startup import FullCycleValidationError, validate_full_cycle
 
-    now = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    # The real builder activates an unbound module-level handle and pool knobs.
+    # Restore them after each synthetic profile so later replay tests keep their
+    # original runtime rather than inheriting this fixture's last profile.
+    for name in (
+        "STRATEGY_RUNTIME",
+        "TREND_POOL_SIZE",
+        "DEFAULT_LIVE_POOL_LEGACY_PATH",
+        "DEFAULT_TREND_POOL_MAX_AGE_DAYS",
+        "DEFAULT_TREND_POOL_ACCEPTABLE_MODES",
+    ):
+        monkeypatch.setattr(main, name, getattr(main, name))
+
+    now = datetime(2026, 3, 15 if scenario == "outside_window" or profile != "crypto_btc_dca" else 25, tzinfo=timezone.utc)
     target = build_runtime_target(
         platform_id="binance",
-        strategy_profile="crypto_live_pool_rotation",
+        strategy_profile=profile,
         dry_run_only=True,
         deployment_selector="fixture",
         account_selector="fixture-account",
         account_scope="fixture-scope",
         service_name="binance-platform",
     )
+    btc_overrides = {}
+    if profile == "crypto_btc_dca":
+        # Ordinary cases explicitly disable smart and exit inputs; the smart case
+        # supplies separate synthetic indicator and normal exit data below.
+        btc_overrides = {"smart_multiplier_enabled": False, "zscore_exit_enabled": False}
+        if scenario == "synthetic_smart":
+            btc_overrides["smart_multiplier_enabled"] = True
+            btc_overrides["zscore_exit_enabled"] = True
+            btc_overrides["zscore_exit_context"] = {"route": "normal"}
+        if scenario == "insufficient_cash":
+            btc_overrides["cash_reserve_usd"] = 1000.0
+        import strategy_runtime
+
+        build_loaded = strategy_runtime._build_loaded_strategy_runtime
+
+        def build_with_synthetic_config(entrypoint):
+            actual = build_loaded(entrypoint)
+            if entrypoint.manifest.profile == "crypto_btc_dca":
+                return replace(actual, runtime_overrides=btc_overrides)
+            return actual
+
+        # Both the authority digest and the real gated activation use the same
+        # synthetic config; neither loader nor the authority check is bypassed.
+        monkeypatch.setattr(strategy_runtime, "_build_loaded_strategy_runtime", build_with_synthetic_config)
     loaded = load_research_only_strategy_runtime(target.strategy_profile)
     runner_revision = "b" * 40
     payload = {
@@ -95,7 +140,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         "authority_scope": "LIVE",
         "runtime_target": {
             "platform_id": "binance",
-            "strategy_profile": "crypto_live_pool_rotation",
+            "strategy_profile": profile,
             "account_scope": "fixture-scope",
             "account_selector": ["fixture-account"],
             "deployment_selector": "fixture",
@@ -158,17 +203,32 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         assert interval == "1d"
         historical_calls.append((symbol, interval, lookback))
         days = int(lookback.split()[0])
+        cutoff = int(now.timestamp() * 1000)
         return [
-            [index * 86_400_000, 100 + index, 101 + index, 99 + index, 100 + index, 10]
+            [cutoff - (days - index) * 86_400_000, 100 + index, 101 + index,
+             99 + index, 100 + index, 10,
+             cutoff - (days - index - 1) * 86_400_000 - 1]
             for index in range(days)
         ]
 
     replay_client.get_historical_klines = historical_klines
+    if scenario == "synthetic_smart":
+        resolve_indicators = main.resolve_runtime_trend_indicators
+
+        def synthetic_smart_indicators(runtime, *, validation_scope="standard"):
+            indicators = resolve_indicators(runtime, validation_scope=validation_scope)
+            # Synthetic test data only: this does not establish a real AHR source.
+            indicators["BTCUSDT"] = {"close": 60000.0, "sma200": 55000.0, "ahr999": 0.7}
+            return indicators
+
+        monkeypatch.setattr(main, "resolve_runtime_trend_indicators", synthetic_smart_indicators)
 
     def build(*, validation_scope):
         assert validation_scope == "full_cycle_no_submit"
         runtime = main.build_live_runtime(now_utc=now, validation_scope=validation_scope)
-        assert runtime.strategy_runtime.profile == "crypto_live_pool_rotation"
+        assert runtime.strategy_runtime.profile == profile
+        if btc_overrides:
+            assert runtime.strategy_runtime.runtime_overrides == btc_overrides
         assert runtime.runtime_target.live_continuity.state == "RECONCILE_ONLY"
         assert runtime.standard_execution_permitted is False
         runtime.state_loader = state_store.load
@@ -177,10 +237,39 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         assert runtime.trend_indicator_snapshots is None
         return runtime
 
+    reports = []
+    observed_exit_plans = []
+    if scenario == "synthetic_smart":
+        import infra.btc_no_submit as btc_no_submit
+
+        approve_amount = btc_no_submit.approved_buy_amount
+
+        def capture_exit_plan(decision, metrics):
+            amount = approve_amount(decision, metrics)
+            exit_plan = decision.diagnostics["zscore_exit"]
+            observed_exit_plans.append((exit_plan["route"], exit_plan["applied"]))
+            return amount
+
+        monkeypatch.setattr(btc_no_submit, "approved_buy_amount", capture_exit_plan)
+    execute_cycle = main.execute_cycle
+
+    def capture_cycle(*args, **kwargs):
+        report = execute_cycle(*args, **kwargs)
+        reports.append(report)
+        return report
+
+    monkeypatch.setattr(main, "execute_cycle", capture_cycle)
     with patch("live_risk_authority.resolve_strategy_revision", return_value="d" * 40), patch(
         "live_risk_authority.resolve_runner_revision", return_value=runner_revision
     ), patch("quant_platform_kit.risk.gate._utc_now", return_value=now):
-        result = validate_full_cycle(runtime_builder=build, client_connector=lambda *_args, **_kwargs: replay_client)
+        try:
+            result = validate_full_cycle(runtime_builder=build, client_connector=lambda *_args, **_kwargs: replay_client)
+        except FullCycleValidationError as exc:
+            pytest.fail(
+                f"synthetic full-cycle failure: reason={exc.reason_code}, "
+                f"stage={exc.failure_stage}, error_type={exc.error_type}",
+                pytrace=False,
+            )
 
     assert result["status"] == "passed"
     assert result["cycle_complete"] is True
@@ -188,8 +277,22 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     assert result["execution_permitted"] is False
     assert result["broker_read_count"] > 0
     assert result["suppressed_strategy_record_count"] > 0
-    assert ("BTCUSDT", "1d", "700 days ago UTC") in historical_calls
-    assert all(call[2] == "420 days ago UTC" for call in historical_calls if call[0] != "BTCUSDT")
+    if profile == "crypto_btc_dca":
+        proposals = reports[0]["btc_dca_intents"]
+        if scenario in {"ordinary_buy", "synthetic_smart"}:
+            assert len(proposals) == 1
+            assert proposals[0]["action"] == "buy"
+            assert proposals[0]["proposal_only"] is True
+            assert proposals[0]["budget"] > 0
+            if scenario == "synthetic_smart":
+                assert observed_exit_plans
+                assert all(plan == ("normal", True) for plan in observed_exit_plans)
+        else:
+            assert proposals == []
+    if profile == "crypto_live_pool_rotation":
+        assert ("BTCUSDT", "1d", "700 days ago UTC") in historical_calls
+        assert all(call[2] == "420 days ago UTC" for call in historical_calls if call[0] != "BTCUSDT")
+    assert replay_client.side_effect_calls == []
     assert state_store.write_calls == []
 
 
@@ -209,7 +312,7 @@ def test_full_cycle_without_live_authority_fails_closed(monkeypatch):
 def test_full_cycle_failure_projection_keeps_reject_and_abort_distinct():
     import main
     import run_cycle_replay
-    from scripts.validate_runtime_startup import _full_cycle_failure_reason
+    from scripts.validate_runtime_startup import _full_cycle_failure_metadata, _full_cycle_failure_reason
 
     risk_rejected = run_cycle_replay.run_replay_cycle(
         run_id="full-cycle-risk-rejected", dry_run=True,
@@ -220,7 +323,9 @@ def test_full_cycle_failure_projection_keeps_reject_and_abort_distinct():
     aborted_runtime.state_loader = lambda *, normalize=False: None
     cycle_aborted = main.execute_cycle(aborted_runtime)
 
-    assert _full_cycle_failure_reason(risk_rejected) == "full_cycle_risk_rejected"
+    assert _full_cycle_failure_reason(risk_rejected) == "full_cycle_risk_rejected", (
+        f"synthetic replay failure metadata: {_full_cycle_failure_metadata(risk_rejected)}"
+    )
     assert _full_cycle_failure_reason(cycle_aborted) == "full_cycle_aborted"
 
 
