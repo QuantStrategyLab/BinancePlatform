@@ -742,12 +742,14 @@ def resolve_runtime_trend_pool(runtime, raw_state):
     )
 
 
-def resolve_runtime_btc_snapshot(runtime, btc_price, log_buffer):
+def resolve_runtime_btc_snapshot(runtime, btc_price, log_buffer, *, validation_scope="standard"):
     snapshot = infra_resolve_runtime_btc_snapshot(
         runtime,
         btc_price,
         log_buffer,
         fetch_btc_market_snapshot_fn=fetch_btc_market_snapshot,
+        closed_bar_validation=(validation_scope == "full_cycle_no_submit"
+                               and runtime.strategy_profile == "crypto_btc_dca"),
         max_attempts=max(1, min(5, get_env_int("BTC_MARKET_SNAPSHOT_MAX_ATTEMPTS", 3))),
         retry_delays=BTC_MARKET_SNAPSHOT_RETRY_DELAYS,
         sleep_fn=time.sleep,
@@ -951,7 +953,9 @@ def _capture_market_snapshot(runtime, report, runtime_trend_universe, log_buffer
         runtime_trend_universe,
         log_buffer,
         get_total_balance_fn=get_total_balance,
-        resolve_btc_snapshot_fn=resolve_runtime_btc_snapshot,
+        resolve_btc_snapshot_fn=(resolve_runtime_btc_snapshot if validation_scope == "standard"
+                                 else lambda *args: resolve_runtime_btc_snapshot(
+                                     *args, validation_scope=validation_scope)),
         resolve_trend_indicators_fn=(resolve_runtime_trend_indicators if validation_scope == "standard"
                                      else lambda current: resolve_runtime_trend_indicators(
                                          current, validation_scope=validation_scope)),

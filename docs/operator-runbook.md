@@ -139,6 +139,56 @@ smart or exit inputs remain a failure; synthetic indicator tests do not prove
 that a trustworthy live source is connected. Production selection remains
 separately controlled by the production allowlist and existing guards.
 
+The standalone BTC smart-cycle input is not established by the current
+cycle-indicator file loader. `main.py` merges the file into the BTC benchmark
+snapshot, while the standalone BTC entrypoint reads its direct AHR input from
+the `BTCUSDT` entry of `derived_indicators`. The synthetic smart-cycle test
+injects that entry and does not establish a connected production source. The
+pinned platform market-data helper's `ahr999` is a price-to-geometric-mean
+calculation; do not relabel it as the direct AHR input required by the strict
+strategy. Missing smart-cycle or exit inputs must continue to fail validation.
+The separate BTC benchmark history helper does not return the selected bar's
+timestamp or verify that it is the most recently completed daily bar, so that
+snapshot alone does not prove freshness or closed-bar integrity. As described
+above, the `crypto_trend_rotation` no-submit derived-indicator path separately
+checks UTC bar boundaries, continuity and the most recent completed day for its
+universe and BTC benchmark. In the standalone BTC no-submit cycle, the benchmark
+history read also checks those boundaries before calling the helper; injected
+benchmark snapshots are rejected. That strict BTC path also checks that the
+latest closed bar has valid market values and that every field required by the
+pinned helper is computable at that bar, preventing fallback to an older row.
+When updating the QPK pin, review the validation calculations against the new
+helper's required fields and formulas. These checks do not prove current-price
+freshness or connect a direct AHR source to the standalone BTC strategy.
+
+The cycle file loader currently accepts configured local or GCS paths and local
+fallbacks without checking the artifact's source, symbol, observation cutoff or
+age. The referenced producer and its artifact contract have not been established
+by this runbook. Before connecting it to the standalone strategy, identify and
+review the actual producer and its published schema and provenance, then bind
+the BTCUSDT data and observation time to the evaluation cutoff. Reject missing,
+future, stale, malformed or non-finite required data under an agreed freshness
+policy; do not treat file presence or an unverified timestamp as provenance.
+Use a validated BTC market-history input for the price-derived fields, preserve
+the direct AHR source separately, and test the real loader-to-consumer path with
+read-only broker and write-port isolation. Until that contract is established,
+do not substitute synthetic or estimated inputs to produce a passing result.
+
+The BTC balance in the current strategy evaluation is an account-level value;
+it does not establish which units belong to the DCA strategy. Do not infer that
+the whole account balance is available for a DCA exit. Before an exit proposal
+can be supported, a trusted, account- and strategy-bound position snapshot must
+be available before strategy evaluation. Its quantities must be reconciled to
+the broker using an authorized opening baseline and a complete, deduplicated
+ledger of subsequent fills, fees, transfers and other relevant changes through
+the snapshot cutoff. Missing history, unresolved orders or mismatched quantities
+must leave the exit blocked. Spot availability and Earn holdings must be
+distinguished, and the position quantity and valuation must agree with the
+price and target used by the decision. Account-wide holdings must remain in a
+separate risk snapshot so attribution does not hide exposure from the final
+risk assessment. This describes prerequisites, not a connected evidence
+producer or permission to submit an order.
+
 Maintenance-only authority version reissue (strategy + runner fields, matching
 SHA256, and source revision) is documented in `docs/authority-reissue.md`. That
 entry never enables `RUNTIME_TARGET_ENABLED`, never changes `RECONCILE_ONLY` or
