@@ -1049,6 +1049,19 @@ ratio called `ahr999` in the existing market snapshot is not used as direct
 AHR input. This does not establish owned BTC inventory or enable exits, orders,
 or production trading. Non-smart BTC evaluation does not require this envelope.
 
+### BTC buy budget in no-submit validation
+
+A positive BTC buy budget must not exceed either the managed `cash_usdt` total
+used by the strategy evaluation or the USDT Spot free balance captured from the
+same market snapshot. The existing Spot and Flexible Earn reads supply the split;
+no additional broker read is made. Missing, malformed, or total-inconsistent
+split observations block a positive proposal, including when an Earn checkpoint
+substitutes for those reads. A zero budget still requires a valid managed total.
+The internal failure may be projected to a generic cycle error in the validation
+report. This checks only a snapshot balance ceiling. It does not establish
+reserved cash or other strategy budgets, fees, exchange filters, future available
+cash, or execution readiness.
+
 ### BTC attribution exit preview in no-submit validation
 
 A caller can explicitly supply synthetic `btc_attribution_evidence` to the

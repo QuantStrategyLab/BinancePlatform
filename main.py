@@ -950,14 +950,20 @@ def _append_trend_pool_source_logs(log_buffer, trend_pool_resolution, allow_new_
 
 
 def _capture_market_snapshot(runtime, report, runtime_trend_universe, log_buffer, *, validation_scope="standard",
-                             btc_balance_parts=None):
+                             btc_balance_parts=None, usdt_balance_parts=None):
     get_balance = get_total_balance
     if validation_scope == "full_cycle_no_submit" and runtime.strategy_profile == "crypto_btc_dca":
         from infra.btc_attribution import read_btc_balance_with_parts
 
+        if btc_balance_parts is not None:
+            btc_balance_parts.clear()
+        if usdt_balance_parts is not None:
+            usdt_balance_parts.clear()
+
         def get_balance(client, asset, *, log_buffer):
+            parts = usdt_balance_parts if asset == "USDT" else btc_balance_parts
             return read_btc_balance_with_parts(get_total_balance, client, asset, log_buffer=log_buffer,
-                                               output=btc_balance_parts if btc_balance_parts is not None else {})
+                                               output=parts if parts is not None else {})
     return ms_capture_market_snapshot(
         runtime,
         report,
@@ -1093,7 +1099,7 @@ def _resolve_strategy_plan(
     return strategy_plan
 
 
-def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, prices, u_total, fuel_val, state, trend_indicators, btc_snapshot, *, validation_scope="standard", btc_input_cache=None, btc_attribution_evidence=None, btc_balance_parts=None):
+def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, prices, u_total, fuel_val, state, trend_indicators, btc_snapshot, *, validation_scope="standard", btc_input_cache=None, btc_attribution_evidence=None, btc_balance_parts=None, usdt_balance_parts=None):
     evaluation_as_of = None
     if validation_scope == "full_cycle_no_submit" and runtime.strategy_profile == "crypto_btc_dca":
         from copy import deepcopy
@@ -1174,7 +1180,7 @@ def _compute_portfolio_allocation(runtime, runtime_trend_universe, balances, pri
                 btc_input_cache["exit_proposal"] = proposal
             amount = 0.0
         else:
-            amount = approved_buy_amount(evaluation.decision, evaluation.account_metrics)
+            amount = approved_buy_amount(evaluation.decision, evaluation.account_metrics, usdt_parts=usdt_balance_parts)
         allocation["dca_usdt_pool"] = amount
         allocation["btc_base_order_usdt"] = amount
     return allocation
@@ -1492,6 +1498,7 @@ def execute_cycle(runtime, *, validation_scope: str = "standard", btc_attributio
 
     btc_cycle_inputs = {}
     btc_balance_parts = {}
+    usdt_balance_parts = {}
     if btc_attribution_evidence is not None:
         from copy import deepcopy
         btc_attribution_evidence = deepcopy(btc_attribution_evidence)
@@ -1500,6 +1507,7 @@ def execute_cycle(runtime, *, validation_scope: str = "standard", btc_attributio
         return _compute_portfolio_allocation(
             *args, validation_scope=validation_scope, btc_input_cache=btc_cycle_inputs,
             btc_attribution_evidence=btc_attribution_evidence, btc_balance_parts=btc_balance_parts,
+            usdt_balance_parts=usdt_balance_parts,
         )
 
     def execute_btc_validation_trend(*args, **kwargs):
@@ -1525,7 +1533,8 @@ def execute_cycle(runtime, *, validation_scope: str = "standard", btc_attributio
             capture_market_snapshot=(_capture_market_snapshot if validation_scope == "standard"
                                      else lambda *args: _capture_market_snapshot(
                                          *args, validation_scope=validation_scope,
-                                         **({"btc_balance_parts": btc_balance_parts} if btc_validation else {}))),
+                                         **({"btc_balance_parts": btc_balance_parts, "usdt_balance_parts": usdt_balance_parts}
+                                            if btc_validation else {}))),
             top_up_bnb_fuel=_top_up_bnb_fuel,
             compute_portfolio_allocation=(
                 compute_btc_validation_allocation if btc_validation else _compute_portfolio_allocation

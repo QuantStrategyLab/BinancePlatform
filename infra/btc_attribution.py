@@ -116,8 +116,8 @@ def reconstruct(snapshot, *, as_of, account_scope, account_selector):
 
 
 def read_btc_balance_with_parts(get_total_balance_fn, client, asset, *, log_buffer, output):
-    """Capture parts of existing BTC balance reads without adding broker calls."""
-    if asset != "BTC":
+    """Capture BTC or USDT parts of existing balance reads without extra calls."""
+    if asset not in {"BTC", "USDT"}:
         return get_total_balance_fn(client, asset, log_buffer=log_buffer)
     captured = {}
 
@@ -144,6 +144,8 @@ def read_btc_balance_with_parts(get_total_balance_fn, client, asset, *, log_buff
             _blocked()
         earn_total = sum((_amount(row["totalAmount"]) for row in earn["rows"]), Decimal(0))
         output.update(spot_free=str(free), spot_locked=str(locked), earn=str(earn_total))
+        if asset == "USDT":
+            output["managed_total"] = total
     except (KeyError, TypeError, AttributionBlocked):
         output.clear()
     return total
