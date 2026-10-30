@@ -130,6 +130,15 @@ trend pool. This daily boundary does not establish tick freshness or full
 historical point-in-time data quality. Other strategies and scopes retain their
 existing injected snapshot behavior.
 
+For standalone `crypto_btc_dca` in this validation scope, an approved plan is
+checked against the current BTC value and records only its proposed buy amount;
+it does not pass through the legacy BTC executor, submit an order, or simulate a
+fill. A no-action plan records no BTC proposal and retains the existing target.
+Exit plans are unsupported in this path and fail validation. Missing required
+smart or exit inputs remain a failure; synthetic indicator tests do not prove
+that a trustworthy live source is connected. Production selection remains
+separately controlled by the production allowlist and existing guards.
+
 Maintenance-only authority version reissue (strategy + runner fields, matching
 SHA256, and source revision) is documented in `docs/authority-reissue.md`. That
 entry never enables `RUNTIME_TARGET_ENABLED`, never changes `RECONCILE_ONLY` or

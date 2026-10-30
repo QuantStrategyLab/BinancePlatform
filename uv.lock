@@ -248,7 +248,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "crypto-strategies", git = "https://github.com/QuantStrategyLab/CryptoStrategies.git?rev=2fb4098aac3913d49c79cfc13b333ad5712168e5" },
+    { name = "crypto-strategies", git = "https://github.com/QuantStrategyLab/CryptoStrategies.git?rev=97243177237dde23ad4f71b4205de4a54e822332" },
     { name = "functions-framework" },
     { name = "google-cloud-firestore" },
     { name = "google-cloud-storage" },
@@ -488,7 +488,7 @@ wheels = [
 [[package]]
 name = "crypto-strategies"
 version = "0.4.11"
-source = { git = "https://github.com/QuantStrategyLab/CryptoStrategies.git?rev=2fb4098aac3913d49c79cfc13b333ad5712168e5#2fb4098aac3913d49c79cfc13b333ad5712168e5" }
+source = { git = "https://github.com/QuantStrategyLab/CryptoStrategies.git?rev=97243177237dde23ad4f71b4205de4a54e822332#97243177237dde23ad4f71b4205de4a54e822332" }
 dependencies = [
     { name = "quant-platform-kit" },
 ]

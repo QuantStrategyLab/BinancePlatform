@@ -6,6 +6,7 @@ import runpy
 import sys
 from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
 from unittest.mock import patch
 
 import pytest
@@ -69,8 +70,15 @@ def test_startup_validation_rejects_broker_credentials(monkeypatch):
         validate_startup()
 
 
-@pytest.mark.parametrize("profile", ["crypto_live_pool_rotation", "crypto_btc_dca", "crypto_trend_rotation"])
-def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tmp_path, profile):
+@pytest.mark.parametrize(("profile", "scenario"), [
+    ("crypto_live_pool_rotation", "default"),
+    ("crypto_btc_dca", "ordinary_buy"),
+    ("crypto_btc_dca", "synthetic_smart"),
+    ("crypto_btc_dca", "outside_window"),
+    ("crypto_btc_dca", "insufficient_cash"),
+    ("crypto_trend_rotation", "default"),
+])
+def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tmp_path, profile, scenario):
     import main
     import run_cycle_replay
     from live_risk_authority import config_sha256
@@ -79,7 +87,19 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
     from scripts.validate_runtime_startup import FullCycleValidationError, validate_full_cycle
 
-    now = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    # The real builder activates an unbound module-level handle and pool knobs.
+    # Restore them after each synthetic profile so later replay tests keep their
+    # original runtime rather than inheriting this fixture's last profile.
+    for name in (
+        "STRATEGY_RUNTIME",
+        "TREND_POOL_SIZE",
+        "DEFAULT_LIVE_POOL_LEGACY_PATH",
+        "DEFAULT_TREND_POOL_MAX_AGE_DAYS",
+        "DEFAULT_TREND_POOL_ACCEPTABLE_MODES",
+    ):
+        monkeypatch.setattr(main, name, getattr(main, name))
+
+    now = datetime(2026, 3, 15 if scenario == "outside_window" or profile != "crypto_btc_dca" else 25, tzinfo=timezone.utc)
     target = build_runtime_target(
         platform_id="binance",
         strategy_profile=profile,
@@ -90,6 +110,18 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         service_name="binance-platform",
     )
     loaded = load_research_only_strategy_runtime(target.strategy_profile)
+    btc_overrides = {}
+    if profile == "crypto_btc_dca":
+        # Ordinary cases explicitly disable smart and exit inputs; the smart case
+        # supplies separate synthetic indicator and normal exit data below.
+        btc_overrides = {"smart_multiplier_enabled": False, "zscore_exit_enabled": False}
+        if scenario == "synthetic_smart":
+            btc_overrides["smart_multiplier_enabled"] = True
+            btc_overrides["zscore_exit_enabled"] = True
+            btc_overrides["zscore_exit_context"] = {"route": "normal"}
+        if scenario == "insufficient_cash":
+            btc_overrides["cash_reserve_usd"] = 1000.0
+        loaded = replace(loaded, runtime_overrides=btc_overrides)
     runner_revision = "b" * 40
     payload = {
         "decision": "APPROVE",
@@ -168,10 +200,22 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         ]
 
     replay_client.get_historical_klines = historical_klines
+    if scenario == "synthetic_smart":
+        resolve_indicators = main.resolve_runtime_trend_indicators
+
+        def synthetic_smart_indicators(runtime, *, validation_scope="standard"):
+            indicators = resolve_indicators(runtime, validation_scope=validation_scope)
+            # Synthetic test data only: this does not establish a real AHR source.
+            indicators["BTCUSDT"] = {"close": 60000.0, "sma200": 55000.0, "ahr999": 0.7}
+            return indicators
+
+        monkeypatch.setattr(main, "resolve_runtime_trend_indicators", synthetic_smart_indicators)
 
     def build(*, validation_scope):
         assert validation_scope == "full_cycle_no_submit"
         runtime = main.build_live_runtime(now_utc=now, validation_scope=validation_scope)
+        if btc_overrides:
+            runtime.strategy_runtime = replace(runtime.strategy_runtime, runtime_overrides=btc_overrides)
         assert runtime.strategy_runtime.profile == profile
         assert runtime.runtime_target.live_continuity.state == "RECONCILE_ONLY"
         assert runtime.standard_execution_permitted is False
@@ -181,6 +225,28 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         assert runtime.trend_indicator_snapshots is None
         return runtime
 
+    reports = []
+    observed_exit_plans = []
+    if scenario == "synthetic_smart":
+        import infra.btc_no_submit as btc_no_submit
+
+        approve_amount = btc_no_submit.approved_buy_amount
+
+        def capture_exit_plan(decision, metrics):
+            amount = approve_amount(decision, metrics)
+            exit_plan = decision.diagnostics["zscore_exit"]
+            observed_exit_plans.append((exit_plan["route"], exit_plan["applied"]))
+            return amount
+
+        monkeypatch.setattr(btc_no_submit, "approved_buy_amount", capture_exit_plan)
+    execute_cycle = main.execute_cycle
+
+    def capture_cycle(*args, **kwargs):
+        report = execute_cycle(*args, **kwargs)
+        reports.append(report)
+        return report
+
+    monkeypatch.setattr(main, "execute_cycle", capture_cycle)
     with patch("live_risk_authority.resolve_strategy_revision", return_value="d" * 40), patch(
         "live_risk_authority.resolve_runner_revision", return_value=runner_revision
     ), patch("quant_platform_kit.risk.gate._utc_now", return_value=now):
@@ -199,6 +265,18 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     assert result["execution_permitted"] is False
     assert result["broker_read_count"] > 0
     assert result["suppressed_strategy_record_count"] > 0
+    if profile == "crypto_btc_dca":
+        proposals = reports[0]["btc_dca_intents"]
+        if scenario in {"ordinary_buy", "synthetic_smart"}:
+            assert len(proposals) == 1
+            assert proposals[0]["action"] == "buy"
+            assert proposals[0]["proposal_only"] is True
+            assert proposals[0]["budget"] > 0
+            if scenario == "synthetic_smart":
+                assert observed_exit_plans
+                assert all(plan == ("normal", True) for plan in observed_exit_plans)
+        else:
+            assert proposals == []
     if profile == "crypto_live_pool_rotation":
         assert ("BTCUSDT", "1d", "700 days ago UTC") in historical_calls
         assert all(call[2] == "420 days ago UTC" for call in historical_calls if call[0] != "BTCUSDT")
