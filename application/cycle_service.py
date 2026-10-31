@@ -217,6 +217,25 @@ def _build_cycle_failure_metadata(exc, report, *, failure_stage, validation_scop
     return error_type, failure_metadata
 
 
+def _build_notification_digest(runtime, report):
+    """Project the existing per-cycle notification summary."""
+    observation = report.get("execution_receipt_observation") or {}
+    fields = ("submission_attempted_count", "broker_acknowledged_count", "partially_filled_count",
+              "filled_count", "transport_uncertain_count", "failed_count")
+    known = all(type(observation.get(k)) is int and observation[k] >= 0 for k in fields)
+    settled = known and observation["submission_attempted_count"] == observation["filled_count"]
+    healthy = (report.get("status") == "ok" and settled
+        and not any(observation[k] for k in fields if k not in {"submission_attempted_count", "filled_count"})
+        and not report.get("execution_blocked_reason") and not report.get("circuit_breaker_triggered")
+        and not (report.get("error_summary") or {}).get("errors"))
+    return {
+        "schema_version": "qsl.notification_cycle.v1", "dry_run": bool(runtime.dry_run),
+        "order_count": observation["filled_count"] if healthy and not runtime.dry_run else None,
+        "fill_count": 0 if healthy and observation["filled_count"] == 0 and not runtime.dry_run else None,
+        "routine": healthy and not runtime.dry_run,
+    }
+
+
 def execute_strategy_cycle(
     runtime,
     *,
@@ -650,21 +669,7 @@ def execute_strategy_cycle(
         attach_execution_receipt_from_report(report)
         from notifications.routing import daily_digest_enabled
         if daily_digest_enabled("daily_digest"):
-            observation = report.get("execution_receipt_observation") or {}
-            fields = ("submission_attempted_count", "broker_acknowledged_count", "partially_filled_count",
-                      "filled_count", "transport_uncertain_count", "failed_count")
-            known = all(type(observation.get(k)) is int and observation[k] >= 0 for k in fields)
-            settled = known and observation["submission_attempted_count"] == observation["filled_count"]
-            healthy = (report.get("status") == "ok" and settled
-                and not any(observation[k] for k in fields if k not in {"submission_attempted_count", "filled_count"})
-                and not report.get("execution_blocked_reason") and not report.get("circuit_breaker_triggered")
-                and not (report.get("error_summary") or {}).get("errors"))
-            report.setdefault("summary", {})["notification_digest"] = {
-                "schema_version": "qsl.notification_cycle.v1", "dry_run": bool(runtime.dry_run),
-                "order_count": observation["filled_count"] if healthy and not runtime.dry_run else None,
-                "fill_count": 0 if healthy and observation["filled_count"] == 0 and not runtime.dry_run else None,
-                "routine": healthy and not runtime.dry_run,
-            }
+            report.setdefault("summary", {})["notification_digest"] = _build_notification_digest(runtime, report)
 
         if not getattr(runtime, "dry_run", False):
             execution_result = _build_platform_execution_result(
