@@ -176,6 +176,47 @@ def _write_lifecycle_export(profile_id, execution_result):
         return
 
 
+def _build_cycle_failure_metadata(exc, report, *, failure_stage, validation_scope):
+    """Return the log classification and public failure metadata."""
+    # Exact types only: provider messages and custom exception names may
+    # contain credentials or account data. Unknown types stay unclassified.
+    error_type = {
+        StatePersistenceError: "state_persistence_error",
+        OrderReconciliationError: "order_reconciliation_error",
+        ExecutionIntegrityError: "execution_integrity_error",
+        ClientCallError: "client_call_error",
+        TimeoutError: "timeout_error",
+        ConnectionError: "connection_error",
+        PermissionError: "permission_error",
+        OSError: "io_error",
+        ValueError: "value_error",
+        TypeError: "type_error",
+        KeyError: "key_error",
+        RuntimeError: "runtime_error",
+    }.get(type(exc), "unclassified_error")
+    failure_metadata = {"stage": failure_stage, "error_type": error_type}
+    if (failure_stage == "btc_execution" and type(exc) is ExecutionIntegrityError
+            and str(exc) == "btc_strategy_attribution_unavailable"):
+        failure_metadata["reason_code"] = "btc_strategy_attribution_unavailable"
+    if validation_scope == "full_cycle_no_submit" and failure_stage == "portfolio_allocation":
+        from infra.btc_cycle_input import cycle_failure_metadata
+
+        failure_metadata.update(cycle_failure_metadata(exc, stage=failure_stage, validation_scope=validation_scope))
+    if failure_stage == "daily_state" and type(exc) is ExecutionIntegrityError:
+        for surface in ("earn_accrual", "external_cash_flow", "balance_change"):
+            diagnostic = report.get("diagnostics", {}).get(surface, {})
+            reason_code = diagnostic.get("reason_code") if isinstance(diagnostic, Mapping) else None
+            if type(reason_code) is str and reason_code in _DAILY_DIAGNOSTIC_REASONS:
+                failure_metadata["reason_code"] = reason_code
+                break
+        else:
+            # Exact application codes only; never expose exception/provider text.
+            reason_code = str(exc)
+            if reason_code in _DAILY_INTEGRITY_REASONS:
+                failure_metadata["reason_code"] = reason_code
+    return error_type, failure_metadata
+
+
 def execute_strategy_cycle(
     runtime,
     *,
@@ -513,42 +554,9 @@ def execute_strategy_cycle(
     except Exception as exc:
         state_healthy = False
         report["status"] = "error"
-        # Exact types only: provider messages and custom exception names may
-        # contain credentials or account data. Unknown types stay unclassified.
-        error_type = {
-            StatePersistenceError: "state_persistence_error",
-            OrderReconciliationError: "order_reconciliation_error",
-            ExecutionIntegrityError: "execution_integrity_error",
-            ClientCallError: "client_call_error",
-            TimeoutError: "timeout_error",
-            ConnectionError: "connection_error",
-            PermissionError: "permission_error",
-            OSError: "io_error",
-            ValueError: "value_error",
-            TypeError: "type_error",
-            KeyError: "key_error",
-            RuntimeError: "runtime_error",
-        }.get(type(exc), "unclassified_error")
-        failure_metadata = {"stage": failure_stage, "error_type": error_type}
-        if (failure_stage == "btc_execution" and type(exc) is ExecutionIntegrityError
-                and str(exc) == "btc_strategy_attribution_unavailable"):
-            failure_metadata["reason_code"] = "btc_strategy_attribution_unavailable"
-        if validation_scope == "full_cycle_no_submit" and failure_stage == "portfolio_allocation":
-            from infra.btc_cycle_input import cycle_failure_metadata
-
-            failure_metadata.update(cycle_failure_metadata(exc, stage=failure_stage, validation_scope=validation_scope))
-        if failure_stage == "daily_state" and type(exc) is ExecutionIntegrityError:
-            for surface in ("earn_accrual", "external_cash_flow", "balance_change"):
-                diagnostic = report.get("diagnostics", {}).get(surface, {})
-                reason_code = diagnostic.get("reason_code") if isinstance(diagnostic, Mapping) else None
-                if type(reason_code) is str and reason_code in _DAILY_DIAGNOSTIC_REASONS:
-                    failure_metadata["reason_code"] = reason_code
-                    break
-            else:
-                # Exact application codes only; never expose exception/provider text.
-                reason_code = str(exc)
-                if reason_code in _DAILY_INTEGRITY_REASONS:
-                    failure_metadata["reason_code"] = reason_code
+        error_type, failure_metadata = _build_cycle_failure_metadata(
+            exc, report, failure_stage=failure_stage, validation_scope=validation_scope,
+        )
         report.setdefault("diagnostics", {})["cycle_failure"] = failure_metadata
         log_buffer.append(f"cycle_execution_failed stage={failure_stage} error_type={error_type}")
         append_report_error(report, "cycle_execution_failed", stage="execute_cycle")
