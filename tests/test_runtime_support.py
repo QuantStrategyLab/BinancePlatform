@@ -102,6 +102,7 @@ def order_query_response(*, client_order_id, status, symbol="BTCUSDT", side="BUY
         "clientOrderId": client_order_id,
         "symbol": symbol,
         "side": side,
+        "type": "MARKET",
         "origQty": quantity,
         "origQuoteOrderQty": "0",
         "executedQty": "0" if status in {"CANCELED", "REJECTED", "EXPIRED"} else quantity,
@@ -714,6 +715,41 @@ class TestBuildExecutionReport(unittest.TestCase):
 
                 self.assertNotIn(("submit_new",), store.events)
                 self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
+
+    def test_unknown_market_order_rejects_missing_or_nonmarket_type_on_both_recovery_paths(self):
+        payload = {"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "type-check"}
+        for restarted in (False, True):
+            for order_type in (None, "LIMIT"):
+                with self.subTest(restarted=restarted, order_type=order_type):
+                    _, identity = _ensure_order_logical_identity(owned_runtime(), "order_market_buy", payload)
+                    record = ({"state": "SUBMISSION_UNKNOWN", "identity_sha256": identity, "symbol": "BTCUSDT"}
+                              if restarted else None)
+                    store = DurableSubmissionStateStore(record)
+                    calls = []
+
+                    class Client:
+                        def order_market_buy(self, **_kwargs):
+                            calls.append("submit")
+                            raise TimeoutError("synthetic timeout")
+
+                        def get_order(self, *, origClientOrderId, **_kwargs):
+                            calls.append("query")
+                            response = order_query_response(client_order_id=origClientOrderId, status="FILLED")
+                            if order_type is None:
+                                response.pop("type")
+                            else:
+                                response["type"] = order_type
+                            return response
+
+                    runtime = owned_runtime(dry_run=False, client=Client(), run_id="type-check",
+                                            state_loader=store.load, state_writer=store.write)
+                    with patch("runtime_support._rate_limit_pause"):
+                        with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_intent_mismatch"):
+                            runtime_call_client(runtime, build_execution_report(runtime),
+                                                method_name="order_market_buy", payload=payload,
+                                                effect_type="order_buy", max_retries=0)
+                    self.assertEqual(calls, ["query"] if restarted else ["submit", "query"])
+                    self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
 
     def test_unknown_order_with_different_client_identity_does_not_query_or_submit(self):
         payload = {"symbol": "BTCUSDT", "quantity": 0.01, "newClientOrderId": "old-identity"}

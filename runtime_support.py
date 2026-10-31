@@ -858,6 +858,9 @@ def _build_order_request_association(method_name, order_payload):
 def _reconciled_order_matches_request(response, association):
     if not isinstance(response, Mapping):
         return False
+    # This association is built only for order_market_buy/sell requests.
+    if response.get("type") != "MARKET":
+        return False
     if str(response.get("clientOrderId") or "").strip() != association["client_order_id"]:
         return False
     if str(response.get("symbol") or "").strip().upper() != association["symbol"]:
