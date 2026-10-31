@@ -74,8 +74,9 @@ class DirectAssociationTests(unittest.TestCase):
             with self.subTest(status=status, mutation=mutation):
                 client = Client(status, mutation)
                 runtime, store = self.make_runtime(client)
-                call = lambda: runtime_call_client(runtime, build_execution_report(runtime),
-                    method_name="order_market_buy", payload={"symbol": "ETHUSDT", "quantity": 1}, effect_type="order_buy", max_retries=0)
+                def call():
+                    return runtime_call_client(runtime, build_execution_report(runtime),
+                        method_name="order_market_buy", payload={"symbol": "ETHUSDT", "quantity": 1}, effect_type="order_buy", max_retries=0)
                 if not matches:
                     with self.assertRaises(OrderReconciliationError): call()
                     self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
@@ -117,9 +118,10 @@ class DirectAssociationTests(unittest.TestCase):
         for mismatch in (False, True):
             client = Client(mutation=(lambda r: r.update(origQuoteOrderQty="101")) if mismatch else None)
             runtime, store = self.make_runtime(client)
-            call = lambda: runtime_call_client(runtime, build_execution_report(runtime),
-                method_name="order_market_buy", payload={"symbol": "BNBUSDT", "quoteOrderQty": 100},
-                effect_type="order_buy", max_retries=0)
+            def call():
+                return runtime_call_client(runtime, build_execution_report(runtime),
+                    method_name="order_market_buy", payload={"symbol": "BNBUSDT", "quoteOrderQty": 100},
+                    effect_type="order_buy", max_retries=0)
             if mismatch:
                 with self.assertRaises(OrderReconciliationError): call()
                 self.assertEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
