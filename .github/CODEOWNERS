@@ -2,3 +2,13 @@
 # Do not automatically request a personal review for every pull request:
 # withdrawing a request after creation cannot prevent its notification.
 # Required CI and investment/runtime authorization remain independently enforced.
+
+# Risk-sensitive changes require the repository owner.
+/.github/CODEOWNERS @Pigbibi
+/.github/workflows/ @Pigbibi
+/application/execution_kernel_adapter.py @Pigbibi
+/application/execution_receipt_adapter.py @Pigbibi
+/application/execution_service.py @Pigbibi
+/live_risk_authority.py @Pigbibi
+/scripts/execution_report_heartbeat.py @Pigbibi
+/trade_state_support.py @Pigbibi
