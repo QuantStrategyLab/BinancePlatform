@@ -319,6 +319,18 @@ def translate(key: str, **kwargs) -> str:
     return build_translator(get_notify_lang())(key, **kwargs)
 
 
+def _legacy_strategy_display_name(profile, fallback_name, translate_fn):
+    """Resolve the legacy translation, operator fallback and profile label."""
+    key = f"strategy_name_{str(profile or '').strip()}"
+    translated = translate_fn(key)
+    if translated != key:
+        return translated
+    fallback = str(fallback_name or "").strip()
+    if fallback:
+        return fallback
+    return str(profile or "").strip()
+
+
 def build_strategy_display_name(translate_fn):
     def strategy_display_name(
         profile: str,
@@ -343,14 +355,7 @@ def build_strategy_display_name(translate_fn):
                 )
 
         # Legacy path (backward compat for callers without metadata)
-        key = f"strategy_name_{str(profile or '').strip()}"
-        translated = translate_fn(key)
-        if translated != key:
-            return translated
-        fallback = str(fallback_name or "").strip()
-        if fallback:
-            return fallback
-        return str(profile or "").strip()
+        return _legacy_strategy_display_name(profile, fallback_name, translate_fn)
 
     return strategy_display_name
 
