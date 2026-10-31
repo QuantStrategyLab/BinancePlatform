@@ -71,6 +71,8 @@ Organization documentation rules are checked by `python scripts/check_style.py`,
 
 ## Do not
 
+- Only the owner, or a reviewer explicitly authorized by the owner, may apply the `owner-approved` label; coding agents must never apply it to their own PRs.
+
 - Do not enable live trading, raise risk limits or change dry-run defaults without
   explicit owner authorization for that account.
 - Do not treat a green CI run, a configuration flag or a deployment label as
