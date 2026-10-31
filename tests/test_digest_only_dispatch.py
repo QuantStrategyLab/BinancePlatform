@@ -102,6 +102,7 @@ class DigestOnlyDispatch(unittest.TestCase):
         self.assertIsNone(unified.current_order_digest(runtime))
         self.assertEqual(side_effects, [])
         runtime.client.order_market_buy = lambda **kwargs: response
+        namespace["_reconciled_order_matches_request"] = lambda result, assoc: result is response
         namespace["_load_order_submission_state"] = lambda runtime: ({}, {"state": "RESERVED"})
         self.assertEqual(call(runtime, {}, method_name="order_market_buy", payload=payload, effect_type="order_buy"), response)
         self.assertEqual(unified.current_order_digest(runtime), order_identity_digest("current-id"))

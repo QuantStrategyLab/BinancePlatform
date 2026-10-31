@@ -777,6 +777,14 @@ Operator action:
 
 ### Fill accounting and daily loss state
 
+Before treating a direct market-order response as a fill or a zero-fill terminal
+failure, the runtime checks its client order ID, symbol, side, market type,
+and original requested quantity against the submitted intent. A response with
+missing or conflicting association fields, including an ACK without status and
+quantity details, remains `SUBMISSION_UNKNOWN`. Keep the execution owner held
+and reconcile the exact order identity; do not resubmit based on the response
+or on an empty open-order list. An earlier cycle leg may already have completed.
+
 Market orders consume Binance's `FULL` response: `executedQty`,
 `cummulativeQuoteQty`, and every fill's `price`, `qty`, `commission`, and
 `commissionAsset`. Base-asset fees reduce the received or remaining position,
