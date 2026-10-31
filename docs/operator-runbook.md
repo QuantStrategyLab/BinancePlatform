@@ -474,6 +474,12 @@ pending, and no state-write intent was added after the state-load metadata
 refresh. Unknown orders, uncertain writes, or an owner held before this cycle
 remain locked for manual reconciliation.
 
+For an unknown market-order submission, recovery also requires the queried
+order's type to be `MARKET`, as well as the existing identity, symbol, side,
+and quantity match. A missing or different type remains an intent mismatch:
+the submission stays unknown and no replacement order is submitted. This does
+not establish that account-wide open orders or other reservations are complete.
+
 The migration is a separate, one-time `Runtime` workflow mode for an old
 `trend_val` ledger. It does not activate recovery control, grant execution
 authority, clear the circuit-breaker latch, or reconstruct historical
