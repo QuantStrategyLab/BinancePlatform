@@ -236,6 +236,39 @@ def _build_notification_digest(runtime, report):
     }
 
 
+def _record_cycle_completion(
+    runtime, report, *, state_healthy, state_owner_release_uncertain,
+):
+    """Record lifecycle evidence and publish the existing heartbeat."""
+    if not getattr(runtime, "dry_run", False):
+        execution_result = _build_platform_execution_result(
+            report,
+            state_healthy=state_healthy,
+            state_owner_release_uncertain=state_owner_release_uncertain,
+        )
+        try_record_platform_execution(
+            str(getattr(runtime, "strategy_profile", "") or ""),
+            execution_result,
+            domain="crypto",
+        )
+        _write_lifecycle_export(
+            str(getattr(runtime, "strategy_profile", "") or ""),
+            execution_result,
+        )
+
+    # Early returns (including risk rejection) also complete a cycle.
+    try:
+        import builtins
+        monitor = builtins.__dict__.get("_qsl_health_monitor")
+        if monitor is not None:
+            monitor.beat(
+                status=report.get("status", "ok"),
+                error=report.get("error", ""),
+            )
+    except Exception:
+        pass
+
+
 def execute_strategy_cycle(
     runtime,
     *,
@@ -671,33 +704,11 @@ def execute_strategy_cycle(
         if daily_digest_enabled("daily_digest"):
             report.setdefault("summary", {})["notification_digest"] = _build_notification_digest(runtime, report)
 
-        if not getattr(runtime, "dry_run", False):
-            execution_result = _build_platform_execution_result(
-                report,
-                state_healthy=state_healthy,
-                state_owner_release_uncertain=state_owner_release_uncertain,
-            )
-            try_record_platform_execution(
-                str(getattr(runtime, "strategy_profile", "") or ""),
-                execution_result,
-                domain="crypto",
-            )
-            _write_lifecycle_export(
-                str(getattr(runtime, "strategy_profile", "") or ""),
-                execution_result,
-            )
-
-        # Early returns (including risk rejection) also complete a cycle.
-        try:
-            import builtins
-            monitor = builtins.__dict__.get("_qsl_health_monitor")
-            if monitor is not None:
-                monitor.beat(
-                    status=report.get("status", "ok"),
-                    error=report.get("error", ""),
-                )
-        except Exception:
-            pass
+        _record_cycle_completion(
+            runtime, report,
+            state_healthy=state_healthy,
+            state_owner_release_uncertain=state_owner_release_uncertain,
+        )
 
     return report
 
