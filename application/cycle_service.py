@@ -530,6 +530,9 @@ def execute_strategy_cycle(
             RuntimeError: "runtime_error",
         }.get(type(exc), "unclassified_error")
         failure_metadata = {"stage": failure_stage, "error_type": error_type}
+        if (failure_stage == "btc_execution" and type(exc) is ExecutionIntegrityError
+                and str(exc) == "btc_strategy_attribution_unavailable"):
+            failure_metadata["reason_code"] = "btc_strategy_attribution_unavailable"
         if validation_scope == "full_cycle_no_submit" and failure_stage == "portfolio_allocation":
             from infra.btc_cycle_input import cycle_failure_metadata
 
