@@ -1425,6 +1425,8 @@ def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
                 target=method_name, payload=dict(client_payload), executed=True,
             )
             if is_order_call:
+                if not _reconciled_order_matches_request(response, association):
+                    raise OrderReconciliationError("order_reconciliation_uncertain") from None
                 result = _complete_order_response(
                     runtime,
                     report,

@@ -353,7 +353,7 @@ class TestBuildExecutionReport(unittest.TestCase):
             def order_market_buy(self, **kwargs):
                 with lock:
                     submissions.append(kwargs["newClientOrderId"])
-                return {"status": "FILLED"}
+                return order_query_response(client_order_id=kwargs["newClientOrderId"], status="FILLED")
 
         def execute(run_id):
             runtime = ExecutionRuntime(
@@ -907,9 +907,9 @@ class TestBuildExecutionReport(unittest.TestCase):
         store = TerminalWriteFailureStore()
 
         class InitialClient:
-            def order_market_buy(self, **_kwargs):
+            def order_market_buy(self, **kwargs):
                 store.events.append(("submit",))
-                return {"status": "FILLED"}
+                return order_query_response(client_order_id=kwargs["newClientOrderId"], status="FILLED")
 
         initial_runtime = owned_runtime(
             dry_run=False,
@@ -1315,7 +1315,7 @@ class TestBuildExecutionReport(unittest.TestCase):
             with self.subTest(status=status):
                 class Client:
                     def order_market_buy(self, **kwargs):
-                        return {"status": status, "clientOrderId": kwargs["newClientOrderId"], "executedQty": "0"}
+                        return order_query_response(client_order_id=kwargs["newClientOrderId"], status=status)
 
                 runtime = build_order_runtime(dry_run=False, run_id=f"direct-{status}", client=Client())
                 report = build_execution_report(runtime)
@@ -1339,7 +1339,7 @@ class TestBuildExecutionReport(unittest.TestCase):
             with self.subTest(status=status):
                 class Client:
                     def order_market_buy(self, **kwargs):
-                        return {"status": status, "clientOrderId": kwargs["newClientOrderId"], "executedQty": "0"}
+                        return order_query_response(client_order_id=kwargs["newClientOrderId"], status=status)
 
                 runtime = build_order_runtime(dry_run=False, run_id=f"direct-{status}", client=Client())
                 report = build_execution_report(runtime)
@@ -1361,7 +1361,7 @@ class TestBuildExecutionReport(unittest.TestCase):
     def test_direct_filled_order_records_one_fill_and_returns_success(self):
         class Client:
             def order_market_buy(self, **kwargs):
-                return {"status": "FILLED", "clientOrderId": kwargs["newClientOrderId"]}
+                return order_query_response(client_order_id=kwargs["newClientOrderId"], status="FILLED")
 
         runtime = build_order_runtime(dry_run=False, run_id="direct-filled", client=Client())
         report = build_execution_report(runtime)
@@ -1479,7 +1479,11 @@ def test_owner_release_requires_confirmed_fill_and_existing_persisted_action():
     response = {'status': 'FILLED', 'symbol': 'ETHUSDT', 'side': 'BUY',
                 'executedQty': '1', 'cummulativeQuoteQty': '100',
                 'fills': [{'price': '100', 'qty': '1', 'commission': '0', 'commissionAsset': 'USDT'}]}
-    client.order_market_buy.return_value = response
+    def respond(**kwargs):
+        response.update(order_query_response(client_order_id=kwargs["newClientOrderId"], status="FILLED",
+                                             symbol="ETHUSDT", quantity="1"))
+        return response
+    client.order_market_buy.side_effect = respond
     runtime = build_order_runtime(client=client)
     release = runtime.state_owner_release = Mock(return_value=True)
     report = build_execution_report(runtime)
@@ -1513,7 +1517,12 @@ def test_partial_or_unknown_fill_retains_owner_but_zero_fill_rejection_releases(
     from unittest.mock import Mock
     for status, filled in [('PARTIALLY_FILLED', '0.5'), ('CANCELED', '0.5'), ('CANCELED', '0')]:
         client = Mock()
-        client.order_market_buy.return_value = {'status': status, 'executedQty': filled}
+        def respond(**kwargs):
+            response = order_query_response(client_order_id=kwargs["newClientOrderId"], status=status,
+                                            symbol="ETHUSDT", quantity="1")
+            response["executedQty"] = filled
+            return response
+        client.order_market_buy.side_effect = respond
         runtime = build_order_runtime(client=client)
         release = runtime.state_owner_release = Mock(return_value=True)
         with pytest.raises((ClientCallError, OrderReconciliationError)):
@@ -1535,7 +1544,14 @@ def test_confirmed_earn_and_fuel_require_fresh_balances_and_successful_state_wri
         ('subscribe_simple_earn_flexible_product', {'productId': 'synthetic', 'amount': 1}, 'earn_subscribe', 'USDT', {'success': True, 'purchaseId': 1}),
     ]:
         client = Mock()
-        getattr(client, method).return_value = response
+        if method == "order_market_buy":
+            def respond(**kwargs):
+                response.update(order_query_response(client_order_id=kwargs["newClientOrderId"], status="FILLED",
+                                                     symbol="BNBUSDT", quantity="1"))
+                return response
+            client.order_market_buy.side_effect = respond
+        else:
+            getattr(client, method).return_value = response
         client.get_asset_balance.return_value = {'free': '10', 'locked': '0'}
         if effect == 'earn_subscribe':
             client.get_asset_balance.side_effect = [{'free': '11', 'locked': '0'}, {'free': '10', 'locked': '0'}]

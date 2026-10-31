@@ -85,7 +85,10 @@ class MarketSnapshotSupportTests(unittest.TestCase):
 
             def order_market_buy(self, **payload):
                 self.calls.append(payload)
-                return {"status": "FILLED", "cummulativeQuoteQty": "30"}
+                return {"status": "FILLED", "cummulativeQuoteQty": "30",
+                        "symbol": payload["symbol"], "side": "BUY", "type": "MARKET",
+                        "clientOrderId": payload["newClientOrderId"],
+                        "origQuoteOrderQty": str(payload["quoteOrderQty"])}
 
         client = FilledOrderClient()
         runtime = ExecutionRuntime(
