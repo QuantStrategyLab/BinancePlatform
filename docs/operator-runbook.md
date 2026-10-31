@@ -1055,6 +1055,35 @@ ratio called `ahr999` in the existing market snapshot is not used as direct
 AHR input. This does not establish owned BTC inventory or enable exits, orders,
 or production trading. Non-smart BTC evaluation does not require this envelope.
 
+### BTC trim ownership guard in standard execution
+
+A BTC DCA trim is blocked when its existing sell trigger, position threshold,
+and cooldown would otherwise request a sell. Account-wide BTC balances do not
+prove strategy-owned sellable inventory. The current standard execution path
+has no authenticated strategy attribution source, so it stops with an execution
+integrity error before formatting a sell quantity, redeeming Earn, or submitting
+a sell. This also applies to standard dry runs; the separately scoped no-submit
+preview remains a proposal only. With a healthy initial state and no trim trigger,
+normal buys and cycles continue through their existing paths. A triggered guard
+marks the cycle as an error at `btc_execution` with reason
+`btc_strategy_attribution_unavailable`. Existing failure handling retains the
+cycle's owner; later cycles may be blocked by that owner even without a trim
+signal. Earlier fuel, trend, or BTC buy actions may already have happened before
+the guard. Do not force-release the owner; inspect the cycle's durable state,
+order and funding outcomes through the approved reconciliation and controlled
+recovery process before any separately authorized recovery action.
+
+This does not implement an authorized live exit or establish strategy ownership.
+For a previously submitted unknown order, the next cycle already blocks on the
+unknown submission before it reaches the BTC trim path; it does not automatically
+query or mark that order failed. Use the approved read-only reconciliation
+process, including an identity-bound broker order lookup and the existing
+account, open-order, and trade observations, to investigate the original order.
+An empty open-order list alone does not prove an order was never filled. Preserve
+the unknown state until the appropriate controlled recovery process establishes
+its outcome; do not submit a replacement to resolve uncertainty. A read-only
+lookup does not itself clear or reconcile durable accounting state.
+
 ### BTC buy budget in no-submit validation
 
 A positive BTC buy budget must not exceed either the managed `cash_usdt` total

@@ -225,16 +225,84 @@ class CycleServiceTests(unittest.TestCase):
         self.assertEqual(len(released), 2)
         self.assertFalse(owners)
 
+    def test_btc_attribution_guard_keeps_owner_and_does_not_record_an_order(self):
+        from application.execution_service import execute_btc_dca_cycle
+        from unittest.mock import Mock
+
+        actual_cycle = execute_strategy_cycle
+        calls = []
+        release, writer, client = Mock(return_value=True), Mock(return_value=True), Mock()
+        state = {"order_submission": {"state": "RESERVED"}}
+        runtime = ExecutionRuntime(run_id="btc-attribution-block", client=client,
+                                   state_owner_claim=lambda _owner: True,
+                                   state_owner_release=release, state_writer=writer)
+
+        def invoke_real_btc(*args):
+            return execute_btc_dca_cycle(
+                *args,
+                append_log_fn=lambda *_args: None,
+                translate_fn=lambda key, **_kwargs: key,
+                format_qty_fn=lambda *_args: calls.append("format") or 0.3,
+                ensure_asset_available_fn=lambda *_args: calls.append("redeem") or True,
+                runtime_call_client_fn=lambda *_args, **_kwargs: calls.append("submit"),
+                next_order_id_fn=lambda *_args: calls.append("id") or "sell-id",
+                runtime_notify_fn=lambda *_args: calls.append("notify"),
+                runtime_set_trade_state_fn=lambda *_args, **_kwargs: calls.append("persist"),
+            )
+
+        def cycle_with_real_btc(rt, **kwargs):
+            original_snapshot = kwargs["capture_market_snapshot"]
+            original_allocation = kwargs["compute_portfolio_allocation"]
+            def snapshot(*args):
+                value = original_snapshot(*args)
+                value["balances"]["BTCUSDT"] = 1.0
+                value["btc_snapshot"] = {"ahr999": 2.0, "zscore": 4.5, "sell_trigger": 3.5}
+                return value
+            def allocation(*args):
+                value = original_allocation(*args)
+                value.update(dca_val=50_000.0, dca_usdt_pool=5.0, btc_base_order_usdt=0.0)
+                return value
+            kwargs.update(capture_market_snapshot=snapshot, compute_portfolio_allocation=allocation,
+                          execute_btc_dca_cycle=invoke_real_btc)
+            return actual_cycle(rt, **kwargs)
+
+        with patch(__name__ + ".execute_strategy_cycle", side_effect=cycle_with_real_btc):
+            report, events = self._run_funds_cycle(True, runtime=runtime, state=state)
+        self.assertEqual(report["status"], "error")
+        self.assertEqual(report["diagnostics"]["cycle_failure"], {
+            "stage": "btc_execution", "error_type": "execution_integrity_error",
+            "reason_code": "btc_strategy_attribution_unavailable",
+        })
+        self.assertEqual(calls, [])
+        self.assertEqual(report["btc_dca_intents"], [])
+        self.assertEqual(state["order_submission"], {"state": "RESERVED"})
+        self.assertTrue(runtime.state_owner_held)
+        release.assert_not_called()
+        client.order_market_sell.assert_not_called()
+        writer.assert_not_called()
+        # Earlier legs can have run before this later failure.
+        self.assertIn("fuel", events)
+        self.assertIn("trend", events)
+        self.assertNotIn("earn", events)
+
     def test_inherited_unknown_never_uses_new_run_id_to_submit_or_release(self):
         from unittest.mock import Mock
         observed = []
         release = Mock(return_value=True)
-        runtime = ExecutionRuntime(run_id="different-run", state_owner_claim=lambda _owner: True, state_owner_release=release)
-        report, events = self._run_funds_cycle(True, runtime=runtime, ownership_events=observed,
-            state={"order_submission": {"state": "SUBMISSION_UNKNOWN"}})
+        writer = Mock(return_value=True)
+        client = Mock()
+        unknown = {"state": "SUBMISSION_UNKNOWN", "identity_sha256": "a" * 64, "symbol": "BTCUSDT"}
+        state = {"order_submission": dict(unknown)}
+        runtime = ExecutionRuntime(run_id="different-run", state_owner_claim=lambda _owner: True,
+                                   state_owner_release=release, state_writer=writer, client=client)
+        report, events = self._run_funds_cycle(True, runtime=runtime, ownership_events=observed, state=state)
         self.assertEqual(report["status"], "error")
         self.assertEqual(observed, ["client", "state"])
         self.assertEqual(events, [])
+        self.assertEqual(state["order_submission"], unknown)
+        client.get_order.assert_not_called()  # The cycle does not perform order lookup automatically.
+        client.order_market_sell.assert_not_called()
+        writer.assert_not_called()
         release.assert_not_called()
 
     def test_durable_funding_receipt_recovers_at_cycle_entry_without_second_post(self):
