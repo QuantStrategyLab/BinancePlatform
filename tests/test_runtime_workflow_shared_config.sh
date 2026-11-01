@@ -46,8 +46,8 @@ fi
 grep -Fq '6. Notify Telegram on runtime workflow failure' "$workflow_file"
 grep -Fq "if: \${{ failure() && github.event.inputs.validate_only != 'true' && github.event.inputs.reconcile_only != 'true' && env.RUNTIME_TARGET_ENABLED == 'true' && steps.strategy.outputs.runtime_failure_notified != 'true' }}" "$workflow_file"
 grep -Fq 'reports/execution_report.json' "$workflow_file"
-grep -Fq 'https://api.telegram.org/bot${TG_TOKEN}/sendMessage' "$workflow_file"
-grep -Fq 'payload.get("ok") is not True' "$workflow_file"
+grep -Fq 'scripts/send_telegram_notification.py' "$workflow_file"
+grep -Fq "receipt['ok']" "$repo_dir/scripts/send_telegram_notification.py"
 if grep -Fq 'TG_CHAT_ID:' "$workflow_file"; then
   echo "workflow should not pass TG_CHAT_ID anymore" >&2
   exit 1

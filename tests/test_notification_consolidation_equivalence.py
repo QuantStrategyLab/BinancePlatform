@@ -187,13 +187,27 @@ def test_flags_off_workflow_failure_script_matches_main_sends(monkeypatch, tmp_p
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     curl = fake_bin / "curl"
-    curl.write_text(f"#!{sys.executable}\nimport json,os,sys\nfrom pathlib import Path\n"
-        "Path(os.environ['FIXTURE_CALLS']).write_text(json.dumps(sys.argv[1:]))\nprint('{\"ok\":true}')\n")
+    curl.write_text(f"#!{sys.executable}\nimport hashlib,json,os,sys\nfrom pathlib import Path\n"
+        "args=sys.argv[1:]\n"
+        "url=args[args.index('POST')+1]\n"
+        "values=dict(args[i+1].split('=',1) for i,a in enumerate(args) if a=='--data-urlencode')\n"
+        "token=url.split('/bot',1)[1].split('/',1)[0]\n"
+        "values['bot']=hashlib.sha256(token.encode()).hexdigest()\n"
+        "Path(os.environ['FIXTURE_CALLS']).write_text(json.dumps(values))\nprint('{\"ok\":true}')\n")
     curl.chmod(0o755)
     (fake_bin / "python3").symlink_to(sys.executable)
+    notification_venv = tmp_path / "notification-venv"
+    (notification_venv / "bin").mkdir(parents=True)
+    sender = notification_venv / "bin/python"
+    sender.write_text(f"#!{sys.executable}\nimport hashlib,json,os,sys\nfrom pathlib import Path\n"
+        "assert sys.argv[1:]==['scripts/send_telegram_notification.py']\n"
+        "values={'chat_id':os.environ['GLOBAL_TELEGRAM_CHAT_ID'],'text':sys.stdin.read(),"
+        "'bot':hashlib.sha256(os.environ['TG_TOKEN'].encode()).hexdigest()}\n"
+        "Path(os.environ['FIXTURE_CALLS']).write_text(json.dumps(values))\n")
+    sender.chmod(0o755)
     env = {**os.environ, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
         "TG_TOKEN": "fixture-token", "GLOBAL_TELEGRAM_CHAT_ID": "fixture-chat",
-        "GITHUB_WORKSPACE": str(tmp_path), "NOTIFY_LANG": locale, "GITHUB_RUN_NUMBER": "1",
+        "GITHUB_WORKSPACE": str(tmp_path), "VENV_PATH": str(notification_venv), "NOTIFY_LANG": locale, "GITHUB_RUN_NUMBER": "1",
         "GITHUB_RUN_ATTEMPT": "1", "GITHUB_RUN_ID": "1", "GITHUB_SERVER_URL": "https://example.invalid",
         "GITHUB_REPOSITORY": "example/repository", "FIXTURE_CALLS": str(tmp_path / "calls.json")}
     env.pop("BINANCE_UNIFIED_NOTIFICATION_ENABLED", None)

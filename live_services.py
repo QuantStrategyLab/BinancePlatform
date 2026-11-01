@@ -1,6 +1,5 @@
 import copy
 import hashlib
-import json
 from contextlib import contextmanager
 from threading import Lock
 from types import SimpleNamespace
@@ -398,41 +397,22 @@ def bind_trade_state_access(*, normalize_fn, default_state_factory,
 def send_tg_msg(token, chat_id, text):
     message = build_telegram_message(text)
     receipt = {
-        "sink": "telegram",
-        "delivery_status": "failed",
-        "transport_acknowledged": False,
+        "sink": "telegram", "delivery_status": "failed", "transport_acknowledged": False,
         "compact_text_sha256": hashlib.sha256(message.encode("utf-8")).hexdigest(),
         "compact_text_length": len(message),
     }
     if not token or not chat_id:
         return {**receipt, "error_type": "missing_target"}
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    try:
-        response = requests.post(
-            url,
-            data={"chat_id": chat_id, "text": message},
-            timeout=10,
-        )
-        if int(getattr(response, "status_code", 500)) >= 400:
-            return {**receipt, "error_type": "http_error"}
-        payload = response.json()
-        if not isinstance(payload, dict) or payload.get("ok") is not True:
-            return {**receipt, "error_type": "telegram_rejected"}
-        result = {
-            **receipt,
-            "delivery_status": "sent",
-            "transport_acknowledged": True,
-        }
-        from notifications.unified_notifications import enabled
-        if enabled():
-            provider_result = payload.get("result")
-            message_id = provider_result.get("message_id") if isinstance(provider_result, dict) else None
-            recipient = provider_result.get("chat") if isinstance(provider_result, dict) else None
-            if (type(message_id) is int and message_id > 0 and isinstance(recipient, dict)
-                    and str(recipient.get("id")) == str(chat_id)):
-                result["transport_receipt_id"] = hashlib.sha256(
-                    json.dumps([str(chat_id), message_id], separators=(",", ":")).encode()).hexdigest()
-        return result
-    except Exception as exc:
-        print(t("telegram_send_failed"))
-        return {**receipt, "error_type": type(exc).__name__}
+    from notifications.intent_transport import send_intent
+    sent = send_intent(message, token=token, chat_id=chat_id, token_env="TG_TOKEN",
+                       requests_module=requests, timeout=10, payload_key="data")
+    receipt.update(compact_text_sha256=sent["sha256"], compact_text_length=sent["length"])
+    if not sent["ok"]:
+        status = sent["http_status"]
+        error = "http_error" if status is not None and status >= 400 else "telegram_rejected"
+        return {**receipt, "error_type": error}
+    result = {**receipt, "delivery_status": "sent", "transport_acknowledged": True}
+    from notifications.unified_notifications import enabled
+    if enabled() and sent.get("transport_receipt_id"):
+        result["transport_receipt_id"] = sent["transport_receipt_id"]
+    return result

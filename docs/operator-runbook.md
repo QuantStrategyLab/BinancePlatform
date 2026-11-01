@@ -1141,3 +1141,10 @@ trusted opening balance, complete history, data provenance, account ownership,
 net performance or trading authority. This contract does not enable orders,
 redemptions or live exits; a real source binding and independent reconciliation
 remain necessary.
+
+The dispatch-guard installer prepares a dedicated notification environment using
+the existing QPK pin in `qsl.toml`, without passing notification credentials to
+package installation. Its generated guard and workflow failure fallback use the
+same stdin-based sender; no token or chat ID is passed as a command argument.
+The fallback needs either the runtime dependency environment or the installed
+guard notification environment. This source change does not run the installer.
