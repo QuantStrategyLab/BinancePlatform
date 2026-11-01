@@ -33,6 +33,10 @@ jobs:
         with:
           script: |
             if (context.eventName === 'workflow_run') {
+              // The signal workflow also runs on pull_request to provide a stable
+              // required check. Only review events can change approvals; skip the
+              // rest so every PR update does not re-evaluate all open PRs.
+              if (context.payload.workflow_run.event !== 'pull_request_review') return [];
               // The review relay is unprivileged. Do not trust its code, output,
               // artifacts, conclusion or PR association (which can omit forks).
               // Re-read all open PRs so dismissals and fork reviews are covered.

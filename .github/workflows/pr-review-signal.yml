@@ -1,6 +1,12 @@
 name: PR review signal
 
+# Runs on every pull request so that "PR review signal" can be a required check
+# without path filters. It always reports success: it carries no approval
+# decision. Review events also trigger it, and the trusted PR risk gate
+# re-evaluates approvals from that workflow_run signal.
 on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
   pull_request_review:
     types: [submitted, edited, dismissed]
 
@@ -9,6 +15,7 @@ permissions: {}
 
 jobs:
   signal:
+    name: PR review signal
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
