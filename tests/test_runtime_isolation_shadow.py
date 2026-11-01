@@ -45,7 +45,10 @@ class RuntimeIsolationShadowWorkflowTests(unittest.TestCase):
         self.assertNotIn("pull_request_target:", workflow)
         self.assertIn("runs-on: ubuntu-latest", github_shadow)
         self.assertNotIn("runs-on: self-hosted", github_shadow)
-        self.assertIn("if: ${{ inputs.include_current_runner }}", current_runner_shadow)
+        self.assertIn(
+            "if: ${{ inputs.include_current_runner && github.repository == 'QuantStrategyLab/BinancePlatform' && github.ref == 'refs/heads/main' }}",
+            current_runner_shadow,
+        )
         self.assertIn("runs-on: self-hosted", current_runner_shadow)
         self.assertNotIn("environment:", current_runner_shadow)
         self.assertIn('--python "$UV_PROJECT_ENVIRONMENT/bin/python"', current_runner_shadow)
