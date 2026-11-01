@@ -24,6 +24,7 @@ from live_risk_authority import (
     bind_live_risk_authority,
     config_sha256,
 )
+from portfolio_loss_stoploss import apply_portfolio_loss_stoploss
 from portfolio_stoploss_observation import observe_portfolio_stoploss, public_stoploss_observation
 from strategy_loader import (
     load_research_strategy_entrypoint_for_profile,
@@ -460,6 +461,7 @@ class LoadedStrategyRuntime:
             artifacts=artifacts,
         )
         decision = self.entrypoint.evaluate(ctx)
+        decision = apply_portfolio_loss_stoploss(decision, portfolio_snapshot)
         try:
             stoploss_observation = observe_portfolio_stoploss(
                 portfolio_snapshot,

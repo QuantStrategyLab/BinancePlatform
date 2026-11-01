@@ -93,6 +93,37 @@ def _evaluate_minimal_runtime(
 
 
 class StrategyRuntimeTests(unittest.TestCase):
+    def test_platform_stoploss_blocks_execution_after_member_approval(self):
+        import strategy_runtime as module
+        from quant_platform_kit import Position
+        from quant_platform_kit.common.strategy_contracts import PositionTarget, StrategyDecision
+        from decision_mapper import map_strategy_decision_to_allocation
+
+        runtime = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        decision = StrategyDecision(
+            positions=(PositionTarget(symbol="BTCUSDT", target_weight=0.2),),
+            diagnostics={"member_risk_assessment": {"scope": "MEMBER", "outcome": "APPROVE"}},
+        )
+        now = datetime.now(timezone.utc)
+        candidate = _synthetic_candidate_identity()
+        snapshot = PortfolioSnapshot(
+            as_of=now, total_equity=2200.0, cash_balance=1000.0, buying_power=1000.0,
+            positions=(Position(symbol="BTCUSDT", quantity=0.02, market_value=1200.0,
+                                average_cost=85000.0),),
+        )
+        with patch.object(type(runtime), "build_portfolio_snapshot", return_value=snapshot), patch.object(
+            type(runtime.entrypoint), "evaluate", return_value=decision
+        ):
+            evaluation = _evaluate_minimal_runtime(runtime, now=now,
+                mandate=_synthetic_mandate(now, candidate), candidate=candidate)
+        self.assertIn("rejected:stop_loss", evaluation.decision.risk_flags)
+        self.assertEqual(evaluation.decision.positions, ())
+        self.assertEqual(evaluation.decision.diagnostics, decision.diagnostics)
+        allocation = map_strategy_decision_to_allocation(
+            evaluation.decision, account_metrics=evaluation.account_metrics,
+        )
+        self.assertFalse(allocation["execution_permitted"])
+
     def test_stoploss_observation_does_not_mutate_strategy_decision(self):
         import strategy_runtime as module
         from quant_platform_kit.common.strategy_contracts import StrategyDecision
