@@ -720,14 +720,14 @@ class PortfolioCostInputTests(unittest.TestCase):
                 account_metrics={"total_equity": 2200.0, "cash_usdt": 1000.0,
                                  "trend_value": 0.0, "dca_value": 1200.0},
                 trend_universe_symbols=(), balances={"BTCUSDT": 0.02}, state={},
-                average_costs={"BTCUSDT": 85000.0}, translator=lambda key, **kw: key,
+                average_costs={"BTCUSDT": 80000.0}, translator=lambda key, **kw: key,
                 now_utc=now, risk_authority=object(), runtime_target=object(),
                 trend_pool_contract={},
             )
-        self.assertEqual(seen[0].portfolio.positions[0].average_cost, 85000.0)
-        self.assertAlmostEqual(compute_unrealized_pnl_pct(seen[0].portfolio), -500.0 / 2200.0)
+        self.assertEqual(seen[0].portfolio.positions[0].average_cost, 80000.0)
+        self.assertAlmostEqual(compute_unrealized_pnl_pct(seen[0].portfolio), -400.0 / 2200.0)
         self.assertIs(result.decision, original)
-        self.assertEqual(bind.call_args.kwargs["input_material"]["average_costs"], {"BTCUSDT": 85000.0})
+        self.assertEqual(bind.call_args.kwargs["input_material"]["average_costs"], {"BTCUSDT": 80000.0})
 
     def test_cost_inputs_preserve_unknown_coverage_and_validate_explicit_values(self):
         import strategy_runtime as module
