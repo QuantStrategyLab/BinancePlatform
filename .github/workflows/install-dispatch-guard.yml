@@ -18,11 +18,21 @@ jobs:
     env:
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
       GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
+      # OS user whose crontab runs dispatch-runtime.sh. Must equal the runner's
+      # own user: the installer writes $HOME/... and a runner user must never
+      # write a script that another (e.g. sudo-capable) user executes.
+      BINANCE_DISPATCH_USER: ${{ vars.BINANCE_DISPATCH_USER }}
     steps:
       - name: Install guarded dispatch script
         shell: bash
         run: |
           set -euo pipefail
+
+          if [ -z "${BINANCE_DISPATCH_USER:-}" ] || [ "$(id -un)" != "$BINANCE_DISPATCH_USER" ]; then
+            echo "Refusing to install: the runner OS user ($(id -un)) is not the dispatch cron user (BINANCE_DISPATCH_USER='${BINANCE_DISPATCH_USER:-}')." >&2
+            echo "Install or update dispatch-runtime.sh and dispatch.env on the host as the dispatch user instead." >&2
+            exit 1
+          fi
 
           if [ -z "${TG_TOKEN:-}" ] || [ -z "${GLOBAL_TELEGRAM_CHAT_ID:-}" ]; then
             echo "TG_TOKEN and GLOBAL_TELEGRAM_CHAT_ID must be configured before installing dispatch guard." >&2
