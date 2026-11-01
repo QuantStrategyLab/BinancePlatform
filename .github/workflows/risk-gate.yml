@@ -231,7 +231,9 @@ jobs:
             if (comments.some(comment => comment.user?.login === 'github-actions[bot]'
                 && comment.user?.type === 'Bot' && comment.body?.includes(marker))) return;
             // The local queue uses this marker; preserve cross-tool head deduplication.
-            if (comments.some(comment => comment.body?.includes(`<!-- coderabbit-queue:${pr.head.sha}:attempt-`))) return;
+            // Only the owner identity may write the queue marker; other commenters cannot suppress a request.
+            if (comments.some(comment => comment.user?.login === 'Pigbibi' && comment.user?.type === 'User'
+                && comment.body?.includes(`<!-- coderabbit-queue:${pr.head.sha}:attempt-`))) return;
             const { data: current } = await github.rest.pulls.get({ ...repo, pull_number: number });
             if (current.state !== 'open' || current.draft || current.head.sha !== pr.head.sha) return;
             await github.rest.issues.createComment({
