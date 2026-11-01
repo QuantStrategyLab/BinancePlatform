@@ -15,7 +15,7 @@ from importlib.metadata import PackageNotFoundError, distribution
 
 _REVIEWED_REVISIONS = {
     "quant-platform-kit": "155d74a615ccdebf7223787939c2dc7151d75efd",
-    "crypto-strategies": "7fcca8ee0280b3e66245eb673caadda8b8b3b9a3",
+    "crypto-strategies": "0a75437bac99fe8953526c054c2c5bbe68269a84",
 }
 _PROFILES = frozenset({"crypto_live_pool_rotation", "crypto_equity_combo",
                        "crypto_btc_dca", "crypto_trend_rotation"})

@@ -532,7 +532,7 @@ def test_missing_or_permission_failure_on_scoped_reads_is_zero_write(
 def test_explicit_approved_operator_hashes_are_accepted_as_inputs_not_defaults() -> None:
     """Documented operator targets must validate, but are never hard-coded defaults."""
 
-    approved_strategy = "7fcca8ee0280b3e66245eb673caadda8b8b3b9a3"
+    approved_strategy = "0a75437bac99fe8953526c054c2c5bbe68269a84"
     approved_runner = "5d922afa5093c16fe2470ea7761277fe35f50d6a"
     approved_source = "5d922afa5093c16fe2470ea7761277fe35f50d6a"
     raw = _authority_bytes(OLD_STRATEGY, OLD_RUNNER)
@@ -553,4 +553,4 @@ def test_explicit_approved_operator_hashes_are_accepted_as_inputs_not_defaults()
     assert planned.target_source_revision == approved_source
     source = Path(mod.__file__).read_text(encoding="utf-8")
     assert approved_strategy not in source
-    assert "7fcca8ee" not in source
+    assert approved_strategy[:8] not in source

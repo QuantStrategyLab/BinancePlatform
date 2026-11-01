@@ -91,7 +91,7 @@ All of the following must be supplied as full lowercase hex values:
 
 Approved operator values for a later run (inputs, not code defaults):
 
-- strategy `7fcca8ee0280b3e66245eb673caadda8b8b3b9a3`
+- strategy `0a75437bac99fe8953526c054c2c5bbe68269a84`
 - runner `5d922afa5093c16fe2470ea7761277fe35f50d6a`
 - source `5d922afa5093c16fe2470ea7761277fe35f50d6a`
 

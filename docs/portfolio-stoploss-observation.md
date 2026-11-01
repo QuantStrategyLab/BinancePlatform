@@ -42,7 +42,7 @@ use a strict projection.
 ## Reviewed scope and future upgrades
 
 The reviewed path is CryptoStrategies
-`7fcca8ee0280b3e66245eb673caadda8b8b3b9a3` and QuantPlatformKit
+`0a75437bac99fe8953526c054c2c5bbe68269a84` and QuantPlatformKit
 `155d74a615ccdebf7223787939c2dc7151d75efd`, with the catalog crypto entrypoint
 and `qsl.risk_gate_assessment.v2` MEMBER assessment. The common wrapper passes
 no risk-control state; the gate's extra stop/drawdown mandate fields apply to
