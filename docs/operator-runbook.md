@@ -1037,6 +1037,19 @@ in public diagnostics mean unavailable, never zero or a substitute account NAV.
 The public lifecycle payload explicitly keeps `external_cash_flow: null`, since
 legacy consumers otherwise interpret an absent cash-flow field as zero.
 
+The structured console event `strategy_runtime_init_ok` means the runtime
+configuration builder returned successfully. Its `initialization_scope` is
+`runtime_configuration`; it does not attest to broker connectivity, state
+reconciliation or trading authority. The existing terminal cycle event also
+logs six bounded counters from `execution_receipt_observation`, each prefixed
+with `order_`: submission attempts, broker acknowledgements, partial fills,
+fills, transport uncertainty and failures. Counts describe observed calls or
+responses, not planned intents or guaranteed unique broker orders. Missing or
+invalid counters are omitted; `order_counts_status` distinguishes complete,
+partial and unavailable evidence. A known zero stays zero. Check cycle status
+and dry-run mode alongside counts. Order payloads, symbols, amounts, identifiers and raw
+provider messages are excluded from these new fields.
+
 The standalone protected account-facts workflow remains unchanged. Its exact
 source-artifact requirement now makes new Runtime sources unavailable: the
 preflight or required download must fail before native-account reading and
