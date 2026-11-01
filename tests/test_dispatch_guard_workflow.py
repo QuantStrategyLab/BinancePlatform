@@ -37,6 +37,15 @@ class DispatchGuardWorkflowTests(unittest.TestCase):
         self.assertIn("--connect-timeout 20", text)
         self.assertIn("--max-time 60", text)
 
+    def test_dispatch_guard_refuses_cross_user_install(self) -> None:
+        text = self.workflow_text
+
+        self.assertIn("BINANCE_DISPATCH_USER: ${{ vars.BINANCE_DISPATCH_USER }}", text)
+        self.assertIn('[ "$(id -un)" != "$BINANCE_DISPATCH_USER" ]', text)
+        self.assertIn("Refusing to install", text)
+        # The user check must run before anything is written under $HOME.
+        self.assertLess(text.index("Refusing to install"), text.index('mkdir -p "$(dirname "$ENV_FILE")"'))
+
 
 if __name__ == "__main__":
     unittest.main()
