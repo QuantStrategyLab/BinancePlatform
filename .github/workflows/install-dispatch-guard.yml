@@ -12,6 +12,7 @@ concurrency:
 
 jobs:
   install:
+    if: ${{ github.repository == 'QuantStrategyLab/BinancePlatform' && github.ref == 'refs/heads/main' }}
     runs-on: self-hosted
     timeout-minutes: 5
     env:
