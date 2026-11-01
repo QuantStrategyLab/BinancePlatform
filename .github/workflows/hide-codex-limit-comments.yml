@@ -9,6 +9,7 @@ on:
 jobs:
   hide-comment:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     if: >
       github.event.comment.user.login == 'chatgpt-codex-connector[bot]' &&
       (
