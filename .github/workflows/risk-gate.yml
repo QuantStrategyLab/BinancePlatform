@@ -84,7 +84,8 @@ jobs:
             });
             function highRisk(path) {
               const p = path.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
-              if (p.startsWith('.github/workflows/') || /(^|\/)codeowners$/.test(p)) return true;
+              if (p.startsWith('.github/workflows/') || /(^|\/)codeowners$/.test(p)
+                  || /(^|\/)\.coderabbit\.ya?ml$/.test(p)) return true;
               if (/(^|\/)(docs?|tests?|examples?|fixtures)(\/|$)/.test(p)) return false;
               if (/(^|\/)\.env(?:[./_-]|$)/.test(p)) return true;
               if (/(^|[\/_.-])(trad(?:e|es|ing)|execution|executors?|orders?|brokers?|risk|deploy(?:ment)?|secrets?|credentials?|iam|runtime|strateg(?:y|ies))([\/_.-]|$)/.test(p)) return true;
@@ -132,9 +133,20 @@ jobs:
               // GitHub caps this API at 3000 files. Incomplete diffs must not pass as low risk.
               if (files.length !== pr.changed_files || files.length >= 3000) throw new Error('Incomplete PR file list');
               const risky = files.some(file => [file.filename, file.previous_filename].filter(Boolean).some(highRisk));
-              const approved = pr.labels.some(label => label.name === 'owner-approved');
+              // A PR must not authorize itself by editing the reviewer's configuration.
+              const touchesReviewConfig = files.some(file => [file.filename, file.previous_filename].filter(Boolean)
+                .some(name => /(^|\/)\.coderabbit\.ya?ml$/i.test(name)));
+              let approved = false;
+              if (pr.labels.some(label => label.name === 'owner-approved')) {
+                // Fail closed: an unreadable event history throws and publishes an error status.
+                const events = await github.paginate(github.rest.issues.listEvents, { ...repo, issue_number: number, per_page: 100 });
+                const latestLabel = events.filter(event => ['labeled', 'unlabeled'].includes(event.event)
+                  && event.label?.name === 'owner-approved').sort((a, b) => b.id - a.id)[0];
+                // A shared GitHub identity cannot distinguish the owner from their AI agents.
+                approved = latestLabel?.event === 'labeled' && latestLabel.actor?.login === 'Pigbibi';
+              }
               let botApproved = false;
-              if (risky && !approved) {
+              if (risky && !approved && !touchesReviewConfig) {
                 const latest = await readCodeRabbit();
                 botApproved = latest?.state === 'APPROVED' && latest.commit_id === sha;
                 // Re-read before publishing; never retain an older approval if
@@ -151,8 +163,9 @@ jobs:
               }
               const allowed = !risky || approved || botApproved;
               await status('risk-gate', allowed ? 'success' : 'failure', !risky ? 'Low-risk paths: no owner approval needed'
-                : approved ? 'High-risk paths: owner-approved label present'
+                : approved ? 'High-risk paths: owner-approved label verified'
                 : botApproved ? 'High-risk paths: CodeRabbit APPROVED current head'
+                  : touchesReviewConfig ? 'High-risk paths: reviewer config changes need owner-approved'
                   : 'High-risk paths: need current-head CodeRabbit APPROVED or owner-approved');
               const templateOK = completeTemplate(pr.body);
               await status('pr-template', templateOK ? 'success' : 'failure', templateOK
@@ -189,7 +202,8 @@ jobs:
             if (context.payload.pull_request.draft) return;
             function highRisk(path) {
               const p = path.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
-              if (p.startsWith('.github/workflows/') || /(^|\/)codeowners$/.test(p)) return true;
+              if (p.startsWith('.github/workflows/') || /(^|\/)codeowners$/.test(p)
+                  || /(^|\/)\.coderabbit\.ya?ml$/.test(p)) return true;
               if (/(^|\/)(docs?|tests?|examples?|fixtures)(\/|$)/.test(p)) return false;
               if (/(^|\/)\.env(?:[./_-]|$)/.test(p)) return true;
               if (/(^|[\/_.-])(trad(?:e|es|ing)|execution|executors?|orders?|brokers?|risk|deploy(?:ment)?|secrets?|credentials?|iam|runtime|strateg(?:y|ies))([\/_.-]|$)/.test(p)) return true;
