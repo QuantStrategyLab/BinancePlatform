@@ -15,7 +15,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Resolve QuantPlatformKit ref
         id: quant-platform-kit-ref
@@ -38,21 +38,21 @@ jobs:
           echo "ref=${ref}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout QuantPlatformKit
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: QuantStrategyLab/QuantPlatformKit
           ref: ${{ steps.quant-platform-kit-ref.outputs.ref }}
           path: external/QuantPlatformKit
 
       - name: Checkout CryptoStrategies
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           repository: QuantStrategyLab/CryptoStrategies
           ref: ${{ steps.crypto-strategies-ref.outputs.ref }}
           path: external/CryptoStrategies
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
 
@@ -133,10 +133,10 @@ jobs:
       BINANCE_EXACT_PIN_TESTS: "1"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
 
