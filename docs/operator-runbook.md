@@ -1141,3 +1141,22 @@ trusted opening balance, complete history, data provenance, account ownership,
 net performance or trading authority. This contract does not enable orders,
 redemptions or live exits; a real source binding and independent reconciliation
 remain necessary.
+
+## Portfolio-loss gate
+
+After strategy evaluation, the platform applies the pinned QPK portfolio-loss
+rule to the same strategy-member snapshot used by the MEMBER assessment. It
+uses `(market value - quantity * average cost) / total equity` and rejects only
+when the result is strictly below the existing QPK threshold of `-0.20`. The
+rejection adds `rejected:stop_loss` and clears positions and budgets; the
+allocation and rotation mappers then deny execution. This gate blocks the
+cycle; it does not create liquidation orders or change strategy signals.
+
+The platform reuses QPK's PnL calculation and threshold rather than invoking
+the entire legacy gate, which would activate other risk checks. MEMBER
+assessment evidence and existing rejections are preserved. Missing or partial
+cost coverage remains unknown and does not trigger this rule. Binance balances
+alone do not supply acquisition cost, so this wiring cannot protect holdings
+until a complete, verified cost input is available. The report-only
+`portfolio_stoploss` observation describes the MEMBER gate; it is not evidence
+that the additional platform check had complete cost coverage.
