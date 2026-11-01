@@ -110,8 +110,87 @@ passes after the existing cycle reaches `cycle_complete` with a real risk
 `APPROVE`; a startup pass or a synthetic replay is not a recovery or activation
 result. Missing or invalid source material fails closed before broker reads.
 
+The separate `full_cycle_no_submit` scope also admits the canonical crypto
+profiles `crypto_btc_dca` and `crypto_trend_rotation` when the target is
+explicitly disabled and declares `dry_run_only=true`. This is a validation-only
+allowlist, not a production rollout grant. The target profile must match the
+loaded profile, and the existing source, risk authority, market-data, trend-pool
+and write-port checks still apply. Missing required snapshots or artifacts must
+remain a failed validation; a successful no-submit cycle is not permission to
+enable trading or alter the existing live continuity controls.
+
+For `crypto_trend_rotation` in that scope, Binance obtains daily bars for the
+existing trend universe and a separate BTC benchmark at the same runtime UTC
+cutoff. The contiguous daily bars must include the most recently completed UTC
+day, and only bars closed strictly before that cutoff reach the existing daily
+indicator calculation. Missing days, a stale tail, invalid bar times, injected
+indicator snapshots and insufficient indicators fail this strict validation.
+BTC is an input to the strategy benchmark, not an addition to the authoritative
+trend pool. This daily boundary does not establish tick freshness or full
+historical point-in-time data quality. Other strategies and scopes retain their
+existing injected snapshot behavior.
+
+For standalone `crypto_btc_dca` in this validation scope, an approved plan is
+checked against the current BTC value and records only its proposed buy amount;
+it does not pass through the legacy BTC executor, submit an order, or simulate a
+fill. A no-action plan records no BTC proposal and retains the existing target.
+Exit plans without explicitly supplied attribution evidence are unsupported in this path and fail validation. Missing required
+smart or exit inputs remain a failure; synthetic indicator tests do not prove
+that a trustworthy live source is connected. Production selection remains
+separately controlled by the production allowlist and existing guards.
+
+The standalone BTC smart-cycle input is not established by the current
+cycle-indicator file loader. `main.py` merges the file into the BTC benchmark
+snapshot, while the standalone BTC entrypoint reads its direct AHR input from
+the `BTCUSDT` entry of `derived_indicators`. The synthetic smart-cycle test
+injects that entry and does not establish a connected production source. The
+pinned platform market-data helper's `ahr999` is a price-to-geometric-mean
+calculation; do not relabel it as the direct AHR input required by the strict
+strategy. Missing smart-cycle or exit inputs must continue to fail validation.
+The separate BTC benchmark history helper does not return the selected bar's
+timestamp or verify that it is the most recently completed daily bar, so that
+snapshot alone does not prove freshness or closed-bar integrity. As described
+above, the `crypto_trend_rotation` no-submit derived-indicator path separately
+checks UTC bar boundaries, continuity and the most recent completed day for its
+universe and BTC benchmark. In the standalone BTC no-submit cycle, the benchmark
+history read also checks those boundaries before calling the helper; injected
+benchmark snapshots are rejected. That strict BTC path also checks that the
+latest closed bar has valid market values and that every field required by the
+pinned helper is computable at that bar, preventing fallback to an older row.
+When updating the QPK pin, review the validation calculations against the new
+helper's required fields and formulas. These checks do not prove current-price
+freshness or connect a direct AHR source to the standalone BTC strategy.
+
+The cycle file loader currently accepts configured local or GCS paths and local
+fallbacks without checking the artifact's source, symbol, observation cutoff or
+age. The referenced producer and its artifact contract have not been established
+by this runbook. Before connecting it to the standalone strategy, identify and
+review the actual producer and its published schema and provenance, then bind
+the BTCUSDT data and observation time to the evaluation cutoff. Reject missing,
+future, stale, malformed or non-finite required data under an agreed freshness
+policy; do not treat file presence or an unverified timestamp as provenance.
+Use a validated BTC market-history input for the price-derived fields, preserve
+the direct AHR source separately, and test the real loader-to-consumer path with
+read-only broker and write-port isolation. Until that contract is established,
+do not substitute synthetic or estimated inputs to produce a passing result.
+
+The BTC balance in the current strategy evaluation is an account-level value;
+it does not establish which units belong to the DCA strategy. Do not infer that
+the whole account balance is available for a DCA exit. Before an exit proposal
+can be supported, a trusted, account- and strategy-bound position snapshot must
+be available before strategy evaluation. Its quantities must be reconciled to
+the broker using an authorized opening baseline and a complete, deduplicated
+ledger of subsequent fills, fees, transfers and other relevant changes through
+the snapshot cutoff. Missing history, unresolved orders or mismatched quantities
+must leave the exit blocked. Spot availability and Earn holdings must be
+distinguished, and the position quantity and valuation must agree with the
+price and target used by the decision. Account-wide holdings must remain in a
+separate risk snapshot so attribution does not hide exposure from the final
+risk assessment. This describes prerequisites, not a connected evidence
+producer or permission to submit an order.
+
 Maintenance-only authority version reissue (strategy + runner fields, matching
-SHA256, and source revision) is documented in `docs/authority_reissue.md`. That
+SHA256, and source revision) is documented in `docs/authority-reissue.md`. That
 entry never enables `RUNTIME_TARGET_ENABLED`, never changes `RECONCILE_ONLY` or
 mandate values, and never dispatches Runtime or full-cycle validation.
 
@@ -168,6 +247,15 @@ The monthly execution pool is locked to the accepted upstream `version` / `as_of
 - Runtime Heartbeat writes a structured `qsl.runtime_heartbeat_assessment.v1` record to its workflow log. A completed Runtime failure is still escalated immediately, while one missing external dispatch is recorded as `DEFERRED`; it only alerts after `RUNTIME_HEARTBEAT_MAX_CONSECUTIVE_MISSES` expected intervals (default: two). A recent in-progress dispatch is `PARKED` until it completes.
 - Repository variable changes are consumed by the next externally scheduled dispatch; they do not reconfigure the VPS scheduler cadence.
 - Avoid overlapping dispatches from multiple schedulers or from a second manual run while the current runtime job is still in progress.
+
+`Runner Scheduler Diagnostics` runs the existing read-only scheduler probe with
+`--diagnose-reason`. It adds a fixed reason code for an absent dispatch script,
+an unreadable crontab, a missing or unrecognized schedule, or an unavailable cron
+daemon check. It never prints cron contents, host identifiers or credentials and
+does not install, enable or dispatch the runtime. The default probe output and
+the runtime's scheduler-state interface remain unchanged. `unknown` stays
+unavailable evidence; a successful diagnostic workflow does not mean trading is
+enabled.
 
 ### Optional native account facts: separate manual capability
 
@@ -386,6 +474,12 @@ pending, and no state-write intent was added after the state-load metadata
 refresh. Unknown orders, uncertain writes, or an owner held before this cycle
 remain locked for manual reconciliation.
 
+For an unknown market-order submission, recovery also requires the queried
+order's type to be `MARKET`, as well as the existing identity, symbol, side,
+and quantity match. A missing or different type remains an intent mismatch:
+the submission stays unknown and no replacement order is submitted. This does
+not establish that account-wide open orders or other reservations are complete.
+
 The migration is a separate, one-time `Runtime` workflow mode for an old
 `trend_val` ledger. It does not activate recovery control, grant execution
 authority, clear the circuit-breaker latch, or reconstruct historical
@@ -567,7 +661,7 @@ The broker job has repository read permission only. Successful execution reports
 
 The staged replacement architecture, no-order shadow proof, deployment preflight,
 and rollback fence are documented in
-[`runtime_isolation_migration.md`](runtime_isolation_migration.md). That plan is
+[`runtime-isolation-migration.md`](runtime-isolation-migration.md). That plan is
 informational until a separately reviewed live cutover is approved; the current
 runtime remains authoritative.
 
@@ -682,6 +776,14 @@ Operator action:
 - Re-run manually only after the connectivity issue is confirmed resolved
 
 ### Fill accounting and daily loss state
+
+Before treating a direct market-order response as a fill or a zero-fill terminal
+failure, the runtime checks its client order ID, symbol, side, market type,
+and original requested quantity against the submitted intent. A response with
+missing or conflicting association fields, including an ACK without status and
+quantity details, remains `SUBMISSION_UNKNOWN`. Keep the execution owner held
+and reconcile the exact order identity; do not resubmit based on the response
+or on an empty open-order list. An earlier cycle leg may already have completed.
 
 Market orders consume Binance's `FULL` response: `executedQty`,
 `cummulativeQuoteQty`, and every fill's `price`, `qty`, `commission`, and
@@ -930,3 +1032,112 @@ It keeps the existing `<prefix>/binance/<business_day>/<slot>.json` convention;
 no cross-repository token, dependency or new storage service is needed. A
 failed or unknown write is not retried by this producer. Production mapping,
 permissions, activation and a natural daily receipt require separate readback.
+
+
+### Standalone BTC cycle input in no-submit validation
+
+For `full_cycle_no_submit` with the standalone BTC strategy and both smart
+multiplier and cycle indicator enabled, the BTC cycle JSON must be a single
+object with exactly these fields: `contract_version` equal to
+`btc-cycle-input/v1`, nonempty `source` and `source_version`, `symbol` equal to
+`BTCUSDT`, UTC `observed_at` and `available_at`, and a finite positive numeric
+`ahr999`. The `BTC_CYCLE_INDICATORS_PATH` reader retains its existing local and
+GCS path selection; if unset, the existing local fallback paths are searched.
+Supply `BTC_CYCLE_INPUT_MAX_AGE_SECONDS` explicitly as a finite positive number
+for this validation. The observation must be no older than that limit at the
+cycle clock, and observation and availability must both be no later than that
+clock, with availability no earlier than observation. Missing, malformed,
+conflicting, or stale input stops this validation with the fixed reason
+`btc_cycle_input_unavailable` at `portfolio_allocation`.
+
+The smart and cycle switches must be booleans; absent switches retain the
+strategy's enabled defaults. When both are enabled, existing BTC indicator
+entries may contain only price, 200-day average, and direct AHR aliases, and
+any supplied value must agree with the validated input. Other fields are
+rejected for this path. The validated input and cycle clock are captured once
+per cycle and reused for both allocation evaluations; a later cycle revalidates.
+
+This is a declared input contract; its source and version strings do not verify
+provenance or attest the producer. No source is supplied by this change. The
+ratio called `ahr999` in the existing market snapshot is not used as direct
+AHR input. This does not establish owned BTC inventory or enable exits, orders,
+or production trading. Non-smart BTC evaluation does not require this envelope.
+
+### BTC trim ownership guard in standard execution
+
+A BTC DCA trim is blocked when its existing sell trigger, position threshold,
+and cooldown would otherwise request a sell. Account-wide BTC balances do not
+prove strategy-owned sellable inventory. The current standard execution path
+has no authenticated strategy attribution source, so it stops with an execution
+integrity error before formatting a sell quantity, redeeming Earn, or submitting
+a sell. This also applies to standard dry runs; the separately scoped no-submit
+preview remains a proposal only. With a healthy initial state and no trim trigger,
+normal buys and cycles continue through their existing paths. A triggered guard
+marks the cycle as an error at `btc_execution` with reason
+`btc_strategy_attribution_unavailable`. Existing failure handling retains the
+cycle's owner; later cycles may be blocked by that owner even without a trim
+signal. Earlier fuel, trend, or BTC buy actions may already have happened before
+the guard. Do not force-release the owner; inspect the cycle's durable state,
+order and funding outcomes through the approved reconciliation and controlled
+recovery process before any separately authorized recovery action.
+
+This does not implement an authorized live exit or establish strategy ownership.
+For a previously submitted unknown order, the next cycle already blocks on the
+unknown submission before it reaches the BTC trim path; it does not automatically
+query or mark that order failed. Use the approved read-only reconciliation
+process, including an identity-bound broker order lookup and the existing
+account, open-order, and trade observations, to investigate the original order.
+An empty open-order list alone does not prove an order was never filled. Preserve
+the unknown state until the appropriate controlled recovery process establishes
+its outcome; do not submit a replacement to resolve uncertainty. A read-only
+lookup does not itself clear or reconcile durable accounting state.
+
+### BTC buy budget in no-submit validation
+
+A positive BTC buy budget must not exceed either the managed `cash_usdt` total
+used by the strategy evaluation or the USDT Spot free balance captured from the
+same market snapshot. The existing Spot and Flexible Earn reads supply the split;
+no additional broker read is made. Missing, malformed, or total-inconsistent
+split observations block a positive proposal, including when an Earn checkpoint
+substitutes for those reads. A zero budget still requires a valid managed total.
+The internal failure may be projected to a generic cycle error in the validation
+report. This checks only a snapshot balance ceiling. It does not establish
+reserved cash or other strategy budgets, fees, exchange filters, future available
+cash, or execution readiness.
+
+### BTC attribution exit preview in no-submit validation
+
+A caller can explicitly supply synthetic `btc_attribution_evidence` to the
+standalone BTC `full_cycle_no_submit` cycle. The ordinary validator supplies no
+such evidence, so exits remain blocked. This input is not read from a file,
+broker, runtime attribute, or account service. Never supply it to standard or
+production execution.
+
+The `btc-attribution/v1` object declares one account scope and selector, the
+BTC DCA profile, source and source version, opening UTC time and spot/Earn BTC
+quantities, exact observation and availability time at the cycle clock, and a
+complete list of unique fills and internal spot/Earn transfers since opening.
+Each fill has a unique ID, UTC time, side, BTC quantity, fee amount and fee
+asset. BTC fees reduce spot inventory; other fees remain in their original
+units and are not converted to return or P&L. A nonempty unsettled-order list,
+missing coverage, ambiguous event order, negative inventory, or disagreement
+with declared spot-free and Earn balances blocks the preview. Only internal
+spot/Earn transfers are supported. The existing BTC balance read captures broker spot free, locked and Earn separately
+without additional broker calls; missing split observations, nonzero locked BTC, or
+a split that differs from the declared strategy ledger blocks the preview. The
+existing managed-balance reader returns a float, so the preview binds its total to
+the float captured from that same read. It separately compares the original Spot
+and Earn quantities against the reconstructed ledger as exact decimals; it does
+not reconstruct 18-digit quantities from the float. The decision's current BTC
+value must also match the reconstructed holdings. A mismatch blocks rather than
+treating shared account BTC as strategy property.
+
+A matching, risk-approved reduction yields a sell proposal only. Its quantity is
+rounded down to 18 decimal places, never up; exchange step size, minimums and
+all other execution filters remain unverified. The proposal explicitly reports
+`proposal_only=true`, `execution_ready=false`, and source and completeness as
+unauthenticated. Self-declared source, version and completeness do not prove a
+trusted opening balance, complete history, data provenance, account ownership,
+net performance or trading authority. This contract does not enable orders,
+redemptions or live exits; a real source binding and independent reconciliation
+remain necessary.

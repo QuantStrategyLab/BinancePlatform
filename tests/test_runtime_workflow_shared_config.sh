@@ -2,13 +2,13 @@
 set -euo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
-workflow_file="$repo_dir/.github/workflows/main.yml"
+workflow_file="$repo_dir/.github/workflows/runtime-protected.yml"
 
 grep -Fq 'TG_TOKEN: ${{ secrets.TG_TOKEN }}' "$workflow_file"
-grep -Fq 'GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}' "$workflow_file"
+grep -Fq 'GLOBAL_TELEGRAM_CHAT_ID: ${{ secrets.PRIVATE_GLOBAL_TELEGRAM_CHAT_ID }}' "$workflow_file"
 grep -Fq 'NOTIFY_LANG: ${{ vars.NOTIFY_LANG }}' "$workflow_file"
 grep -Fq "STRATEGY_PROFILE: \${{ vars.STRATEGY_PROFILE || 'crypto_live_pool_rotation' }}" "$workflow_file"
-grep -Fq 'RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}' "$workflow_file"
+grep -Fq 'RUNTIME_TARGET_JSON: ${{ secrets.PRIVATE_RUNTIME_TARGET_JSON }}' "$workflow_file"
 grep -Fq 'RUNTIME_TARGET_ENABLED: ${{ env.RUNTIME_TARGET_ENABLED }}' "$workflow_file"
 grep -Fq 'assert_standard_execution_entry_permitted' "$workflow_file"
 grep -Fq 'BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON: ${{ vars.BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON }}' "$workflow_file"

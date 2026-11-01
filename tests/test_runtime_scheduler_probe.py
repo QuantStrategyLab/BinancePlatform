@@ -14,6 +14,28 @@ from scripts import runtime_scheduler_probe as probe
 
 
 class RuntimeSchedulerProbeTests(unittest.TestCase):
+    def test_manual_diagnostic_emits_only_allowlisted_reason(self):
+        cases = (
+            (("unknown", "dispatch_schedule_missing"), "dispatch_schedule_missing"),
+            (("enabled", "private cron contents"), "invalid_assessment"),
+            (RuntimeError("private host error"), "probe_failed"),
+        )
+        for value, reason in cases:
+            context = (
+                patch.object(probe, "observe_runtime_scheduler_assessment", side_effect=value)
+                if isinstance(value, BaseException)
+                else patch.object(probe, "observe_runtime_scheduler_assessment", return_value=value)
+            )
+            with self.subTest(reason=reason), context, patch.dict(os.environ, {}, clear=True):
+                stdout = io.StringIO()
+                with redirect_stdout(stdout):
+                    self.assertEqual(probe.main(["--diagnose-reason"]), 0)
+                result = json.loads(stdout.getvalue())
+                self.assertEqual(set(result), {"scheduler_state", "observed_at", "reason"})
+                self.assertEqual(result["scheduler_state"], "unknown")
+                self.assertEqual(result["reason"], reason)
+                self.assertNotIn("private", stdout.getvalue())
+
     def test_probe_emits_only_scheduler_state_and_time_without_runtime_report(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "github-output.txt"

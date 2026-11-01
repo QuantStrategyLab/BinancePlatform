@@ -12,7 +12,7 @@ advance a cursor, clear receipts or register with runtime. Every preview reports
 The missing native seam is qualified acquisition of the existing retained source
 archive, with explicit physical identity, complete bounded enumeration, cutover
 and retention evidence. As the later
-[bound source contract](interval_source_receipt_candidate.md#source-consumers-and-rollout-limits)
+[bound source contract](interval-source-receipt-candidate.md#source-consumers-and-rollout-limits)
 states, retained receipts can feed the existing calculator directly. A second
 PerformanceStore sink or delivery ACK is unnecessary for that read-only path.
 The preview's existing delivery-status string is retained for compatibility; it

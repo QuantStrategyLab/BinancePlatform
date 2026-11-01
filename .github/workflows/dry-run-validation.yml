@@ -139,6 +139,7 @@ jobs:
           import hashlib
           import json
           import os
+          import re
           from pathlib import Path
           import subprocess
           import sys
@@ -244,6 +245,20 @@ jobs:
                   for key in ("reason_code", "stage", "failure_stage", "error_type"):
                       if key in projection:
                           result[key] = projection[key]
+                  observation = projection.get("version_binding_observation")
+                  if (process.returncode != 0 and projection.get("status") == "failed"
+                          and projection.get("stage") == "full_cycle_validation"
+                          and projection.get("failure_stage") == "build"
+                          and projection.get("reason_code") in {"strategy_revision_mismatch", "runner_revision_mismatch"}
+                          and isinstance(observation, dict)):
+                      fields = ("declared_strategy_revision", "observed_strategy_revision",
+                                "declared_runner_revision", "observed_runner_revision")
+                      safe = {}
+                      for key in fields:
+                          value = observation.get(key)
+                          safe[key] = value if type(value) is str and re.fullmatch(r"[0-9a-f]{40}", value) else None
+                      safe["interpretation"] = "comparison_observation_remaining_checks_not_passed"
+                      result["version_binding_observation"] = safe
               result["validator_exit_code"] = process.returncode
           except Exception:
               # Never expose exception/provider text or private input values.

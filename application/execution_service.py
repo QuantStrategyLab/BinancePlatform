@@ -740,6 +740,11 @@ def _resolve_btc_trim_sell_pct(zscore):
     return sell_pct
 
 
+def _require_btc_strategy_attribution():
+    """Block BTC trims until a trusted strategy-owned inventory source exists."""
+    raise ExecutionIntegrityError("btc_strategy_attribution_unavailable")
+
+
 def execute_btc_dca_cycle(
     runtime,
     report,
@@ -898,6 +903,7 @@ def execute_btc_dca_cycle(
         )
 
     if zscore > sell_trigger and dca_val > 20 and state.get("dca_last_sell_date") != today_id_str:
+        _require_btc_strategy_attribution()
         sell_pct = _resolve_btc_trim_sell_pct(zscore)
         qty = format_qty_fn(runtime.client, "BTCUSDT", balances["BTCUSDT"] * sell_pct)
         report["btc_dca_intents"].append(

@@ -33,7 +33,7 @@ class UvDependencyWorkflowTests(unittest.TestCase):
 
     def test_ci_runtime_and_watchdog_use_uv_lock(self) -> None:
         ci = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
-        runtime = Path(".github/workflows/main.yml").read_text(encoding="utf-8")
+        runtime = Path(".github/workflows/runtime-protected.yml").read_text(encoding="utf-8")
         watchdog = Path(".github/workflows/watchdog.yml").read_text(encoding="utf-8")
         lockfile = Path("uv.lock").read_text(encoding="utf-8")
 

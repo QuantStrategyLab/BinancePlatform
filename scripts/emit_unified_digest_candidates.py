@@ -5,13 +5,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import json  # noqa: E402
 import os  # noqa: E402
-from notifications.digest_snapshot.digest_archive import emit as legacy_emit  # noqa: E402
-from notifications.unified_notifications import enabled  # noqa: E402
 from notifications.unified_producer import emit_archive  # noqa: E402
 
 
 def emit(env, **kwargs):
-    return emit_archive(env, **kwargs) if enabled(env) else legacy_emit(env, **kwargs)
+    return emit_archive(env, **kwargs)
 
 
 def main():
@@ -25,3 +23,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -112,7 +112,7 @@ class DigestCandidatesTest(unittest.TestCase):
 
     def test_default_off_never_reads_or_writes(self):
         with patch.object(producer.heartbeat, "_list_reports") as read, patch.object(producer, "_upload") as upload:
-            self.assertEqual(producer.emit_digest_candidates({}), {"status": "disabled", "uploaded": False})
+            self.assertEqual(producer._legacy_emit_digest_candidates({}), {"status": "disabled", "uploaded": False})
             read.assert_not_called()
             upload.assert_not_called()
 
@@ -125,7 +125,7 @@ class DigestCandidatesTest(unittest.TestCase):
         with patch.object(producer.heartbeat, "_list_reports") as read, patch.object(producer, "_upload") as upload:
             for case in cases:
                 with self.assertRaises(producer.CandidateBlocked):
-                    producer.emit_digest_candidates(case, now=NOW)
+                    producer._legacy_emit_digest_candidates(case, now=NOW)
             read.assert_not_called()
             upload.assert_not_called()
 
@@ -133,7 +133,7 @@ class DigestCandidatesTest(unittest.TestCase):
         entries = [{"url": "gs://synthetic-reports/binance/synthetic_core/host/2026-10/report.json",
                     "metadata": {"updated": "2026-10-14T02:01:00Z"}}]
         with patch.dict(os.environ, {}, clear=True), patch.object(producer.heartbeat, "_list_reports", return_value=(entries, "gs://synthetic-reports")), patch.object(producer.heartbeat, "_read_report", return_value=report()), patch.object(producer, "_upload", upload):
-            return producer.emit_digest_candidates(env(), now=NOW)
+            return producer._legacy_emit_digest_candidates(env(), now=NOW)
 
     def test_upload_once_private_single_day_convention_and_cleanup(self):
         saved = []
@@ -165,7 +165,7 @@ class DigestCandidatesTest(unittest.TestCase):
         entries = [{"url": "gs://other-store/private.json", "metadata": {"updated": "2026-10-14T02:01:00Z"}}]
         with patch.dict(os.environ, {}, clear=True), patch.object(producer.heartbeat, "_list_reports", return_value=(entries, "gs://synthetic-reports")), patch.object(producer.heartbeat, "_read_report") as read, patch.object(producer, "_upload") as upload:
             with self.assertRaisesRegex(producer.CandidateBlocked, "candidate_source_locator_mismatch"):
-                producer.emit_digest_candidates(env(), now=NOW)
+                producer._legacy_emit_digest_candidates(env(), now=NOW)
             read.assert_not_called()
             upload.assert_not_called()
 
@@ -179,18 +179,19 @@ class DigestCandidatesTest(unittest.TestCase):
             producer._upload(Path("synthetic.json"), "gs://synthetic/destination")
         self.assertIsNone(blob.upload_from_filename.call_args.kwargs["retry"])
 
-    def test_workflow_opt_in_preserves_original_monitor_outcome_and_permissions(self):
+    def test_workflow_has_one_guarded_canonical_candidate_writer(self):
         text = (Path(__file__).parents[1] / ".github/workflows/runtime-target-lifecycle.yml").read_text()
-        step = text.split("- name: Project and store private digest candidate (opt-in)", 1)[1]
-        self.assertIn("vars.BINANCE_DIGEST_CANDIDATES_ENABLED == 'true'", step)
-        self.assertIn("continue-on-error: true", step)
+        step = text.split("- name: Publish existing reports as unified digest candidates", 1)[1].split("- name:", 1)[0]
+        self.assertIn("steps.target.outputs.configured_state == 'enabled'", step)
+        self.assertIn("steps.target.outputs.runtime_guard == 'pass'", step)
         self.assertIn("secrets.BINANCE_DIGEST_OPAQUE_ACCOUNT_UID", step)
         self.assertIn("secrets.DIGEST_CANDIDATES_GCS_URI", step)
-        self.assertIn("run: uv run --no-sync python scripts/emit_digest_candidates.py", step)
-        self.assertNotIn("run: python scripts/emit_digest_candidates.py", step)
+        self.assertIn("run: uv run --no-sync python scripts/emit_unified_digest_candidates.py", step)
+        self.assertNotIn("run: uv run --no-sync python scripts/emit_digest_candidates.py", text)
         for forbidden in ("TG_TOKEN", "BINANCE_API_KEY", "workflow_dispatch", "id-token", "upload-artifact"):
             self.assertNotIn(forbidden, step)
 
 
 if __name__ == "__main__":
     unittest.main()
+

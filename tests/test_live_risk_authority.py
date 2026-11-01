@@ -104,6 +104,33 @@ def test_missing_authority_material_remains_closed():
     assert load_live_risk_authority(env={}, runtime_target=_target()) is None
 
 
+def test_revision_diagnostic_is_scoped_and_projects_before_exception(tmp_path):
+    now = datetime.now(timezone.utc)
+    payload = _payload(now)
+    payload["strategy_revision"] = {"nested": "secret/account"}
+    payload["runner_revision"] = ["secret/runner"]
+    path, digest = _write_authority(tmp_path, payload)
+    kwargs = dict(env=_env(path, digest), runtime_target=_target(), strategy_revision=STRATEGY_REVISION,
+                  runner_revision=RUNNER_REVISION, config_sha256=CONFIG_SHA256, now_utc=now)
+    with pytest.raises(LiveRiskAuthorityError) as standard:
+        load_live_risk_authority(**kwargs)
+    assert not hasattr(standard.value, "version_binding_observation")
+    with pytest.raises(LiveRiskAuthorityError) as diagnostic:
+        load_live_risk_authority(**kwargs, version_diagnostics=True)
+    assert diagnostic.value.version_binding_observation == {
+        "declared_strategy_revision": None, "observed_strategy_revision": STRATEGY_REVISION,
+        "declared_runner_revision": None, "observed_runner_revision": RUNNER_REVISION,
+    }
+    assert "secret" not in repr(diagnostic.value.version_binding_observation)
+    payload["strategy_revision"] = STRATEGY_REVISION
+    payload["runner_revision"] = RUNNER_REVISION
+    payload["config_sha256"] = "0" * 64
+    path, digest = _write_authority(tmp_path, payload)
+    with pytest.raises(LiveRiskAuthorityError) as other:
+        load_live_risk_authority(**{**kwargs, "env": _env(path, digest)}, version_diagnostics=True)
+    assert not hasattr(other.value, "version_binding_observation")
+
+
 def test_partial_authority_material_is_a_sanitized_configuration_error(tmp_path):
     with pytest.raises(LiveRiskAuthorityError, match="authority configuration invalid"):
         load_live_risk_authority(

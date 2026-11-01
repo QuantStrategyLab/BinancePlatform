@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from application.execution_service import (
     execute_btc_dca_cycle,
@@ -9,6 +10,7 @@ from application.execution_service import (
     run_daily_circuit_breaker,
 )
 from runtime_support import (
+    ExecutionIntegrityError,
     OrderReconciliationError,
     build_execution_report,
     runtime_call_client,
@@ -770,7 +772,8 @@ class ExecutionServiceTests(unittest.TestCase):
 
         self.assertEqual(observed["methods"], ["order_market_buy"])
 
-    def test_execute_btc_dca_cycle_executes_trim_branch(self):
+    @patch("application.execution_service._require_btc_strategy_attribution")
+    def test_execute_btc_dca_cycle_executes_trim_branch(self, _guard):
         runtime = SimpleNamespace(client=object())
         report = {"btc_dca_intents": [], "gating_summary": {}, "gating_events": []}
         state = {}
@@ -816,7 +819,8 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertEqual(observed["client_calls"][0][0], "order_market_sell")
         self.assertEqual(observed["persist_reasons"], ["btc_dca_sell"])
 
-    def test_btc_trim_reconciliation_uncertainty_propagates(self):
+    @patch("application.execution_service._require_btc_strategy_attribution")
+    def test_btc_trim_reconciliation_uncertainty_propagates(self, _guard):
         with self.assertRaises(OrderReconciliationError):
             execute_btc_dca_cycle(
                 SimpleNamespace(client=object()),
@@ -844,6 +848,53 @@ class ExecutionServiceTests(unittest.TestCase):
                 runtime_notify_fn=lambda *_args: None,
                 runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
             )
+
+    def test_btc_exit_without_owned_inventory_stops_before_redeem_or_order(self):
+        runtime = SimpleNamespace(client=object())
+        report = {"btc_dca_intents": [], "gating_summary": {}, "gating_events": []}
+        state = {}
+        balances = {"BTCUSDT": 1.0}
+        calls = []
+        with self.assertRaisesRegex(ExecutionIntegrityError, "btc_strategy_attribution_unavailable"):
+            execute_btc_dca_cycle(
+                runtime, report, state, balances, {"BTCUSDT": 10_000.0}, 500.0,
+                20_000.0, 5.0, 10_000.0,
+                {"ahr999": 2.0, "zscore": 4.5, "sell_trigger": 3.5},
+                0.25, 50.0, "20260329", [],
+                append_log_fn=lambda *_args: None,
+                translate_fn=lambda key, **_kwargs: key,
+                format_qty_fn=lambda *_args: calls.append("format") or 0.3,
+                ensure_asset_available_fn=lambda *_args: calls.append("redeem") or True,
+                runtime_call_client_fn=lambda *_args, **_kwargs: calls.append("submit"),
+                next_order_id_fn=lambda *_args: calls.append("id") or "sell-id",
+                runtime_notify_fn=lambda *_args: calls.append("notify"),
+                runtime_set_trade_state_fn=lambda *_args, **_kwargs: calls.append("persist"),
+            )
+        self.assertEqual(calls, [])
+        self.assertEqual(state, {})
+        self.assertEqual(balances, {"BTCUSDT": 1.0})
+        self.assertEqual(report["btc_dca_intents"], [])
+
+    def test_btc_no_exit_signal_does_not_block_or_call_order_ports(self):
+        report = {"btc_dca_intents": [], "gating_summary": {}, "gating_events": []}
+        calls = []
+        result = execute_btc_dca_cycle(
+            SimpleNamespace(client=object()), report, {}, {"BTCUSDT": 1.0},
+            {"BTCUSDT": 10_000.0}, 500.0, 20_000.0, 5.0, 10_000.0,
+            {"ahr999": 2.0, "zscore": 3.0, "sell_trigger": 3.5},
+            0.25, 50.0, "20260329", [],
+            append_log_fn=lambda *_args: None,
+            translate_fn=lambda key, **_kwargs: key,
+            format_qty_fn=lambda *_args: calls.append("format") or 0.3,
+            ensure_asset_available_fn=lambda *_args: calls.append("redeem") or True,
+            runtime_call_client_fn=lambda *_args, **_kwargs: calls.append("submit"),
+            next_order_id_fn=lambda *_args: calls.append("id") or "sell-id",
+            runtime_notify_fn=lambda *_args: calls.append("notify"),
+            runtime_set_trade_state_fn=lambda *_args, **_kwargs: calls.append("persist"),
+        )
+        self.assertEqual(result, 500.0)
+        self.assertEqual(calls, [])
+        self.assertEqual(report["btc_dca_intents"], [])
 
     def test_execute_btc_dca_cycle_records_gate_when_pool_too_small(self):
         runtime = SimpleNamespace(client=object())

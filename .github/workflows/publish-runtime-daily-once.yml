@@ -1,0 +1,47 @@
+name: Publish one Binance runtime daily projection
+
+on:
+  workflow_dispatch:
+    inputs:
+      compare_nonce:
+        description: Optional 64-hex nonce for protected source comparison only
+        type: string
+        required: false
+      status_only:
+        description: Verify the protected binding without printing its digest
+        type: boolean
+        default: false
+      preflight_only:
+        description: Check authentication only; do not read or publish reports
+        type: boolean
+        default: true
+      business_date:
+        description: One New York business date (YYYY-MM-DD)
+        type: string
+        required: true
+
+permissions:
+  # The reusable workflow validates all job permissions, including skipped jobs.
+  actions: read
+  contents: read
+  id-token: write
+
+concurrency:
+  group: binance-runtime-daily-once
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ github.ref == 'refs/heads/main' && github.run_attempt == 1 }}
+    uses: ./.github/workflows/runtime-protected.yml
+    with:
+      runtime_daily_only: true
+      runtime_daily_compare_nonce: ${{ inputs.compare_nonce }}
+      runtime_daily_compare_status_only: ${{ inputs.status_only }}
+      runtime_daily_preflight_only: ${{ inputs.preflight_only }}
+      runtime_daily_business_date: ${{ inputs.business_date }}
+    secrets:
+      PRIVATE_RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}
+      PRIVATE_EXECUTION_REPORT_GCS_URI: ${{ vars.EXECUTION_REPORT_GCS_URI || secrets.EXECUTION_REPORT_GCS_URI }}
+      EXECUTION_EVIDENCE_SYNC_TOKEN: ${{ secrets.EXECUTION_EVIDENCE_SYNC_TOKEN }}
+      BINANCE_ACCOUNT_FACTS_BINDING_JSON: ${{ secrets.BINANCE_ACCOUNT_FACTS_BINDING_JSON }}

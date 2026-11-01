@@ -18,6 +18,7 @@ _TEXT = {
         "query_unavailable": "⚠️ 无法核实运行状态\n运行记录暂时不可用，请检查监测日志。",
         "receipt_missing": "⚠️ 缺少执行回执\n本窗口的运行情况尚未核实。",
         "receipt_unacceptable": "⚠️ 执行回执不可接受\n请检查执行结果和运行日志。",
+        "coverage_failure": "⚠️ 日报候选写入未确认；请检查候选存储和运行记录。",
     },
     "en": {
         "runtime_failure": "⚠️ Runtime failed\nReview this run's log.",
@@ -25,12 +26,17 @@ _TEXT = {
         "query_unavailable": "⚠️ Runtime state could not be verified\nRun records are unavailable. Review the monitor log.",
         "receipt_missing": "⚠️ Execution receipt missing\nExecution coverage for this window is unverified.",
         "receipt_unacceptable": "⚠️ Execution receipt is unacceptable\nReview the execution result and run log.",
+        "coverage_failure": "⚠️ Digest candidate write unconfirmed; check candidate storage and run records.",
     },
 }
 
 
 def message(category):
-    locale = "zh" if os.environ.get("NOTIFY_LANG", "zh").lower().startswith("zh") else "en"
+    if category == "coverage_failure":
+        language = (os.environ.get("QSL_NOTIFY_LANG") or "").strip() or (os.environ.get("NOTIFY_LANG") or "").strip() or "zh"
+        locale = "zh" if language.lower().startswith("zh") else "en"
+    else:
+        locale = "zh" if os.environ.get("NOTIFY_LANG", "zh").lower().startswith("zh") else "en"
     return _TEXT[locale][category]
 
 
@@ -59,6 +65,8 @@ def _correlated_event(assessment, *, env, store=None):
 
 
 def notify_workflow(assessment, original_message, *, send=None, store=None):
+    if assessment.get("status") == "healthy":
+        return False
     if unified.enabled() and send is None and (
             not (os.environ.get("TG_TOKEN") or os.environ.get("TELEGRAM_TOKEN"))
             or not (os.environ.get("QSL_GLOBAL_TELEGRAM_CHAT_ID") or os.environ.get("GLOBAL_TELEGRAM_CHAT_ID"))):
@@ -107,3 +115,4 @@ def recover_workflow(assessment, *, store=None):
                 source_run_id=str(latest.get("id") or ""), incident_reason=reason), store=store)
     except Exception:
         print(json.dumps({"notification_status": "blocked", "reason": "notification_recovery_unverified"}))
+

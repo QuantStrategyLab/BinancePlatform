@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = ROOT / ".github" / "workflows" / "watchdog.yml"
 MONITOR_RUNTIME_WORKFLOW = ROOT / ".github" / "workflows" / "runtime-target-lifecycle.yml"
-PRODUCTION_RUNTIME_WORKFLOW = ROOT / ".github" / "workflows" / "main.yml"
+PRODUCTION_RUNTIME_WORKFLOW = ROOT / ".github" / "workflows" / "runtime-protected.yml"
 PYPROJECT = ROOT / "pyproject.toml"
 LOCK = ROOT / "uv.lock"
 QSL = ROOT / "qsl.toml"

@@ -80,7 +80,7 @@ def test_activation_uses_separate_policy_and_does_not_activate_recovery(target_e
         resolve_runtime_target_strategy(target)
 
 
-@pytest.mark.parametrize("profile", ["crypto_btc_dca", "crypto_trend_rotation", "crypto_equity_combo", "unapproved_profile", "crypto_leader_rotation"])
+@pytest.mark.parametrize("profile", ["crypto_equity_combo", "unapproved_profile", "crypto_leader_rotation"])
 def test_unapproved_dry_run_profiles_are_rejected(target_env, monkeypatch, profile):
     payload = dry_run_target_payload(strategy_profile=profile)
     monkeypatch.setenv("RUNTIME_TARGET_JSON", json.dumps(payload))
@@ -107,8 +107,10 @@ def test_standard_and_live_resolvers_do_not_consume_dry_run_grant(target_env, mo
         load_cycle_execution_settings()
 
 
+@pytest.mark.parametrize("profile", ["crypto_live_pool_rotation", "crypto_btc_dca", "crypto_trend_rotation"])
 @pytest.mark.parametrize("enabled", [None, "", "true", "False"])
-def test_dry_run_scope_requires_explicit_disabled_runtime(target_env, monkeypatch, enabled):
+def test_dry_run_scope_requires_explicit_disabled_runtime(target_env, monkeypatch, enabled, profile):
+    monkeypatch.setenv("RUNTIME_TARGET_JSON", json.dumps(dry_run_target_payload(strategy_profile=profile)))
     if enabled is None:
         monkeypatch.delenv("RUNTIME_TARGET_ENABLED")
     else:
@@ -219,12 +221,12 @@ def test_pinned_crypto_dependency_exposes_separate_collection():
     root = Path(__file__).resolve().parents[1]
     project = tomllib.loads((root / "pyproject.toml").read_text())
     lock = tomllib.loads((root / "uv.lock").read_text())
-    revision = "0a75437bac99fe8953526c054c2c5bbe68269a84"
+    revision = tomllib.loads((root / "qsl.toml").read_text())["qsl"]["requires"]["crypto_strategies"]
     requirement = next(item for item in project["project"]["dependencies"] if item.startswith("crypto-strategies @"))
     assert requirement.endswith("@" + revision)
     package = next(item for item in lock["package"] if item["name"] == "crypto-strategies")
     assert package["source"]["git"].endswith("?rev=" + revision + "#" + revision)
-    assert DRY_RUN_RUNTIME_ALLOWLIST == frozenset({"crypto_live_pool_rotation"})
+    assert DRY_RUN_RUNTIME_ALLOWLIST == frozenset({"crypto_live_pool_rotation", "crypto_btc_dca", "crypto_trend_rotation"})
     assert RUNTIME_SELECTABLE_ALLOWLIST_V1 == frozenset()
 
 
@@ -236,3 +238,46 @@ def test_default_cycle_does_not_inherit_scope_from_built_runtime(target_env):
         main.execute_cycle(runtime)
     with pytest.raises(ValueError, match="unsupported_strategy_validation_scope"):
         main.execute_cycle(runtime, validation_scope="dry_run")
+
+
+@pytest.mark.parametrize("profile", ["crypto_btc_dca", "crypto_trend_rotation"])
+def test_scoped_profiles_use_real_resolver_and_loader_without_production_grant(target_env, monkeypatch, profile):
+    import main
+    from strategy_loader import load_strategy_entrypoint_for_profile
+
+    payload = dry_run_target_payload(strategy_profile=profile)
+    monkeypatch.setenv("RUNTIME_TARGET_JSON", json.dumps(payload))
+    target = build_runtime_target(**payload, continuity_fingerprint_payload=payload)
+    settings = load_cycle_execution_settings(validation_scope=FULL_CYCLE_NO_SUBMIT)
+    assert settings.strategy_profile == profile
+    assert settings.runtime_target_enabled is False
+    entrypoint = load_strategy_entrypoint_for_profile(profile, runtime_target=target, validation_scope=FULL_CYCLE_NO_SUBMIT)
+    assert entrypoint.manifest.profile == profile
+    runtime = main.build_live_runtime(validation_scope=FULL_CYCLE_NO_SUBMIT)
+    assert runtime.strategy_runtime.profile == profile
+    assert runtime.standard_execution_permitted is False
+    if profile == "crypto_trend_rotation":
+        runtime.trend_pool_payload = {}
+        connector = Mock(side_effect=AssertionError("broker must not be called"))
+        monkeypatch.setattr(main, "qpk_connect_client", connector)
+        with pytest.raises(ValueError, match="Injected trend_pool_payload failed validation"):
+            main.resolve_runtime_trend_pool(runtime, {})
+        connector.assert_not_called()
+    with pytest.raises(ValueError, match="Unsupported STRATEGY_PROFILE"):
+        resolve_strategy_definition(profile, platform_id="binance")
+    with pytest.raises(ValueError, match="Unsupported STRATEGY_PROFILE"):
+        load_cycle_execution_settings()
+    with pytest.raises(ValueError, match="runtime_strategy_target_mismatch"):
+        load_strategy_entrypoint_for_profile("crypto_live_pool_rotation", runtime_target=target, validation_scope=FULL_CYCLE_NO_SUBMIT)
+    with pytest.raises(ValueError, match="Unsupported platform_id"):
+        resolve_runtime_target_strategy(replace(target, platform_id="other"), validation_scope=FULL_CYCLE_NO_SUBMIT)
+    monkeypatch.setenv("RUNTIME_TARGET_ENABLED", "true")
+    with pytest.raises(ValueError, match="requires_disabled_runtime"):
+        load_cycle_execution_settings(validation_scope=FULL_CYCLE_NO_SUBMIT)
+    monkeypatch.setenv("RUNTIME_TARGET_ENABLED", "false")
+    monkeypatch.setenv("BINANCE_DRY_RUN", "false")
+    payload["dry_run_only"] = False
+    payload.pop("live_continuity")
+    monkeypatch.setenv("RUNTIME_TARGET_JSON", json.dumps(payload))
+    with pytest.raises(ValueError, match="requires_dry_run_target"):
+        load_cycle_execution_settings(validation_scope=FULL_CYCLE_NO_SUBMIT)

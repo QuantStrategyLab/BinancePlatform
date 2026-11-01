@@ -22,4 +22,4 @@ jobs:
           persist-credentials: false
 
       - name: Observe scheduler state
-        run: python3 -m scripts.runtime_scheduler_probe
+        run: python3 -m scripts.runtime_scheduler_probe --diagnose-reason

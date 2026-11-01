@@ -308,7 +308,9 @@ class AccountingRegressionTests(unittest.TestCase):
                     executed=1,
                     quote=105,
                     fills=[_fill(105, 1, "0.001", "ETH")],
-                ) | {"clientOrderId": payload["newClientOrderId"]}
+                ) | {"clientOrderId": payload["newClientOrderId"], "type": "MARKET",
+                     "origQty": str(payload.get("quantity", 0)),
+                     "origQuoteOrderQty": str(payload.get("quoteOrderQty", 0))}
 
         def write(current):
             persisted.append(copy.deepcopy(current))
@@ -374,7 +376,9 @@ class AccountingRegressionTests(unittest.TestCase):
                     executed=0.1,
                     quote=30,
                     fills=[_fill(300, 0.1, "0", "BNB")],
-                ) | {"clientOrderId": payload["newClientOrderId"]}
+                ) | {"clientOrderId": payload["newClientOrderId"], "type": "MARKET",
+                     "origQty": str(payload.get("quantity", 0)),
+                     "origQuoteOrderQty": str(payload.get("quoteOrderQty", 0))}
 
             def get_asset_balance(self, *, asset):
                 return {"free": "1.0" if asset == "BNB" else "70.0", "locked": "0"}

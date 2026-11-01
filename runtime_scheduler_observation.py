@@ -45,21 +45,36 @@ def observe_runtime_scheduler_state(
     run_command: Callable[..., Any] | None = None,
 ) -> str:
     """Return enabled, disabled, or unknown without changing the scheduler."""
+    return observe_runtime_scheduler_assessment(environ=environ, run_command=run_command)[0]
+
+
+def observe_runtime_scheduler_assessment(
+    *,
+    environ: Mapping[str, str] | None = None,
+    run_command: Callable[..., Any] | None = None,
+) -> tuple[str, str]:
+    """Add a fixed reason for manual diagnostics without exposing host data."""
     environment = os.environ if environ is None else environ
     if any(environment.get(name) != value for name, value in _EXPECTED_CONTEXT.items()):
-        return "unknown"
+        return "unknown", "unexpected_execution_context"
     try:
         current_user = pwd.getpwuid(os.getuid()).pw_name
         script_stat = os.stat(_DISPATCH_SCRIPT)
+    except FileNotFoundError:
+        return "unknown", "dispatch_script_missing"
+    except PermissionError:
+        return "unknown", "host_permission_denied"
     except (KeyError, OSError):
-        return "unknown"
-    if current_user != "ubuntu" or not stat.S_ISREG(script_stat.st_mode) or not os.access(_DISPATCH_SCRIPT, os.X_OK):
-        return "unknown"
+        return "unknown", "host_inspection_unavailable"
+    if current_user != "ubuntu":
+        return "unknown", "unexpected_os_user"
+    if not stat.S_ISREG(script_stat.st_mode) or not os.access(_DISPATCH_SCRIPT, os.X_OK):
+        return "unknown", "dispatch_script_invalid"
 
     command_runner = subprocess.run if run_command is None else run_command
     crontab = _run_probe(["crontab", "-l"], command_runner)
     if crontab is None or crontab.returncode != 0 or not isinstance(crontab.stdout, str):
-        return "unknown"
+        return "unknown", "crontab_unavailable"
 
     active_lines = [
         line.strip()
@@ -69,16 +84,16 @@ def observe_runtime_scheduler_state(
     dispatch_lines = [line for line in active_lines if _DISPATCH_SCRIPT in line]
     matching_lines = [line for line in dispatch_lines if _EXACT_CRON.fullmatch(line)]
     if dispatch_lines != matching_lines or len(matching_lines) > 1:
-        return "unknown"
+        return "unknown", "dispatch_schedule_unrecognized"
     if not matching_lines:
-        return "unknown"
+        return "unknown", "dispatch_schedule_missing"
 
     daemon = _run_probe(["systemctl", "is-active", "cron"], command_runner)
     if daemon is None or not isinstance(daemon.stdout, str):
-        return "unknown"
+        return "unknown", "daemon_probe_unavailable"
     daemon_state = daemon.stdout.strip()
     if daemon.returncode == 0 and daemon_state == "active":
-        return "enabled"
+        return "enabled", "cron_active"
     if daemon.returncode == 3 and daemon_state in _STOPPED_DAEMON_STATES:
-        return "disabled"
-    return "unknown"
+        return "disabled", "cron_stopped"
+    return "unknown", "daemon_state_unrecognized"

@@ -202,6 +202,7 @@ def execute_strategy_cycle(
     runtime_notify,
     translate_fn,
     traceback_module,
+    validation_scope="standard",
 ):
     circuit_breaker_pct = -0.05
     min_bnb_value, buy_bnb_amount = 10.0, 15.0
@@ -529,6 +530,13 @@ def execute_strategy_cycle(
             RuntimeError: "runtime_error",
         }.get(type(exc), "unclassified_error")
         failure_metadata = {"stage": failure_stage, "error_type": error_type}
+        if (failure_stage == "btc_execution" and type(exc) is ExecutionIntegrityError
+                and str(exc) == "btc_strategy_attribution_unavailable"):
+            failure_metadata["reason_code"] = "btc_strategy_attribution_unavailable"
+        if validation_scope == "full_cycle_no_submit" and failure_stage == "portfolio_allocation":
+            from infra.btc_cycle_input import cycle_failure_metadata
+
+            failure_metadata.update(cycle_failure_metadata(exc, stage=failure_stage, validation_scope=validation_scope))
         if failure_stage == "daily_state" and type(exc) is ExecutionIntegrityError:
             for surface in ("earn_accrual", "external_cash_flow", "balance_change"):
                 diagnostic = report.get("diagnostics", {}).get(surface, {})
@@ -633,7 +641,7 @@ def execute_strategy_cycle(
         finalize_notification_delivery(report)
         attach_execution_receipt_from_report(report)
         from notifications.routing import daily_digest_enabled
-        if daily_digest_enabled():
+        if daily_digest_enabled("daily_digest"):
             observation = report.get("execution_receipt_observation") or {}
             fields = ("submission_attempted_count", "broker_acknowledged_count", "partially_filled_count",
                       "filled_count", "transport_uncertain_count", "failed_count")
@@ -739,9 +747,17 @@ def run_live_cycle(
         append_report_error(report, "report_persistence_failed", stage="report_persistence")
         output_printer("failed to persist archived execution report: report_persistence_failed")
         persisted_local_path = report_writer(report)
-    from notifications.unified_notifications import enabled, observe_archived_report
-    if enabled() and getattr(locals().get("persisted"), "cloud_uri", None):
+    from notifications.unified_notifications import observe_archived_report
+    if getattr(locals().get("persisted"), "cloud_uri", None):
         observe_archived_report(report)
+    elif not getattr(runtime, "dry_run", False):
+        from notifications.unified_notifications import _coverage_message, _note
+        from runtime_support import _legacy_runtime_notify
+        _note(report, "candidate_archive_unconfirmed")
+        try:
+            _legacy_runtime_notify(runtime, report, _coverage_message(), urgent=True)
+        except Exception:
+            output_printer("notification_report_coverage_alert_failed")
     report_status = _public_cycle_status(report.get("status"))
     status_event = {
         "ok": "strategy_cycle_completed",
@@ -765,3 +781,4 @@ def run_live_cycle(
         exit_fn(1)
 
     return report, persisted_local_path
+

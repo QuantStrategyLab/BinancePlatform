@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from runtime_scheduler_observation import observe_runtime_scheduler_state
+from runtime_scheduler_observation import observe_runtime_scheduler_assessment, observe_runtime_scheduler_state
 
 
 class RuntimeSchedulerObservationTests(unittest.TestCase):
@@ -50,6 +50,41 @@ class RuntimeSchedulerObservationTests(unittest.TestCase):
         )
 
         self.assertEqual(state, "enabled")
+
+    def test_assessment_distinguishes_unknown_causes_without_host_contents(self):
+        exact = "0 * * * * /home/ubuntu/binance-quant/ops/dispatch-runtime.sh\n"
+        cases = (
+            ((0, "# no active entries\n", ""), (0, "active\n", ""), "unknown", "dispatch_schedule_missing"),
+            ((0, exact + exact, ""), (0, "active\n", ""), "unknown", "dispatch_schedule_unrecognized"),
+            ((1, "", "private error"), (0, "active\n", ""), "unknown", "crontab_unavailable"),
+            ((0, exact, ""), (0, "active\n", ""), "enabled", "cron_active"),
+            ((0, exact, ""), (3, "inactive\n", ""), "disabled", "cron_stopped"),
+            ((0, exact, ""), (4, "private state", "private error"), "unknown", "daemon_state_unrecognized"),
+        )
+        for crontab, daemon, state, reason in cases:
+            with (
+                self.subTest(reason=reason),
+                patch("runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
+                patch("runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
+                patch("runtime_scheduler_observation.os.access", return_value=True),
+            ):
+                result = observe_runtime_scheduler_assessment(
+                    environ=self.expected_environment,
+                    run_command=self.command_runner(crontab=crontab, daemon=daemon),
+                )
+                self.assertEqual(result, (state, reason))
+                self.assertNotIn("private", str(result))
+
+    def test_assessment_distinguishes_absent_and_unreadable_script(self):
+        for failure, reason in ((FileNotFoundError, "dispatch_script_missing"),
+                                (PermissionError, "host_permission_denied")):
+            with (
+                self.subTest(reason=reason),
+                patch("runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
+                patch("runtime_scheduler_observation.os.stat", side_effect=failure("private path")),
+            ):
+                self.assertEqual(observe_runtime_scheduler_assessment(environ=self.expected_environment),
+                                 ("unknown", reason))
 
     def test_exact_cron_and_inactive_daemon_are_disabled(self):
         exact = "0 * * * * /home/ubuntu/binance-quant/ops/dispatch-runtime.sh\n"

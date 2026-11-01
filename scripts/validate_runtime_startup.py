@@ -76,6 +76,7 @@ _SAFE_CYCLE_FAILURE_STAGES = frozenset({
     "state_owner_release",
 })
 _SAFE_CYCLE_FAILURE_TYPES = frozenset({
+    "btc_cycle_input_error",
     "state_persistence_error",
     "order_reconciliation_error",
     "execution_integrity_error",
@@ -172,11 +173,29 @@ def _wrap_full_cycle_error(exc, *, failure_stage, fallback_reason):
     reason_code = _authority_reason_code(exc)
     if reason_code is None:
         reason_code = _safe_startup_reason(exc)
-    return FullCycleValidationError(
+    wrapped = FullCycleValidationError(
         reason_code or fallback_reason,
         failure_stage=failure_stage,
         error_type=_error_type_name(exc),
     )
+    if failure_stage == "build" and reason_code in {"strategy_revision_mismatch", "runner_revision_mismatch"}:
+        wrapped.version_binding_observation = getattr(exc, "version_binding_observation", None)
+    return wrapped
+
+
+def _safe_version_binding_observation(exc):
+    """Project only fixed, syntactically valid revisions from an existing comparison."""
+    values = getattr(exc, "version_binding_observation", None)
+    if not isinstance(values, dict):
+        return None
+    fields = ("declared_strategy_revision", "observed_strategy_revision",
+              "declared_runner_revision", "observed_runner_revision")
+    result = {}
+    for field in fields:
+        value = values.get(field)
+        result[field] = value if type(value) is str and re.fullmatch(r"[0-9a-f]{40}", value) else None
+    result["interpretation"] = "comparison_observation_remaining_checks_not_passed"
+    return result
 
 
 def _full_cycle_failure_reason(report):
@@ -188,6 +207,9 @@ def _full_cycle_failure_reason(report):
     failure = report.get("diagnostics", {}).get("cycle_failure", {})
     stage = failure.get("stage")
     reason_code = failure.get("reason_code")
+    if (stage == "portfolio_allocation" and failure.get("error_type") == "btc_cycle_input_error"
+            and reason_code == "btc_cycle_input_unavailable"):
+        return "btc_cycle_input_unavailable"
     if stage == "daily_state" and type(reason_code) is str and reason_code in _DAILY_STATE_REASON_CODES:
         return reason_code
     if stage in {"client_connect", "market_snapshot"}:
@@ -508,5 +530,10 @@ if __name__ == "__main__":
         }
         if failure_stage is not None:
             output["failure_stage"] = failure_stage
+        if (full_cycle and isinstance(exc, FullCycleValidationError) and failure_stage == "build"
+                and reason in {"strategy_revision_mismatch", "runner_revision_mismatch"}):
+            observation = _safe_version_binding_observation(exc)
+            if observation is not None:
+                output["version_binding_observation"] = observation
         print(json.dumps(output, sort_keys=True))
         raise SystemExit(1) from None

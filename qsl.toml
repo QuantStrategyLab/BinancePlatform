@@ -10,7 +10,7 @@ next_action = "keep uv.lock current and maintain QPK/CryptoStrategies pin consis
 
 [qsl.requires]
 quant_platform_kit = "155d74a615ccdebf7223787939c2dc7151d75efd"
-crypto_strategies = "7fcca8ee0280b3e66245eb673caadda8b8b3b9a3"
+crypto_strategies = "97243177237dde23ad4f71b4205de4a54e822332"
 
 [qsl.compat]
 bundle = "2026.09.1"
