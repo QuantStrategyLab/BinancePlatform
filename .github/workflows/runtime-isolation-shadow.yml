@@ -78,7 +78,7 @@ jobs:
           retention-days: 7
 
   current-runner-shadow:
-    if: ${{ inputs.include_current_runner }}
+    if: ${{ inputs.include_current_runner && github.repository == 'QuantStrategyLab/BinancePlatform' && github.ref == 'refs/heads/main' }}
     runs-on: self-hosted
     timeout-minutes: 20
     steps:
