@@ -2,6 +2,12 @@ name: PAPER Notification Preview
 
 on:
   workflow_dispatch:
+    inputs:
+      send:
+        description: Send the rendered preview message to Telegram (false prints the preview to the job log only)
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -12,7 +18,7 @@ concurrency:
 
 jobs:
   preview:
-    name: Send PAPER Telegram notification preview pack
+    name: Render PAPER notification preview (optional send)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -21,6 +27,7 @@ jobs:
       # Production runtime target stays fail-closed for this manual preview path.
       RUNTIME_TARGET_ENABLED: "false"
       NOTIFY_LANG: ${{ vars.NOTIFY_LANG || 'zh' }}
+      PREVIEW_SEND: ${{ inputs.send }}
       GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
     steps:
       - name: Checkout repository
@@ -36,7 +43,7 @@ jobs:
           set -euo pipefail
           uv sync --frozen --no-dev
 
-      - name: Send PAPER notification preview pack
+      - name: Render PAPER notification preview (sends only when requested)
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
         run: uv run --no-sync python scripts/send_paper_notification_preview.py
