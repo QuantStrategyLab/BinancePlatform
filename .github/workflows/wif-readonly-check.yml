@@ -53,8 +53,12 @@ jobs:
           try:
               with urllib.request.urlopen(request, timeout=30) as response:
                   data = json.load(response)
+                  unreachable = len(data.get("unreachable", []))
                   print(json.dumps({"gcp_read_http": response.status,
-                                    "database_count": len(data.get("databases", []))}))
+                                    "database_count": None if unreachable else len(data.get("databases", [])),
+                                    "unreachable_count": unreachable}))
+                  if unreachable:
+                      raise SystemExit(1)
           except urllib.error.HTTPError as exc:
               print(json.dumps({"gcp_read_http": exc.code}))
               raise SystemExit(1)
