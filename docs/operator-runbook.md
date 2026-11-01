@@ -467,6 +467,69 @@ are visible. Binance's transfer and fee semantics remain unverified, and the
 separate one-eight-decimal-unit flag is diagnostic only; neither flag changes
 accounting, owner, control, or execution state.
 
+### Forward Earn verification and durable state
+
+`earn_forward_accounting_unverified` is a failed verification result for the
+current interval, not a latch that can be cleared by editing an approval SHA or
+a status field. An existing `earn_accrual_checkpoint` enables the forward
+consumer; an old ledger without one is not automatically migrated.
+
+The runtime uses the following existing path:
+
+1. `market_snapshot_support.capture_market_snapshot` collects a fresh checkpoint
+   for the approved asset scope and account identity. Its Spot plus Flexible
+   Earn quantities also supply portfolio valuation, avoiding independent
+   balance reads. Failure here reports `earn_observation_unavailable`.
+2. `application.portfolio_service.maybe_rebase_daily_state_for_balance_change`
+   requires the valuation quantities to match that checkpoint at eight decimal
+   places, then reads bounded external cash-flow evidence through its cutoff.
+   `application.earn_accrual.prepare_forward_earn_state` requires a later
+   checkpoint, matching account and asset keys, explicit per-asset accounted
+   net changes, matching cursor cutoffs and settled order state (`RESERVED` or
+   `TERMINAL`). Product identity and auto-subscribe flags must be continuous;
+   realtime reward counters must not decrease. Exact Decimal quantity changes
+   must equal those rewards plus independently accounted fills/fees and
+   supported cash flows. Supported USDT deposits remain separate principal.
+   The existing bounded BNB-dividend fallback must also pass exact conservation;
+   a diagnostic residual match alone is insufficient.
+3. Preparation returns a detached next state. The consumer first calls
+   `runtime_support.runtime_set_trade_state` with reason
+   `earn_forward_accounting`. A live write requires the held owner and a
+   successful persistence result. With `BoundTradeStateAccess`, saves compare
+   the owned source version and perform exact readback; any uncertain result
+   invalidates the session. If receipt retention is already enabled, checkpoint
+   and cursor advancement also require the seven-field interval and its source
+   receipt transaction. See [the interval receipt contract](interval-source-receipt-candidate.md).
+4. Only after the writer returns successfully does the consumer replace the
+   in-memory state, publish the interval and report `earn_accrual.status` as
+   `reconciled`. The durable state advances `earn_accrual_checkpoint`,
+   `last_balance_snapshot` and `external_cash_flow_cursor`, and zeroes
+   `earn_accounted_net_changes` for the next interval. Normalization preserves
+   these fields on reload. Frozen opening equity and existing risk settings
+   are not reset to make an unexplained difference disappear.
+
+On failure, the private report's bounded `diagnostics.earn_accrual.reason_code`
+identifies a supported validation failure when available; unknown exceptions
+retain the generic code without exposing provider text. Preparation failure
+never advances the ledger. A write/readback failure may have an uncertain
+durable outcome: do not infer rollback or retry blindly. In-memory status is
+not proof of persistence. Read the protected ledger and owner through the
+approved operator path before deciding how to recover.
+
+The read-only `earn-forward-diagnose` action can explain why a window fails.
+Its `forward_accounting_eligible` flag and any dry-run result do not persist or
+clear anything. A later normally authorized cycle can report `reconciled` only
+if fresh evidence passes and its guarded write succeeds. Missing opening
+provenance, product discontinuity, unsupported movement or unexplained quantity
+requires the existing separately authorized reconciliation/recovery process.
+No offline flag edit or synthetic checkpoint can establish that evidence.
+
+Local regression tests exercise preparation, failed writes and normalized
+reload using synthetic data; existing receipt tests exercise atomic commit and
+readback failures. These checks do not verify a real account or remove a live
+blocker. No production implementation change is needed for this documented
+state transition.
+
 If a cycle reaches `daily_state` and fails only during the pure Earn preparation
 check, the runtime releases its own newly claimed owner only when the initial
 and current order states are explicitly `RESERVED` or `TERMINAL`, no funds are
