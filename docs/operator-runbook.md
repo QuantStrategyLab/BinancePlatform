@@ -958,6 +958,15 @@ Stop on the first real failure; do not initialize a cursor or activate trading
 to make this diagnostic pass. A successful preview is not durable accounting.
 
 
+## Historical cost coverage
+
+Use the standalone [cost history coverage](cost-history-coverage.md) tools to
+inspect saved Spot trade history across all supplied historical coins and
+pairs. Collection supports paginated GET reads; offline replay prints only
+query ranges, gaps, unknown segments and counts. It does not calculate or
+persist costs, update runtime settings, or activate portfolio stop-loss checks.
+Missing opening, nontrade or fee evidence keeps the affected cost UNKNOWN.
+
 ## Public diagnostic output privacy
 
 The Runtime workflow must not upload the complete `execution_report.json` to
