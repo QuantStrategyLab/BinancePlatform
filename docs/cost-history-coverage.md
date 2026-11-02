@@ -67,7 +67,13 @@ parameters. These constraints follow the Binance
 [account trade endpoint](https://developers.binance.com/docs/binance-spot-api-docs/rest-api/account-endpoints).
 
 The collector honors `Retry-After` on HTTP 429 with at most three retries;
-a delay over 60 seconds stops collection with a gap. HTTP 418 stops immediately.
+a delay over 60 seconds or exhausted retries stops the entire collection run.
+HTTP 418 stops the run immediately. An invalid HTTP 429 backoff also stops the
+run. No later symbol is requested after these failures. Successful earlier
+ranges and trades are retained; the failed range and every unqueried symbol
+receive explicit gaps. The artifact reports `collection_status: "partial"`
+and a fixed `stop_reason`. Otherwise `stop_reason` is null; `collection_status`
+describes query coverage, not cost proof or historical-universe completeness.
 It pauses for 60 seconds at the configured minute-weight ceiling. Budget
 exhaustion, permission failures, invalid symbols and malformed responses also
 produce explicit gaps, rather than empty successful coverage. No other
@@ -219,6 +225,13 @@ evidence leaves affected inventory UNKNOWN. Input order and alphabetical
 symbol order never prove execution order. Exact duplicates with the same
 event ID are counted once; conflicting duplicates and reuse of a transfer ID
 are rejected. Separate evidence cannot introduce a `spot` event.
+Convert (including flash-swap records represented as `convert`) and dust
+records also deduplicate by `(kind, execution_id)` across different event IDs,
+before ordering or updating inventory, costs and fees. All fields other than
+the event ID must match; conflicting records for one execution are rejected.
+A missing execution ID remains incomplete evidence and cannot establish KNOWN
+conversion costs. Execution IDs must identify individual conversions within
+each event kind, including individual dust legs.
 
 An acquisition without cost evidence contaminates the mixed pool, including
 later known purchases. Its basis can recover only after a proven complete

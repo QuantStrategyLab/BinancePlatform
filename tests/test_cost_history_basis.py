@@ -12,7 +12,7 @@ import sys
 import pytest
 
 from application.cost_history_basis import replay_cost_basis
-from application.cost_history_collector import HistoryReadError
+from application.cost_history_collector import HistoryReadError, ReadPage, collect_history
 
 
 COINS = ["BTC", "USDT", "BNB", "ETH", "DROP"]
@@ -286,6 +286,27 @@ def test_failed_pair_query_also_invalidates_possible_third_coin_fee_inventory():
     assert result["quantity"] is None
 
 
+def test_globally_stopped_collector_cannot_establish_known_costs():
+    history, evidence = material()
+    universe = copy.deepcopy(history["universe"])
+    universe["symbols"]["ETHBTC"] = ["ETH", "BTC"]
+    class BannedReader:
+        calls = 0
+
+        def request(self, *args):
+            self.calls += 1
+            assert self.calls == 1
+            return ReadPage(418)
+
+    history = collect_history(BannedReader(), universe=universe, account_open_ms=0,
+                              end_ms=100, sleep=lambda _: None)
+    result = replay_cost_basis(history, evidence)
+    assert result["cost_writes_allowed"] is False
+    assert result["cost_proof_status"] == "UNKNOWN"
+    assert all(c["status"] == "UNKNOWN" and c["total_cost"] is None
+               for c in result["coins"].values())
+
+
 @pytest.mark.parametrize("missing", ["quantity", "fee_quantity"])
 def test_incomplete_internal_principal_leg_is_unknown_instead_of_rejected(missing):
     history, evidence = material()
@@ -336,6 +357,57 @@ def test_evidence_must_match_scope(field, value):
     history, evidence = material()
     evidence[field] = value
     with pytest.raises(HistoryReadError, match="scope_invalid"):
+        replay_cost_basis(history, evidence)
+
+
+@pytest.mark.parametrize("kind", ["convert", "dust"])
+@pytest.mark.parametrize("sequenced", [True, False])
+def test_conversion_execution_is_counted_once_across_distinct_event_ids(kind, sequenced):
+    history, evidence = material()
+    row = event(evidence, kind, sold_coin="BNB", sold_quantity="2", bought_coin="BTC",
+                bought_quantity="1", fee_coin="BNB", fee_quantity="1", execution_id="synthetic-conversion",
+                prices={"BNB": price("10")}, sequence=1)
+    if not sequenced:
+        row.pop("sequence")
+    single = replay_cost_basis(history, evidence)
+    evidence["events"].append({**copy.deepcopy(row), "id": "second-import"})
+    original = copy.deepcopy(evidence)
+    result = replay_cost_basis(history, evidence)
+    assert result == single
+    assert evidence == original
+    assert result["cost_writes_allowed"] is False
+    assert result["cost_proof_status"] == "KNOWN"
+    assert result["coins"]["BNB"]["quantity"] == "7"
+    assert result["coins"]["BTC"]["quantity"] == "1"
+    assert result["coins"]["BTC"]["total_cost"] == "30"
+    assert len(result["acquisitions"]) == 1
+    assert len(result["disposals"]) == 2
+
+
+def test_distinct_conversion_execution_ids_are_both_replayed():
+    history, evidence = material()
+    row = event(evidence, "convert", sold_coin="BNB", sold_quantity="2", bought_coin="BTC",
+                bought_quantity="1", fee_coin="BNB", fee_quantity="0", execution_id="synthetic-first",
+                prices={"BNB": price("10")}, sequence=1)
+    evidence["events"].append({**row, "id": "second-event", "execution_id": "synthetic-second",
+                               "sequence": 2})
+    result = replay_cost_basis(history, evidence)
+    assert result["coins"]["BTC"]["quantity"] == "2"
+    assert result["coins"]["BTC"]["total_cost"] == "40"
+    assert len(result["acquisitions"]) == 2
+
+
+@pytest.mark.parametrize("field,value", [
+    ("sold_quantity", "3"), ("bought_quantity", "2"), ("time_ms", 20),
+    ("fee_quantity", "1"), ("bought_coin", "ETH"),
+])
+def test_conflicting_conversion_execution_cannot_produce_known_basis(field, value):
+    history, evidence = material()
+    row = event(evidence, "convert", sold_coin="BNB", sold_quantity="2", bought_coin="BTC",
+                bought_quantity="1", fee_coin="BNB", fee_quantity="0", execution_id="synthetic-conversion",
+                prices={"BNB": price("10")}, sequence=1)
+    evidence["events"].append({**copy.deepcopy(row), "id": "second-import", field: value})
+    with pytest.raises(HistoryReadError, match="cost_history_duplicate_conflict"):
         replay_cost_basis(history, evidence)
 
 

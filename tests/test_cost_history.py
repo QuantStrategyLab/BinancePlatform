@@ -156,6 +156,63 @@ def test_failed_reads_are_not_empty_coverage(source, page, reason, requests):
     assert history["request_count"] == requests
 
 
+@pytest.mark.parametrize("pagination", ["from-id", "time-window"])
+@pytest.mark.parametrize("page,reason,requests", [
+    (ReadPage(418), "ip_banned", 1),
+    (ReadPage(418, headers=None), "ip_banned", 1),
+    (ReadPage(429, headers=None), "response_invalid", 1),
+    (ReadPage(429, headers={"Retry-After": "61"}), "rate_limited", 1),
+    (ReadPage(429, headers={"Retry-After": "1"}), "rate_limited", 4),
+    (ReadPage(429, headers={"Retry-After": "NaN"}), "retry_after_invalid", 1),
+])
+def test_rate_stop_aborts_all_symbols_and_reports_unqueried_ranges(
+        source, pagination, page, reason, requests):
+    reader = FixtureReader([], [page] * requests)
+    history = collect(source, reader, pagination=pagination)
+    assert history["request_count"] == len(reader.calls) == requests
+    assert {call["symbol"] for call in reader.calls} == {"BTCUSDT"}
+    assert history["collection_status"] == "partial"
+    assert history["stop_reason"] == "cost_history_" + reason
+    for material in history["symbols"].values():
+        assert material["covered_ranges"] == []
+        assert material["gaps"] == [{"start_ms": 0, "end_ms": source["end_ms"],
+                                    "reason": "cost_history_" + reason}]
+    report = replay_coverage(history)
+    assert all(c["status"] == "UNKNOWN" for c in report["coins"].values())
+    assert report["coins"]["ETH"]["covered_ranges"] == []
+
+
+def test_global_stop_preserves_completed_symbols_and_partial_windows(source):
+    source["universe"]["symbols"]["DOGEUSDT"] = ["DOGE", "USDT"]
+    row = source["trades"][0]
+    reader = FixtureReader([], [
+        ReadPage(200, [row]), ReadPage(200, []), ReadPage(200, []),
+        ReadPage(200, []), ReadPage(418),
+    ])
+    history = collect(source, reader, pagination="time-window")
+    assert [call["symbol"] for call in reader.calls] == ["BTCUSDT"] * 3 + ["DOGEUSDT"] * 2
+    assert history["symbols"]["BTCUSDT"]["trades"] == [row]
+    assert history["symbols"]["BTCUSDT"]["gaps"] == []
+    partial = history["symbols"]["DOGEUSDT"]
+    assert partial["covered_ranges"] == [[0, DAY_MS - 1]]
+    assert partial["gaps"] == [{"start_ms": DAY_MS, "end_ms": source["end_ms"],
+                                "reason": "cost_history_ip_banned"}]
+    assert history["symbols"]["ETHBTC"]["covered_ranges"] == []
+    assert history["symbols"]["ETHBTC"]["gaps"][0]["start_ms"] == 0
+
+
+def test_global_stop_retains_full_id_page_without_claiming_coverage(source):
+    rows = [{**source["trades"][0], "id": index} for index in range(PAGE_SIZE)]
+    reader = FixtureReader([], [ReadPage(200, rows), ReadPage(418)])
+    history = collect(source, reader)
+    assert len(reader.calls) == history["request_count"] == 2
+    partial = history["symbols"]["BTCUSDT"]
+    assert len(partial["trades"]) == PAGE_SIZE
+    assert partial["covered_ranges"] == []
+    assert partial["gaps"][0]["start_ms"] == 0
+    assert history["symbols"]["ETHBTC"]["gaps"][0]["reason"] == "cost_history_ip_banned"
+
+
 def test_partial_windows_and_failed_delisted_pair_are_explicit(source):
     reader = FixtureReader(source["trades"], [ReadPage(200, []), ReadPage(400)])
     history = collect(source, reader, pagination="time-window")

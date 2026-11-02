@@ -18,6 +18,10 @@ class HistoryReadError(ValueError):
     """Fixed failure codes without provider messages or signed URLs."""
 
 
+class _CollectionStopped(HistoryReadError):
+    """An IP-wide limit stops requests across the whole collection run."""
+
+
 def require_coverage_only(mode):
     if mode != "coverage-only":
         raise HistoryReadError("cost_history_write_forbidden")
@@ -150,22 +154,25 @@ class _Pages:
                 page = self.reader.request("GET", PATH, params)
             except Exception:
                 raise HistoryReadError("cost_history_get_failed") from None
-            if (not isinstance(page, ReadPage) or not isinstance(page.headers, dict)
-                    or any(not isinstance(key, str) for key in page.headers)):
+            if not isinstance(page, ReadPage):
                 raise HistoryReadError("cost_history_response_invalid")
-            headers = {key.lower(): str(value) for key, value in page.headers.items()}
             if page.status == 418:
-                raise HistoryReadError("cost_history_ip_banned")
+                raise _CollectionStopped("cost_history_ip_banned")
+            if (not isinstance(page.headers, dict)
+                    or any(not isinstance(key, str) for key in page.headers)):
+                error = _CollectionStopped if page.status == 429 else HistoryReadError
+                raise error("cost_history_response_invalid")
+            headers = {key.lower(): str(value) for key, value in page.headers.items()}
             if page.status == 429:
                 try:
                     delay = float(headers["retry-after"])
                     if not math.isfinite(delay) or delay < 0:
                         raise ValueError
                 except (KeyError, ValueError):
-                    raise HistoryReadError("cost_history_retry_after_invalid") from None
-                # Long backoffs stop this attempt rather than retrying early.
+                    raise _CollectionStopped("cost_history_retry_after_invalid") from None
+                # IP-wide limits stop the run rather than moving to another pair.
                 if attempt == 3 or delay > 60:
-                    raise HistoryReadError("cost_history_rate_limited")
+                    raise _CollectionStopped("cost_history_rate_limited")
                 self.sleep(max(delay, self.interval))
                 continue
             if page.status != 200:
@@ -203,7 +210,14 @@ def collect_history(reader, *, universe, account_open_ms, end_ms,
         raise HistoryReadError("cost_history_configuration_invalid")
     pages = _Pages(reader, sleep, max_requests, request_interval, weight_ceiling)
     results = {}
+    stop_reason = None
     for symbol in universe["symbols"]:
+        if stop_reason is not None:
+            results[symbol] = {
+                "covered_ranges": [], "trades": [], "duplicate_count": 0,
+                "gaps": [{"start_ms": start, "end_ms": end, "reason": stop_reason}],
+            }
+            continue
         seen, covered, gaps = {}, [], []
         duplicates = 0
 
@@ -257,6 +271,8 @@ def collect_history(reader, *, universe, account_open_ms, end_ms,
                     covered.append([window_start, window_end])
                     window_start = window_end + 1
         except HistoryReadError as error:
+            if isinstance(error, _CollectionStopped):
+                stop_reason = str(error)
             if str(error) in {"cost_history_duplicate_conflict", "cost_history_time_regressed"}:
                 covered, window_start = [], start
             gaps.append({"start_ms": window_start, "end_ms": end, "reason": str(error)})
@@ -271,5 +287,7 @@ def collect_history(reader, *, universe, account_open_ms, end_ms,
         coins.update(row["commissionAsset"] for row in result["trades"])
     universe["coins"] = sorted(coins)
     return {"schema_version": "cost_history.v1", "mode": "coverage-only",
+            "collection_status": "partial" if any(r["gaps"] for r in results.values()) else "complete",
+            "stop_reason": stop_reason,
             "account_open_ms": start, "end_ms": end, "universe": universe,
             "symbols": results, "request_count": pages.requests}

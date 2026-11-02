@@ -100,7 +100,7 @@ class _Pool:
 
 
 def _events(evidence, universe, start, end, symbols):
-    events, seen, transfers = [], {}, set()
+    events, seen, transfers, conversions = [], {}, set(), {}
     supplied = evidence.get("events", [])
     trade_proofs = evidence.get("trades", {})
     if not isinstance(supplied, list) or not isinstance(trade_proofs, dict):
@@ -141,6 +141,14 @@ def _events(evidence, universe, start, end, symbols):
                 raise HistoryReadError("cost_history_duplicate_conflict")
             continue
         seen[row["id"]] = row
+        if row["kind"] in {"convert", "dust"} and _reference(row.get("execution_id")):
+            key = (row["kind"], row["execution_id"])
+            execution = {k: v for k, v in row.items() if k != "id"}
+            if key in conversions:
+                if conversions[key] != execution:
+                    raise HistoryReadError("cost_history_duplicate_conflict")
+                continue
+            conversions[key] = execution
         if row["kind"] in {"deposit", "transfer_in", "internal_transfer"}:
             identity = row.get("transfer_id")
             if _reference(identity):
