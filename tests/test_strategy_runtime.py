@@ -26,7 +26,7 @@ from quant_platform_kit import PortfolioSnapshot
 from quant_platform_kit.common.strategy_contracts import StrategyManifest, StrategyRuntimeAdapter
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 from decision_mapper import map_strategy_decision_to_rotation_plan
-from strategy_registry import BINANCE_ENABLED_PROFILES
+from strategy_registry import BINANCE_ENABLED_PROFILES, ELIGIBLE_STRATEGY_PROFILES
 
 
 def _synthetic_candidate_identity() -> CandidateRiskIdentity:
@@ -93,15 +93,48 @@ def _evaluate_minimal_runtime(
 
 
 class StrategyRuntimeTests(unittest.TestCase):
-    def test_platform_stoploss_blocks_execution_after_member_approval(self):
+    def test_platform_stoploss_defaults_off_for_every_profile(self):
+        import strategy_runtime as module
+
+        for profile in sorted(ELIGIBLE_STRATEGY_PROFILES):
+            for raw in (None, "", " ", "false", "0", "off"):
+                with self.subTest(profile=profile, flag=raw), patch.dict(os.environ, {}, clear=True):
+                    if raw is not None:
+                        os.environ["PORTFOLIO_LOSS_STOPLOSS_ENABLED"] = raw
+                    runtime = module.load_research_only_strategy_runtime(profile)
+                    self.assertIs(runtime.portfolio_loss_stoploss_enabled, False)
+                    # Disabled platform wiring must not change strategy inputs or
+                    # the config digest used to bind existing live authority.
+                    self.assertEqual(runtime.runtime_overrides, {})
+                    self.assertEqual(runtime.effective_runtime_config, runtime.entrypoint.manifest.default_config)
+
+    def test_platform_stoploss_rejects_invalid_flag(self):
+        import strategy_runtime as module
+
+        entrypoint = module.load_research_strategy_entrypoint_for_profile("crypto_live_pool_rotation")
+        with patch.dict(os.environ, {"PORTFOLIO_LOSS_STOPLOSS_ENABLED": "typo"}):
+            with self.assertRaisesRegex(ValueError, "PORTFOLIO_LOSS_STOPLOSS_ENABLED must be boolean-like"):
+                module._build_loaded_strategy_runtime(entrypoint)
+
+    def test_direct_runtime_construction_defaults_stoploss_off(self):
+        import strategy_runtime as module
+
+        with patch.dict(os.environ, {"PORTFOLIO_LOSS_STOPLOSS_ENABLED": "true"}):
+            loaded = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+            runtime = module.LoadedStrategyRuntime(loaded.entrypoint, loaded.runtime_adapter)
+        self.assertTrue(loaded.portfolio_loss_stoploss_enabled)
+        self.assertIs(runtime.portfolio_loss_stoploss_enabled, False)
+
+    def test_platform_stoploss_requires_explicit_opt_in_after_member_approval(self):
         import strategy_runtime as module
         from quant_platform_kit import Position
-        from quant_platform_kit.common.strategy_contracts import PositionTarget, StrategyDecision
+        from quant_platform_kit.common.strategy_contracts import BudgetIntent, PositionTarget, StrategyDecision
         from decision_mapper import map_strategy_decision_to_allocation
 
-        runtime = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
         decision = StrategyDecision(
             positions=(PositionTarget(symbol="BTCUSDT", target_weight=0.2),),
+            budgets=(BudgetIntent(name="btc_core_dca_pool", amount=20.0),),
+            risk_flags=("existing:flag",),
             diagnostics={"member_risk_assessment": {"scope": "MEMBER", "outcome": "APPROVE"}},
         )
         now = datetime.now(timezone.utc)
@@ -111,18 +144,32 @@ class StrategyRuntimeTests(unittest.TestCase):
             positions=(Position(symbol="BTCUSDT", quantity=0.02, market_value=1200.0,
                                 average_cost=85000.0),),
         )
-        with patch.object(type(runtime), "build_portfolio_snapshot", return_value=snapshot), patch.object(
-            type(runtime.entrypoint), "evaluate", return_value=decision
-        ):
-            evaluation = _evaluate_minimal_runtime(runtime, now=now,
-                mandate=_synthetic_mandate(now, candidate), candidate=candidate)
-        self.assertIn("rejected:stop_loss", evaluation.decision.risk_flags)
-        self.assertEqual(evaluation.decision.positions, ())
-        self.assertEqual(evaluation.decision.diagnostics, decision.diagnostics)
-        allocation = map_strategy_decision_to_allocation(
-            evaluation.decision, account_metrics=evaluation.account_metrics,
-        )
-        self.assertFalse(allocation["execution_permitted"])
+        for raw in (None, "false", "true"):
+            with self.subTest(flag=raw), patch.dict(os.environ, {}, clear=True):
+                if raw is not None:
+                    os.environ["PORTFOLIO_LOSS_STOPLOSS_ENABLED"] = raw
+                runtime = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+                with patch.object(type(runtime), "build_portfolio_snapshot", return_value=snapshot), patch.object(
+                    type(runtime.entrypoint), "evaluate", return_value=decision
+                ), patch.object(module, "apply_portfolio_loss_stoploss", wraps=module.apply_portfolio_loss_stoploss) as gate:
+                    evaluation = _evaluate_minimal_runtime(runtime, now=now,
+                        mandate=_synthetic_mandate(now, candidate), candidate=candidate)
+                allocation = map_strategy_decision_to_allocation(
+                    evaluation.decision, account_metrics=evaluation.account_metrics,
+                )
+                if raw == "true":
+                    gate.assert_called_once()
+                    self.assertIn("rejected:stop_loss", evaluation.decision.risk_flags)
+                    self.assertEqual(evaluation.decision.positions, ())
+                    self.assertEqual(evaluation.decision.budgets, ())
+                    self.assertEqual(evaluation.decision.diagnostics, decision.diagnostics)
+                    self.assertFalse(allocation["execution_permitted"])
+                else:
+                    gate.assert_not_called()
+                    self.assertIs(evaluation.decision, decision)
+                    self.assertEqual(allocation, map_strategy_decision_to_allocation(
+                        decision, account_metrics=evaluation.account_metrics,
+                    ))
 
     def test_stoploss_observation_does_not_mutate_strategy_decision(self):
         import strategy_runtime as module

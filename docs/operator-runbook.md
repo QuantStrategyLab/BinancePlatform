@@ -1144,9 +1144,24 @@ remain necessary.
 
 ## Portfolio-loss gate
 
-After strategy evaluation, the platform applies the pinned QPK portfolio-loss
-rule to the same strategy-member snapshot used by the MEMBER assessment. It
-uses `(market value - quantity * average cost) / total equity` and rejects only
+The additional platform gate ships disabled. The platform environment setting
+`PORTFOLIO_LOSS_STOPLOSS_ENABLED` defaults to `false` in code for every profile,
+including direct runtime construction. Missing, blank and explicit false values
+leave the strategy decision and existing execution mapping unchanged; the
+additional predicate is not called. No profile, checked-in configuration or
+workflow enables this setting. It is separate from the strategy manifest, so
+disabled wiring also preserves strategy parameters and existing config digests.
+Invalid non-boolean values fail runtime loading.
+
+Keep `PORTFOLIO_LOSS_STOPLOSS_ENABLED=false` until the owner finalizes the pending
+risk parameters and separately authorizes activation. This change does not
+authorize setting it to `true` in a live environment. Existing parameters,
+including the `-0.20` threshold, remain unchanged.
+
+When explicitly enabled, after strategy evaluation the platform applies the
+pinned QPK portfolio-loss rule to the same strategy-member snapshot used by the
+MEMBER assessment. It uses
+`(market value - quantity * average cost) / total equity` and rejects only
 when the result is strictly below the existing QPK threshold of `-0.20`. The
 rejection adds `rejected:stop_loss` and clears positions and budgets; the
 allocation and rotation mappers then deny execution. This gate blocks the
