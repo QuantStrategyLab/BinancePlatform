@@ -152,7 +152,7 @@ def replay_coverage(history, *, mode="coverage-only"):
                 balances[fee_coin] -= fee
                 if fee_coin not in {base, quote}:
                     for coin in {base, quote, fee_coin}:
-                        unknown(coin, row["time"], "third_coin_fee_policy_and_valuation_missing")
+                        unknown(coin, row["time"], "third_coin_fee_valuation_and_basis_missing")
             if quote != "USDT":
                 unknown(base, row["time"], "historical_quote_cost_proof_missing")
     for coin in coins.values():

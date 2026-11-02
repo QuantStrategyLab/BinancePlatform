@@ -186,7 +186,7 @@ def test_all_coins_quote_legs_and_third_coin_fees_remain_unknown(source):
     assert report["coins"]["BNB"]["counts"]["fee_events"] == 1
     assert report["coins"]["DOGE"]["gaps"][0]["reason"] == "no_historical_pair"
     assert report["coins"]["BTC"]["covered_ranges"] == [[0, source["end_ms"]]]
-    assert any("third_coin_fee_policy_and_valuation_missing" in segment["reasons"]
+    assert any("third_coin_fee_valuation_and_basis_missing" in segment["reasons"]
                for segment in report["coins"]["BNB"]["unknown_segments"])
     serialized = json.dumps(report)
     for forbidden in ("average_cost", "quoteQty", "commissionAsset", "entry_price", '"qty"', '"price"'):
