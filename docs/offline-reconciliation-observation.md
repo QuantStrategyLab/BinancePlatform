@@ -54,10 +54,113 @@ Pass the emitted `observation.json` to the companion repository's
 The separate historical section retains the provided recovery fixture exactly,
 including its original stale status. No production endpoint is updated.
 
+## Forward native-quantity report
+
+The same offline entrypoint also accepts a forward fixture. It compares native
+asset quantities for Spot, Funding, Flexible Earn and locked Earn, independently
+for every wallet and asset. It does not value balances or treat USDT as USD.
+
+```sh
+forward_output=$(mktemp -d)
+python3 scripts/collect_reconciliation_observation.py \
+  --forward-fixture tests/fixtures/reconciliation_observation/forward-unreconciled.json \
+  --report-dir "$forward_output"
+```
+
+The example emits `UNRECONCILED`: Funding and locked Earn are unknown, with null
+opening and closing quantities and no combined balance. Unknown wallets are
+never zero. All four wallet keys remain visible. Explicit zero rows are retained
+in private inputs and the quantity projection; an absent asset is unknown even
+if a different asset was observed. A newly appearing asset therefore needs
+explicit opening coverage, not an inferred opening zero. Margin, futures,
+options and portfolio margin remain outside this scope.
+
+`--forward-fixture` is mutually exclusive with `--fixture`; do not supply
+`--config` or `--now` with it. The CLI accepts only `environment=synthetic` and
+invented account/source bindings. It writes `forward-synthetic-report.json`
+create-only. Concurrent writers have one winner; replay or a conflicting
+restart cannot overwrite the first receipt. Invalid input or persistence
+failure exits 2 with a fixed diagnostic. Exit 0 means the informational report
+was written, including an `UNRECONCILED` result. This status never requests a
+halt or grants execution, readiness, recovery or go-live authority.
+
+The Python API `application.forward_reconciliation.build_forward_report` can
+also project `environment=private_observation` in memory. Its caller must supply
+`expected_account_id` and `expected_binding` separately from the input bundle,
+using approved private configuration. This API has no SDK, collector, store,
+notification or scheduler dependency. Private raw observations, product IDs,
+bindings, quantities and receipt revisions remain in the private report's
+`inputs`; use the shared `forward_envelope` allowlist for public diagnostics.
+Never log the private report. The offline CLI rejects private observations.
+
+The contract is:
+
+- `anchor_at` is the first authentic observation's actual time, no earlier than
+  2026-11-03 UTC. `previous_cutoff` and `cutoff` select only
+  `(previous_cutoff, cutoff]`, at most 24 hours. Opening and closing snapshots
+  must bind those exact cutoffs. No pre-anchor history, old cost, recovery
+  cursor, checkpoint, migration or midnight observation is required or inferred.
+- Each snapshot binds the expected account and source and contains four
+  `wallets`. A wallet is null when unknown; otherwise it supplies exact Decimal
+  strings in `balances` or private `native_rows`, plus a coverage `receipt`.
+  Native Spot rows retain `asset/free/locked`; Funding retains
+  `asset/free/locked/freeze/withdrawing`; Flexible Earn retains
+  `asset/productId/totalAmount`; locked Earn retains
+  `asset/positionId/amount`. Duplicate assets or product/position IDs fail the
+  comparison. Funding with a nonzero withdrawing amount stays unknown because
+  ownership and fee semantics are unqualified. Unsupported product rows remain
+  unknown. Multiple valid Earn positions sum by asset without dropping rows.
+- Receipts retain binding, collection start/finish, explicit `source_as_of`,
+  stable revision and ordered pages. Each page records its number, size, row
+  count, stable total, binding, revision, capture interval and `content_sha256`.
+  The digest covers that page's canonical JSON rows (sorted keys, compact
+  separators, ASCII escaping, no NaN); normalized balance rows are sorted by
+  asset with `asset` and `quantity` keys. Native inventory and event rows retain
+  source order. This is private corruption detection, not authentication or
+  anonymisation. Totals and content digests must match
+  every received row, including zeros. Missing, full-but-incomplete, changing,
+  extra or misbound pages fail the comparison. A client observation timestamp
+  cannot substitute for source-effective time. APIs without a qualified stable
+  revision/source cutoff remain `UNRECONCILED`; do not invent either field.
+- `event_receipts` covers all nine surfaces: fills, deposits, withdrawals,
+  rewards, Convert, dust, wallet transfers, Flexible lifecycle and locked
+  lifecycle. Every receipt binds the exact forward window and `all_assets`
+  universe, including zero-event surfaces. Counts are checked against canonical
+  events. Strategy-symbol lists and diagnostic history counts cannot establish
+  full-account coverage. Opening assets, newly appearing assets and fee assets
+  must all have explicit wallet inventory coverage.
+- Each event has a native identity, successful status and source-effective
+  time in the selected window. Fills, Convert and dust supply exact from/to
+  assets and quantities plus an independently specified fee asset/quantity and
+  `additional_debit` fee semantics. `project_spot_fill` requires native
+  `quoteQty`, `qty`, commission, millisecond time and a qualified base/quote
+  mapping; it never substitutes `price * qty`. Trade IDs are namespaced by
+  symbol. Other conversion or fee semantics remain unknown.
+- Deposits/rewards are explicit positive native quantities in a named wallet.
+  Withdrawals require separately qualified debit and fee semantics; unknown
+  withdrawal fees cannot become zero. A canonical transfer supplies source and
+  destination wallets and one exact positive quantity; both signed legs are
+  derived once. Earn subscription/redemption similarly pairs Spot with its
+  named Earn wallet. The canonical upstream identity must represent one
+  economic movement, not separate duplicate wallet sightings. Duplicate native
+  identities, missing second-wallet quantities, unsupported boundary wallets,
+  transfer fees or lifecycle directions remain `UNRECONCILED`.
+
+Matched synthetic inputs produce `MATCHED_SYNTHETIC`; privately bound inputs
+may produce `MATCHED_OBSERVATION`. These describe only the supplied quantity
+equation, `closing - opening - native movements = 0`, separately per wallet and
+asset. Per-wallet residuals prevent equal and opposite errors from disappearing
+in an aggregate. Missing event evidence suppresses the partial movement ledger.
+Inputs are copied and all checks recomputed on every invocation; a saved match
+flag has no effect. The `runtime_status` remains `NOT_PROVEN` and the policy is
+always observation-only. This change does not install a real feed, prove an
+authentic opening, establish collection provenance or connect to the console.
+
 ## Verify
 
 ```sh
 python3 -m unittest tests.test_reconciliation_observation_mock
+python3 -m pytest -q tests/test_forward_reconciliation_observation.py
 ```
 
 Tests cover match/difference, missing reference/ledger, incomplete/busy input,
