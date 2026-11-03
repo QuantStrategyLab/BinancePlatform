@@ -700,5 +700,57 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertEqual(entrypoint.ctx.portfolio.metadata["consecutive_losses"], 5)
 
 
+class PortfolioCostInputTests(unittest.TestCase):
+    def test_explicit_average_costs_reach_strategy_snapshot_and_authority_binding(self):
+        import strategy_runtime as module
+        from quant_platform_kit.common.strategy_contracts import StrategyDecision
+        from quant_platform_kit.risk.portfolio_diagnostics import compute_unrealized_pnl_pct
+
+        runtime = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        now = datetime.now(timezone.utc)
+        candidate = _synthetic_candidate_identity()
+        mandate = _synthetic_mandate(now, candidate)
+        seen = []
+        original = StrategyDecision(diagnostics={"strategy_signal": "unchanged"})
+        with patch.object(type(runtime.entrypoint), "evaluate", side_effect=lambda ctx: seen.append(ctx) or original), patch.object(
+            module, "bind_live_risk_authority", return_value=(mandate, candidate)
+        ) as bind:
+            result = runtime.evaluate(
+                prices={"BTCUSDT": 60000.0}, trend_indicators={}, btc_snapshot={},
+                account_metrics={"total_equity": 2200.0, "cash_usdt": 1000.0,
+                                 "trend_value": 0.0, "dca_value": 1200.0},
+                trend_universe_symbols=(), balances={"BTCUSDT": 0.02}, state={},
+                average_costs={"BTCUSDT": 80000.0}, translator=lambda key, **kw: key,
+                now_utc=now, risk_authority=object(), runtime_target=object(),
+                trend_pool_contract={},
+            )
+        self.assertEqual(seen[0].portfolio.positions[0].average_cost, 80000.0)
+        self.assertAlmostEqual(compute_unrealized_pnl_pct(seen[0].portfolio), -400.0 / 2200.0)
+        self.assertIs(result.decision, original)
+        self.assertEqual(bind.call_args.kwargs["input_material"]["average_costs"], {"BTCUSDT": 80000.0})
+
+    def test_cost_inputs_preserve_unknown_coverage_and_validate_explicit_values(self):
+        import strategy_runtime as module
+        from quant_platform_kit.risk.portfolio_diagnostics import compute_unrealized_pnl_pct
+
+        runtime = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        kwargs = dict(account_metrics={"total_equity": 200.0, "cash_usdt": 0.0,
+                                      "trend_value": 100.0, "dca_value": 100.0},
+                      balances={"BTCUSDT": 1.0, "ETHUSDT": 1.0},
+                      prices={"BTCUSDT": 100.0, "ETHUSDT": 100.0},
+                      trend_universe_symbols=("ETHUSDT",), as_of=datetime.now(timezone.utc))
+        for costs in (None, {}, {"BTCUSDT": 110.0}, {"BTCUSDT": None}):
+            with self.subTest(costs=costs):
+                snapshot = runtime.build_portfolio_snapshot(**kwargs, average_costs=costs)
+                self.assertIsNone(compute_unrealized_pnl_pct(snapshot))
+        complete = runtime.build_portfolio_snapshot(**kwargs, average_costs={"BTCUSDT": 110.0, "ETHUSDT": 120.0})
+        self.assertEqual(compute_unrealized_pnl_pct(complete), -0.15)
+        for value in (0.0, -1.0, True, float("nan"), float("inf"), "bad"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "average_cost"):
+                runtime.build_portfolio_snapshot(**kwargs, average_costs={"BTCUSDT": value})
+        with self.assertRaisesRegex(ValueError, "average_costs must be a mapping"):
+            runtime.build_portfolio_snapshot(**kwargs, average_costs=[])
+
+
 if __name__ == "__main__":
     unittest.main()
