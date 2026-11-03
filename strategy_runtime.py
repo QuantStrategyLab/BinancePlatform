@@ -187,6 +187,7 @@ class LoadedStrategyRuntime:
         trend_universe_symbols: tuple[str, ...],
         as_of: datetime,
         portfolio_risk_symbols: tuple[str, ...] | None = None,
+        average_costs: Mapping[str, Any] | None = None,
     ) -> PortfolioSnapshot:
         if not isinstance(account_metrics, Mapping):
             raise ValueError("portfolio_snapshot.account_metrics must be a mapping")
@@ -194,6 +195,8 @@ class LoadedStrategyRuntime:
             raise ValueError("portfolio_snapshot.balances must be a complete non-empty mapping")
         if not isinstance(prices, Mapping):
             raise ValueError("portfolio_snapshot.prices must be a mapping")
+        if average_costs is not None and not isinstance(average_costs, Mapping):
+            raise ValueError("portfolio_snapshot.average_costs must be a mapping")
 
         def finite_number(value: Any, *, label: str, minimum: float | None = None) -> float:
             if isinstance(value, bool):
@@ -237,7 +240,16 @@ class LoadedStrategyRuntime:
                 raise ValueError(f"portfolio_snapshot.market_value.{symbol} is invalid")
             observed_risk_value += market_value
             if quantity > 0.0:
-                positions.append(Position(symbol=symbol, quantity=quantity, market_value=market_value))
+                raw_cost = (average_costs or {}).get(symbol)
+                average_cost = None
+                if raw_cost is not None:
+                    average_cost = finite_number(raw_cost, label=f"average_cost.{symbol}")
+                    if average_cost <= 0.0:
+                        raise ValueError(f"portfolio_snapshot.average_cost.{symbol} must be positive")
+                positions.append(Position(
+                    symbol=symbol, quantity=quantity, market_value=market_value,
+                    average_cost=average_cost,
+                ))
         if not math.isclose(
             cash_balance + observed_risk_value,
             total_equity,
@@ -287,6 +299,7 @@ class LoadedStrategyRuntime:
         trend_pool_contract: Mapping[str, Any] | None = None,
         execution_mode: str | None = None,
         portfolio_risk_symbols: tuple[str, ...] | None = None,
+        average_costs: Mapping[str, Any] | None = None,
     ) -> StrategyEvaluationResult:
         runtime_config = dict(self.runtime_overrides)
         runtime_config.update(
@@ -315,6 +328,7 @@ class LoadedStrategyRuntime:
                 trend_universe_symbols=portfolio_symbols,
                 as_of=runtime_now,
                 portfolio_risk_symbols=portfolio_risk_symbols,
+                average_costs=average_costs,
             )
         except ValueError as exc:
             # Preserve the existing CryptoStrategies → QPK gate so malformed
@@ -358,6 +372,7 @@ class LoadedStrategyRuntime:
                     risk_authority,
                     runtime_target=runtime_target,
                     input_material={
+                        **({"average_costs": dict(average_costs)} if average_costs is not None else {}),
                         "prices": prices,
                         "balances": balances,
                         "account_metrics": account_metrics,

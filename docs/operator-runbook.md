@@ -958,6 +958,24 @@ Stop on the first real failure; do not initialize a cursor or activate trading
 to make this diagnostic pass. A successful preview is not durable accounting.
 
 
+## Portfolio cost input
+
+`LoadedStrategyRuntime.build_portfolio_snapshot` and `evaluate` accept optional
+`average_costs`, a mapping from USDT pair symbol to per-unit acquisition cost in
+USDT. Explicit costs must be finite and positive. Omitted symbols and `None`
+remain unknown; current prices never substitute for costs. The existing QPK
+portfolio PnL diagnostic requires coverage of every held strategy-member
+position. An explicit cost mapping is included in live authority input material
+so the evaluation input digest binds it together with balances and prices.
+
+This interface does not provide a cost source for existing live holdings. A
+caller must establish account, strategy, quantity and cutoff provenance before
+supplying costs. The runtime does not read trade history, alter ledger fields,
+or promote `entry_price` or BTC `avg_cost` to verified costs. Existing callers
+omit the new argument and retain their previous decisions and unknown-cost
+coverage. Adding an acquisition-cost ledger or replacing unknown costs with
+a market-value baseline needs a separately reviewed accounting policy.
+
 ## Public diagnostic output privacy
 
 The Runtime workflow must not upload the complete `execution_report.json` to
