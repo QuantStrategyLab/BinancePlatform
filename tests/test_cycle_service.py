@@ -1043,11 +1043,66 @@ class CycleServiceTests(unittest.TestCase):
                     payload = json.load(handle)
 
         self.assertEqual(observed["built"], 1)
-        self.assertEqual(len(observed["printed"]), 4)
+        self.assertEqual(len(observed["printed"]), 5)
         self.assertIn("notification_report_coverage_alert_failed", observed["printed"])
-        self.assertEqual(observed["printed"][1], "Strategy report details retained in the execution report.")
+        self.assertEqual(observed["printed"][2], "Strategy report details retained in the execution report.")
         self.assertEqual(report["status"], "ok")
         self.assertEqual(payload["log_lines"], ["line-1", "line-2"])
+
+    def test_runtime_init_and_per_cycle_order_counts_are_bounded_and_private(self):
+        sentinel = "SYNTHETIC_PRIVATE_ORDER_TOKEN"
+        fields = ("submission_attempted_count", "broker_acknowledged_count", "partially_filled_count",
+                  "filled_count", "transport_uncertain_count", "failed_count")
+        cases = [
+            {"submission_attempted_count": 2, "broker_acknowledged_count": 0,
+             "partially_filled_count": 0, "filled_count": 1, "transport_uncertain_count": 1, "failed_count": 0},
+            {field: 0 for field in fields},
+            {"submission_attempted_count": sentinel, "filled_count": True,
+             "failed_count": -1, "transport_uncertain_count": float("nan")},
+            {"filled_count": 2**53, "submission_attempted_count": 1},
+            None,
+        ]
+        for status in ("ok", "aborted", "error"):
+            for counts in cases:
+                with self.subTest(status=status, counts=counts):
+                    printed = []
+                    private = {"status": status, "execution_receipt_observation": counts,
+                               "error_summary": {"errors": []}, "log_lines": [sentinel]}
+                    original = copy.deepcopy(private)
+                    with patch("application.cycle_service.persist_runtime_report",
+                               return_value=SimpleNamespace(local_path="synthetic.json", cloud_uri=None)):
+                        run_live_cycle(
+                            runtime_builder=lambda: SimpleNamespace(run_id="synthetic", dry_run=True),
+                            execute_cycle=lambda runtime: private,
+                            output_printer=printed.append, report_writer=lambda report: "synthetic.json",
+                        )
+                    events = [json.loads(line) for line in printed if line.startswith("{")]
+                    self.assertEqual(events[0]["event"], "strategy_runtime_init_ok")
+                    self.assertEqual(events[0]["initialization_scope"], "runtime_configuration")
+                    self.assertEqual(events[1]["event"], "strategy_cycle_started")
+                    completion = events[-1]
+                    self.assertEqual(completion["status"], status)
+                    for field in fields:
+                        raw = counts.get(field) if counts else None
+                        expected = raw if type(raw) is int and 0 <= raw <= 2**53 - 1 else None
+                        self.assertEqual(completion.get(f"order_{field}"), expected)
+                    valid_count = sum(type(value) is int and 0 <= value <= 2**53 - 1
+                                      for value in (counts or {}).values())
+                    expected_status = "complete" if valid_count == len(fields) else "partial" if valid_count else "unavailable"
+                    self.assertEqual(completion["order_counts_status"], expected_status)
+                    self.assertNotIn(sentinel, "\n".join(printed))
+                    self.assertEqual(private, original)
+
+    def test_failed_runtime_builder_does_not_log_init_ok(self):
+        printed = []
+        execute = Mock()
+        with self.assertRaisesRegex(RuntimeError, "synthetic init failure"):
+            run_live_cycle(
+                runtime_builder=Mock(side_effect=RuntimeError("synthetic init failure")),
+                execute_cycle=execute, output_printer=printed.append,
+            )
+        self.assertEqual(printed, [])
+        execute.assert_not_called()
 
     def test_run_live_cycle_emits_structured_runtime_events(self):
         observed = {"printed": []}
@@ -1088,9 +1143,9 @@ class CycleServiceTests(unittest.TestCase):
                 )
 
         self.assertEqual(report["status"], "ok")
-        self.assertEqual(len(observed["printed"]), 3)
-        start_log = json.loads(observed["printed"][0])
-        end_log = json.loads(observed["printed"][2])
+        self.assertEqual(len(observed["printed"]), 4)
+        start_log = json.loads(observed["printed"][1])
+        end_log = json.loads(observed["printed"][3])
         self.assertEqual(start_log["event"], "strategy_cycle_started")
         self.assertEqual(start_log["strategy_profile"], "crypto_live_pool_rotation")
         self.assertEqual(start_log["strategy_display_name"], "Crypto Live Pool Rotation")

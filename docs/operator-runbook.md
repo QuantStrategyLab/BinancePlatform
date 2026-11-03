@@ -958,6 +958,24 @@ Stop on the first real failure; do not initialize a cursor or activate trading
 to make this diagnostic pass. A successful preview is not durable accounting.
 
 
+## Portfolio cost input
+
+`LoadedStrategyRuntime.build_portfolio_snapshot` and `evaluate` accept optional
+`average_costs`, a mapping from USDT pair symbol to per-unit acquisition cost in
+USDT. Explicit costs must be finite and positive. Omitted symbols and `None`
+remain unknown; current prices never substitute for costs. The existing QPK
+portfolio PnL diagnostic requires coverage of every held strategy-member
+position. An explicit cost mapping is included in live authority input material
+so the evaluation input digest binds it together with balances and prices.
+
+This interface does not provide a cost source for existing live holdings. A
+caller must establish account, strategy, quantity and cutoff provenance before
+supplying costs. The runtime does not read trade history, alter ledger fields,
+or promote `entry_price` or BTC `avg_cost` to verified costs. Existing callers
+omit the new argument and retain their previous decisions and unknown-cost
+coverage. Adding an acquisition-cost ledger or replacing unknown costs with
+a market-value baseline needs a separately reviewed accounting policy.
+
 ## Public diagnostic output privacy
 
 The Runtime workflow must not upload the complete `execution_report.json` to
@@ -973,6 +991,19 @@ PerformanceStore recorder keep their existing content. Missing financial values
 in public diagnostics mean unavailable, never zero or a substitute account NAV.
 The public lifecycle payload explicitly keeps `external_cash_flow: null`, since
 legacy consumers otherwise interpret an absent cash-flow field as zero.
+
+The structured console event `strategy_runtime_init_ok` means the runtime
+configuration builder returned successfully. Its `initialization_scope` is
+`runtime_configuration`; it does not attest to broker connectivity, state
+reconciliation or trading authority. The existing terminal cycle event also
+logs six bounded counters from `execution_receipt_observation`, each prefixed
+with `order_`: submission attempts, broker acknowledgements, partial fills,
+fills, transport uncertainty and failures. Counts describe observed calls or
+responses, not planned intents or guaranteed unique broker orders. Missing or
+invalid counters are omitted; `order_counts_status` distinguishes complete,
+partial and unavailable evidence. A known zero stays zero. Check cycle status
+and dry-run mode alongside counts. Order payloads, symbols, amounts, identifiers and raw
+provider messages are excluded from these new fields.
 
 The standalone protected account-facts workflow remains unchanged. Its exact
 source-artifact requirement now makes new Runtime sources unavailable: the
@@ -1141,3 +1172,37 @@ trusted opening balance, complete history, data provenance, account ownership,
 net performance or trading authority. This contract does not enable orders,
 redemptions or live exits; a real source binding and independent reconciliation
 remain necessary.
+
+## Portfolio-loss gate
+
+The additional platform gate ships disabled. The platform environment setting
+`PORTFOLIO_LOSS_STOPLOSS_ENABLED` defaults to `false` in code for every profile,
+including direct runtime construction. Missing, blank and explicit false values
+leave the strategy decision and existing execution mapping unchanged; the
+additional predicate is not called. No profile, checked-in configuration or
+workflow enables this setting. It is separate from the strategy manifest, so
+disabled wiring also preserves strategy parameters and existing config digests.
+Invalid non-boolean values fail runtime loading.
+
+Keep `PORTFOLIO_LOSS_STOPLOSS_ENABLED=false` until the owner finalizes the pending
+risk parameters and separately authorizes activation. This change does not
+authorize setting it to `true` in a live environment. Existing parameters,
+including the `-0.20` threshold, remain unchanged.
+
+When explicitly enabled, after strategy evaluation the platform applies the
+pinned QPK portfolio-loss rule to the same strategy-member snapshot used by the
+MEMBER assessment. It uses
+`(market value - quantity * average cost) / total equity` and rejects only
+when the result is strictly below the existing QPK threshold of `-0.20`. The
+rejection adds `rejected:stop_loss` and clears positions and budgets; the
+allocation and rotation mappers then deny execution. This gate blocks the
+cycle; it does not create liquidation orders or change strategy signals.
+
+The platform reuses QPK's PnL calculation and threshold rather than invoking
+the entire legacy gate, which would activate other risk checks. MEMBER
+assessment evidence and existing rejections are preserved. Missing or partial
+cost coverage remains unknown and does not trigger this rule. Binance balances
+alone do not supply acquisition cost, so this wiring cannot protect holdings
+until a complete, verified cost input is available. The report-only
+`portfolio_stoploss` observation describes the MEMBER gate; it is not evidence
+that the additional platform check had complete cost coverage.
