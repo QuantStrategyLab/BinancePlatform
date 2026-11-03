@@ -302,3 +302,77 @@ def test_accounting_terminal_hook_records_raw_fill_before_discarding_it():
     _prepare_accounting_state(state, symbol='BNBUSDT', base_asset='BNB', balances={'BNBUSDT': 3.01999}, u_total=90)
     assert state['order_submission'] == {'state': 'TERMINAL'}
     assert state['earn_accounted_net_changes'] == {'USDT': '-10', 'BNB': '0.01999'}
+
+
+@pytest.mark.parametrize('persist_ok', [False, True])
+def test_forward_status_requires_durable_write_and_survives_normalized_reload(tmp_path, persist_ok):
+    import json
+    from runtime_support import ExecutionRuntime, StatePersistenceError, runtime_set_trade_state
+    from trade_state_support import normalize_trade_state
+
+    state, current, cash = materials()
+    before = copy.deepcopy(state)
+    ledger = tmp_path / 'synthetic-ledger.json'
+    ledger.write_text(json.dumps(before))
+    persisted = []
+
+    def normalize(value):
+        return normalize_trade_state(value, trend_universe={}, last_good_payload_key='last_good',
+                                     action_history_key='actions', retired_positions_key='retired')
+
+    def write(value):
+        # Exercise the real owner-guarded runtime setter with a local test store.
+        # This is not a Firestore or broker integration test.
+        assert state == before
+        if not persist_ok:
+            return False
+        persisted.append(copy.deepcopy(value))
+        ledger.write_text(json.dumps(normalize(value)))
+        return True
+
+    runtime = ExecutionRuntime(
+        now_utc=NOW, client=object(), trade_state=state, state_writer=write,
+        state_owner_held=True, state_owner_id='synthetic-owner',
+    )
+    runtime.earn_accrual_observation = current
+    report = {'state_write_intents': [],
+              'side_effect_summary': {'executed_call_count': 0, 'suppressed_call_count': 0}}
+    quantities = {a: round(float(row['quantity']), 8) for a, row in current['assets'].items()}
+
+    def advance():
+        return maybe_rebase_daily_state_for_balance_change(
+            state, runtime, report, 1600.000005, 0, quantities, [],
+            collect_external_cash_flows_fn=lambda *args, **kwargs: cash,
+            runtime_set_trade_state_fn=runtime_set_trade_state,
+            append_log_fn=lambda *args: None, translate_fn=lambda *args, **kwargs: '',
+        )
+
+    if not persist_ok:
+        with pytest.raises(StatePersistenceError):
+            advance()
+        assert state == before
+        assert runtime.trade_state == before
+        assert json.loads(ledger.read_text()) == before
+        assert report.get('diagnostics', {}).get('earn_accrual', {}).get('status') != 'reconciled'
+        assert 'external_cash_flow_interval' not in report
+        return
+
+    assert advance() is True
+    assert report['diagnostics']['earn_accrual'] == {'status': 'reconciled'}
+    reloaded = normalize(json.loads(ledger.read_text()))
+    for field in ('earn_accrual_checkpoint', 'earn_accounted_net_changes',
+                  'last_balance_snapshot', 'external_cash_flow_cursor'):
+        assert reloaded[field] == state[field] == persisted[0][field]
+    assert reloaded['daily_equity_base'] == before['daily_equity_base']
+    assert reloaded['earn_accounted_net_changes'] == {'USDT': '0', 'BNB': '0'}
+    # Replaying the saved cutoff cannot consume its reward delta a second time.
+    with pytest.raises(ExecutionIntegrityError):
+        consume(reloaded, current, cash)
+    later = copy.deepcopy(current)
+    later['observed_at'] = '2026-09-12T14:02:00+00:00'
+    following_cash = copy.deepcopy(cash)
+    following_cash['cursor']['observed_at'] = later['observed_at']
+    _, writes = consume(reloaded, later, following_cash)
+    assert writes[0]['earn_accrual_checkpoint'] == later
+    assert writes[0]['daily_equity_base'] == before['daily_equity_base']
+    assert writes[0].get('daily_external_principal_usdt', 0) == 0
