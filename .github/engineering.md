@@ -70,3 +70,8 @@ commit, merge, release, deployment or real-trading authority.
 - Unknown, stale and read-failure states stay distinct. A green check, an
   existing artifact or a filled configuration field is not evidence that a live
   account, deployment or business result is current.
+
+## Staged review policy
+
+See [acceptance-policy.md](../docs/acceptance-policy.md) for R0/R1/R2 acceptance
+and the advisory provider policy. Existing enforcement remains authoritative.
