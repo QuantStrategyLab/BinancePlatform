@@ -697,6 +697,23 @@ def write_execution_report(report, *, reports_dir="reports", filename="execution
     return output_path
 
 
+def _public_order_counts(report):
+    """Publish only bounded receipt counters; missing evidence stays unknown."""
+    raw = report.get("execution_receipt_observation")
+    observation = raw if isinstance(raw, Mapping) else {}
+    fields = ("submission_attempted_count", "broker_acknowledged_count", "partially_filled_count",
+              "filled_count", "transport_uncertain_count", "failed_count")
+    counts = {}
+    for field in fields:
+        value = observation.get(field)
+        if type(value) is int and 0 <= value <= 2**53 - 1:
+            counts[f"order_{field}"] = value
+    counts["order_counts_status"] = (
+        "complete" if len(counts) == len(fields) else "partial" if counts else "unavailable"
+    )
+    return counts
+
+
 def run_live_cycle(
     *,
     runtime_builder,
@@ -722,6 +739,13 @@ def run_live_cycle(
             "strategy_display_name": str(getattr(runtime, "strategy_display_name", "") or ""),
             "strategy_display_name_localized": str(getattr(runtime, "strategy_display_name_localized", "") or ""),
         },
+    )
+    emit_runtime_log(
+        log_context,
+        "strategy_runtime_init_ok",
+        message="Runtime configuration initialized",
+        printer=output_printer,
+        initialization_scope="runtime_configuration",
     )
     emit_runtime_log(
         log_context,
@@ -775,6 +799,7 @@ def run_live_cycle(
             if isinstance(report.get("circuit_breaker_triggered"), bool) else None
         ),
         error_count=len(report.get("error_summary", {}).get("errors", [])),
+        **_public_order_counts(report),
     )
 
     if report.get("status") != "ok" and exit_fn is not None:
