@@ -26,7 +26,7 @@ from quant_platform_kit import PortfolioSnapshot
 from quant_platform_kit.common.strategy_contracts import StrategyManifest, StrategyRuntimeAdapter
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 from decision_mapper import map_strategy_decision_to_rotation_plan
-from strategy_registry import BINANCE_ENABLED_PROFILES
+from strategy_registry import BINANCE_ENABLED_PROFILES, ELIGIBLE_STRATEGY_PROFILES
 
 
 def _synthetic_candidate_identity() -> CandidateRiskIdentity:
@@ -93,6 +93,84 @@ def _evaluate_minimal_runtime(
 
 
 class StrategyRuntimeTests(unittest.TestCase):
+    def test_platform_stoploss_defaults_off_for_every_profile(self):
+        import strategy_runtime as module
+
+        for profile in sorted(ELIGIBLE_STRATEGY_PROFILES):
+            for raw in (None, "", " ", "false", "0", "off"):
+                with self.subTest(profile=profile, flag=raw), patch.dict(os.environ, {}, clear=True):
+                    if raw is not None:
+                        os.environ["PORTFOLIO_LOSS_STOPLOSS_ENABLED"] = raw
+                    runtime = module.load_research_only_strategy_runtime(profile)
+                    self.assertIs(runtime.portfolio_loss_stoploss_enabled, False)
+                    # Disabled platform wiring must not change strategy inputs or
+                    # the config digest used to bind existing live authority.
+                    self.assertEqual(runtime.runtime_overrides, {})
+                    self.assertEqual(runtime.effective_runtime_config, runtime.entrypoint.manifest.default_config)
+
+    def test_platform_stoploss_rejects_invalid_flag(self):
+        import strategy_runtime as module
+
+        entrypoint = module.load_research_strategy_entrypoint_for_profile("crypto_live_pool_rotation")
+        with patch.dict(os.environ, {"PORTFOLIO_LOSS_STOPLOSS_ENABLED": "typo"}):
+            with self.assertRaisesRegex(ValueError, "PORTFOLIO_LOSS_STOPLOSS_ENABLED must be boolean-like"):
+                module._build_loaded_strategy_runtime(entrypoint)
+
+    def test_direct_runtime_construction_defaults_stoploss_off(self):
+        import strategy_runtime as module
+
+        with patch.dict(os.environ, {"PORTFOLIO_LOSS_STOPLOSS_ENABLED": "true"}):
+            loaded = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+            runtime = module.LoadedStrategyRuntime(loaded.entrypoint, loaded.runtime_adapter)
+        self.assertTrue(loaded.portfolio_loss_stoploss_enabled)
+        self.assertIs(runtime.portfolio_loss_stoploss_enabled, False)
+
+    def test_platform_stoploss_requires_explicit_opt_in_after_member_approval(self):
+        import strategy_runtime as module
+        from quant_platform_kit import Position
+        from quant_platform_kit.common.strategy_contracts import BudgetIntent, PositionTarget, StrategyDecision
+        from decision_mapper import map_strategy_decision_to_allocation
+
+        decision = StrategyDecision(
+            positions=(PositionTarget(symbol="BTCUSDT", target_weight=0.2),),
+            budgets=(BudgetIntent(name="btc_core_dca_pool", amount=20.0),),
+            risk_flags=("existing:flag",),
+            diagnostics={"member_risk_assessment": {"scope": "MEMBER", "outcome": "APPROVE"}},
+        )
+        now = datetime.now(timezone.utc)
+        candidate = _synthetic_candidate_identity()
+        snapshot = PortfolioSnapshot(
+            as_of=now, total_equity=2200.0, cash_balance=1000.0, buying_power=1000.0,
+            positions=(Position(symbol="BTCUSDT", quantity=0.02, market_value=1200.0,
+                                average_cost=85000.0),),
+        )
+        for raw in (None, "false", "true"):
+            with self.subTest(flag=raw), patch.dict(os.environ, {}, clear=True):
+                if raw is not None:
+                    os.environ["PORTFOLIO_LOSS_STOPLOSS_ENABLED"] = raw
+                runtime = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+                with patch.object(type(runtime), "build_portfolio_snapshot", return_value=snapshot), patch.object(
+                    type(runtime.entrypoint), "evaluate", return_value=decision
+                ), patch.object(module, "apply_portfolio_loss_stoploss", wraps=module.apply_portfolio_loss_stoploss) as gate:
+                    evaluation = _evaluate_minimal_runtime(runtime, now=now,
+                        mandate=_synthetic_mandate(now, candidate), candidate=candidate)
+                allocation = map_strategy_decision_to_allocation(
+                    evaluation.decision, account_metrics=evaluation.account_metrics,
+                )
+                if raw == "true":
+                    gate.assert_called_once()
+                    self.assertIn("rejected:stop_loss", evaluation.decision.risk_flags)
+                    self.assertEqual(evaluation.decision.positions, ())
+                    self.assertEqual(evaluation.decision.budgets, ())
+                    self.assertEqual(evaluation.decision.diagnostics, decision.diagnostics)
+                    self.assertFalse(allocation["execution_permitted"])
+                else:
+                    gate.assert_not_called()
+                    self.assertIs(evaluation.decision, decision)
+                    self.assertEqual(allocation, map_strategy_decision_to_allocation(
+                        decision, account_metrics=evaluation.account_metrics,
+                    ))
+
     def test_stoploss_observation_does_not_mutate_strategy_decision(self):
         import strategy_runtime as module
         from quant_platform_kit.common.strategy_contracts import StrategyDecision
@@ -698,6 +776,58 @@ class StrategyRuntimeTests(unittest.TestCase):
 
         stamp.assert_called_once()
         self.assertEqual(entrypoint.ctx.portfolio.metadata["consecutive_losses"], 5)
+
+
+class PortfolioCostInputTests(unittest.TestCase):
+    def test_explicit_average_costs_reach_strategy_snapshot_and_authority_binding(self):
+        import strategy_runtime as module
+        from quant_platform_kit.common.strategy_contracts import StrategyDecision
+        from quant_platform_kit.risk.portfolio_diagnostics import compute_unrealized_pnl_pct
+
+        runtime = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        now = datetime.now(timezone.utc)
+        candidate = _synthetic_candidate_identity()
+        mandate = _synthetic_mandate(now, candidate)
+        seen = []
+        original = StrategyDecision(diagnostics={"strategy_signal": "unchanged"})
+        with patch.object(type(runtime.entrypoint), "evaluate", side_effect=lambda ctx: seen.append(ctx) or original), patch.object(
+            module, "bind_live_risk_authority", return_value=(mandate, candidate)
+        ) as bind:
+            result = runtime.evaluate(
+                prices={"BTCUSDT": 60000.0}, trend_indicators={}, btc_snapshot={},
+                account_metrics={"total_equity": 2200.0, "cash_usdt": 1000.0,
+                                 "trend_value": 0.0, "dca_value": 1200.0},
+                trend_universe_symbols=(), balances={"BTCUSDT": 0.02}, state={},
+                average_costs={"BTCUSDT": 80000.0}, translator=lambda key, **kw: key,
+                now_utc=now, risk_authority=object(), runtime_target=object(),
+                trend_pool_contract={},
+            )
+        self.assertEqual(seen[0].portfolio.positions[0].average_cost, 80000.0)
+        self.assertAlmostEqual(compute_unrealized_pnl_pct(seen[0].portfolio), -400.0 / 2200.0)
+        self.assertIs(result.decision, original)
+        self.assertEqual(bind.call_args.kwargs["input_material"]["average_costs"], {"BTCUSDT": 80000.0})
+
+    def test_cost_inputs_preserve_unknown_coverage_and_validate_explicit_values(self):
+        import strategy_runtime as module
+        from quant_platform_kit.risk.portfolio_diagnostics import compute_unrealized_pnl_pct
+
+        runtime = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
+        kwargs = dict(account_metrics={"total_equity": 200.0, "cash_usdt": 0.0,
+                                      "trend_value": 100.0, "dca_value": 100.0},
+                      balances={"BTCUSDT": 1.0, "ETHUSDT": 1.0},
+                      prices={"BTCUSDT": 100.0, "ETHUSDT": 100.0},
+                      trend_universe_symbols=("ETHUSDT",), as_of=datetime.now(timezone.utc))
+        for costs in (None, {}, {"BTCUSDT": 110.0}, {"BTCUSDT": None}):
+            with self.subTest(costs=costs):
+                snapshot = runtime.build_portfolio_snapshot(**kwargs, average_costs=costs)
+                self.assertIsNone(compute_unrealized_pnl_pct(snapshot))
+        complete = runtime.build_portfolio_snapshot(**kwargs, average_costs={"BTCUSDT": 110.0, "ETHUSDT": 120.0})
+        self.assertEqual(compute_unrealized_pnl_pct(complete), -0.15)
+        for value in (0.0, -1.0, True, float("nan"), float("inf"), "bad"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "average_cost"):
+                runtime.build_portfolio_snapshot(**kwargs, average_costs={"BTCUSDT": value})
+        with self.assertRaisesRegex(ValueError, "average_costs must be a mapping"):
+            runtime.build_portfolio_snapshot(**kwargs, average_costs=[])
 
 
 if __name__ == "__main__":

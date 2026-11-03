@@ -14,6 +14,7 @@ permissions:
 
 jobs:
   profile-current-runner:
+    if: ${{ github.repository == 'QuantStrategyLab/BinancePlatform' && github.ref == 'refs/heads/main' }}
     runs-on: self-hosted
     timeout-minutes: 10
     steps:
