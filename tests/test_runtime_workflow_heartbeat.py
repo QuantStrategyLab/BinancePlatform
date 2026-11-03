@@ -67,7 +67,8 @@ class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
         self.assertIn("[运行工作流心跳] BinancePlatform Runtime", message)
         self.assertIn("检查范围：过去 2.5 小时", message)
         self.assertIn("GitHub Actions 运行记录查询失败", message)
-        self.assertIn("技术详情（原文）：\nOSError: network unavailable", message)
+        self.assertIn("排查详情请查看工作流或云端运行日志。", message)
+        self.assertNotIn("OSError: network unavailable", message)
 
     def test_lifecycle_workflow_has_no_broker_authority_and_uses_pinned_actions(self) -> None:
         workflow = (
@@ -458,7 +459,7 @@ class RuntimeWorkflowHeartbeatTests(unittest.TestCase):
             with patch.object(heartbeat.urllib.request, "urlopen", side_effect=fake_urlopen):
                 self.assertTrue(heartbeat._send_telegram("heartbeat failed"))
 
-        self.assertIn("chat_id=qsl-chat-id", observed["body"])
+        self.assertEqual(json.loads(observed["body"])["chat_id"], "qsl-chat-id")
         self.assertNotIn("legacy-chat-id", observed["body"])
 
 

@@ -139,6 +139,9 @@ from trend_pool_support import (
     validate_trend_pool_payload as tp_validate_trend_pool_payload,
 )
 
+from quant_platform_kit.notifications import install_log_redaction
+install_log_redaction(wrap_streams=True)
+
 ExecutionRuntime = _ExecutionRuntime
 
 _SAFE_RUNTIME_SETUP_REASONS = frozenset({

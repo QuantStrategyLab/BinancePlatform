@@ -15,15 +15,28 @@ jobs:
     if: ${{ github.repository == 'QuantStrategyLab/BinancePlatform' && github.ref == 'refs/heads/main' }}
     runs-on: self-hosted
     timeout-minutes: 5
-    env:
-      TG_TOKEN: ${{ secrets.TG_TOKEN }}
-      GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
-      # OS user whose crontab runs dispatch-runtime.sh. Must equal the runner's
-      # own user: the installer writes $HOME/... and a runner user must never
-      # write a script that another (e.g. sudo-capable) user executes.
-      BINANCE_DISPATCH_USER: ${{ vars.BINANCE_DISPATCH_USER }}
     steps:
+      - name: Checkout installer revision
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Prepare pinned notification runtime
+        run: |
+          set -euo pipefail
+          notification_venv="$HOME/binance-quant/ops/notification-venv"
+          notification_python=python3
+          if command -v python3.11 >/dev/null 2>&1; then notification_python=python3.11; fi
+          "$notification_python" -m venv "$notification_venv"
+          pin=$("$notification_python" -c 'import tomllib; print(tomllib.load(open("qsl.toml", "rb"))["qsl"]["requires"]["quant_platform_kit"])')
+          [[ "$pin" =~ ^[0-9a-f]{40}$ ]]
+          "$notification_venv/bin/python" -m pip install "quant-platform-kit @ git+https://github.com/QuantStrategyLab/QuantPlatformKit.git@$pin"
+          cp scripts/send_telegram_notification.py "$HOME/binance-quant/ops/send-telegram-notification.py"
       - name: Install guarded dispatch script
+        env:
+          # Keep installation bound to the runner user without exposing credentials to setup.
+          BINANCE_DISPATCH_USER: ${{ vars.BINANCE_DISPATCH_USER }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
         shell: bash
         run: |
           set -euo pipefail
@@ -88,10 +101,14 @@ jobs:
               echo "Telegram dispatch notification skipped: target is not configured." >&2
               return 0
             fi
-            curl --fail --silent --show-error \
-              -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-              --data-urlencode "chat_id=${GLOBAL_TELEGRAM_CHAT_ID}" \
-              --data-urlencode "text=${message}" >/dev/null || \
+            local notification_python="$HOME/binance-quant/ops/notification-venv/bin/python"
+            local notification_script="$HOME/binance-quant/ops/send-telegram-notification.py"
+            if [ ! -x "$notification_python" ] || [ ! -f "$notification_script" ]; then
+              echo "Pinned Telegram notification runtime is unavailable." >&2
+              return 1
+            fi
+            printf '%s' "$message" | TG_TOKEN="$TG_TOKEN" GLOBAL_TELEGRAM_CHAT_ID="$GLOBAL_TELEGRAM_CHAT_ID" \
+              "$notification_python" "$notification_script" || \
               echo "Telegram dispatch notification failed." >&2
           }
 

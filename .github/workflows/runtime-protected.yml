@@ -947,20 +947,15 @@ jobs:
             "$TITLE" \
             "run: #${GITHUB_RUN_NUMBER} attempt ${GITHUB_RUN_ATTEMPT}" \
             "url: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}")
-          RESPONSE="$(curl -fsS -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-            --data-urlencode "chat_id=${GLOBAL_TELEGRAM_CHAT_ID}" \
-            --data-urlencode "text=${MESSAGE}")"
-          python3 - "${RESPONSE}" <<'PY'
-          import json
-          import sys
-
-          try:
-              payload = json.loads(sys.argv[1])
-          except json.JSONDecodeError as exc:
-              raise SystemExit("Telegram returned invalid JSON") from exc
-          if not isinstance(payload, dict) or payload.get("ok") is not True:
-              raise SystemExit("Telegram did not acknowledge workflow failure notification")
-          PY
+          PYTHON_NOTIFICATION="${VENV_PATH:-}/bin/python"
+          if [ ! -x "$PYTHON_NOTIFICATION" ]; then
+            PYTHON_NOTIFICATION="$HOME/binance-quant/ops/notification-venv/bin/python"
+          fi
+          if [ ! -x "$PYTHON_NOTIFICATION" ] || [ ! -f scripts/send_telegram_notification.py ]; then
+            echo "::error::Pinned notification runtime is unavailable."
+            exit 1
+          fi
+          printf '%s' "$MESSAGE" | "$PYTHON_NOTIFICATION" scripts/send_telegram_notification.py
         env:
           BINANCE_UNIFIED_NOTIFICATION_ENABLED: ${{ vars.BINANCE_UNIFIED_NOTIFICATION_ENABLED || 'false' }}
           DIGEST_OPAQUE_ACCOUNT_UID: ${{ secrets.DIGEST_OPAQUE_ACCOUNT_UID || secrets.BINANCE_DIGEST_OPAQUE_ACCOUNT_UID }}

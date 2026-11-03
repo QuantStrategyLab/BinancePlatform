@@ -429,30 +429,13 @@ def _send_telegram(message: str) -> bool:
     if not token or not chats:
         print("Telegram heartbeat notification skipped: target is not configured.", file=sys.stderr)
         return False
-    ok = True
-    for chat_id in chats:
-        body = urllib.parse.urlencode({"chat_id": chat_id, "text": message}).encode()
-        request = urllib.request.Request(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            data=body,
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                try:
-                    payload = json.loads(response.read().decode("utf-8"))
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    payload = {}
-                ok = (
-                    ok
-                    and response.status < 400
-                    and isinstance(payload, dict)
-                    and payload.get("ok") is True
-                )
-        except Exception as exc:  # noqa: BLE001
-            ok = False
-            print(f"Telegram send failed: {exc}", file=sys.stderr)
-    return ok
+    from quant_platform_kit.notifications import NotificationIntent, send_notification_intent
+    token_env = "TG_TOKEN" if os.environ.get("TG_TOKEN") else "TELEGRAM_TOKEN"
+    try:
+        intent = NotificationIntent(text=message, run_id="workflow-heartbeat", chat_ids=tuple(chats))
+        return send_notification_intent(intent, bot_token_env=token_env, timeout=15)["ok"]
+    except ValueError:
+        return False
 
 
 def _notify_assessment(assessment, message):
@@ -468,6 +451,8 @@ def _recover_assessment(assessment):
 
 
 def main() -> int:
+    from quant_platform_kit.notifications import install_log_redaction
+    install_log_redaction(wrap_streams=True)
     repository = os.environ.get("GITHUB_REPOSITORY") or "QuantStrategyLab/BinancePlatform"
     workflow = os.environ.get("RUNTIME_HEARTBEAT_WORKFLOW") or "main.yml"
     branch = os.environ.get("RUNTIME_HEARTBEAT_BRANCH") or "runtime-production"
