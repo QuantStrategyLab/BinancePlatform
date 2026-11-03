@@ -218,7 +218,8 @@ def route(send, *, kind, report=None, runtime=None, reason=None, state="active",
         return False
 
 
-def runtime_notice(runtime, report, text, *, urgent, send, send_coverage=None):
+def _runtime_notice_classification(report, *, urgent):
+    """Project the existing report fields into notification routing arguments."""
     kind, reason, severity = "routine_cycle", None, 1
     if urgent:
         failure = (report.get("diagnostics") or {}).get("cycle_failure") or {}
@@ -232,6 +233,11 @@ def runtime_notice(runtime, report, text, *, urgent, send, send_coverage=None):
             kind, reason = "real_error", "runtime_failure"
             if failure.get("stage") and failure.get("error_type"):
                 reason = "cycle_" + failure["stage"] + "_" + failure["error_type"]
+    return kind, reason, severity
+
+
+def runtime_notice(runtime, report, text, *, urgent, send, send_coverage=None):
+    kind, reason, severity = _runtime_notice_classification(report, urgent=urgent)
     return route(send, kind=kind, reason=reason, severity=severity, runtime=runtime, report=report, send_coverage=send_coverage)
 
 
