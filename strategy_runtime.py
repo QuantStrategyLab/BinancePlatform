@@ -24,6 +24,7 @@ from live_risk_authority import (
     bind_live_risk_authority,
     config_sha256,
 )
+from portfolio_loss_stoploss import apply_portfolio_loss_stoploss
 from portfolio_stoploss_observation import observe_portfolio_stoploss, public_stoploss_observation
 from strategy_loader import (
     load_research_strategy_entrypoint_for_profile,
@@ -121,6 +122,7 @@ class LoadedStrategyRuntime:
     runtime_overrides: Mapping[str, Any] = field(default_factory=dict)
     merged_runtime_config: Mapping[str, Any] = field(default_factory=dict)
     local_artifact_candidates: tuple[Path, ...] = ()
+    portfolio_loss_stoploss_enabled: bool = False
 
     @property
     def profile(self) -> str:
@@ -475,6 +477,8 @@ class LoadedStrategyRuntime:
             artifacts=artifacts,
         )
         decision = self.entrypoint.evaluate(ctx)
+        if self.portfolio_loss_stoploss_enabled:
+            decision = apply_portfolio_loss_stoploss(decision, portfolio_snapshot)
         try:
             stoploss_observation = observe_portfolio_stoploss(
                 portfolio_snapshot,
@@ -515,6 +519,10 @@ def _build_loaded_strategy_runtime(entrypoint: StrategyEntrypoint) -> LoadedStra
         runtime_overrides=runtime_overrides,
         merged_runtime_config=merged_runtime_config,
         local_artifact_candidates=local_artifact_candidates,
+        portfolio_loss_stoploss_enabled=_parse_env_bool(
+            "PORTFOLIO_LOSS_STOPLOSS_ENABLED",
+            os.getenv("PORTFOLIO_LOSS_STOPLOSS_ENABLED", "false").strip() or "false",
+        ),
     )
 
 
