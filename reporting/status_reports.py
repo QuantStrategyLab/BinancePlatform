@@ -26,6 +26,31 @@ def build_btc_manual_hint(btc_snapshot, *, translate_fn):
     return translate_fn("manual_hint_neutral")
 
 
+def _format_periodic_btc_status_report(
+    total_equity,
+    trend_holdings_equity,
+    trend_daily_pnl,
+    btc_price,
+    btc_snapshot,
+    btc_target_ratio,
+    strategy_display_name,
+    *,
+    translate_fn,
+):
+    """Format the heartbeat body without selecting delivery or updating state."""
+    gate_text = translate_fn("gate_on") if btc_snapshot.get("regime_on", False) else translate_fn("gate_off")
+    return (
+        f"{translate_fn('heartbeat_title')}\n"
+        f"{translate_fn('strategy_label', name=strategy_display_name)}\n"
+        f"{translate_fn('total_equity')}: ${total_equity:,.0f} | "
+        f"{translate_fn('trend_equity')}: ${trend_holdings_equity:,.0f} ({trend_daily_pnl:+.1%})\n"
+        f"{translate_fn('btc_price')}: ${btc_price:,.0f} | "
+        f"{translate_fn('btc_gate')}: {gate_text}\n"
+        f"{translate_fn('btc_target')}: {btc_target_ratio:.1%} | "
+        f"AHR999: {btc_snapshot['ahr999']:.2f} | {translate_fn('zscore')}: {btc_snapshot['zscore']:.1f}"
+    )
+
+
 def maybe_send_periodic_btc_status_report(
     state,
     tg_token,
@@ -51,16 +76,15 @@ def maybe_send_periodic_btc_status_report(
     if not report_bucket or state.get("last_btc_status_report_bucket") == report_bucket:
         return
 
-    gate_text = translate_fn("gate_on") if btc_snapshot.get("regime_on", False) else translate_fn("gate_off")
-    text = (
-        f"{translate_fn('heartbeat_title')}\n"
-        f"{translate_fn('strategy_label', name=strategy_display_name)}\n"
-        f"{translate_fn('total_equity')}: ${total_equity:,.0f} | "
-        f"{translate_fn('trend_equity')}: ${trend_holdings_equity:,.0f} ({trend_daily_pnl:+.1%})\n"
-        f"{translate_fn('btc_price')}: ${btc_price:,.0f} | "
-        f"{translate_fn('btc_gate')}: {gate_text}\n"
-        f"{translate_fn('btc_target')}: {btc_target_ratio:.1%} | "
-        f"AHR999: {btc_snapshot['ahr999']:.2f} | {translate_fn('zscore')}: {btc_snapshot['zscore']:.1f}"
+    text = _format_periodic_btc_status_report(
+        total_equity,
+        trend_holdings_equity,
+        trend_daily_pnl,
+        btc_price,
+        btc_snapshot,
+        btc_target_ratio,
+        strategy_display_name,
+        translate_fn=translate_fn,
     )
     if notifier_fn is None:
         from notifications.unified_notifications import _coverage_message, external_notice

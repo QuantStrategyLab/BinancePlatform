@@ -467,6 +467,69 @@ are visible. Binance's transfer and fee semantics remain unverified, and the
 separate one-eight-decimal-unit flag is diagnostic only; neither flag changes
 accounting, owner, control, or execution state.
 
+### Forward Earn verification and durable state
+
+`earn_forward_accounting_unverified` is a failed verification result for the
+current interval, not a latch that can be cleared by editing an approval SHA or
+a status field. An existing `earn_accrual_checkpoint` enables the forward
+consumer; an old ledger without one is not automatically migrated.
+
+The runtime uses the following existing path:
+
+1. `market_snapshot_support.capture_market_snapshot` collects a fresh checkpoint
+   for the approved asset scope and account identity. Its Spot plus Flexible
+   Earn quantities also supply portfolio valuation, avoiding independent
+   balance reads. Failure here reports `earn_observation_unavailable`.
+2. `application.portfolio_service.maybe_rebase_daily_state_for_balance_change`
+   requires the valuation quantities to match that checkpoint at eight decimal
+   places, then reads bounded external cash-flow evidence through its cutoff.
+   `application.earn_accrual.prepare_forward_earn_state` requires a later
+   checkpoint, matching account and asset keys, explicit per-asset accounted
+   net changes, matching cursor cutoffs and settled order state (`RESERVED` or
+   `TERMINAL`). Product identity and auto-subscribe flags must be continuous;
+   realtime reward counters must not decrease. Exact Decimal quantity changes
+   must equal those rewards plus independently accounted fills/fees and
+   supported cash flows. Supported USDT deposits remain separate principal.
+   The existing bounded BNB-dividend fallback must also pass exact conservation;
+   a diagnostic residual match alone is insufficient.
+3. Preparation returns a detached next state. The consumer first calls
+   `runtime_support.runtime_set_trade_state` with reason
+   `earn_forward_accounting`. A live write requires the held owner and a
+   successful persistence result. With `BoundTradeStateAccess`, saves compare
+   the owned source version and perform exact readback; any uncertain result
+   invalidates the session. If receipt retention is already enabled, checkpoint
+   and cursor advancement also require the seven-field interval and its source
+   receipt transaction. See [the interval receipt contract](interval-source-receipt-candidate.md).
+4. Only after the writer returns successfully does the consumer replace the
+   in-memory state, publish the interval and report `earn_accrual.status` as
+   `reconciled`. The durable state advances `earn_accrual_checkpoint`,
+   `last_balance_snapshot` and `external_cash_flow_cursor`, and zeroes
+   `earn_accounted_net_changes` for the next interval. Normalization preserves
+   these fields on reload. Frozen opening equity and existing risk settings
+   are not reset to make an unexplained difference disappear.
+
+On failure, the private report's bounded `diagnostics.earn_accrual.reason_code`
+identifies a supported validation failure when available; unknown exceptions
+retain the generic code without exposing provider text. Preparation failure
+never advances the ledger. A write/readback failure may have an uncertain
+durable outcome: do not infer rollback or retry blindly. In-memory status is
+not proof of persistence. Read the protected ledger and owner through the
+approved operator path before deciding how to recover.
+
+The read-only `earn-forward-diagnose` action can explain why a window fails.
+Its `forward_accounting_eligible` flag and any dry-run result do not persist or
+clear anything. A later normally authorized cycle can report `reconciled` only
+if fresh evidence passes and its guarded write succeeds. Missing opening
+provenance, product discontinuity, unsupported movement or unexplained quantity
+requires the existing separately authorized reconciliation/recovery process.
+No offline flag edit or synthetic checkpoint can establish that evidence.
+
+Local regression tests exercise preparation, failed writes and normalized
+reload using synthetic data; existing receipt tests exercise atomic commit and
+readback failures. These checks do not verify a real account or remove a live
+blocker. No production implementation change is needed for this documented
+state transition.
+
 If a cycle reaches `daily_state` and fails only during the pure Earn preparation
 check, the runtime releases its own newly claimed owner only when the initial
 and current order states are explicitly `RESERVED` or `TERMINAL`, no funds are
@@ -958,6 +1021,24 @@ Stop on the first real failure; do not initialize a cursor or activate trading
 to make this diagnostic pass. A successful preview is not durable accounting.
 
 
+## Portfolio cost input
+
+`LoadedStrategyRuntime.build_portfolio_snapshot` and `evaluate` accept optional
+`average_costs`, a mapping from USDT pair symbol to per-unit acquisition cost in
+USDT. Explicit costs must be finite and positive. Omitted symbols and `None`
+remain unknown; current prices never substitute for costs. The existing QPK
+portfolio PnL diagnostic requires coverage of every held strategy-member
+position. An explicit cost mapping is included in live authority input material
+so the evaluation input digest binds it together with balances and prices.
+
+This interface does not provide a cost source for existing live holdings. A
+caller must establish account, strategy, quantity and cutoff provenance before
+supplying costs. The runtime does not read trade history, alter ledger fields,
+or promote `entry_price` or BTC `avg_cost` to verified costs. Existing callers
+omit the new argument and retain their previous decisions and unknown-cost
+coverage. Adding an acquisition-cost ledger or replacing unknown costs with
+a market-value baseline needs a separately reviewed accounting policy.
+
 ## Public diagnostic output privacy
 
 The Runtime workflow must not upload the complete `execution_report.json` to
@@ -1154,3 +1235,37 @@ trusted opening balance, complete history, data provenance, account ownership,
 net performance or trading authority. This contract does not enable orders,
 redemptions or live exits; a real source binding and independent reconciliation
 remain necessary.
+
+## Portfolio-loss gate
+
+The additional platform gate ships disabled. The platform environment setting
+`PORTFOLIO_LOSS_STOPLOSS_ENABLED` defaults to `false` in code for every profile,
+including direct runtime construction. Missing, blank and explicit false values
+leave the strategy decision and existing execution mapping unchanged; the
+additional predicate is not called. No profile, checked-in configuration or
+workflow enables this setting. It is separate from the strategy manifest, so
+disabled wiring also preserves strategy parameters and existing config digests.
+Invalid non-boolean values fail runtime loading.
+
+Keep `PORTFOLIO_LOSS_STOPLOSS_ENABLED=false` until the owner finalizes the pending
+risk parameters and separately authorizes activation. This change does not
+authorize setting it to `true` in a live environment. Existing parameters,
+including the `-0.20` threshold, remain unchanged.
+
+When explicitly enabled, after strategy evaluation the platform applies the
+pinned QPK portfolio-loss rule to the same strategy-member snapshot used by the
+MEMBER assessment. It uses
+`(market value - quantity * average cost) / total equity` and rejects only
+when the result is strictly below the existing QPK threshold of `-0.20`. The
+rejection adds `rejected:stop_loss` and clears positions and budgets; the
+allocation and rotation mappers then deny execution. This gate blocks the
+cycle; it does not create liquidation orders or change strategy signals.
+
+The platform reuses QPK's PnL calculation and threshold rather than invoking
+the entire legacy gate, which would activate other risk checks. MEMBER
+assessment evidence and existing rejections are preserved. Missing or partial
+cost coverage remains unknown and does not trigger this rule. Binance balances
+alone do not supply acquisition cost, so this wiring cannot protect holdings
+until a complete, verified cost input is available. The report-only
+`portfolio_stoploss` observation describes the MEMBER gate; it is not evidence
+that the additional platform check had complete cost coverage.
