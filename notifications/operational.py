@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from quant_platform_kit.notifications._redaction import redact_sensitive_text
 
 from . import unified_notifications as unified
 from .digest_snapshot.unified_contract import NotificationEvent, sgt_business_window
@@ -31,13 +35,41 @@ _TEXT = {
 }
 
 
-def message(category):
-    if category == "coverage_failure":
-        language = (os.environ.get("QSL_NOTIFY_LANG") or "").strip() or (os.environ.get("NOTIFY_LANG") or "").strip() or "zh"
-        locale = "zh" if language.lower().startswith("zh") else "en"
+def message(category, *, observed_at=None, source_url=None):
+    """P10 plan contract adapter pending the published step-1 QPK formatter pin.
+
+    Only approved static labels and parsed timestamps enter the shared redactor;
+    caller diagnostics and internal identities stay in controlled records.
+    """
+    language = (os.environ.get("QSL_NOTIFY_LANG") or "").strip() or (os.environ.get("NOTIFY_LANG") or "").strip() or "zh"
+    locale = "zh" if language.lower().startswith("zh") else "en"
+    stamp = "未核实" if locale == "zh" else "unverified"
+    if observed_at:
+        try:
+            parsed = datetime.fromisoformat(str(observed_at).replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                stamp = parsed.astimezone(ZoneInfo("Asia/Singapore")).strftime("%Y-%m-%d %H:%M:%S %z")
+        except (ValueError, TypeError):
+            pass
+    detail = _TEXT[locale].get(category, _TEXT[locale]["query_unavailable"]).removeprefix("⚠️ ")
+    # Do not invent a business run from a monitor check or expose arbitrary URLs.
+    link = str(source_url or "")
+    if not re.fullmatch(r"https://github[.]com/QuantStrategyLab/BinancePlatform/actions/runs/[0-9]+", link):
+        link = "运行链接不可用" if locale == "zh" else "run link unavailable"
+    disabled = str(os.environ.get("RUNTIME_TARGET_ENABLED", "")).strip().lower() == "false"
+    if locale == "zh":
+        status = "状态：已停用；运行、订单和成交：不适用\n" if disabled else ""
+        text = (f"【资产管理｜运行错误】\n时间：{stamp}\n平台 / 策略：币安 / 未核实\n"
+                f"{status}问题：{detail}\n影响：是否提交订单：未知；是否有待处理订单：未知\n"
+                f"证据：{link}\n处理：查看本次运行记录；未恢复前保持执行保护\n"
+                "事件：以受控运行记录为准｜投递状态以回执为准")
     else:
-        locale = "zh" if os.environ.get("NOTIFY_LANG", "zh").lower().startswith("zh") else "en"
-    return _TEXT[locale][category]
+        status = "Status: disabled; runtime, orders and fills: not applicable\n" if disabled else ""
+        text = (f"【Asset management | Runtime error】\nTime: {stamp}\nPlatform / strategy: Binance / unverified\n"
+                f"{status}Problem: {detail}\nImpact: order submission unknown; pending orders unknown\n"
+                f"Evidence: {link}\nAction: review the run record; retain execution protection\n"
+                "Event: see controlled run record | delivery status follows receipt")
+    return redact_sensitive_text(text)
 
 
 def send_configured(text):
@@ -65,7 +97,7 @@ def _correlated_event(assessment, *, env, store=None):
 
 
 def notify_workflow(assessment, original_message, *, send=None, store=None):
-    if assessment.get("status") == "healthy":
+    if assessment.get("status") in {"healthy", "not_applicable", "parked", "deferred"}:
         return False
     if unified.enabled() and send is None and (
             not (os.environ.get("TG_TOKEN") or os.environ.get("TELEGRAM_TOKEN"))
@@ -73,8 +105,6 @@ def notify_workflow(assessment, original_message, *, send=None, store=None):
         print(json.dumps({"notification_status": "blocked", "reason": "notification_target_unconfigured"}))
         return False
     send = send or send_configured
-    if not unified.enabled():
-        return send(original_message)
     reason = assessment.get("reason")
     values = dict(os.environ)
     occurred_at, source_run_id = None, None
@@ -84,7 +114,7 @@ def notify_workflow(assessment, original_message, *, send=None, store=None):
     elif reason == "latest_runtime_completed_unsuccessfully":
         kind, incident, category = "real_error", "runtime_failure", "runtime_failure"
         try:
-            correlated = _correlated_event(assessment, env=os.environ, store=store)
+            correlated = _correlated_event(assessment, env=os.environ, store=store) if unified.enabled() else None
         except Exception:
             print(json.dumps({"notification_status": "blocked", "reason": "notification_history_unavailable"}))
             return False
@@ -97,9 +127,13 @@ def notify_workflow(assessment, original_message, *, send=None, store=None):
             if raw_stamp:
                 occurred_at = datetime.fromisoformat(raw_stamp.replace("Z", "+00:00"))
         values["GITHUB_RUN_ID"] = str((assessment.get("latest_run") or {}).get("id") or "")
-    elif reason not in {"github_actions_query_unavailable", "runtime_startup_failed"}:
+    elif reason in {"no_successful_runtime_run_observed", "consecutive_runtime_dispatches_missing"}:
         kind, incident, category = "receipt_missing", "runtime_dispatch_missing", "dispatch_missing"
-    return unified.route(lambda: send(message(category)), kind=kind, reason=incident, env=values,
+    text = message(category, observed_at=assessment.get("observed_at"),
+        source_url=(assessment.get("latest_run") or {}).get("html_url"))
+    if not unified.enabled():
+        return send(text)
+    return unified.route(lambda: send(text), kind=kind, reason=incident, env=values,
         marker_store=store, candidate_store=store, occurred_at=occurred_at, source_run_id=source_run_id)
 
 
