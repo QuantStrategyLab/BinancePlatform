@@ -1,0 +1,340 @@
+{
+  "environment": "synthetic",
+  "account_id": "binance-paper-mock-001",
+  "binding": "synthetic-source-1",
+  "anchor_at": "2026-11-03T12:00:00Z",
+  "previous_cutoff": "2026-11-03T12:00:00Z",
+  "cutoff": "2026-11-04T12:00:00Z",
+  "opening": {
+    "account_id": "binance-paper-mock-001",
+    "binding": "synthetic-source-1",
+    "as_of": "2026-11-03T12:00:00Z",
+    "wallets": {
+      "spot": {
+        "balances": {
+          "BTC": "0",
+          "USDT": "100"
+        },
+        "receipt": {
+          "binding": "synthetic-source-1",
+          "started_at": "2026-11-03T12:00:00Z",
+          "finished_at": "2026-11-03T12:00:00Z",
+          "source_as_of": "2026-11-03T12:00:00Z",
+          "stable_revision": "synthetic-revision-1",
+          "pages": [
+            {
+              "number": 1,
+              "size": 100,
+              "count": 2,
+              "total": 2,
+              "binding": "synthetic-source-1",
+              "revision": "synthetic-revision-1",
+              "started_at": "2026-11-03T12:00:00Z",
+              "finished_at": "2026-11-03T12:00:00Z",
+              "content_sha256": "2fca4b7c4469796aa7b99b254697312d8542bdb77a68fd41df84efc4695ba8c4"
+            }
+          ]
+        }
+      },
+      "funding": null,
+      "flexible_earn": {
+        "balances": {
+          "BTC": "0",
+          "USDT": "0"
+        },
+        "receipt": {
+          "binding": "synthetic-source-1",
+          "started_at": "2026-11-03T12:00:00Z",
+          "finished_at": "2026-11-03T12:00:00Z",
+          "source_as_of": "2026-11-03T12:00:00Z",
+          "stable_revision": "synthetic-revision-1",
+          "pages": [
+            {
+              "number": 1,
+              "size": 100,
+              "count": 2,
+              "total": 2,
+              "binding": "synthetic-source-1",
+              "revision": "synthetic-revision-1",
+              "started_at": "2026-11-03T12:00:00Z",
+              "finished_at": "2026-11-03T12:00:00Z",
+              "content_sha256": "aee8af68d16916e1bf1fac69b3059f6938ee1ac5d3eec52a41834302d8ba7470"
+            }
+          ]
+        }
+      },
+      "locked_earn": null
+    }
+  },
+  "closing": {
+    "account_id": "binance-paper-mock-001",
+    "binding": "synthetic-source-1",
+    "as_of": "2026-11-04T12:00:00Z",
+    "wallets": {
+      "spot": {
+        "balances": {
+          "BTC": "0",
+          "USDT": "100"
+        },
+        "receipt": {
+          "binding": "synthetic-source-1",
+          "started_at": "2026-11-04T12:00:00Z",
+          "finished_at": "2026-11-04T12:00:00Z",
+          "source_as_of": "2026-11-04T12:00:00Z",
+          "stable_revision": "synthetic-revision-1",
+          "pages": [
+            {
+              "number": 1,
+              "size": 100,
+              "count": 2,
+              "total": 2,
+              "binding": "synthetic-source-1",
+              "revision": "synthetic-revision-1",
+              "started_at": "2026-11-04T12:00:00Z",
+              "finished_at": "2026-11-04T12:00:00Z",
+              "content_sha256": "2fca4b7c4469796aa7b99b254697312d8542bdb77a68fd41df84efc4695ba8c4"
+            }
+          ]
+        }
+      },
+      "funding": null,
+      "flexible_earn": {
+        "balances": {
+          "BTC": "0",
+          "USDT": "0"
+        },
+        "receipt": {
+          "binding": "synthetic-source-1",
+          "started_at": "2026-11-04T12:00:00Z",
+          "finished_at": "2026-11-04T12:00:00Z",
+          "source_as_of": "2026-11-04T12:00:00Z",
+          "stable_revision": "synthetic-revision-1",
+          "pages": [
+            {
+              "number": 1,
+              "size": 100,
+              "count": 2,
+              "total": 2,
+              "binding": "synthetic-source-1",
+              "revision": "synthetic-revision-1",
+              "started_at": "2026-11-04T12:00:00Z",
+              "finished_at": "2026-11-04T12:00:00Z",
+              "content_sha256": "aee8af68d16916e1bf1fac69b3059f6938ee1ac5d3eec52a41834302d8ba7470"
+            }
+          ]
+        }
+      },
+      "locked_earn": null
+    }
+  },
+  "events": [],
+  "event_receipts": {
+    "fills": {
+      "binding": "synthetic-source-1",
+      "started_at": "2026-11-04T12:00:00Z",
+      "finished_at": "2026-11-04T12:00:00Z",
+      "source_as_of": "2026-11-04T12:00:00Z",
+      "stable_revision": "synthetic-revision-1",
+      "pages": [
+        {
+          "number": 1,
+          "size": 100,
+          "count": 0,
+          "total": 0,
+          "binding": "synthetic-source-1",
+          "revision": "synthetic-revision-1",
+          "started_at": "2026-11-04T12:00:00Z",
+          "finished_at": "2026-11-04T12:00:00Z",
+          "content_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ],
+      "start_exclusive": "2026-11-03T12:00:00Z",
+      "end_inclusive": "2026-11-04T12:00:00Z",
+      "universe": "all_assets"
+    },
+    "deposits": {
+      "binding": "synthetic-source-1",
+      "started_at": "2026-11-04T12:00:00Z",
+      "finished_at": "2026-11-04T12:00:00Z",
+      "source_as_of": "2026-11-04T12:00:00Z",
+      "stable_revision": "synthetic-revision-1",
+      "pages": [
+        {
+          "number": 1,
+          "size": 100,
+          "count": 0,
+          "total": 0,
+          "binding": "synthetic-source-1",
+          "revision": "synthetic-revision-1",
+          "started_at": "2026-11-04T12:00:00Z",
+          "finished_at": "2026-11-04T12:00:00Z",
+          "content_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ],
+      "start_exclusive": "2026-11-03T12:00:00Z",
+      "end_inclusive": "2026-11-04T12:00:00Z",
+      "universe": "all_assets"
+    },
+    "withdrawals": {
+      "binding": "synthetic-source-1",
+      "started_at": "2026-11-04T12:00:00Z",
+      "finished_at": "2026-11-04T12:00:00Z",
+      "source_as_of": "2026-11-04T12:00:00Z",
+      "stable_revision": "synthetic-revision-1",
+      "pages": [
+        {
+          "number": 1,
+          "size": 100,
+          "count": 0,
+          "total": 0,
+          "binding": "synthetic-source-1",
+          "revision": "synthetic-revision-1",
+          "started_at": "2026-11-04T12:00:00Z",
+          "finished_at": "2026-11-04T12:00:00Z",
+          "content_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ],
+      "start_exclusive": "2026-11-03T12:00:00Z",
+      "end_inclusive": "2026-11-04T12:00:00Z",
+      "universe": "all_assets"
+    },
+    "rewards": {
+      "binding": "synthetic-source-1",
+      "started_at": "2026-11-04T12:00:00Z",
+      "finished_at": "2026-11-04T12:00:00Z",
+      "source_as_of": "2026-11-04T12:00:00Z",
+      "stable_revision": "synthetic-revision-1",
+      "pages": [
+        {
+          "number": 1,
+          "size": 100,
+          "count": 0,
+          "total": 0,
+          "binding": "synthetic-source-1",
+          "revision": "synthetic-revision-1",
+          "started_at": "2026-11-04T12:00:00Z",
+          "finished_at": "2026-11-04T12:00:00Z",
+          "content_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ],
+      "start_exclusive": "2026-11-03T12:00:00Z",
+      "end_inclusive": "2026-11-04T12:00:00Z",
+      "universe": "all_assets"
+    },
+    "convert": {
+      "binding": "synthetic-source-1",
+      "started_at": "2026-11-04T12:00:00Z",
+      "finished_at": "2026-11-04T12:00:00Z",
+      "source_as_of": "2026-11-04T12:00:00Z",
+      "stable_revision": "synthetic-revision-1",
+      "pages": [
+        {
+          "number": 1,
+          "size": 100,
+          "count": 0,
+          "total": 0,
+          "binding": "synthetic-source-1",
+          "revision": "synthetic-revision-1",
+          "started_at": "2026-11-04T12:00:00Z",
+          "finished_at": "2026-11-04T12:00:00Z",
+          "content_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ],
+      "start_exclusive": "2026-11-03T12:00:00Z",
+      "end_inclusive": "2026-11-04T12:00:00Z",
+      "universe": "all_assets"
+    },
+    "dust": {
+      "binding": "synthetic-source-1",
+      "started_at": "2026-11-04T12:00:00Z",
+      "finished_at": "2026-11-04T12:00:00Z",
+      "source_as_of": "2026-11-04T12:00:00Z",
+      "stable_revision": "synthetic-revision-1",
+      "pages": [
+        {
+          "number": 1,
+          "size": 100,
+          "count": 0,
+          "total": 0,
+          "binding": "synthetic-source-1",
+          "revision": "synthetic-revision-1",
+          "started_at": "2026-11-04T12:00:00Z",
+          "finished_at": "2026-11-04T12:00:00Z",
+          "content_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ],
+      "start_exclusive": "2026-11-03T12:00:00Z",
+      "end_inclusive": "2026-11-04T12:00:00Z",
+      "universe": "all_assets"
+    },
+    "transfers": {
+      "binding": "synthetic-source-1",
+      "started_at": "2026-11-04T12:00:00Z",
+      "finished_at": "2026-11-04T12:00:00Z",
+      "source_as_of": "2026-11-04T12:00:00Z",
+      "stable_revision": "synthetic-revision-1",
+      "pages": [
+        {
+          "number": 1,
+          "size": 100,
+          "count": 0,
+          "total": 0,
+          "binding": "synthetic-source-1",
+          "revision": "synthetic-revision-1",
+          "started_at": "2026-11-04T12:00:00Z",
+          "finished_at": "2026-11-04T12:00:00Z",
+          "content_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ],
+      "start_exclusive": "2026-11-03T12:00:00Z",
+      "end_inclusive": "2026-11-04T12:00:00Z",
+      "universe": "all_assets"
+    },
+    "flexible_lifecycle": {
+      "binding": "synthetic-source-1",
+      "started_at": "2026-11-04T12:00:00Z",
+      "finished_at": "2026-11-04T12:00:00Z",
+      "source_as_of": "2026-11-04T12:00:00Z",
+      "stable_revision": "synthetic-revision-1",
+      "pages": [
+        {
+          "number": 1,
+          "size": 100,
+          "count": 0,
+          "total": 0,
+          "binding": "synthetic-source-1",
+          "revision": "synthetic-revision-1",
+          "started_at": "2026-11-04T12:00:00Z",
+          "finished_at": "2026-11-04T12:00:00Z",
+          "content_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ],
+      "start_exclusive": "2026-11-03T12:00:00Z",
+      "end_inclusive": "2026-11-04T12:00:00Z",
+      "universe": "all_assets"
+    },
+    "locked_lifecycle": {
+      "binding": "synthetic-source-1",
+      "started_at": "2026-11-04T12:00:00Z",
+      "finished_at": "2026-11-04T12:00:00Z",
+      "source_as_of": "2026-11-04T12:00:00Z",
+      "stable_revision": "synthetic-revision-1",
+      "pages": [
+        {
+          "number": 1,
+          "size": 100,
+          "count": 0,
+          "total": 0,
+          "binding": "synthetic-source-1",
+          "revision": "synthetic-revision-1",
+          "started_at": "2026-11-04T12:00:00Z",
+          "finished_at": "2026-11-04T12:00:00Z",
+          "content_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+        }
+      ],
+      "start_exclusive": "2026-11-03T12:00:00Z",
+      "end_inclusive": "2026-11-04T12:00:00Z",
+      "universe": "all_assets"
+    }
+  }
+}
