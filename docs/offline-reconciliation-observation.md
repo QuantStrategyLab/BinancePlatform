@@ -141,7 +141,10 @@ The contract is:
   withdrawal fees cannot become zero. A canonical transfer supplies source and
   destination wallets and one exact positive quantity; both signed legs are
   derived once. Earn subscription/redemption similarly pairs Spot with its
-  named Earn wallet. The canonical upstream identity must represent one
+  named Earn wallet. Both transfers and Earn lifecycle events require an
+  explicitly supplied `fee_quantity` string that validates as zero; a missing,
+  invalid or nonzero fee keeps the comparison `UNRECONCILED`. Receipt integrity
+  alone does not qualify omitted fees. The canonical upstream identity must represent one
   economic movement, not separate duplicate wallet sightings. Duplicate native
   identities, missing second-wallet quantities, unsupported boundary wallets,
   transfer fees or lifecycle directions remain `UNRECONCILED`.

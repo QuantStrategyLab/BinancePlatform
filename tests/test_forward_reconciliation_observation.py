@@ -84,7 +84,7 @@ def event(kind, *, asset="USDT", quantity="10", **fields):
 
 
 def transfer(f):
-    f["events"] = [event("transfer", source_wallet="spot", destination_wallet="funding")]
+    f["events"] = [event("transfer", source_wallet="spot", destination_wallet="funding", fee_quantity="0")]
     f["closing"]["wallets"]["spot"]["balances"]["USDT"] = "90"
     f["closing"]["wallets"]["funding"]["balances"]["USDT"] = "10"
     f["event_receipts"]["transfers"] = {**f["event_receipts"]["transfers"],
@@ -125,6 +125,46 @@ def test_internal_transfer_has_two_native_legs_and_no_external_inflow():
     assert sorted(x["quantity"] for x in report["legs"]) == ["-10", "10"]
 
 
+@pytest.mark.parametrize("kind", ["transfer", "flexible_subscription", "flexible_redemption",
+                                  "locked_subscription", "locked_redemption"])
+@pytest.mark.parametrize("private", [False, True], ids=["mock", "private"])
+@pytest.mark.parametrize("fee", ["missing", None, "", "unknown", 0, False, "-0", "NaN", "1", "0", "0.00"])
+def test_paired_movement_requires_explicit_validated_zero_fee(kind, private, fee):
+    f = fixture()
+    wallet = ("funding" if kind == "transfer" else
+              "flexible_earn" if kind.startswith("flexible") else "locked_earn")
+    source, destination = ((wallet, "spot") if kind.endswith("redemption") else ("spot", wallet))
+    f["opening"]["wallets"][source]["balances"]["USDT"] = "100"
+    f["closing"]["wallets"][source]["balances"]["USDT"] = "90"
+    f["closing"]["wallets"][destination]["balances"]["USDT"] = str(
+        int(f["opening"]["wallets"][destination]["balances"]["USDT"]) + 10)
+    movement = event(kind, source_wallet=source, destination_wallet=destination,
+                     fee_semantics="unknown")
+    if fee != "missing":
+        movement["fee_quantity"] = fee
+    f["events"] = [movement]
+    surface = ("transfers" if kind == "transfer" else
+               "flexible_lifecycle" if kind.startswith("flexible") else "locked_lifecycle")
+    f["event_receipts"][surface]["pages"] = receipt(END)["pages"]
+    seal_receipts(f)
+    kwargs = {}
+    if private:
+        f["environment"] = "private_observation"
+        kwargs = {"expected_account_id": f["account_id"], "expected_binding": f["binding"]}
+    original = deepcopy(f)
+    report = build_forward_report(f, **kwargs)
+    if fee in ("0", "0.00"):
+        assert report["status"] == ("MATCHED_OBSERVATION" if private else "MATCHED_" + fixture()["environment"].upper())
+        assert report["reason_codes"] == []
+        assert sorted(leg["quantity"] for leg in report["legs"]) == ["-10", "10"]
+    else:
+        assert report["status"] == "UNRECONCILED"
+        assert report["reason_codes"]
+        assert report["combined"] is None
+    assert report["policy"]["execution_authority_granted"] is False
+    assert f == original
+
+
 @pytest.mark.parametrize("problem", ["duplicate", "missing_leg", "unknown_destination",
                                     "pending", "outside_window", "count_missing"])
 def test_transfer_adversaries_cannot_match(problem):
@@ -156,7 +196,7 @@ def test_earn_lifecycle_is_paired_once(kind):
     f["closing"]["wallets"][source]["balances"]["USDT"] = "90"
     f["closing"]["wallets"][destination]["balances"]["USDT"] = str(
         int(f["opening"]["wallets"][destination]["balances"]["USDT"]) + 10)
-    f["events"] = [event(kind, source_wallet=source, destination_wallet=destination)]
+    f["events"] = [event(kind, source_wallet=source, destination_wallet=destination, fee_quantity="0")]
     surface = "flexible_lifecycle" if kind.startswith("flexible") else "locked_lifecycle"
     f["event_receipts"][surface]["pages"] = receipt(END)["pages"]
     seal_receipts(f)

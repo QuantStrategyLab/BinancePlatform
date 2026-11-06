@@ -202,7 +202,7 @@ def _legs(event):
         add(source, asset, -quantity)
         add(destination, asset, quantity)
         # Nonzero or unknown fees cannot disappear into the paired amount.
-        _require(event.get("fee_quantity", "0") == "0", "transfer_fee_unsupported")
+        _require(_amount(event.get("fee_quantity")) == 0, "transfer_fee_unsupported")
     elif kind in ("fill", "convert", "dust"):
         _require(event.get("from_asset") != event.get("to_asset"), "exchange_assets_invalid")
         outgoing, incoming = _amount(event.get("from_quantity")), _amount(event.get("to_quantity"))
