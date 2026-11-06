@@ -173,6 +173,10 @@ def route(send, *, kind, report=None, runtime=None, reason=None, state="active",
           env=None, candidate_store=None, marker_store=None, order_digest=None,
           occurred_at=None, source_run_id=None, send_coverage=None):
     values = os.environ if env is None else env
+    if (str(values.get("RUNTIME_TARGET_ENABLED", "")).strip().lower() == "false"
+            and kind in {"routine_cycle", "healthy_heartbeat"}):
+        _note(report, "target_disabled")
+        return False
     selected = select_notification_route(event_kind=kind, env=values, flag_key=FLAG)
     def coverage_failure():
         if send_coverage is not None:

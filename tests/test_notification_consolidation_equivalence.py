@@ -1,6 +1,7 @@
 """Call recordings made on main 3974b72 before the notification patch."""
 
 import copy
+import hashlib
 import json
 import socket
 import os
@@ -128,6 +129,19 @@ def test_flags_off_matches_main_entrypoint_and_renderer_call_recordings(monkeypa
     monkeypatch.setattr(unified, "route", route_with_confirmed_candidate)
     golden = json.loads(GOLDEN.read_text())
     expected = copy.deepcopy(golden[mode])
+    from notifications.operational import message
+    error_text = message("runtime_failure")
+    # P10 intentionally changes only the urgent notification presentation.
+    # Preserve every broker/state/accounting assertion in the historical trace.
+    def update_error_presentation(value):
+        if isinstance(value, dict):
+            return {key: (hashlib.sha256(error_text.encode()).hexdigest() if key == "compact_text_sha256"
+                          else len(error_text) if key == "compact_text_length"
+                          else update_error_presentation(item)) for key, item in value.items()}
+        if isinstance(value, list):
+            return [update_error_presentation(item) for item in value]
+        return error_text if value == "fixture notice" else value
+    expected["runtime"][1] = update_error_presentation(expected["runtime"][1])
     observed = record_main_calls(monkeypatch, mode)
     assert deferred
     # The confirmed candidate replaces only routine transport. Keep the

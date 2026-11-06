@@ -394,7 +394,7 @@ def test_real_archived_receipt_proves_recovery_but_missing_or_stale_receipt_does
     assert len(sends) == 3
 
 
-def test_workflow_failure_correlates_to_runtime_incident_and_flags_off_delegates_original(monkeypatch):
+def test_workflow_failure_correlates_to_runtime_incident_and_flags_off_uses_p10(monkeypatch):
     from notifications import operational
     env, store, sends = configure(monkeypatch), MemoryStore(), []
     monkeypatch.setenv("GITHUB_RUN_ID", "42")
@@ -415,7 +415,7 @@ def test_workflow_failure_correlates_to_runtime_incident_and_flags_off_delegates
     assert sends == ["original"]
     monkeypatch.delenv(unified.FLAG)
     operational.notify_workflow(assessment, "unchanged legacy", send=send, store=store)
-    assert sends[-1] == "unchanged legacy"
+    assert sends[-1] == operational.message("runtime_failure")
 
 
 def test_snapshot_matches_declared_qpk_source_hash_and_new_strings_are_single_language(monkeypatch):
