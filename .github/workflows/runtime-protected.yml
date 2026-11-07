@@ -332,7 +332,7 @@ jobs:
 
       - name: Publish disabled host observation
         if: ${{ steps.disabled-host.outputs.publish_ready == 'true' }}
-        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-target-lifecycle@2cb9834dc34b8a23e1b261457e1e077bfc414386
+        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-target-lifecycle@884b780364a8e04bc647575be4646e6c2c702ce7
         with:
           source-id: binance.runtime-target-lifecycle
           target-id: ${{ steps.disabled-host.outputs.target_id }}
