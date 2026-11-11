@@ -1098,10 +1098,12 @@ def test_prospective_opening_blocks_spot_earn_double_read_divergence(monkeypatch
         )
 
 
+@pytest.mark.parametrize("control_state", ["RECONCILE_ONLY", "ACTIVE_LKG"])
 def test_prospective_proposal_runtime_binds_run_fingerprint_without_ledger_or_order_writes(
-    monkeypatch, tmp_path, capsys
+    monkeypatch, tmp_path, capsys, control_state
 ):
     from scripts import migrate_daily_accounting_state as migration
+    from application import reconciliation_recovery
 
     now = datetime.now(timezone.utc)
     ledger = _ledger(
@@ -1112,8 +1114,14 @@ def test_prospective_proposal_runtime_binds_run_fingerprint_without_ledger_or_or
     refs = {
         "ledger_ref": Ref(Snapshot(ledger)),
         "owner_ref": Ref(Snapshot(None)),
-        "control_ref": Ref(Snapshot({"state": "RECONCILE_ONLY"})),
+        "control_ref": Ref(Snapshot({"state": control_state})),
     }
+    verified = []
+    monkeypatch.setattr(reconciliation_recovery, "activated_target",
+                        lambda target, control, *, expected: verified.append(control["state"]))
+    if control_state == "ACTIVE_LKG":
+        with pytest.raises(migration.MigrationBlocked, match="recovery_control_not_reconcile_only"):
+            migration._read_source(refs)
     captured = []
 
     def encrypt(proposal, **kwargs):
@@ -1175,6 +1183,8 @@ def test_prospective_proposal_runtime_binds_run_fingerprint_without_ledger_or_or
     assert proposal["control_sha256"] == migration.digest({"state": "RECONCILE_ONLY"})
     assert proposal["historical_difference_unresolved"] is True
     assert proposal["opening_mode"] == "prospective"
+    assert verified == (["ACTIVE_LKG", "ACTIVE_LKG"] if control_state == "ACTIVE_LKG" else [])
+    assert refs["control_ref"].snapshot.value == {"state": control_state}
     assert refs["ledger_ref"].snapshot.value == original_ledger
     assert (
         refs["ledger_ref"].snapshot.value["accounting_rebase"]["archive_document"]
