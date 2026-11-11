@@ -188,6 +188,38 @@ def test_runtime_workflow_revision_pin_is_required_before_release_selection() ->
     assert "python3 scripts/select_runtime_release_sha.py --verify-workflow" in verify
 
 
+@pytest.mark.parametrize(
+    ("mode", "pin", "head", "accepted"),
+    [
+        ("rebase-proposal", "b" * 40, "b" * 40, True),
+        ("rebase-proposal", "", "a" * 40, False),
+        ("rebase-proposal", "b" * 40, "a" * 40, False),
+        ("none", "b" * 40, "a" * 40, True),
+        ("prospective-rebase-apply", "b" * 40, "b" * 40, False),
+    ],
+)
+def test_rebase_preview_pin_is_exact_and_does_not_authorize_apply(mode, pin, head, accepted):
+    broker_job = _job_block(WORKFLOW.read_text(encoding="utf-8"), "deploy")
+    verify = broker_job.split("- name: Verify approved workflow revision", 1)[1]
+    verify = verify.split("- name: Resolve approved runtime release SHA", 1)[0]
+    command = textwrap.dedent(verify.split("run: |\n", 1)[1])
+    result = subprocess.run(
+        ["bash", "-c", command],
+        cwd=WORKFLOW.parents[2],
+        env={
+            "ACCOUNTING_MIGRATION_ACTION": mode,
+            "BINANCE_REBASE_PREVIEW_SHA": pin,
+            "BINANCE_RUNTIME_WORKFLOW_SHA": "a" * 40,
+            "BINANCE_RUNTIME_RELEASE_SHA": "c" * 40,
+            "GITHUB_SHA": head,
+            "RECONCILE_ONLY": "true",
+            "RUNTIME_TARGET_ENABLED": "false",
+        },
+        capture_output=True, text=True, check=False,
+    )
+    assert (result.returncode == 0) is accepted
+
+
 def test_runtime_workflow_keeps_trigger_sha_distinct_from_app_checkout() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     broker_job = _job_block(workflow, "deploy")

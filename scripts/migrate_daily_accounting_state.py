@@ -1181,7 +1181,7 @@ def _refs():
     }
 
 
-def _read_source(refs):
+def _read_source(refs, *, proposal_target=None, expected=None):
     owner = refs["owner_ref"].get(retry=None)
     ledger = refs["ledger_ref"].get(retry=None)
     control = refs["control_ref"].get(retry=None)
@@ -1189,7 +1189,16 @@ def _read_source(refs):
         raise MigrationBlocked("ledger_unavailable_or_owned")
     ledger_value = ledger.to_dict()
     control_value = control.to_dict() if control.exists else None
-    _validate_control(control_value)
+    if (proposal_target is not None and isinstance(control_value, Mapping)
+            and control_value.get("state") == "ACTIVE_LKG"):
+        from application.reconciliation_recovery import activated_target
+
+        try:
+            activated_target(proposal_target, control_value, expected=expected)
+        except (KeyError, TypeError, ValueError, AttributeError):
+            raise MigrationBlocked("prospective_control_identity_unverified") from None
+    else:
+        _validate_control(control_value)
     _validate_safe_order_state(ledger_value)
     return ledger, ledger_value, control_value
 
@@ -2968,7 +2977,8 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
         return release_stale_owner(
             refs, client=client, target=target, expected=expected
         )
-    ledger_snapshot, ledger, control = _read_source(refs)
+    source_options = {"proposal_target": target, "expected": expected} if action == "rebase-proposal" else {}
+    ledger_snapshot, ledger, control = _read_source(refs, **source_options)
     client = connect_client(
         os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30
     )
@@ -3017,18 +3027,21 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
         raise MigrationBlocked("utc_day_changed_during_evidence")
     if action == "rebase-proposal":
         proposal = build_rebase_proposal(ledger=ledger, evidence=evidence, observed_at=decision_now)
-        after_snapshot, after_ledger, after_control = _read_source(refs)
+        after_snapshot, after_ledger, after_control = _read_source(refs, **source_options)
         if (digest(ledger) != digest(after_ledger) or digest(control) != digest(after_control)
                 or _timestamp(ledger_snapshot.update_time) != _timestamp(after_snapshot.update_time)):
             raise MigrationBlocked("proposal_ledger_changed_during_read")
         run_id = proposal_run_id_from_env()
+        # An approved apply still requires the exact state-only quiescence.
+        apply_control = ({**control, "state": "RECONCILE_ONLY"}
+                         if isinstance(control, Mapping) and control.get("state") == "ACTIVE_LKG" else control)
         proposal.update(
             proposal_run_id=run_id,
             archive_document=prospective_archive_document(run_id),
             source_sha=os.environ["GITHUB_SHA"],
             ledger_update_time=_timestamp(ledger_snapshot.update_time),
             ledger_sha256=digest(ledger),
-            control_sha256=digest(control),
+            control_sha256=digest(apply_control),
         )
         encrypted = encrypt_rebase_proposal(proposal, certificate=os.environ.get("PROPOSAL_RECIPIENT_CERTIFICATE", ""))
         REBASE_PROPOSAL_PATH.parent.mkdir(parents=True, exist_ok=True)

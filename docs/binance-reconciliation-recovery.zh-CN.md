@@ -129,6 +129,11 @@ Spot + Flexible Earn 持有资产口径，闲置理财不等于资金退出策�
 用户确认可采用“破坏性”语义时，仅表示**从本次观察时刻起**建立新会计基线，不是物理删除旧证据。
 操作入口仍是现有 `rebase-proposal` →（人工审阅加密预览）→ 另授权的 `prospective-rebase-apply`：
 
+在 `main` 运行只读预览时，`BINANCE_REBASE_PREVIEW_SHA` 必须等于已批准的工作流提交。
+预览从该提交加载代码。定时交易与其他恢复操作继续检查原生产版本。
+交易开关关闭且原控制记录为 `ACTIVE_LKG` 时，预览先验证原恢复确认，再读取账户。
+候选绑定将来仅把状态改为 `RECONCILE_ONLY` 后的控制记录摘要，实际变更仍须另行确认。
+
 - **不要求**用缺失的旧历史 / `historical_continuity` 去证明新周期；旧账本与旧归档保持不可变，
   提案中 `historical_difference_unresolved=true`，期前收益分类为 `unreconstructed_history`。
 - **仍 fail-closed**：建立前核验账户身份、Spot、Flexible Earn、当前 ledger/control；拒绝
