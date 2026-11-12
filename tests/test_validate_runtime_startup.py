@@ -160,10 +160,21 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
 
     replay_client.get_historical_klines = historical_klines
 
+    def load_upstream_pool(*, state, now_utc):
+        checked = main.validate_trend_pool_payload(
+            replay_runtime.trend_pool_payload, source_label="fixture", now_utc=now_utc,
+        )
+        assert checked["ok"] is True
+        resolution = main.build_trend_pool_resolution(
+            checked, source_kind="fresh_upstream", degraded=False, now_utc=now_utc,
+        )
+        return resolution["symbol_map"], resolution
+
+    monkeypatch.setattr(main, "load_trend_universe_from_live_pool", load_upstream_pool)
+
     def build():
         runtime = main.build_live_runtime(now_utc=now)
         runtime.state_loader = state_store.load
-        runtime.trend_pool_payload = replay_runtime.trend_pool_payload
         assert runtime.btc_market_snapshot is None
         assert runtime.trend_indicator_snapshots is None
         return runtime

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import hashlib
 import os
-from copy import deepcopy
 from contextvars import ContextVar
 from datetime import datetime, timezone
 
@@ -278,10 +277,9 @@ def report_issue(report):
     if not report.get("execution_receipt"):
         return "receipt_missing", "execution_receipt", 1
     try:
-        from quant_platform_kit.common.execution_receipts import attach_execution_receipt
-        # Public validation includes release/target binding; leave the original
-        # report and all existing acceptance functions unchanged.
-        attach_execution_receipt(deepcopy(report), report["execution_receipt"])
+        from application.execution_receipt_adapter import validate_report_execution_receipt
+
+        validate_report_execution_receipt(report)
     except (ValueError, TypeError, KeyError):
         return "receipt_unacceptable", "execution_receipt", 1
     outcome = report["execution_receipt"]["outcome"]
