@@ -660,7 +660,6 @@ def _validate_execution_receipt_status(report: Mapping[str, Any]) -> None:
     attempts = counts["submission_attempted_count"]
     no_execution_observed = not any(counts.values())
     has_receipt = "execution_receipt" in report
-    raw_receipt = report.get("execution_receipt")
     if not has_receipt:
         # Older approved runtimes can omit a receipt when the report has no
         # attested strategy release. Zero observed submissions is still a
@@ -670,23 +669,11 @@ def _validate_execution_receipt_status(report: Mapping[str, Any]) -> None:
             return
         raise _stop("strategy_execution_receipt_required")
     try:
-        from quant_platform_kit.common.execution_receipts import validate_execution_receipt
+        from application.execution_receipt_adapter import validate_report_execution_receipt
 
-        receipt = validate_execution_receipt(raw_receipt)
-    except Exception:
+        receipt = validate_report_execution_receipt(report)
+    except (ValueError, TypeError, KeyError):
         raise _stop("strategy_execution_receipt_invalid") from None
-    target = report.get("runtime_target")
-    runtime_loaded = report.get("runtime_release_receipt")
-    strategy_release = runtime_loaded.get("strategy_release") if isinstance(runtime_loaded, Mapping) else None
-    if (
-        not isinstance(target, Mapping)
-        or receipt["platform"] != "binance"
-        or receipt["strategy_profile"] != report.get("strategy_profile")
-        or receipt["execution_mode"] != target.get("execution_mode")
-        or not isinstance(strategy_release, Mapping)
-        or receipt["strategy_revision"] != strategy_release.get("strategy_revision")
-    ):
-        raise _stop("strategy_execution_receipt_invalid")
     outcome = receipt["outcome"]
     confirmation = receipt["broker_confirmation"]
     if no_execution_observed:
