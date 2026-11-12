@@ -21,7 +21,9 @@ UID、余额、订单和成交永不写入日志、报告或 artifact。启用�
 ## 受限恢复控制器
 
 显式选择 Runtime 的 `recovery_action=prepare`，同时 `reconcile_only=true`，可生成并发布恢复候选。
-运行目标必须已停用，分支必须是 main，不能混用其他诊断或 artifact 模式。两项恢复凭据仅在对应
+运行目标必须已停用，分支必须是 `main`，不能混用其他诊断或 artifact 模式。仓库变量
+`BINANCE_RECOVERY_WORKFLOW_SHA` 必须指向获准的 `main` 工作流提交。应用仍使用已批准的
+`BINANCE_RUNTIME_RELEASE_SHA`。两项恢复凭据仅在对应
 prepare / verify / activate 步骤消费；普通运行不取得这些凭据。控制台固定为既有 QSL 私有控制台，禁止重定向和自定义目标。
 
 本次适配严格绑定 2026-09-03 的既有冻结收据（Runtime 33768005187 / artifact 9898377291）、
