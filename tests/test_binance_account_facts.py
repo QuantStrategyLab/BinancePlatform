@@ -1349,6 +1349,21 @@ def _eligible_strategy_report(*, receipt_outcome="no_action", confirmation=None,
     return report, runtime_target
 
 
+def test_strategy_report_checks_authority_bound_receipt():
+    from scripts import read_binance_account_facts as reader
+
+    report, target = _eligible_strategy_report()
+    revision = report["execution_receipt"]["strategy_revision"]
+    report["runtime_release_receipt"] = {"attestation_state": "legacy_unattested"}
+    report["binance_live_authority"] = {
+        "strategy_revision": revision, "runtime_revision": "b" * 40, "config_sha256": "c" * 64,
+    }
+    reader.validate_strategy_report(report, target)
+    report["binance_live_authority"]["strategy_revision"] = "d" * 40
+    with pytest.raises(reader.ReaderError, match="strategy_execution_receipt_invalid"):
+        reader.validate_strategy_report(report, target)
+
+
 def test_strategy_report_accepts_closed_execution_receipt():
     from scripts import read_binance_account_facts as reader
 

@@ -91,6 +91,25 @@ def test_success_requires_complete_read_only_contract(capsys):
     assert result["executed_call_count"] == 0 and result["execution_permitted"] is False
 
 
+def test_live_readiness_projects_the_selected_release_not_child_input(capsys, monkeypatch):
+    selected = "a" * 40
+    monkeypatch.setenv("BINANCE_SELECTED_APPLICATION_SHA", selected)
+    candidate = passed() | {
+        "application_sha": "b" * 40,
+        "trend_pool_source": "fresh_upstream",
+        "execution_receipt_checked": True,
+    }
+    code, result = run_projection(capsys, json.dumps(candidate), 0)
+    assert code == 0
+    assert result["application_sha"] == selected
+    assert result["trend_pool_source"] == "fresh_upstream"
+    assert result["execution_receipt_checked"] is True
+
+    candidate["execution_receipt_checked"] = False
+    code, result = run_projection(capsys, json.dumps(candidate), 0)
+    assert code == 0 and "application_sha" not in result
+
+
 @pytest.mark.parametrize("override", [
     {"cycle_complete": False}, {"execution_permitted": True}, {"risk_outcome": "REJECT"},
     {"validation_scope": "live"}, {"broker_read_count": True},

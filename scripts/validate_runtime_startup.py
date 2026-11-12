@@ -346,6 +346,24 @@ class _SuppressedPerformanceMonitor:
         self.calls += 1
 
 
+def _live_pool_readiness(runtime, report):
+    if runtime.strategy_profile != "crypto_live_pool_rotation" or runtime.runtime_target.execution_mode != "live":
+        return {}
+    pool = runtime.trend_pool_contract
+    if (runtime.trend_pool_payload is not None or not isinstance(pool, Mapping)
+            or pool.get("source_kind") != "fresh_upstream" or pool.get("is_fresh") is not True):
+        raise FullCycleValidationError("full_cycle_trend_pool_not_fresh", failure_stage="result")
+    from application.execution_receipt_adapter import validate_report_execution_receipt
+
+    try:
+        receipt = validate_report_execution_receipt(report)
+        if receipt["outcome"] != "no_action" or receipt["broker_confirmation"] != "not_applicable":
+            raise ValueError("Unexpected validation receipt")
+    except (TypeError, ValueError):
+        raise FullCycleValidationError("full_cycle_execution_receipt_invalid", failure_stage="result") from None
+    return {"trend_pool_source": "fresh_upstream", "execution_receipt_checked": True}
+
+
 def validate_full_cycle(*, runtime_builder=None, client_connector=None):
     """Run one real-input cycle with every mutation port closed."""
     import importlib
@@ -462,6 +480,7 @@ def validate_full_cycle(*, runtime_builder=None, client_connector=None):
         "suppressed_side_effect_count": report.get("side_effect_summary", {}).get("suppressed_call_count", 0),
         "suppressed_strategy_record_count": monitor.calls,
         "execution_permitted": False,
+        **_live_pool_readiness(runtime, report),
     }
 
 
