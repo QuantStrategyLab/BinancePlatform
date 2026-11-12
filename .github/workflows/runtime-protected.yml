@@ -605,8 +605,7 @@ jobs:
 
           # Capture the sole existing validator. Child/provider diagnostics never reach logs.
           result = {"status": "failed", "reason_code": "validation_input_invalid",
-                    "validation_scope": "full_cycle_no_submit", "execution_permitted": False,
-                    "application_sha": os.environ["BINANCE_SELECTED_APPLICATION_SHA"]}
+                    "validation_scope": "full_cycle_no_submit", "execution_permitted": False}
           process = None
           allowed_reasons = {
               "earn_checkpoint_required_for_receipt",
@@ -785,7 +784,9 @@ jobs:
                   result.update(status="passed", reason_code="full_cycle_complete",
                                 cycle_complete=True, risk_outcome="APPROVE", executed_call_count=0)
                   if candidate.get("trend_pool_source") == "fresh_upstream" and candidate.get("execution_receipt_checked") is True:
-                      result.update(trend_pool_source="fresh_upstream", execution_receipt_checked=True)
+                      release = os.environ.get("BINANCE_SELECTED_APPLICATION_SHA", "")
+                      if len(release) == 40 and all(char in "0123456789abcdef" for char in release):
+                          result.update(application_sha=release, trend_pool_source="fresh_upstream", execution_receipt_checked=True)
               else:
                   result["reason_code"] = (candidate.get("reason_code")
                                            if candidate.get("reason_code") in allowed_reasons
