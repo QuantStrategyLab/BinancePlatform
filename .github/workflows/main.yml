@@ -1,5 +1,5 @@
 name: Runtime
-run-name: Runtime · ${{ inputs.recovery_action == 'prepare-github' && 'prepare GitHub recovery candidate' || inputs.recovery_action == 'verify-github' && 'GitHub recovery verification' || inputs.full_cycle && 'full-cycle-validation' || inputs.validate_only && 'validation' || inputs.reconcile_only && 'reconciliation' || vars.RUNTIME_TARGET_ENABLED == 'true' && 'strategy' || 'disabled' }}
+run-name: Runtime · ${{ inputs.recovery_action == 'prepare-github' && 'prepare GitHub recovery candidate' || inputs.recovery_action == 'verify-github' && 'GitHub recovery verification' || inputs.recovery_action == 'activate-github' && 'GitHub recovery activation (trading disabled)' || inputs.full_cycle && 'full-cycle-validation' || inputs.validate_only && 'validation' || inputs.reconcile_only && 'reconciliation' || vars.RUNTIME_TARGET_ENABLED == 'true' && 'strategy' || 'disabled' }}
 
 on:
   workflow_dispatch:
@@ -42,13 +42,13 @@ on:
         type: choice
         required: false
         default: none
-        options: [none, diagnose, prepare, verify, activate, prepare-github, verify-github]
+        options: [none, diagnose, prepare, verify, activate, prepare-github, verify-github, activate-github]
       recovery_id:
         description: "Exact prepared recovery ID; required for verification or activation"
         type: string
         required: false
       recovery_candidate_sha256:
-        description: "Exact candidate SHA-256 from the prepare run; required for verify-github"
+        description: "Exact candidate SHA-256 from the prepare run for GitHub approval"
         type: string
         required: false
       accounting_migration_action:

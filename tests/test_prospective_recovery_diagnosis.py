@@ -828,6 +828,43 @@ def test_github_verify_requires_bound_owner_review_before_broker_reads(monkeypat
     assert docs[controller.CONTROL_DOCUMENT].snapshot.value == stored
 
 
+@pytest.mark.parametrize("separate_activation_approval", [False, True])
+def test_github_activation_cannot_reuse_read_only_approval(monkeypatch, separate_activation_approval):
+    from application.reconciliation_recovery import activated_target
+
+    controller, target, expected, recovery_id, docs, writes, _requests = _controller_setup(
+        monkeypatch, prepared=True
+    )
+    stored = docs[controller.CONTROL_DOCUMENT].snapshot.value
+    monkeypatch.setenv("RECOVERY_CANDIDATE_SHA256", stored["candidate"]["candidate_sha256"])
+    monkeypatch.setenv("BINANCE_RECOVERY_REVIEWER_ID", "55")
+    environment = (
+        controller.GITHUB_ACTIVATION_ENVIRONMENT
+        if separate_activation_approval else controller.GITHUB_REVIEW_ENVIRONMENT
+    )
+    monkeypatch.setattr(controller, "request_json", lambda *_args, **_kwargs: [{
+        "state": "approved",
+        "user": {"id": 55, "login": "synthetic-owner"},
+        "environments": [{"name": environment}],
+    }])
+    if not separate_activation_approval:
+        monkeypatch.setattr(controller, "connect_client", lambda *_args, **_kwargs: pytest.fail("broker read before activation approval"))
+        with pytest.raises(ValueError, match="github_recovery_review_missing_or_ambiguous"):
+            controller.run("activate-github", recovery_id)
+        assert not writes
+        return
+
+    result = controller.run("activate-github", recovery_id)
+
+    assert result["status"] == "active_lkg"
+    assert result["runtime_target_enabled"] is False
+    assert result["no_order"] is True
+    assert result["execution_authority_granted"] is False
+    assert len(writes) == 1
+    assert writes[0]["github_activation_run_id"] == 401
+    assert activated_target(target, writes[0], expected=expected).live_continuity.state == "ACTIVE_LKG"
+
+
 @pytest.mark.parametrize(
     "setup_kwargs,reason",
     [

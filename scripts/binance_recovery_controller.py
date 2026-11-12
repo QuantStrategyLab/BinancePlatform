@@ -67,6 +67,7 @@ from scripts.reconcile_frozen_live_baseline import _symbols_from_env
 REPOSITORY = "QuantStrategyLab/BinancePlatform"
 CONSOLE = "https://qsl-strategy-switch-console.pigbibi.workers.dev"
 GITHUB_REVIEW_ENVIRONMENT = "binance-recovery-review"
+GITHUB_ACTIVATION_ENVIRONMENT = "live-trading"
 STAGE = "preflight"
 MANAGED_SYMBOLS_SHA256 = "eb824ac33ac9781344cf717bd5a9ca291cfda87b2e8ca26d2ccc3b444635bbc8"
 CONTROL_DOCUMENT = "MULTI_ASSET_STATE__recovery"
@@ -196,8 +197,8 @@ def verified_run(
     return {key: value[key] for key in ("id", "head_sha", "head_branch", "event", "path")}
 
 
-def read_github_confirmation(*, current_run, recovery_id, candidate):
-    """Read the owner review for this run and adapt it for in-memory verification."""
+def read_github_confirmation(*, current_run, recovery_id, candidate, review_environment):
+    """Bind the owner review to the exact candidate and the required environment."""
     expected = os.environ.get("RECOVERY_CANDIDATE_SHA256", "")
     reviewer = os.environ.get("BINANCE_RECOVERY_REVIEWER_ID", "")
     if (not re.fullmatch(r"[0-9a-f]{64}", expected)
@@ -212,7 +213,7 @@ def read_github_confirmation(*, current_run, recovery_id, candidate):
     )
     environment_reviews = [
         review for review in reviews
-        if any(environment.get("name") == GITHUB_REVIEW_ENVIRONMENT for environment in review["environments"])
+        if any(environment.get("name") == review_environment for environment in review["environments"])
     ]
     if len(environment_reviews) != 1:
         raise ValueError("github_recovery_review_missing_or_ambiguous")
@@ -698,8 +699,13 @@ def run(action, recovery_id=""):
     if previous["source"]["symbols_sha256"] != digest(list(symbols)):
         raise ValueError("recovery_managed_symbols_changed")
     STAGE = "confirmation_read"
-    if action == "verify-github":
-        confirmation = read_github_confirmation(current_run=current_run, recovery_id=recovery_id, candidate=candidate)
+    if action in {"verify-github", "activate-github"}:
+        confirmation = read_github_confirmation(
+            current_run=current_run,
+            recovery_id=recovery_id,
+            candidate=candidate,
+            review_environment=GITHUB_ACTIVATION_ENVIRONMENT if action == "activate-github" else GITHUB_REVIEW_ENVIRONMENT,
+        )
     else:
         response = request_json(CONSOLE + "/api/internal/reconciliation-recovery-confirmation?" + urlencode({"recovery_id": recovery_id}), os.getenv("RECONCILIATION_RECOVERY_CONTROLLER_TOKEN", ""))
         confirmation = verify_confirmation(response, recovery_id=recovery_id, candidate=candidate)
@@ -846,9 +852,12 @@ def run(action, recovery_id=""):
         current_evidence=current_evidence, current_live_continuity_state=target.live_continuity.state)
     if not evaluation.ready_for_atomic_state_transition:
         raise ValueError("recovery_post_confirmation_reconciliation_blocked")
-    if action == "activate":
+    activating = action in {"activate", "activate-github"}
+    if activating:
         STAGE = "atomic_activation"
         value = {**previous, "state": "ACTIVE_LKG", "transition_plan": evaluation.transition_plan.to_dict(), "confirmation": confirmation.to_dict()}
+        if action == "activate-github":
+            value["github_activation_run_id"] = current_run["id"]
         if is_post_rebase:
             save_post_rebase_control(
                 db,
@@ -866,18 +875,18 @@ def run(action, recovery_id=""):
                 next_value=value,
                 ledger_sha256=candidate.local_execution_ledger_sha256,
             )
-    result = {"status": "active_lkg" if action == "activate" else "verified", "recovery_id": recovery_id,
+    result = {"status": "active_lkg" if activating else "verified", "recovery_id": recovery_id,
               "no_order": True, "execution_authority_granted": False, "runtime_target_enabled": False}
     if is_post_rebase:
         result.update(source_kind=source_kind, historical_difference_unresolved=True)
-    if action == "verify-github":
+    if action in {"verify-github", "activate-github"}:
         result["confirmation_source"] = "github_environment"
     return result
 
 
 def main(argv=None):
     parser = ArgumentParser(description="Prepare, verify or adopt the designated Binance recovery; never trade")
-    parser.add_argument("action", choices=("diagnose", "prepare", "verify", "activate", "prepare-github", "verify-github"))
+    parser.add_argument("action", choices=("diagnose", "prepare", "verify", "activate", "prepare-github", "verify-github", "activate-github"))
     parser.add_argument("--recovery-id", default="")
     args = parser.parse_args(argv)
     if args.action not in {"prepare", "prepare-github", "diagnose"} and not re.fullmatch(r"binance-[0-9]+-[0-9]+", args.recovery_id):
