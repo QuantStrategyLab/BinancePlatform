@@ -695,6 +695,8 @@ def run_live_cycle(
         printer=output_printer,
     )
     report = execute_cycle(runtime)
+    if receipt := report.get("execution_receipt"):
+        report["finished_at"] = receipt["observed_at"]
     # Free-form portfolio lines belong only in the existing private report.
     output_printer("Strategy report details retained in the execution report.")
     report_path = report_writer(report)
