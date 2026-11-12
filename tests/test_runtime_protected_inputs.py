@@ -95,10 +95,7 @@ def run_projection(capsys, output, exit_code=1, *, env=None, source_builder=None
         assert {k:v for k,v in kwargs.items() if k != "env"} == {
             "capture_output": True, "text": True, "check": False}
         child_env = kwargs["env"]
-        target = json.loads(child_env["RUNTIME_TARGET_JSON"])
-        assert target["dry_run_only"] is True and target["execution_mode"] == "paper"
-        assert target["live_continuity"]["state"] == "RECONCILE_ONLY"
-        assert child_env["BINANCE_DRY_RUN"] == "true" and child_env["RUNTIME_TARGET_ENABLED"] == "false"
+        assert child_env == original_env
     else:
         child.assert_not_called()
     captured = capsys.readouterr()
@@ -336,34 +333,20 @@ def real_source(monkeypatch, tmp_path):
                            state=state, observed=observed, builder=runtime_config_support.build_live_runtime)
 
 
-def test_real_source_control_and_authority_precede_process_copy(real_source, capsys):
+def test_child_can_load_the_checked_recovery_and_authority(real_source, capsys):
     source = real_source
     raw_target = source.env['RUNTIME_TARGET_JSON']
     authority_bytes = source.authority_path.read_bytes()
+
     def child(*_args, **kwargs):
         assert source.observed['reads'] >= 1
-        child_env = kwargs['env']
-        candidate = json.loads(child_env['RUNTIME_TARGET_JSON'])
-        expected = json.loads(source.env['RUNTIME_TARGET_JSON'])
-        expected['dry_run_only'] = True
-        expected['execution_mode'] = 'paper'
-        expected['live_continuity']['baseline_target_sha256'] = candidate['live_continuity']['baseline_target_sha256']
-        assert candidate == expected
-        for key in ('BINANCE_RISK_AUTHORITY_FILE', 'BINANCE_RISK_AUTHORITY_SHA256',
-                    'BINANCE_RISK_AUTHORITY_SOURCE_REVISION',
-                    'BINANCE_RECONCILIATION_EXPECTED_DIGESTS_JSON', 'BINANCE_RECOVERY_CONTROL_ENABLED'):
-            assert child_env[key] == source.env[key]
-        from datetime import datetime, timezone
-        from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
-        from live_risk_authority import load_live_risk_authority
-        loaded = load_live_risk_authority(
-            env=child_env, runtime_target=resolve_runtime_target_from_env(
-                env=child_env, expected_platform_id="binance"),
-            strategy_revision="d" * 40, runner_revision="e" * 40,
-            config_sha256=source.payload["config_sha256"], now_utc=datetime.now(timezone.utc),
-        )
-        assert loaded.authority_receipt_sha256 == child_env["BINANCE_RISK_AUTHORITY_SHA256"]
+        with patch.dict(os.environ, kwargs['env'], clear=True):
+            runtime = source.builder()
+        assert runtime.runtime_target.live_continuity.state == 'ACTIVE_LKG'
+        assert runtime.standard_execution_permitted is False
+        assert runtime.risk_authority.authority_receipt_sha256 == source.env['BINANCE_RISK_AUTHORITY_SHA256']
         return SimpleNamespace(stdout=json.dumps(passed()), stderr='PRIVATE_CHILD_LOG', returncode=0)
+
     code, result = run_projection(capsys, '', env=source.env, source_builder=source.builder,
                                   child_effect=child)
     assert code == 0 and result['executed_call_count'] == 0
@@ -376,7 +359,7 @@ def test_real_source_control_and_authority_precede_process_copy(real_source, cap
     'missing_control', 'confirmation', 'source', 'expected_scope', 'authority_digest',
     'authority_account', 'runner', 'strategy', 'config', 'budget',
 ])
-def test_real_source_or_authority_failure_cannot_be_hidden_by_paper_copy(real_source, capsys, change):
+def test_real_source_or_authority_failure_never_reaches_child(real_source, capsys, change):
     from tests.test_live_risk_authority import _write_authority
     source = real_source
     if change == 'missing_control':

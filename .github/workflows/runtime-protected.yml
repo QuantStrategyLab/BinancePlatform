@@ -577,7 +577,6 @@ jobs:
             if [ "${FULL_CYCLE:-false}" = "true" ]; then
               RUNTIME_TARGET_ENABLED=false "$VENV_PATH/bin/python" - <<'SAFE_VALIDATION'
           import contextlib
-          import copy
           import io
           import logging
           import json
@@ -705,7 +704,6 @@ jobs:
               "unclassified_error", "ValueError", "KeyError", "TypeError", "OSError", "RuntimeError",
           }
           try:
-              from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
               from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
 
               if os.environ.get("RUNTIME_TARGET_ENABLED") != "false":
@@ -742,24 +740,12 @@ jobs:
                           "client", "state_loader", "state_writer", "notifier",
                           "state_owner_claim", "state_owner_release"))):
                   raise ValueError("disabled_live_source_required")
-              # Reuse the existing isolated validator's process-only paper target.
-              # Keep account identity, continuity and LIVE authority/source bindings intact.
-              target = copy.deepcopy(original)
-              target["dry_run_only"] = True
-              target["execution_mode"] = "paper"
-              target["live_continuity"]["baseline_target_sha256"] = runtime_target_fingerprint(target)
-              child_env = dict(os.environ)
-              child_env["RUNTIME_TARGET_JSON"] = json.dumps(target, sort_keys=True)
-              child_env["RUNTIME_TARGET_ENABLED"] = "false"
-              child_env["BINANCE_DRY_RUN"] = "true"
-              resolved = resolve_runtime_target_from_env(env=child_env, expected_platform_id="binance")
-              if not resolved.dry_run_only or resolved.live_continuity.permits_standard_execution:
-                  raise ValueError("validation_target_invalid")
-              child_env["STRATEGY_PROFILE"] = resolved.strategy_profile
+              # Preserve the checked recovery target. The child verifies that
+              # execution is disabled, then forces dry_run and closes write ports.
               result["reason_code"] = "validator_output_invalid"
               process = subprocess.run(
                   [sys.executable, "scripts/validate_runtime_startup.py", "--full-cycle"],
-                  capture_output=True, text=True, check=False, env=child_env,
+                  capture_output=True, text=True, check=False, env=dict(os.environ),
               )
               candidate = json.loads(process.stdout.strip().splitlines()[-1])
               if candidate.get("status") == "passed" and process.returncode == 0:
