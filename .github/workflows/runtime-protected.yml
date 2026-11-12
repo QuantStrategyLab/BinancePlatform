@@ -383,8 +383,10 @@ jobs:
         env:
           BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA }}
           BINANCE_REBASE_PREVIEW_SHA: ${{ vars.BINANCE_REBASE_PREVIEW_SHA }}
+          BINANCE_RECOVERY_WORKFLOW_SHA: ${{ vars.BINANCE_RECOVERY_WORKFLOW_SHA }}
           BINANCE_RUNTIME_RELEASE_SHA: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA }}
           ACCOUNTING_MIGRATION_ACTION: ${{ inputs.accounting_migration_action || 'none' }}
+          RECOVERY_ACTION: ${{ inputs.recovery_action || 'none' }}
           CANDIDATE_RELEASE_SHA: ${{ inputs.candidate_release_sha }}
           VALIDATE_ONLY: ${{ inputs.validate_only || 'false' }}
           FULL_CYCLE: ${{ inputs.full_cycle || 'false' }}
@@ -398,6 +400,12 @@ jobs:
               exit 1
             fi
             export BINANCE_RUNTIME_WORKFLOW_SHA="$BINANCE_REBASE_PREVIEW_SHA"
+          elif [ "$RECOVERY_ACTION" != "none" ]; then
+            if [[ ! "$BINANCE_RECOVERY_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::An exact approved recovery workflow SHA is required."
+              exit 1
+            fi
+            export BINANCE_RUNTIME_WORKFLOW_SHA="$BINANCE_RECOVERY_WORKFLOW_SHA"
           fi
           verified="$(python3 scripts/select_runtime_release_sha.py --verify-workflow)"
           if [[ ! "$verified" =~ ^[0-9a-f]{40}$ ]]; then

@@ -189,16 +189,21 @@ def test_runtime_workflow_revision_pin_is_required_before_release_selection() ->
 
 
 @pytest.mark.parametrize(
-    ("mode", "pin", "head", "accepted"),
+    ("migration", "recovery", "pin", "head", "accepted"),
     [
-        ("rebase-proposal", "b" * 40, "b" * 40, True),
-        ("rebase-proposal", "", "a" * 40, False),
-        ("rebase-proposal", "b" * 40, "a" * 40, False),
-        ("none", "b" * 40, "a" * 40, True),
-        ("prospective-rebase-apply", "b" * 40, "b" * 40, False),
+        ("rebase-proposal", "none", "b" * 40, "b" * 40, True),
+        ("rebase-proposal", "none", "", "a" * 40, False),
+        ("rebase-proposal", "none", "b" * 40, "a" * 40, False),
+        ("none", "none", "b" * 40, "a" * 40, True),
+        ("none", "none", "d" * 40, "d" * 40, False),
+        ("prospective-rebase-apply", "none", "b" * 40, "b" * 40, False),
+        ("none", "prepare", "d" * 40, "d" * 40, True),
+        ("none", "prepare", "", "a" * 40, False),
+        ("none", "prepare", "d" * 40, "a" * 40, False),
+        ("none", "verify", "d" * 40, "d" * 40, True),
     ],
 )
-def test_rebase_preview_pin_is_exact_and_does_not_authorize_apply(mode, pin, head, accepted):
+def test_workflow_revision_pins_are_exact_and_scoped(migration, recovery, pin, head, accepted):
     broker_job = _job_block(WORKFLOW.read_text(encoding="utf-8"), "deploy")
     verify = broker_job.split("- name: Verify approved workflow revision", 1)[1]
     verify = verify.split("- name: Resolve approved runtime release SHA", 1)[0]
@@ -207,8 +212,10 @@ def test_rebase_preview_pin_is_exact_and_does_not_authorize_apply(mode, pin, hea
         ["bash", "-c", command],
         cwd=WORKFLOW.parents[2],
         env={
-            "ACCOUNTING_MIGRATION_ACTION": mode,
-            "BINANCE_REBASE_PREVIEW_SHA": pin,
+            "ACCOUNTING_MIGRATION_ACTION": migration,
+            "RECOVERY_ACTION": recovery,
+            "BINANCE_REBASE_PREVIEW_SHA": pin if migration == "rebase-proposal" else "b" * 40,
+            "BINANCE_RECOVERY_WORKFLOW_SHA": pin if recovery != "none" else "d" * 40,
             "BINANCE_RUNTIME_WORKFLOW_SHA": "a" * 40,
             "BINANCE_RUNTIME_RELEASE_SHA": "c" * 40,
             "GITHUB_SHA": head,
