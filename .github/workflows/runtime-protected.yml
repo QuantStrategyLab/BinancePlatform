@@ -1011,7 +1011,7 @@ jobs:
           GLOBAL_TELEGRAM_CHAT_ID: ${{ secrets.PRIVATE_GLOBAL_TELEGRAM_CHAT_ID }}
 
   recovery-review-input:
-    if: ${{ inputs.recovery_action == 'verify-github' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.recovery_action == 'verify-github' }}
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions: {}
@@ -1028,6 +1028,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_WORKFLOW_REF" = "$GITHUB_REPOSITORY/.github/workflows/main.yml@refs/heads/main"
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$GITHUB_SHA" = "$APPROVED_WORKFLOW_SHA"
           test "$RECONCILE_ONLY" = true
@@ -1039,7 +1040,7 @@ jobs:
             "$RECOVERY_ID" "$CANDIDATE_SHA" "$GITHUB_REPOSITORY" "${BASH_REMATCH[1]}" >> "$GITHUB_STEP_SUMMARY"
 
   recovery-review:
-    if: ${{ inputs.recovery_action == 'verify-github' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.recovery_action == 'verify-github' }}
     needs: recovery-review-input
     runs-on: ubuntu-latest
     timeout-minutes: 3

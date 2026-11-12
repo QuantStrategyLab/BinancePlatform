@@ -25,6 +25,8 @@ def test_runtime_does_not_automatically_run_optional_account_facts() -> None:
     assert re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.MULTILINE) == [
         "runtime-daily",
         "deploy",
+        "recovery-review-input",
+        "recovery-review",
     ]
     assert "account-facts-readonly:" not in jobs
     assert "/.github/workflows/binance-account-facts.yml@" not in jobs
@@ -745,6 +747,7 @@ def test_github_candidate_verification_waits_for_its_review_job():
     workflow = WORKFLOW.read_text()
     review = _job_block(workflow, "recovery-review")
     runtime = _job_block(workflow, "deploy")
+    assert "github.event_name == 'workflow_dispatch' && inputs.recovery_action == 'verify-github'" in review
     assert "environment: binance-recovery-review" in review
     assert "permissions: {}" in review
     assert "needs: recovery-review-input" in review
