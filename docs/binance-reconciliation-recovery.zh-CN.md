@@ -49,6 +49,21 @@ Firestore 事务中精确切换同一控制文档至 ACTIVE_LKG，同时保存�
 `RUNTIME_TARGET_ENABLED` 仍是独立停用开关，activate 不会修改它。只有完成上述恢复并核验后，
 操作员才可按授权恢复既有调度。所有恢复步骤均不调用 `main.py`，不下单、撤单或执行资金操作。
 
+### 在 GitHub 确认并验证
+
+为 `binance-recovery-review` 环境配置必需审核人，只允许 `main`，关闭管理员绕过，
+并用仓库变量 `BINANCE_RECOVERY_REVIEWER_ID` 固定该审核人的 GitHub 用户 ID。
+此审批环境不放凭据。现有运行身份仍在 `binance-runtime` 环境使用。
+
+1. 在获准的 `main` 提交运行 Runtime，选择 `reconcile_only=true` 和
+   `recovery_action=prepare-github`。从运行输出复制 `recovery_id` 和候选 SHA-256。
+2. 在同一获准提交运行 Runtime，选择 `reconcile_only=true` 和
+   `recovery_action=verify-github`，填入 `recovery_id` 和 `recovery_candidate_sha256`。
+   审核人在运行摘要核对候选，再通过 **Review deployments** 批准 `binance-recovery-review`。
+3. 工作流读取本次运行的 GitHub 审批记录，核对审核人和候选，并重新读取交易所。
+   候选自最后一次观测起 30 分钟内有效。候选过期、内容变化或读不到有效审批记录时，验证停止。
+   结果为 `verified` 时，控制状态仍为 `RECONCILE_ONLY`。如需重试，创建新的审批运行。
+
 本次历史窗口是有意限定的；过期或配置变化时保持关闭，重新调查对应基线，不能扩大窗口或盲目重采
 来接受未知账务变化。恢复步骤失败仅输出阶段及固定原因码；先只读诊断，不盲目重复可变远端操作。
 

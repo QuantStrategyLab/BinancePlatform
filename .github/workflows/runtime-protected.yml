@@ -63,7 +63,11 @@ on:
         required: false
         default: none
       recovery_id:
-        description: "Exact prepared recovery ID; required for verify or activate"
+        description: "Exact prepared recovery ID; required for verification or activation"
+        type: string
+        required: false
+      recovery_candidate_sha256:
+        description: "Exact candidate SHA-256 for GitHub-approved verification"
         type: string
         required: false
       accounting_migration_action:
@@ -239,7 +243,7 @@ jobs:
           fi
           case "${RECOVERY_ACTION_INPUT:-none}" in
             none) ;;
-            diagnose|prepare|verify|activate)
+            diagnose|prepare|verify|activate|prepare-github|verify-github)
               if [ "${ACCOUNTING_MIGRATION_ACTION_INPUT:-none}" != "none" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
                 echo "::error::Recovery requires disabled main runtime, reconcile_only, and no other diagnostic mode."
                 exit 1
@@ -421,6 +425,7 @@ jobs:
         env:
           BINANCE_RUNTIME_RELEASE_SHA: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA }}
           ACCOUNTING_MIGRATION_ACTION: ${{ inputs.accounting_migration_action || 'none' }}
+          RECOVERY_ACTION: ${{ inputs.recovery_action || 'none' }}
           CANDIDATE_RELEASE_SHA: ${{ inputs.candidate_release_sha }}
           VALIDATE_ONLY: ${{ inputs.validate_only || 'false' }}
           FULL_CYCLE: ${{ inputs.full_cycle || 'false' }}
@@ -429,6 +434,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$ACCOUNTING_MIGRATION_ACTION" = "rebase-proposal" ]; then
+            selected="$GITHUB_SHA"
+          elif [[ "$RECOVERY_ACTION" == "prepare-github" || "$RECOVERY_ACTION" == "verify-github" ]]; then
             selected="$GITHUB_SHA"
           else
             selected="$(python3 scripts/select_runtime_release_sha.py)"
@@ -440,6 +447,8 @@ jobs:
           echo "sha=$selected" >> "$GITHUB_OUTPUT"
           if [ "$ACCOUNTING_MIGRATION_ACTION" = "rebase-proposal" ]; then
             echo "Selected approved rebase preview SHA ${selected}."
+          elif [[ "$RECOVERY_ACTION" == "prepare-github" || "$RECOVERY_ACTION" == "verify-github" ]]; then
+            echo "Selected approved GitHub recovery tooling SHA ${selected}."
           else
             echo "Selected runtime release SHA ${selected} (workflow github.sha=${GITHUB_SHA:-unknown} is not used as the application execution identity)."
           fi
@@ -819,9 +828,11 @@ jobs:
         env:
           RECOVERY_ACTION: ${{ inputs.recovery_action || 'none' }}
           RECOVERY_ID: ${{ inputs.recovery_id }}
+          RECOVERY_CANDIDATE_SHA256: ${{ inputs.recovery_candidate_sha256 }}
+          BINANCE_RECOVERY_REVIEWER_ID: ${{ vars.BINANCE_RECOVERY_REVIEWER_ID }}
           RECONCILIATION_RECOVERY_SYNC_TOKEN: ${{ (inputs.recovery_action == 'prepare' || inputs.accounting_migration_action == 'scope-preview') && secrets.RECONCILIATION_RECOVERY_SYNC_TOKEN || '' }}
           RECONCILIATION_RECOVERY_CONTROLLER_TOKEN: ${{ (inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.RECONCILIATION_RECOVERY_CONTROLLER_TOKEN || '' }}
-          GITHUB_TOKEN: ${{ (inputs.recovery_action == 'diagnose' || inputs.recovery_action == 'prepare' || inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.GITHUB_TOKEN || '' }}
+          GITHUB_TOKEN: ${{ (inputs.recovery_action == 'diagnose' || inputs.recovery_action == 'prepare' || inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate' || inputs.recovery_action == 'prepare-github' || inputs.recovery_action == 'verify-github') && secrets.GITHUB_TOKEN || '' }}
           BINANCE_RECOVERY_CONTROL_ENABLED: ${{ vars.BINANCE_RECOVERY_CONTROL_ENABLED || 'false' }}
           BINANCE_APPROVED_PROSPECTIVE_OPENING: ${{ inputs.accounting_migration_action == 'prospective-rebase-apply' && secrets.BINANCE_APPROVED_PROSPECTIVE_OPENING || '' }}
           BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}

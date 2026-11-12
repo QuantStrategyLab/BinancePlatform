@@ -764,6 +764,70 @@ def test_controller_prospective_confirmation_rechecks_and_runtime_consumes_activ
             activated_target(target, active, expected=expected)
 
 
+def test_github_prepare_persists_candidate_without_console(monkeypatch):
+    controller, _target, _expected, _recovery_id, docs, writes, requests = _controller_setup(monkeypatch)
+
+    result = controller.run("prepare-github")
+
+    stored = docs[controller.CONTROL_DOCUMENT].snapshot.value
+    assert result["status"] == "awaiting_human_confirmation"
+    assert result["confirmation_source"] == "github_environment"
+    assert result["candidate_sha256"] == stored["candidate"]["candidate_sha256"]
+    assert stored["state"] == "RECONCILE_ONLY"
+    assert len(writes) == 1
+    assert not requests
+
+
+@pytest.mark.parametrize(
+    ("review_case", "reason"),
+    [
+        ("approved", None),
+        ("missing", "github_recovery_review_missing_or_ambiguous"),
+        ("ambiguous", "github_recovery_review_missing_or_ambiguous"),
+        ("wrong_environment", "github_recovery_review_missing_or_ambiguous"),
+        ("wrong_owner", "github_recovery_review_not_approved_by_owner"),
+        ("rejected", "github_recovery_review_not_approved_by_owner"),
+        ("wrong_digest", "github_recovery_review_binding_invalid"),
+        ("rerun", "github_recovery_review_binding_invalid"),
+    ],
+)
+def test_github_verify_requires_bound_owner_review_before_broker_reads(monkeypatch, review_case, reason):
+    controller, _target, _expected, recovery_id, docs, writes, requests = _controller_setup(
+        monkeypatch, prepared=True
+    )
+    stored = docs[controller.CONTROL_DOCUMENT].snapshot.value
+    candidate_sha = stored["candidate"]["candidate_sha256"]
+    monkeypatch.setenv("RECOVERY_CANDIDATE_SHA256", "f" * 64 if review_case == "wrong_digest" else candidate_sha)
+    monkeypatch.setenv("BINANCE_RECOVERY_REVIEWER_ID", "55")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2" if review_case == "rerun" else "1")
+    review = {
+        "state": "rejected" if review_case == "rejected" else "approved",
+        "user": {"id": 56 if review_case == "wrong_owner" else 55, "login": "synthetic-owner"},
+        "environments": [{"name": "another-environment" if review_case == "wrong_environment" else controller.GITHUB_REVIEW_ENVIRONMENT}],
+    }
+
+    def request(url, _token, *, expected_type):
+        assert url == f"https://api.github.com/repos/{controller.REPOSITORY}/actions/runs/401/approvals"
+        assert expected_type is list
+        requests.append(url)
+        return [] if review_case == "missing" else [review, review] if review_case == "ambiguous" else [review]
+
+    monkeypatch.setattr(controller, "request_json", request)
+    if reason:
+        monkeypatch.setattr(controller, "connect_client", lambda *_args, **_kwargs: pytest.fail("broker read before approval"))
+        with pytest.raises(ValueError, match=reason):
+            controller.run("verify-github", recovery_id)
+    else:
+        result = controller.run("verify-github", recovery_id)
+        assert result["status"] == "verified"
+        assert result["confirmation_source"] == "github_environment"
+        assert result["no_order"] is True
+        assert result["execution_authority_granted"] is False
+        assert len(requests) == 1
+    assert not writes
+    assert docs[controller.CONTROL_DOCUMENT].snapshot.value == stored
+
+
 @pytest.mark.parametrize(
     "setup_kwargs,reason",
     [
