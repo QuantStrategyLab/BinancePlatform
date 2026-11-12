@@ -47,7 +47,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  authorize-write:
+    name: Approve the new authority version
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1 && inputs.mode == 'apply'
+    environment: live-trading
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions: {}
+    steps:
+      - name: Record approval for the authority update
+        env:
+          TARGET_RUNNER_REVISION: ${{ inputs.target_runner_revision }}
+        run: |
+          printf 'Approved authority version update for runner %s.\n' "$TARGET_RUNNER_REVISION" >> "$GITHUB_STEP_SUMMARY"
+
   reissue:
+    needs: authorize-write
+    if: >-
+      !cancelled() && ((inputs.mode == 'plan' && needs.authorize-write.result == 'skipped') ||
+      (inputs.mode == 'apply' && needs.authorize-write.result == 'success'))
     # This maintenance task only reads/writes GitHub configuration.  Keep the
     # authority secret off the persistent trading runner and use the hosted
     # image that provides the required `gh` client.

@@ -124,6 +124,10 @@ checks before presenting the request in the `live-trading` environment.
 After approval, the operator rechecks the same release, current readiness and
 switch state before enabling it. The emergency stop remains directly available.
 
+The authority-version reissue workflow uses the same Environment for `apply`.
+Its `plan` mode remains read-only and does not enter the approval queue.
+
+
 
 
 The separate `full_cycle_no_submit` scope also admits the canonical crypto
