@@ -442,6 +442,9 @@ def test_production_earn_route_is_readonly_and_mode_exclusive(changes, allowed, 
     ("historical-continuity-diagnose", "actual", "historical"),
     ("historical-continuity-diagnose", "", None),
     ("historical-continuity-diagnose", "a" * 40, None),
+    ("prospective-rebase-apply", "actual", "prospective"),
+    ("prospective-rebase-apply", "", None),
+    ("prospective-rebase-apply", "a" * 40, None),
     ("none", "actual", "release"),
     ("cash-flow-preview", "actual", "release"),
 ])
@@ -463,8 +466,13 @@ def test_tool_source_uses_only_verified_workflow_pin(tmp_path, action, pin, expe
     else:
         assert result.returncode == 0
         values = dict(line.split("=", 1) for line in output.read_text().splitlines())
-        assert values == {"sha": actual if expected in {"actual", "historical"} else release,
-                          "source_kind": {"actual": "earn_readonly", "historical": "historical_readonly"}.get(expected, "runtime_release")}
+        source_kinds = {
+            "actual": "earn_readonly",
+            "historical": "historical_readonly",
+            "prospective": "prospective_accounting_apply",
+        }
+        assert values == {"sha": actual if expected in source_kinds else release,
+                          "source_kind": source_kinds.get(expected, "runtime_release")}
 
 
 def earn_diagnosis_result():

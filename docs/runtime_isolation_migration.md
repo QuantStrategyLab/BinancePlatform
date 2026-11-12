@@ -116,6 +116,17 @@ candidate, enrolls a source, changes accounting/control or grants trading
 permission. A separate, reviewed workflow-pin adoption and explicit diagnostic
 run are still required before this code can supply production evidence.
 
+The approved prospective opening is applied on `runtime-production` with the
+runtime disabled and `reconcile_only=true`. Pass the exact proposal run ID and
+canonical proposal digest and supply the approved proposal in the protected
+`BINANCE_APPROVED_PROSPECTIVE_OPENING` secret. The tool runs from the verified
+workflow commit. It checks that changing the current active recovery control
+to `RECONCILE_ONLY` would match the approved control digest. It verifies the
+existing confirmation and current broker evidence before a single transaction
+updates the control state, archives the prior ledger, and writes the opening.
+A failed precondition leaves all three documents unchanged. The new baseline
+requires its own recovery validation before activation.
+
 ## Phase 2 decision gate
 
 Do not select Cloud Run merely because the runtime uses Google Cloud for state.

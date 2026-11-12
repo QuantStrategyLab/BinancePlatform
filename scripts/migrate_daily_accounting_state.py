@@ -146,23 +146,27 @@ def _candidate_digest(candidate: Mapping[str, object]) -> str:
 
 
 def require_runtime_context(action: str | None = None) -> None:
-    readonly_ref = os.environ.get("GITHUB_REF")
+    ref = os.environ.get("GITHUB_REF")
     readonly_kinds = {"earn-forward-diagnose": "earn_readonly",
                       "historical-continuity-diagnose": "historical_readonly"}
-    readonly = (
-        action in readonly_kinds
-        and (action != "historical-continuity-diagnose" or readonly_ref == "refs/heads/runtime-production")
-        and readonly_ref in {"refs/heads/main", "refs/heads/runtime-production"}
+    prospective_apply = action == "prospective-rebase-apply"
+    scoped_kind = "prospective_accounting_apply" if prospective_apply else readonly_kinds.get(action)
+    allowed_refs = {"refs/heads/runtime-production"}
+    if action == "earn-forward-diagnose":
+        allowed_refs.add("refs/heads/main")
+    scoped = (
+        scoped_kind is not None
+        and ref in allowed_refs
         and os.environ.get("GITHUB_WORKFLOW_REF")
-        == f"{REPOSITORY}/.github/workflows/main.yml@{readonly_ref}"
+        == f"{REPOSITORY}/.github/workflows/main.yml@{ref}"
         and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
-        and os.environ.get("RUNTIME_SOURCE_KIND") == readonly_kinds[action]
+        and os.environ.get("RUNTIME_SOURCE_KIND") == scoped_kind
         and os.environ.get("BINANCE_RUNTIME_WORKFLOW_SHA") == os.environ.get("GITHUB_SHA")
     )
     if (
         os.environ.get("GITHUB_REPOSITORY") != REPOSITORY
-        or (action in readonly_kinds and not readonly)
-        or (not readonly and (
+        or (scoped_kind is not None and not scoped)
+        or (not scoped and (
             os.environ.get("GITHUB_REF") != "refs/heads/main"
             or os.environ.get("GITHUB_WORKFLOW_REF")
             != f"{REPOSITORY}/.github/workflows/main.yml@refs/heads/main"
@@ -172,13 +176,14 @@ def require_runtime_context(action: str | None = None) -> None:
         or not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", ""))
     ):
         raise ValueError("migration_requires_disabled_main_runtime")
-    if readonly:
+    if scoped:
         actual = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
             capture_output=True, text=True,
         ).stdout.strip()
         if actual != os.environ["GITHUB_SHA"]:
-            raise ValueError("earn_diagnosis_tool_revision_mismatch")
+            reason = "prospective_apply_tool_revision_mismatch" if prospective_apply else "earn_diagnosis_tool_revision_mismatch"
+            raise ValueError(reason)
 
 
 def project_earn_diagnosis(value, *, exit_code: int) -> dict:
@@ -637,16 +642,26 @@ def _verified_control_account_scope(control, *, expected, runtime_target):
     return scope
 
 
-def _prospective_preflight(*, refs, client, expected, approved, now, runtime_target, clock=None):
+def _prospective_control(control, *, quiesce_active):
+    if quiesce_active:
+        if not isinstance(control, Mapping) or control.get("state") != "ACTIVE_LKG":
+            raise MigrationBlocked("prospective_active_control_required")
+        return {**control, "state": "RECONCILE_ONLY"}
+    _validate_control(control)
+    return control
+
+
+def _prospective_preflight(*, refs, client, expected, approved, now, runtime_target,
+                           clock=None, quiesce_active=False):
     from application.earn_accrual import compare_earn_checkpoints, _time
     clock = clock or (lambda: datetime.now(timezone.utc))
     _validate_prospective_approval(approved)
-    snapshot, ledger, control = _read_source(refs)
+    snapshot, ledger, control = _read_source(refs, allow_active=quiesce_active)
+    control = _prospective_control(control, quiesce_active=quiesce_active)
     if (digest(ledger) != approved["ledger_sha256"] or digest(control) != approved["control_sha256"]
             or _timestamp(snapshot.update_time) != approved["ledger_update_time"]
             or _finite(ledger.get("daily_external_principal_usdt", 0)) != 0):
         raise MigrationBlocked("prospective_source_changed")
-    _validate_control(control)
     _validate_safe_order_state(ledger)
     control_scope = _verified_control_account_scope(
         control, expected=expected, runtime_target=runtime_target
@@ -683,7 +698,7 @@ def _prospective_preflight(*, refs, client, expected, approved, now, runtime_tar
     return decision
 
 
-def _prospective_transaction(transaction, *, refs, archive_ref, approved, now):
+def _prospective_transaction(transaction, *, refs, archive_ref, approved, now, quiesce_active=False):
     _validate_prospective_approval(approved)
     run_id = _proposal_run_id(approved["proposal_run_id"])
     archive_document = prospective_archive_document(run_id)
@@ -694,12 +709,13 @@ def _prospective_transaction(transaction, *, refs, archive_ref, approved, now):
     archive = archive_ref.get(transaction=transaction, retry=None)
     if (owner.exists or archive.exists or not current.exists or not control.exists
             or digest(current.to_dict()) != approved["ledger_sha256"]
-            or digest(control.to_dict()) != approved["control_sha256"]
             or _timestamp(current.update_time) != approved["ledger_update_time"]):
         raise MigrationAtomicPrecondition("prospective_atomic_precondition_changed")
-    ledger, recovery = current.to_dict(), control.to_dict()
+    ledger = current.to_dict()
+    recovery = _prospective_control(control.to_dict(), quiesce_active=quiesce_active)
+    if digest(recovery) != approved["control_sha256"]:
+        raise MigrationAtomicPrecondition("prospective_atomic_precondition_changed")
     _validate_safe_order_state(ledger)
-    _validate_control(recovery)
     proposed = copy.deepcopy(approved["proposed_fields"])
     marker = {
         "archive_document": archive_document,
@@ -720,6 +736,8 @@ def _prospective_transaction(transaction, *, refs, archive_ref, approved, now):
         "new_ledger_sha256": new_digest,
         "valuation_price_source": "binance_get_avg_price_estimate",
     }
+    if quiesce_active:
+        transaction.update(refs["control_ref"], {"state": "RECONCILE_ONLY"})
     transaction.create(archive_ref, backup)
     transaction.update(refs["ledger_ref"], patch)
     return {
@@ -731,9 +749,13 @@ def _prospective_transaction(transaction, *, refs, archive_ref, approved, now):
     }
 
 
-def _apply_prospective_rebase(refs, *, client, expected, now, fixed_now, runtime_target):
+def _apply_prospective_rebase(refs, *, client, expected, now, fixed_now, runtime_target,
+                              quiesce_active=False, expected_digest="", expected_run_id=""):
     from google.cloud import firestore
     approved = _load_prospective_approval()
+    if quiesce_active and (_proposal_run_id(approved["proposal_run_id"]) != expected_run_id
+                           or digest(approved) != expected_digest):
+        raise MigrationBlocked("prospective_dispatch_approval_mismatch")
     archive_document = prospective_archive_document(approved["proposal_run_id"])
     if approved.get("archive_document") != archive_document:
         raise MigrationBlocked("prospective_approval_mismatch")
@@ -744,12 +766,13 @@ def _apply_prospective_rebase(refs, *, client, expected, now, fixed_now, runtime
         refs=refs, client=client, expected=expected, approved=approved,
         now=now, runtime_target=runtime_target,
         clock=(lambda: now + timedelta(seconds=1)) if fixed_now else None,
+        quiesce_active=quiesce_active,
     )
 
     @firestore.transactional
     def apply(transaction):
         return _prospective_transaction(transaction, refs=refs, archive_ref=archive_ref,
-                                        approved=approved, now=decision)
+                                        approved=approved, now=decision, quiesce_active=quiesce_active)
     try:
         written = apply(get_firestore_client().transaction(max_attempts=1))
     except MigrationBlocked:
@@ -772,7 +795,8 @@ def _apply_prospective_rebase(refs, *, client, expected, now, fixed_now, runtime
             "approved_proposal_sha256": written["approved_proposal_sha256"],
             "ledger_update_time": updated_at, "new_ledger_sha256": written["new_ledger_sha256"],
             "archive_sha256": written["archive_sha256"], "old_ledger_archived": True,
-            "historical_difference_unresolved": True, "control_unchanged": True, "no_order": True,
+            "historical_difference_unresolved": True, "control_unchanged": not quiesce_active,
+            "control_state": "RECONCILE_ONLY", "no_order": True,
             "write_performed": True, "execution_authority_granted": False}
 
 
@@ -1268,7 +1292,7 @@ def _refs():
     }
 
 
-def _read_source(refs):
+def _read_source(refs, *, allow_active=False):
     owner = refs["owner_ref"].get(retry=None)
     ledger = refs["ledger_ref"].get(retry=None)
     control = refs["control_ref"].get(retry=None)
@@ -1276,7 +1300,8 @@ def _read_source(refs):
         raise MigrationBlocked("ledger_unavailable_or_owned")
     ledger_value = ledger.to_dict()
     control_value = control.to_dict() if control.exists else None
-    _validate_control(control_value)
+    if not (allow_active and isinstance(control_value, Mapping) and control_value.get("state") == "ACTIVE_LKG"):
+        _validate_control(control_value)
     _validate_safe_order_state(ledger_value)
     return ledger, ledger_value, control_value
 
@@ -3007,7 +3032,7 @@ def _quiesce_control(refs):
 
 
 def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
-    if action in {"earn-forward-diagnose", "historical-continuity-diagnose"}:
+    if action in {"earn-forward-diagnose", "historical-continuity-diagnose", "prospective-rebase-apply"}:
         require_runtime_context(action)
     else:
         require_runtime_context()
@@ -3069,6 +3094,15 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
         return release_stale_owner(
             refs, client=client, target=target, expected=expected
         )
+    if action == "prospective-rebase-apply":
+        client = connect_client(
+            os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30
+        )
+        return _apply_prospective_rebase(
+            refs, client=client, expected=expected, now=now, fixed_now=fixed_now,
+            runtime_target=target, quiesce_active=True, expected_digest=expected_digest,
+            expected_run_id=os.environ.get("ACCOUNTING_MIGRATION_PREVIEW_RUN_ID", ""),
+        )
     ledger_snapshot, ledger, control = _read_source(refs)
     client = connect_client(
         os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30
@@ -3103,11 +3137,6 @@ def run(action: str, *, expected_digest: str = "", now: datetime | None = None):
         }
     if action == "audit":
         return audit_ledger(refs, client=client, expected=expected, now=now)
-    if action == "prospective-rebase-apply":
-        return _apply_prospective_rebase(
-            refs, client=client, expected=expected, now=now, fixed_now=fixed_now,
-            runtime_target=target,
-        )
     if action == "rebase-apply":
         return _apply_approved_rebase(refs, client=client, expected=expected, now=now, fixed_now=fixed_now)
     evidence = (collect_prospective_opening(client, ledger=ledger, now=now, expected=expected)
@@ -3219,9 +3248,10 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--expected-digest", default="")
     args = parser.parse_args(argv)
-    if args.action != "apply" and args.expected_digest:
-        parser.error("only apply accepts an expected digest")
-    if args.action == "apply" and not re.fullmatch(
+    apply_actions = {"apply", "prospective-rebase-apply"}
+    if args.action not in apply_actions and args.expected_digest:
+        parser.error("only apply actions accept an expected digest")
+    if args.action in apply_actions and not re.fullmatch(
         r"[0-9a-f]{64}", args.expected_digest
     ):
         parser.error("apply requires the exact preview candidate digest")

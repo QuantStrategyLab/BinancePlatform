@@ -123,8 +123,9 @@ def test_prospective_transaction_binds_dynamic_archive_and_marker(monkeypatch):
     assert written['new_ledger_sha256'] == m.digest({**backup['ledger'], **patch})
 
 
+@pytest.mark.parametrize('quiesce_active', [False, True])
 @pytest.mark.parametrize('change', [None, 'counter_reset', 'unknown_delta', 'new_flow', 'trade'])
-def test_preflight_allows_only_continuous_income_since_approved_snapshot(monkeypatch, change):
+def test_preflight_allows_only_continuous_income_since_approved_snapshot(monkeypatch, change, quiesce_active):
     refs, archive, approved, checkpoint = setup(monkeypatch)
     fresh = {'earn_accrual_checkpoint': checkpoint,
              'external_cash_flow_cursor': {'observed_at': NOW.isoformat(), 'records': {}},
@@ -139,15 +140,25 @@ def test_preflight_allows_only_continuous_income_since_approved_snapshot(monkeyp
     approved['proposed_fields']['earn_accrual_checkpoint']['account_scope_sha256'] = cp_scope
     checkpoint['account_scope_sha256'] = cp_scope
     approved['control_sha256'] = m.digest(refs['control_ref'].snapshot.value)
-    monkeypatch.setattr(m, '_verified_control_account_scope', lambda control, **kw: cp_scope)
+    if quiesce_active:
+        refs['control_ref'].snapshot.value['state'] = 'ACTIVE_LKG'
+
+    def verify_scope(control, **kwargs):
+        assert control['state'] == 'RECONCILE_ONLY'
+        assert m.digest(control) == approved['control_sha256']
+        return cp_scope
+
+    monkeypatch.setattr(m, '_verified_control_account_scope', verify_scope)
     kwargs = dict(
         refs=refs, client=object(), expected={'account_scope_sha256': cp_scope},
         approved=approved, now=NOW-timedelta(seconds=10), runtime_target=object(), clock=lambda: NOW,
+        quiesce_active=quiesce_active,
     )
     if change:
         with pytest.raises(m.MigrationBlocked): m._prospective_preflight(**kwargs)
     else:
         assert m._prospective_preflight(**kwargs) == NOW
+    assert refs['control_ref'].snapshot.value['state'] == ('ACTIVE_LKG' if quiesce_active else 'RECONCILE_ONLY')
 
 
 def test_preflight_accepts_reconciled_enrollment_control_and_rejects_forged_identity(monkeypatch):
@@ -206,14 +217,14 @@ def test_preflight_accepts_reconciled_enrollment_control_and_rejects_forged_iden
 def test_apply_surfaces_control_identity_reason_not_generic_blocked(monkeypatch, capsys):
     refs, archive, approved, _ = setup(monkeypatch)
     live = {
-        "state": "RECONCILE_ONLY",
+        "state": "ACTIVE_LKG",
         "source": {
             "kind": "prospective_rebase",
             "reconciled_evidence": {"account_scope_sha256": "a" * 64},
         },
     }
     refs["control_ref"] = Ref(Snapshot(live))
-    approved["control_sha256"] = m.digest(live)
+    approved["control_sha256"] = m.digest({**live, "state": "RECONCILE_ONLY"})
     approved["ledger_sha256"] = m.digest(refs["ledger_ref"].snapshot.value)
     refs["ledger_ref"].parent = SimpleNamespace(document=lambda name: archive)
     monkeypatch.setenv("BINANCE_APPROVED_PROSPECTIVE_OPENING", json.dumps(approved))
@@ -226,16 +237,12 @@ def test_apply_surfaces_control_identity_reason_not_generic_blocked(monkeypatch,
         strategy_profile="crypto_live_pool_rotation",
         to_dict=lambda: {"platform_id": "binance"},
     ))
-    monkeypatch.setattr(m, "require_runtime_context", lambda: None)
+    monkeypatch.setattr(m, "require_runtime_context", lambda action: None)
     monkeypatch.setattr(m, "_expected_digests", lambda: {"account_scope_sha256": "a" * 64})
     monkeypatch.setattr(m, "_refs", lambda: refs)
     monkeypatch.setattr(m, "connect_client", lambda *a, **kw: object())
-    monkeypatch.setattr(m, "_read_source", lambda refs: (
-        refs["ledger_ref"].snapshot,
-        refs["ledger_ref"].snapshot.value,
-        refs["control_ref"].snapshot.value,
-    ))
-    assert m.main(["prospective-rebase-apply"]) == 2
+    monkeypatch.setenv("ACCOUNTING_MIGRATION_PREVIEW_RUN_ID", PROPOSAL_RUN_ID)
+    assert m.main(["prospective-rebase-apply", "--expected-digest", m.digest(approved)]) == 2
     payload = json.loads(capsys.readouterr().out)
     assert payload["reason_code"] == "prospective_control_identity_unverified"
     assert payload["status"] == "blocked"
@@ -265,11 +272,14 @@ def test_dynamic_archive_handoff_to_material_and_migration_binding(monkeypatch):
     assert binding["archive_document"] != recovery.PROSPECTIVE_ARCHIVE_DOCUMENT
 
 
+@pytest.mark.parametrize('quiesce_active', [False, True])
 @pytest.mark.parametrize('outcome', ['success', 'write_timeout', 'readback_timeout', 'readback_mismatch'])
-def test_apply_is_single_attempt_and_archives_without_activating(monkeypatch, outcome):
+def test_apply_is_single_attempt_and_archives_without_activating(monkeypatch, outcome, quiesce_active):
     from google.cloud import firestore
     refs, archive, approved, _ = setup(monkeypatch)
     expected_archive = m.prospective_archive_document(PROPOSAL_RUN_ID)
+    if quiesce_active:
+        refs['control_ref'].snapshot.value['state'] = 'ACTIVE_LKG'
     created = {}
 
     def document(name):
@@ -302,10 +312,13 @@ def test_apply_is_single_attempt_and_archives_without_activating(monkeypatch, ou
     monkeypatch.setattr(m, '_prospective_preflight', lambda **kw: NOW)
     monkeypatch.setenv('BINANCE_APPROVED_PROSPECTIVE_OPENING', json.dumps(approved))
     target = SimpleNamespace(live_continuity=SimpleNamespace(state='RECONCILE_ONLY'))
-    kwargs = dict(client=object(), expected={}, now=NOW, fixed_now=True, runtime_target=target)
+    kwargs = dict(client=object(), expected={}, now=NOW, fixed_now=True, runtime_target=target,
+                  quiesce_active=quiesce_active, expected_run_id=PROPOSAL_RUN_ID,
+                  expected_digest=m.digest(approved))
     if outcome == 'success':
         result = m._apply_prospective_rebase(refs, **kwargs)
-        assert result['status'] == 'rebased' and result['control_unchanged'] is True
+        assert result['status'] == 'rebased' and result['control_unchanged'] is not quiesce_active
+        assert result['control_state'] == 'RECONCILE_ONLY'
         assert result['execution_authority_granted'] is False
         assert result['archive_document'] == expected_archive
         assert result['approved_proposal_run_id'] == PROPOSAL_RUN_ID
@@ -313,11 +326,13 @@ def test_apply_is_single_attempt_and_archives_without_activating(monkeypatch, ou
         monkeypatch.setenv('BINANCE_APPROVED_PROSPECTIVE_OPENING', json.dumps(approved))
         with pytest.raises(m.MigrationBlocked, match='prospective_archive_already_exists'):
             m._apply_prospective_rebase(refs, **kwargs)
-        assert len(tx.creates) == len(tx.writes) == 1
     else:
         with pytest.raises(m.MigrationApplyUncertain) as error: m._apply_prospective_rebase(refs, **kwargs)
         assert 'private' not in str(error.value)
-        assert attempts == [1] and len(tx.creates) == len(tx.writes) == 1
+    assert attempts == [1] and len(tx.creates) == 1
+    assert len(tx.writes) == (2 if quiesce_active else 1)
+    if quiesce_active:
+        assert tx.writes[0] == (refs['control_ref'], {'state': 'RECONCILE_ONLY'})
     assert refs['control_ref'].snapshot.value['state'] == 'RECONCILE_ONLY'
     assert refs['ledger_ref'].snapshot.value['is_circuit_broken'] is True
 
@@ -342,3 +357,30 @@ def test_apply_rejects_existing_archive_with_zero_writes(monkeypatch):
         )
     assert attempts == []
     assert 'BINANCE_APPROVED_PROSPECTIVE_OPENING' not in os.environ
+
+
+@pytest.mark.parametrize('change', ['control_proof', 'already_quiesced', 'owner'])
+def test_production_transaction_requires_the_exact_active_control(monkeypatch, change):
+    refs, archive, approved, _ = setup(monkeypatch)
+    control = refs['control_ref'].snapshot.value
+    if change != 'already_quiesced':
+        control['state'] = 'ACTIVE_LKG'
+    if change == 'control_proof':
+        control['source']['changed'] = True
+    if change == 'owner':
+        refs['owner_ref'] = Ref(Snapshot({'owner': 'busy'}))
+    tx = ArchiveTransaction()
+    with pytest.raises(m.MigrationBlocked):
+        m._prospective_transaction(tx, refs=refs, archive_ref=archive, approved=approved,
+                                   now=NOW, quiesce_active=True)
+    assert not tx.writes and not tx.creates
+
+
+@pytest.mark.parametrize('run_id,digest_matches', [('1', True), (PROPOSAL_RUN_ID, False)])
+def test_production_apply_rejects_wrong_dispatch_binding(monkeypatch, run_id, digest_matches):
+    refs, _, approved, _ = setup(monkeypatch)
+    monkeypatch.setenv('BINANCE_APPROVED_PROSPECTIVE_OPENING', json.dumps(approved))
+    with pytest.raises(m.MigrationBlocked, match='prospective_dispatch_approval_mismatch'):
+        m._apply_prospective_rebase(refs, client=object(), expected={}, now=NOW, fixed_now=True,
+                                   runtime_target=object(), quiesce_active=True, expected_run_id=run_id,
+                                   expected_digest=m.digest(approved) if digest_matches else '0' * 64)
