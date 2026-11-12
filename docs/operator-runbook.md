@@ -110,6 +110,22 @@ passes after the existing cycle reaches `cycle_complete` with a real risk
 `APPROVE`; a startup pass or a synthetic replay is not a recovery or activation
 result. Missing or invalid source material fails closed before broker reads.
 
+The live pool rotation validation also requires the normal upstream trend-pool
+read to pass freshness checks and a revision-bound execution receipt to validate.
+Cached or injected pools do not satisfy the live readiness check. When the
+legacy target has no release manifest, the report carries the strategy and
+runner revisions checked by the existing live risk-authority loader. The
+execution receipt uses that identity and the observed broker outcome.
+
+For a live resume, run **Approve Binance live enable** on `main` with the
+successful production no-submit run ID while the switch is off. The workflow
+matches the current workflow and application pins and the pool and receipt
+checks before presenting the request in the `live-trading` environment.
+After approval, the operator rechecks the same release, current readiness and
+switch state before enabling it. The emergency stop remains directly available.
+
+
+
 The separate `full_cycle_no_submit` scope also admits the canonical crypto
 profiles `crypto_btc_dca` and `crypto_trend_rotation` when the target is
 explicitly disabled and declares `dry_run_only=true`. This is a validation-only

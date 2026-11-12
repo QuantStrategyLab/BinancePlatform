@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 from typing import Any
 
 from quant_platform_kit.common.execution_receipts import (
+    attach_execution_receipt,
     attach_runtime_execution_receipt,
+    build_execution_receipt,
     resolve_execution_receipt_fact,
+    validate_execution_receipt,
 )
 
 
@@ -58,6 +62,42 @@ def record_order_failure(report: dict[str, Any]) -> None:
     _observation(report)["failed_count"] += 1
 
 
+def _authority_bound_receipt(report, *, outcome, confirmation, observed_at=None):
+    release = report.get("binance_live_authority") or {}
+    target = report.get("runtime_target") or {}
+    if (report.get("platform") != "binance"
+            or not isinstance(target, Mapping)
+            or not isinstance(release, Mapping)
+            or target.get("execution_mode") != "live"
+            or not re.fullmatch(r"[0-9a-f]{40}", str(release.get("runtime_revision") or ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", str(release.get("config_sha256") or ""))):
+        raise ValueError("Binance live authority identity is unavailable")
+    return build_execution_receipt(
+        platform="binance",
+        strategy_profile=report.get("strategy_profile"),
+        strategy_revision=release.get("strategy_revision"),
+        execution_mode="live",
+        outcome=outcome,
+        broker_confirmation=confirmation,
+        observed_at=observed_at,
+    )
+
+
+def validate_report_execution_receipt(report):
+    """Recheck the structured receipt against the report's runtime identity."""
+    receipt = validate_execution_receipt(report.get("execution_receipt"))
+    if "binance_live_authority" in report:
+        expected = _authority_bound_receipt(
+            report, outcome=receipt["outcome"], confirmation=receipt["broker_confirmation"],
+            observed_at=receipt["observed_at"],
+        )
+        if receipt != expected:
+            raise ValueError("Binance execution receipt does not match its live authority")
+    else:
+        attach_execution_receipt(dict(report), receipt)
+    return receipt
+
+
 def attach_execution_receipt_from_report(report: dict[str, Any]) -> bool:
     """Attach a receipt from bounded observations, returning false if unattested.
 
@@ -73,7 +113,7 @@ def attach_execution_receipt_from_report(report: dict[str, Any]) -> bool:
     fills = observation["filled_count"]
     failures = observation["failed_count"]
     transport_uncertain = observation["transport_uncertain_count"]
-    report_error = str(report.get("status") or "").strip().lower() == "error"
+    report_error = str(report.get("status") or "").strip().lower() != "ok"
     reconciliation_required = bool(
         transport_uncertain
         or (report_error and (acknowledged or partial_fills or fills))
@@ -89,11 +129,16 @@ def attach_execution_receipt_from_report(report: dict[str, Any]) -> bool:
         failed=bool(failures) or (report_error and not reconciliation_required),
     )
     try:
-        attach_runtime_execution_receipt(
-            report,
-            outcome=outcome,
-            broker_confirmation=confirmation,
-        )
+        observed_at = report.get("finished_at")
+        if "binance_live_authority" in report:
+            receipt = _authority_bound_receipt(report, outcome=outcome, confirmation=confirmation, observed_at=observed_at)
+            if report.get("execution_receipt", receipt) != receipt:
+                return False
+            report["execution_receipt"] = receipt
+        else:
+            attach_runtime_execution_receipt(
+                report, outcome=outcome, broker_confirmation=confirmation, observed_at=observed_at,
+            )
     except ValueError:
         return False
     return True

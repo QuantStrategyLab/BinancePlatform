@@ -652,12 +652,14 @@ jobs:
             if [ "${FULL_CYCLE:-false}" = "true" ]; then
               RUNTIME_TARGET_ENABLED=false "$VENV_PATH/bin/python" - <<'SAFE_VALIDATION'
           import json
+          import os
           import subprocess
           import sys
 
           # Capture the sole existing validator. Child/provider diagnostics never reach logs.
           result = {"status": "failed", "reason_code": "validator_output_invalid",
-                    "validation_scope": "full_cycle_no_submit", "execution_permitted": False}
+                    "validation_scope": "full_cycle_no_submit", "execution_permitted": False,
+                    "application_sha": os.environ["BINANCE_SELECTED_APPLICATION_SHA"]}
           process = subprocess.run(
               [sys.executable, "scripts/validate_runtime_startup.py", "--full-cycle"],
               capture_output=True, text=True, check=False,
@@ -727,6 +729,8 @@ jobs:
               "full_cycle_state_snapshot_unavailable",
               "full_cycle_state_write_forbidden",
               "full_cycle_validation",
+              "full_cycle_execution_receipt_invalid",
+              "full_cycle_trend_pool_not_fresh",
               "full_cycle_validation_failed",
               "full_cycle_write_port_called",
               "recovery_active_binding_invalid",
@@ -774,6 +778,8 @@ jobs:
                       result[key] = value
                   result.update(status="passed", reason_code="full_cycle_complete",
                                 cycle_complete=True, risk_outcome="APPROVE", executed_call_count=0)
+                  if candidate.get("trend_pool_source") == "fresh_upstream" and candidate.get("execution_receipt_checked") is True:
+                      result.update(trend_pool_source="fresh_upstream", execution_receipt_checked=True)
               else:
                   result["reason_code"] = (candidate.get("reason_code")
                                            if candidate.get("reason_code") in allowed_reasons
@@ -886,6 +892,7 @@ jobs:
           BINANCE_RECONCILIATION_SYMBOLS: ${{ vars.BINANCE_RECONCILIATION_SYMBOLS }}
           VALIDATE_ONLY: ${{ github.event.inputs.validate_only || 'false' }}
           FULL_CYCLE: ${{ github.event.inputs.full_cycle || 'false' }}
+          BINANCE_SELECTED_APPLICATION_SHA: ${{ steps.runtime-release.outputs.sha }}
           RECONCILE_ONLY: ${{ github.event.inputs.reconcile_only || 'false' }}
           DIAGNOSE_BALANCES: ${{ github.event.inputs.diagnose_balances || 'false' }}
           BALANCE_HISTORY_START: ${{ inputs.balance_history_start }}

@@ -20,6 +20,7 @@ from application.execution_receipt_adapter import (
     record_order_submission_attempt,
     record_order_transport_uncertainty,
 )
+from live_risk_authority import LiveRiskAuthority
 from runtime_scheduler_observation import observe_runtime_scheduler_state
 
 # Binance rate limits (public API: 1200 weight/min, order placement: 50 orders/10s)
@@ -349,6 +350,7 @@ def build_execution_report(runtime):
         dry_run=bool(runtime.dry_run),
         started_at=runtime.now_utc,
         status="ok",
+        runtime_target=runtime_target.to_dict() if runtime_target is not None else None,
     )
     report.update({
         "status": "ok",
@@ -385,8 +387,15 @@ def build_execution_report(runtime):
             "strategy_display_name_localized": str(runtime.strategy_display_name_localized or ""),
         },
     })
-    if runtime_target is not None:
-        report["runtime_target"] = runtime_target.to_dict()
+    authority = getattr(runtime, "risk_authority", None)
+    if (isinstance(authority, LiveRiskAuthority)
+            and getattr(runtime_target, "execution_mode", None) == "live"
+            and not getattr(runtime_target, "strategy_release", None)):
+        report["binance_live_authority"] = {
+            "strategy_revision": authority.strategy_revision,
+            "runtime_revision": authority.runner_revision,
+            "config_sha256": authority.config_sha256,
+        }
     return report
 
 

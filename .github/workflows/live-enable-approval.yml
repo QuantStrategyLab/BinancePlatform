@@ -1,0 +1,93 @@
+name: Approve Binance live enable
+run-name: Approve Binance live enable · validation ${{ inputs.validation_run_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      validation_run_id:
+        description: Successful production no-submit run for this release
+        type: string
+        required: true
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: binance-live-enable-approval
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      release: ${{ steps.check.outputs.release }}
+    steps:
+      - name: Check production readiness evidence
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VALIDATION_RUN: ${{ inputs.validation_run_id }}
+          RUNTIME_WORKFLOW: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA }}
+          RUNTIME_RELEASE: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA }}
+          RUNTIME_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED }}
+        run: |
+          set -euo pipefail
+          [[ "$RUNTIME_ENABLED" = false && "$VALIDATION_RUN" =~ ^[1-9][0-9]*$ ]]
+          [[ "$RUNTIME_WORKFLOW" =~ ^[a-f0-9]{40}$ && "$RUNTIME_RELEASE" =~ ^[a-f0-9]{40}$ ]]
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${VALIDATION_RUN}" |
+            jq -e --arg workflow "$RUNTIME_WORKFLOW" '
+              .head_branch == "runtime-production" and .head_sha == $workflow and
+              .path == ".github/workflows/main.yml" and .run_attempt == 1 and
+              .event == "workflow_dispatch" and .conclusion == "success" and
+              .display_title == "Runtime · full-cycle-validation" and
+              (now - (.updated_at | fromdateiso8601) | . >= 0 and . <= 86400)
+            ' >/dev/null
+          gh run view "$VALIDATION_RUN" --repo "$GITHUB_REPOSITORY" --log |
+            python3 -c '
+          import json
+          import os
+          import sys
+
+          evidence = []
+          for line in sys.stdin:
+              if "{" not in line:
+                  continue
+              try:
+                  item = json.loads(line[line.index("{"):])
+              except ValueError:
+                  continue
+              if isinstance(item, dict) and item.get("reason_code") == "full_cycle_complete":
+                  evidence.append(item)
+          if len(evidence) != 1:
+              raise SystemExit("Expected one full-cycle result")
+          proof = evidence[0]
+          if not (proof.get("application_sha") == os.environ["RUNTIME_RELEASE"]
+                  and proof.get("status") == "passed"
+                  and proof.get("cycle_complete") is True
+                  and proof.get("execution_permitted") is False
+                  and proof.get("risk_outcome") == "APPROVE"
+                  and type(proof.get("executed_call_count")) is int
+                  and proof["executed_call_count"] == 0
+                  and proof.get("trend_pool_source") == "fresh_upstream"
+                  and proof.get("execution_receipt_checked") is True):
+              raise SystemExit("Production readiness evidence did not match")
+          '
+          echo "release=$RUNTIME_RELEASE" >> "$GITHUB_OUTPUT"
+
+  approve:
+    name: Approve enabling the verified release
+    needs: validate
+    environment: live-trading
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions: {}
+    steps:
+      - name: Record approval for the operator switch
+        env:
+          VALIDATION_RUN: ${{ inputs.validation_run_id }}
+          APPROVED_RELEASE: ${{ needs.validate.outputs.release }}
+        run: |
+          printf 'Approved production release %s from validation %s.\n' "$APPROVED_RELEASE" "$VALIDATION_RUN" >> "$GITHUB_STEP_SUMMARY"
