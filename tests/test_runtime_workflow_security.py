@@ -713,7 +713,12 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
         ("rebase-proposal", "", "", "false", "false", "refs/heads/main", False),
         ("rebase-proposal", "12345", "", "true", "false", "refs/heads/main", False),
         ("rebase-apply", "", "", "true", "false", "refs/heads/main", True),
-        ("prospective-rebase-apply", "", "", "true", "false", "refs/heads/main", True),
+        ("prospective-rebase-apply", "", "", "true", "false", "refs/heads/main", False),
+        ("prospective-rebase-apply", "12345", "a" * 64, "true", "false", "refs/heads/main", False),
+        ("prospective-rebase-apply", "12345", "a" * 64, "true", "false", "refs/heads/runtime-production", True),
+        ("prospective-rebase-apply", "", "a" * 64, "true", "false", "refs/heads/runtime-production", False),
+        ("prospective-rebase-apply", "12345", "bad", "true", "false", "refs/heads/runtime-production", False),
+        ("prospective-rebase-apply", "12345", "a" * 64, "true", "true", "refs/heads/runtime-production", False),
         ("prospective-rebase-apply", "", "", "true", "true", "refs/heads/main", False),
         ("prospective-rebase-apply", "", "", "false", "false", "refs/heads/main", False),
         ("prospective-rebase-apply", "", "", "true", "false", "refs/heads/topic", False),
@@ -743,7 +748,7 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
         ("preview", "", "", "true", "false", "refs/heads/feature", False),
     ],
 )
-def test_accounting_migration_guard_is_disabled_main_only(
+def test_accounting_migration_guard_requires_the_disabled_approved_ref(
     action, run_id, digest, reconcile, enabled, ref, allowed
 ):
     workflow = WORKFLOW.read_text()

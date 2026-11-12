@@ -55,11 +55,11 @@ on:
         type: string
         required: false
       accounting_migration_preview_run_id:
-        description: "Exact successful preview run ID; required only for apply"
+        description: "Exact approved run ID for apply or prospective-rebase-apply"
         type: string
         required: false
       accounting_migration_expected_digest:
-        description: "Exact approved preview candidate digest; required only for apply"
+        description: "Exact approved preview or prospective opening digest"
         type: string
         required: false
       candidate_release_sha:
@@ -189,7 +189,17 @@ jobs:
                 exit 1
               fi
               ;;
-            inspect|quiesce|audit|preview|scope-preview|cash-flow-preview|rebase-proposal|rebase-apply|prospective-rebase-apply|release-stale-owner|apply)
+            prospective-rebase-apply)
+              if [ "${GITHUB_REF:-}" != "refs/heads/runtime-production" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "${FULL_CYCLE_INPUT:-false}" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ] || [ "${RECOVERY_ACTION_INPUT:-none}" != "none" ] || [ -n "${CANDIDATE_RELEASE_SHA_INPUT:-}${PROPOSAL_RECIPIENT_CERTIFICATE:-}" ]; then
+                echo "::error::Prospective apply requires the disabled production ref and an exclusive reconciliation action."
+                exit 1
+              fi
+              if [[ ! "${ACCOUNTING_MIGRATION_PREVIEW_RUN_ID:-}" =~ ^[1-9][0-9]{0,19}$ ]] || [[ ! "${ACCOUNTING_MIGRATION_EXPECTED_DIGEST:-}" =~ ^[0-9a-f]{64}$ ]]; then
+                echo "::error::Prospective apply requires the approved proposal run ID and digest."
+                exit 1
+              fi
+              ;;
+            inspect|quiesce|audit|preview|scope-preview|cash-flow-preview|rebase-proposal|rebase-apply|release-stale-owner|apply)
               if [ "${RECOVERY_ACTION_INPUT:-none}" != "none" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
                 echo "::error::Accounting migration requires disabled main runtime, reconcile_only, and no other recovery or diagnostic mode."
                 exit 1
@@ -348,7 +358,14 @@ jobs:
         run: |
           set -euo pipefail
           source_kind=runtime_release
-          if [ "$ACCOUNTING_MIGRATION_ACTION" = "earn-forward-diagnose" ] || [ "$ACCOUNTING_MIGRATION_ACTION" = "historical-continuity-diagnose" ]; then
+          if [ "$ACCOUNTING_MIGRATION_ACTION" = "prospective-rebase-apply" ]; then
+            if [ -z "${BINANCE_RUNTIME_WORKFLOW_SHA:-}" ]; then
+              echo "::error::Prospective apply requires an explicit workflow pin."
+              exit 1
+            fi
+            selected="$(python3 scripts/select_runtime_release_sha.py --verify-workflow)"
+            source_kind=prospective_accounting_apply
+          elif [ "$ACCOUNTING_MIGRATION_ACTION" = "earn-forward-diagnose" ] || [ "$ACCOUNTING_MIGRATION_ACTION" = "historical-continuity-diagnose" ]; then
             # This fixed read-only maintenance tool uses the already approved
             # workflow tree; it neither selects nor adopts a trading candidate.
             if [ -z "${BINANCE_RUNTIME_WORKFLOW_SHA:-}" ]; then
@@ -369,6 +386,8 @@ jobs:
           echo "source_kind=$source_kind" >> "$GITHUB_OUTPUT"
           if [ "$source_kind" = "earn_readonly" ] || [ "$source_kind" = "historical_readonly" ]; then
             echo "Selected read-only tool SHA ${selected} (workflow github.sha=${GITHUB_SHA:-unknown})."
+          elif [ "$source_kind" = "prospective_accounting_apply" ]; then
+            echo "Selected protected accounting tool SHA ${selected}."
           else
             echo "Selected runtime release SHA ${selected} (workflow github.sha=${GITHUB_SHA:-unknown} is not used as the application execution identity)."
           fi
@@ -828,7 +847,7 @@ jobs:
             fi
             if [ "${ACCOUNTING_MIGRATION_ACTION:-none}" != "none" ]; then
               args=("$ACCOUNTING_MIGRATION_ACTION")
-              if [ "$ACCOUNTING_MIGRATION_ACTION" = "apply" ]; then
+              if [ "$ACCOUNTING_MIGRATION_ACTION" = "apply" ] || [ "$ACCOUNTING_MIGRATION_ACTION" = "prospective-rebase-apply" ]; then
                 args+=(--expected-digest "$ACCOUNTING_MIGRATION_EXPECTED_DIGEST")
               fi
               "$VENV_PATH/bin/python" scripts/migrate_daily_accounting_state.py "${args[@]}"
@@ -925,6 +944,7 @@ jobs:
           ACCOUNTING_MIGRATION_ACTION: ${{ inputs.accounting_migration_action || 'none' }}
           PROPOSAL_RECIPIENT_CERTIFICATE: ${{ inputs.proposal_recipient_certificate }}
           ACCOUNTING_MIGRATION_EXPECTED_DIGEST: ${{ inputs.accounting_migration_expected_digest }}
+          ACCOUNTING_MIGRATION_PREVIEW_RUN_ID: ${{ inputs.accounting_migration_preview_run_id }}
 
       - name: Remove protected LIVE risk authority source
         if: ${{ always() }}

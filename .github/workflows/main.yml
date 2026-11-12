@@ -58,11 +58,11 @@ on:
         type: string
         required: false
       accounting_migration_preview_run_id:
-        description: "Exact successful preview run ID; required only for apply"
+        description: "Exact approved run ID for apply or prospective-rebase-apply"
         type: string
         required: false
       accounting_migration_expected_digest:
-        description: "Exact approved preview candidate digest; required only for apply"
+        description: "Exact approved preview or prospective opening digest"
         type: string
         required: false
       candidate_release_sha:
