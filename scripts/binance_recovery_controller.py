@@ -23,7 +23,12 @@ from google.cloud.firestore_v1.transaction import Transaction as FirestoreTransa
 from quant_platform_kit.binance import connect_client
 from quant_platform_kit.common.broker_reconciliation import BrokerReconciliationEvidence, calculate_broker_observation_sha256 as digest
 from quant_platform_kit.common.broker_reconciliation_enrollment import DEFAULT_BROKER_RECONCILIATION_ENROLLMENT_MAX_AGE
-from quant_platform_kit.common.reconciliation_recovery import evaluate_reconciliation_recovery_activation
+from quant_platform_kit.common.reconciliation_recovery import (
+    RECONCILIATION_RECOVERY_CONFIRMATION_SCHEMA_VERSION,
+    ReconciliationRecoveryConfirmation,
+    calculate_reconciliation_recovery_confirmation_sha256,
+    evaluate_reconciliation_recovery_activation,
+)
 from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
 from application.broker_reconciliation import _expected_digests, build_reconciliation_candidate, collect_read_only_reconciliation_observations, diagnose_balance_snapshot
 from application.reconciliation_recovery import (
@@ -61,6 +66,7 @@ from scripts.reconcile_frozen_live_baseline import _symbols_from_env
 
 REPOSITORY = "QuantStrategyLab/BinancePlatform"
 CONSOLE = "https://qsl-strategy-switch-console.pigbibi.workers.dev"
+GITHUB_REVIEW_ENVIRONMENT = "binance-recovery-review"
 STAGE = "preflight"
 MANAGED_SYMBOLS_SHA256 = "eb824ac33ac9781344cf717bd5a9ca291cfda87b2e8ca26d2ccc3b444635bbc8"
 CONTROL_DOCUMENT = "MULTI_ASSET_STATE__recovery"
@@ -149,7 +155,7 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def request_json(url, token, *, payload=None):
+def request_json(url, token, *, payload=None, expected_type=dict):
     if not token:
         raise ValueError("recovery_credential_missing")
     request = Request(url, data=None if payload is None else json.dumps(payload).encode(),
@@ -163,7 +169,7 @@ def request_json(url, token, *, payload=None):
         if len(body) > 262144:
             raise ValueError("recovery_response_too_large")
     result = json.loads(body)
-    if not isinstance(result, dict):
+    if not isinstance(result, expected_type):
         raise ValueError("recovery_response_invalid")
     return result
 
@@ -188,6 +194,53 @@ def verified_run(
             )):
         raise ValueError("recovery_source_workflow_unverified")
     return {key: value[key] for key in ("id", "head_sha", "head_branch", "event", "path")}
+
+
+def read_github_confirmation(*, current_run, recovery_id, candidate):
+    """Read the owner review for this run and adapt it for in-memory verification."""
+    expected = os.environ.get("RECOVERY_CANDIDATE_SHA256", "")
+    reviewer = os.environ.get("BINANCE_RECOVERY_REVIEWER_ID", "")
+    if (not re.fullmatch(r"[0-9a-f]{64}", expected)
+            or expected != candidate.candidate_sha256
+            or not re.fullmatch(r"[1-9][0-9]*", reviewer)
+            or os.environ.get("GITHUB_RUN_ATTEMPT") != "1"):
+        raise ValueError("github_recovery_review_binding_invalid")
+    reviews = request_json(
+        f"https://api.github.com/repos/{REPOSITORY}/actions/runs/{current_run['id']}/approvals",
+        os.environ.get("GITHUB_TOKEN", ""),
+        expected_type=list,
+    )
+    environment_reviews = [
+        review for review in reviews
+        if any(environment.get("name") == GITHUB_REVIEW_ENVIRONMENT for environment in review["environments"])
+    ]
+    if len(environment_reviews) != 1:
+        raise ValueError("github_recovery_review_missing_or_ambiguous")
+    review = environment_reviews[0]
+    if review["state"] != "approved" or review["user"]["id"] != int(reviewer):
+        raise ValueError("github_recovery_review_not_approved_by_owner")
+
+    # The review-history API omits an approval timestamp. Use the time we
+    # observed the approval so subsequent broker samples must be strictly newer.
+    observed_at = datetime.now(timezone.utc)
+    if not candidate.last_observed_at <= observed_at <= (
+        candidate.last_observed_at + DEFAULT_BROKER_RECONCILIATION_ENROLLMENT_MAX_AGE
+    ):
+        raise ValueError("github_recovery_review_candidate_expired")
+    material = {
+        "schema_version": RECONCILIATION_RECOVERY_CONFIRMATION_SCHEMA_VERSION,
+        "recovery_id": recovery_id,
+        "candidate_sha256": expected,
+        "dual_review_binding_sha256": expected,
+        "confirmed_at": observed_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "confirmed_by": review["user"]["login"],
+        "no_order": True,
+        "execution_authority_granted": False,
+    }
+    return ReconciliationRecoveryConfirmation.from_dict({
+        **material,
+        "confirmation_sha256": calculate_reconciliation_recovery_confirmation_sha256(material),
+    })
 
 
 def compare_and_set_control(transaction, *, control_ref, owner_ref, ledger_ref, previous, next_value, ledger_sha256):
@@ -312,7 +365,7 @@ def run(action, recovery_id=""):
     symbols = _symbols_from_env()
     if digest(list(symbols)) != MANAGED_SYMBOLS_SHA256:
         raise ValueError("recovery_managed_symbols_changed")
-    if action in {"prepare", "diagnose"}:
+    if action in {"prepare", "prepare-github", "diagnose"}:
         if previous is not None and previous.get("state") != "RECONCILE_ONLY":
             raise ValueError("recovery_already_active")
         if action == "diagnose" and not is_post_rebase:
@@ -355,7 +408,7 @@ def run(action, recovery_id=""):
                         now=collected_at,
                         require_fresh=False,
                     )
-                if action == "prepare":
+                if action in {"prepare", "prepare-github"}:
                     has_confirmation = "confirmation" in previous
                     has_transition = "transition_plan" in previous
                     if has_confirmation or has_transition:
@@ -531,31 +584,35 @@ def run(action, recovery_id=""):
                 next_value=value,
                 ledger_sha256=candidate.local_execution_ledger_sha256,
             )
-        STAGE = "console_publication"
-        payload = console_snapshot(
-            candidate,
-            recovery_id=recovery_id,
-            now=(
-                prospective_clock()
-                if is_prospective_rebase
-                else collected_at if is_post_rebase else None
-            ),
-        )
-        try:
-            acknowledgement = request_json(CONSOLE + "/api/internal/sync-reconciliation-recovery-source", os.getenv("RECONCILIATION_RECOVERY_SYNC_TOKEN", ""), payload=payload)
-            if (acknowledgement.get("ok") is not True or acknowledgement.get("source_id") != payload["source_id"]
-                    or acknowledgement.get("recovery_count") != 1 or acknowledgement.get("generated_at") != payload["generated_at"]):
-                raise ValueError("recovery_publication_not_acknowledged")
-        except Exception as exc:
-            if is_post_rebase:
-                raise RecoveryWriteUncertain("post_rebase_publication_unknown") from exc
-            raise
+        if action == "prepare":
+            STAGE = "console_publication"
+            payload = console_snapshot(
+                candidate,
+                recovery_id=recovery_id,
+                now=(
+                    prospective_clock()
+                    if is_prospective_rebase
+                    else collected_at if is_post_rebase else None
+                ),
+            )
+            try:
+                acknowledgement = request_json(CONSOLE + "/api/internal/sync-reconciliation-recovery-source", os.getenv("RECONCILIATION_RECOVERY_SYNC_TOKEN", ""), payload=payload)
+                if (acknowledgement.get("ok") is not True or acknowledgement.get("source_id") != payload["source_id"]
+                        or acknowledgement.get("recovery_count") != 1 or acknowledgement.get("generated_at") != payload["generated_at"]):
+                    raise ValueError("recovery_publication_not_acknowledged")
+            except Exception as exc:
+                if is_post_rebase:
+                    raise RecoveryWriteUncertain("post_rebase_publication_unknown") from exc
+                raise
         result = {"status": "awaiting_human_confirmation", "recovery_id": recovery_id, "candidate_sha256": candidate.candidate_sha256, "no_order": True, "execution_authority_granted": False}
         if is_post_rebase:
             result.update(
                 source_kind=package["source"]["kind"],
                 historical_difference_unresolved=True,
             )
+        if action == "prepare-github":
+            result["confirmation_source"] = "github_environment"
+            result["last_observed_at"] = candidate.last_observed_at.isoformat()
         return result
     if not previous or previous.get("recovery_id") != recovery_id or previous.get("state") != "RECONCILE_ONLY":
         raise ValueError("recovery_request_missing_or_changed")
@@ -641,8 +698,11 @@ def run(action, recovery_id=""):
     if previous["source"]["symbols_sha256"] != digest(list(symbols)):
         raise ValueError("recovery_managed_symbols_changed")
     STAGE = "confirmation_read"
-    response = request_json(CONSOLE + "/api/internal/reconciliation-recovery-confirmation?" + urlencode({"recovery_id": recovery_id}), os.getenv("RECONCILIATION_RECOVERY_CONTROLLER_TOKEN", ""))
-    confirmation = verify_confirmation(response, recovery_id=recovery_id, candidate=candidate)
+    if action == "verify-github":
+        confirmation = read_github_confirmation(current_run=current_run, recovery_id=recovery_id, candidate=candidate)
+    else:
+        response = request_json(CONSOLE + "/api/internal/reconciliation-recovery-confirmation?" + urlencode({"recovery_id": recovery_id}), os.getenv("RECONCILIATION_RECOVERY_CONTROLLER_TOKEN", ""))
+        confirmation = verify_confirmation(response, recovery_id=recovery_id, candidate=candidate)
     STAGE = "post_confirmation_collection"
     # Broker reads begin only after the actual server-issued confirmation.
     client = connect_client(os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"], timeout=30)
@@ -810,16 +870,18 @@ def run(action, recovery_id=""):
               "no_order": True, "execution_authority_granted": False, "runtime_target_enabled": False}
     if is_post_rebase:
         result.update(source_kind=source_kind, historical_difference_unresolved=True)
+    if action == "verify-github":
+        result["confirmation_source"] = "github_environment"
     return result
 
 
 def main(argv=None):
     parser = ArgumentParser(description="Prepare, verify or adopt the designated Binance recovery; never trade")
-    parser.add_argument("action", choices=("diagnose", "prepare", "verify", "activate"))
+    parser.add_argument("action", choices=("diagnose", "prepare", "verify", "activate", "prepare-github", "verify-github"))
     parser.add_argument("--recovery-id", default="")
     args = parser.parse_args(argv)
-    if args.action not in {"prepare", "diagnose"} and not re.fullmatch(r"binance-[0-9]+-[0-9]+", args.recovery_id):
-        parser.error("verify/activate require the exact recovery ID shown by prepare")
+    if args.action not in {"prepare", "prepare-github", "diagnose"} and not re.fullmatch(r"binance-[0-9]+-[0-9]+", args.recovery_id):
+        parser.error("verification and activation require the exact prepared recovery ID")
     try:
         result = run(args.action, args.recovery_id)
     except RecoveryWriteUncertain:

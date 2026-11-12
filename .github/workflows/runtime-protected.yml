@@ -63,7 +63,11 @@ on:
         required: false
         default: none
       recovery_id:
-        description: "Exact prepared recovery ID; required for verify or activate"
+        description: "Exact prepared recovery ID; required for verification or activation"
+        type: string
+        required: false
+      recovery_candidate_sha256:
+        description: "Exact candidate SHA-256 for GitHub-approved verification"
         type: string
         required: false
       accounting_migration_action:
@@ -197,7 +201,8 @@ jobs:
           PYTHONPATH=. uv run --no-sync python -m scripts.publish_runtime_daily
 
   deploy:
-    if: ${{ !inputs.runtime_daily_only }}
+    needs: recovery-review
+    if: ${{ !cancelled() && !inputs.runtime_daily_only && (inputs.recovery_action != 'verify-github' || needs.recovery-review.result == 'success') }}
     runs-on: self-hosted
     timeout-minutes: 60
     environment: binance-runtime
@@ -239,7 +244,7 @@ jobs:
           fi
           case "${RECOVERY_ACTION_INPUT:-none}" in
             none) ;;
-            diagnose|prepare|verify|activate)
+            diagnose|prepare|verify|activate|prepare-github|verify-github)
               if [ "${ACCOUNTING_MIGRATION_ACTION_INPUT:-none}" != "none" ] || [ "${GITHUB_REF:-}" != "refs/heads/main" ] || [ "${RUNTIME_TARGET_ENABLED:-}" != "false" ] || [ "$RECONCILE_ONLY_INPUT" != "true" ] || [ "$VALIDATE_ONLY_INPUT" = "true" ] || [ "$DIAGNOSE_BALANCES_INPUT" = "true" ] || [ "$RECONCILE_PERSIST_INPUT" = "true" ]; then
                 echo "::error::Recovery requires disabled main runtime, reconcile_only, and no other diagnostic mode."
                 exit 1
@@ -421,6 +426,7 @@ jobs:
         env:
           BINANCE_RUNTIME_RELEASE_SHA: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA }}
           ACCOUNTING_MIGRATION_ACTION: ${{ inputs.accounting_migration_action || 'none' }}
+          RECOVERY_ACTION: ${{ inputs.recovery_action || 'none' }}
           CANDIDATE_RELEASE_SHA: ${{ inputs.candidate_release_sha }}
           VALIDATE_ONLY: ${{ inputs.validate_only || 'false' }}
           FULL_CYCLE: ${{ inputs.full_cycle || 'false' }}
@@ -429,6 +435,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$ACCOUNTING_MIGRATION_ACTION" = "rebase-proposal" ]; then
+            selected="$GITHUB_SHA"
+          elif [[ "$RECOVERY_ACTION" == "prepare-github" || "$RECOVERY_ACTION" == "verify-github" ]]; then
             selected="$GITHUB_SHA"
           else
             selected="$(python3 scripts/select_runtime_release_sha.py)"
@@ -440,6 +448,8 @@ jobs:
           echo "sha=$selected" >> "$GITHUB_OUTPUT"
           if [ "$ACCOUNTING_MIGRATION_ACTION" = "rebase-proposal" ]; then
             echo "Selected approved rebase preview SHA ${selected}."
+          elif [[ "$RECOVERY_ACTION" == "prepare-github" || "$RECOVERY_ACTION" == "verify-github" ]]; then
+            echo "Selected approved GitHub recovery tooling SHA ${selected}."
           else
             echo "Selected runtime release SHA ${selected} (workflow github.sha=${GITHUB_SHA:-unknown} is not used as the application execution identity)."
           fi
@@ -819,9 +829,11 @@ jobs:
         env:
           RECOVERY_ACTION: ${{ inputs.recovery_action || 'none' }}
           RECOVERY_ID: ${{ inputs.recovery_id }}
+          RECOVERY_CANDIDATE_SHA256: ${{ inputs.recovery_candidate_sha256 }}
+          BINANCE_RECOVERY_REVIEWER_ID: ${{ vars.BINANCE_RECOVERY_REVIEWER_ID }}
           RECONCILIATION_RECOVERY_SYNC_TOKEN: ${{ (inputs.recovery_action == 'prepare' || inputs.accounting_migration_action == 'scope-preview') && secrets.RECONCILIATION_RECOVERY_SYNC_TOKEN || '' }}
           RECONCILIATION_RECOVERY_CONTROLLER_TOKEN: ${{ (inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.RECONCILIATION_RECOVERY_CONTROLLER_TOKEN || '' }}
-          GITHUB_TOKEN: ${{ (inputs.recovery_action == 'diagnose' || inputs.recovery_action == 'prepare' || inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.GITHUB_TOKEN || '' }}
+          GITHUB_TOKEN: ${{ (inputs.recovery_action == 'diagnose' || inputs.recovery_action == 'prepare' || inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate' || inputs.recovery_action == 'prepare-github' || inputs.recovery_action == 'verify-github') && secrets.GITHUB_TOKEN || '' }}
           BINANCE_RECOVERY_CONTROL_ENABLED: ${{ vars.BINANCE_RECOVERY_CONTROL_ENABLED || 'false' }}
           BINANCE_APPROVED_PROSPECTIVE_OPENING: ${{ inputs.accounting_migration_action == 'prospective-rebase-apply' && secrets.BINANCE_APPROVED_PROSPECTIVE_OPENING || '' }}
           BINANCE_API_KEY: ${{ secrets.BINANCE_API_KEY }}
@@ -997,3 +1009,42 @@ jobs:
           NOTIFY_LANG: ${{ vars.NOTIFY_LANG || 'zh' }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           GLOBAL_TELEGRAM_CHAT_ID: ${{ secrets.PRIVATE_GLOBAL_TELEGRAM_CHAT_ID }}
+
+  recovery-review-input:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.recovery_action == 'verify-github' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions: {}
+    steps:
+      - name: Show the exact candidate before requesting approval
+        shell: bash
+        env:
+          RECOVERY_ID: ${{ inputs.recovery_id }}
+          CANDIDATE_SHA: ${{ inputs.recovery_candidate_sha256 }}
+          APPROVED_WORKFLOW_SHA: ${{ vars.BINANCE_RECOVERY_WORKFLOW_SHA }}
+          REVIEWER_ID: ${{ vars.BINANCE_RECOVERY_REVIEWER_ID }}
+          RECONCILE_ONLY: ${{ inputs.reconcile_only }}
+          RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_WORKFLOW_REF" = "$GITHUB_REPOSITORY/.github/workflows/main.yml@refs/heads/main"
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_SHA" = "$APPROVED_WORKFLOW_SHA"
+          test "$RECONCILE_ONLY" = true
+          test "$RUNTIME_TARGET_ENABLED" = false
+          [[ "$REVIEWER_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$RECOVERY_ID" =~ ^binance-([1-9][0-9]*)-[1-9][0-9]*$ ]]
+          printf 'Candidate: %s\n\nSHA-256: %s\n\n[Prepare run](https://github.com/%s/actions/runs/%s)\n' \
+            "$RECOVERY_ID" "$CANDIDATE_SHA" "$GITHUB_REPOSITORY" "${BASH_REMATCH[1]}" >> "$GITHUB_STEP_SUMMARY"
+
+  recovery-review:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.recovery_action == 'verify-github' }}
+    needs: recovery-review-input
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    environment: binance-recovery-review
+    permissions: {}
+    steps:
+      - run: echo 'GitHub released the candidate review job.'

@@ -25,6 +25,8 @@ def test_runtime_does_not_automatically_run_optional_account_facts() -> None:
     assert re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.MULTILINE) == [
         "runtime-daily",
         "deploy",
+        "recovery-review-input",
+        "recovery-review",
     ]
     assert "account-facts-readonly:" not in jobs
     assert "/.github/workflows/binance-account-facts.yml@" not in jobs
@@ -685,6 +687,10 @@ def test_balance_diagnostic_guard_rejects_unsafe_input_combinations(reconcile, p
     ("prepare", "true", "false", "refs/heads/main", True),
     ("activate", "true", "false", "refs/heads/main", True),
     ("verify", "false", "false", "refs/heads/main", False),
+    ("prepare-github", "true", "false", "refs/heads/main", True),
+    ("verify-github", "true", "false", "refs/heads/main", True),
+    ("verify-github", "true", "true", "refs/heads/main", False),
+    ("verify-github", "true", "false", "refs/heads/feature", False),
     ("prepare", "true", "true", "refs/heads/main", False),
     ("prepare", "true", "false", "refs/heads/feature", False),
     ("unexpected", "true", "false", "refs/heads/main", False),
@@ -734,6 +740,20 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
     assert "options: [none, inspect, quiesce, earn-forward-diagnose, audit, preview, scope-preview, cash-flow-preview, rebase-proposal, rebase-apply, prospective-rebase-apply, release-stale-owner, apply]" in inputs
     assert "accounting_migration_preview_run_id:" in inputs
     assert "accounting_migration_expected_digest:" in inputs
+
+
+def test_github_candidate_verification_waits_for_its_review_job():
+    entry = WORKFLOW.with_name("main.yml").read_text()
+    workflow = WORKFLOW.read_text()
+    review = _job_block(workflow, "recovery-review")
+    runtime = _job_block(workflow, "deploy")
+    assert "github.event_name == 'workflow_dispatch' && inputs.recovery_action == 'verify-github'" in review
+    assert "environment: binance-recovery-review" in review
+    assert "permissions: {}" in review
+    assert "needs: recovery-review-input" in review
+    assert "needs: recovery-review" in runtime
+    assert "inputs.recovery_action != 'verify-github' || needs.recovery-review.result == 'success'" in runtime
+    assert "recovery_candidate_sha256: ${{ inputs.recovery_candidate_sha256 }}" in entry
 
 
 @pytest.mark.parametrize(

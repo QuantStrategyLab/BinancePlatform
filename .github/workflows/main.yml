@@ -1,5 +1,5 @@
 name: Runtime
-run-name: Runtime · ${{ inputs.full_cycle && 'full-cycle-validation' || inputs.validate_only && 'validation' || inputs.reconcile_only && 'reconciliation' || vars.RUNTIME_TARGET_ENABLED == 'true' && 'strategy' || 'disabled' }}
+run-name: Runtime · ${{ inputs.recovery_action == 'prepare-github' && 'prepare GitHub recovery candidate' || inputs.recovery_action == 'verify-github' && 'GitHub recovery verification' || inputs.full_cycle && 'full-cycle-validation' || inputs.validate_only && 'validation' || inputs.reconcile_only && 'reconciliation' || vars.RUNTIME_TARGET_ENABLED == 'true' && 'strategy' || 'disabled' }}
 
 on:
   workflow_dispatch:
@@ -42,9 +42,13 @@ on:
         type: choice
         required: false
         default: none
-        options: [none, diagnose, prepare, verify, activate]
+        options: [none, diagnose, prepare, verify, activate, prepare-github, verify-github]
       recovery_id:
-        description: "Exact prepared recovery ID; required for verify or activate"
+        description: "Exact prepared recovery ID; required for verification or activation"
+        type: string
+        required: false
+      recovery_candidate_sha256:
+        description: "Exact candidate SHA-256 from the prepare run; required for verify-github"
         type: string
         required: false
       accounting_migration_action:
@@ -93,6 +97,7 @@ jobs:
       balance_history_end: ${{ inputs.balance_history_end }}
       recovery_action: ${{ inputs.recovery_action || 'none' }}
       recovery_id: ${{ inputs.recovery_id }}
+      recovery_candidate_sha256: ${{ inputs.recovery_candidate_sha256 }}
       accounting_migration_action: ${{ inputs.accounting_migration_action || 'none' }}
       proposal_recipient_certificate: ${{ inputs.proposal_recipient_certificate }}
       accounting_migration_preview_run_id: ${{ inputs.accounting_migration_preview_run_id }}
