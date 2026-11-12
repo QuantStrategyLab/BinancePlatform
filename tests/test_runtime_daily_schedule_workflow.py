@@ -35,7 +35,8 @@ def test_natural_daily_is_read_only_and_separate_from_runtime() -> None:
     assert "PRIVATE_RUNTIME_TARGET_JSON: ${{ vars.RUNTIME_TARGET_JSON }}" in call
     assert "RUNTIME_TARGET_JSON: ${{ secrets.PRIVATE_RUNTIME_TARGET_JSON }}" in daily
     assert "vars.RUNTIME_TARGET_JSON" not in daily
-    assert "if: ${{ !inputs.runtime_daily_only }}" in deploy
+    deploy_condition = next(line for line in deploy.splitlines() if line.startswith("    if:"))
+    assert "&& !inputs.runtime_daily_only &&" in deploy_condition
     assert "github.event_name == 'schedule'" in daily
     assert "github.run_attempt == 1" in daily
     assert "scripts.publish_runtime_daily" in daily
