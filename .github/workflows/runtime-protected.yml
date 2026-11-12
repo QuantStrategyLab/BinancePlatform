@@ -201,7 +201,8 @@ jobs:
           PYTHONPATH=. uv run --no-sync python -m scripts.publish_runtime_daily
 
   deploy:
-    if: ${{ !inputs.runtime_daily_only }}
+    needs: recovery-review
+    if: ${{ !cancelled() && !inputs.runtime_daily_only && (inputs.recovery_action != 'verify-github' || needs.recovery-review.result == 'success') }}
     runs-on: self-hosted
     timeout-minutes: 60
     environment: binance-runtime
@@ -1008,3 +1009,41 @@ jobs:
           NOTIFY_LANG: ${{ vars.NOTIFY_LANG || 'zh' }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           GLOBAL_TELEGRAM_CHAT_ID: ${{ secrets.PRIVATE_GLOBAL_TELEGRAM_CHAT_ID }}
+
+  recovery-review-input:
+    if: ${{ inputs.recovery_action == 'verify-github' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions: {}
+    steps:
+      - name: Show the exact candidate before requesting approval
+        shell: bash
+        env:
+          RECOVERY_ID: ${{ inputs.recovery_id }}
+          CANDIDATE_SHA: ${{ inputs.recovery_candidate_sha256 }}
+          APPROVED_WORKFLOW_SHA: ${{ vars.BINANCE_RECOVERY_WORKFLOW_SHA }}
+          REVIEWER_ID: ${{ vars.BINANCE_RECOVERY_REVIEWER_ID }}
+          RECONCILE_ONLY: ${{ inputs.reconcile_only }}
+          RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_RUN_ATTEMPT" = 1
+          test "$GITHUB_SHA" = "$APPROVED_WORKFLOW_SHA"
+          test "$RECONCILE_ONLY" = true
+          test "$RUNTIME_TARGET_ENABLED" = false
+          [[ "$REVIEWER_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$RECOVERY_ID" =~ ^binance-([1-9][0-9]*)-[1-9][0-9]*$ ]]
+          printf 'Candidate: %s\n\nSHA-256: %s\n\n[Prepare run](https://github.com/%s/actions/runs/%s)\n' \
+            "$RECOVERY_ID" "$CANDIDATE_SHA" "$GITHUB_REPOSITORY" "${BASH_REMATCH[1]}" >> "$GITHUB_STEP_SUMMARY"
+
+  recovery-review:
+    if: ${{ inputs.recovery_action == 'verify-github' }}
+    needs: recovery-review-input
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    environment: binance-recovery-review
+    permissions: {}
+    steps:
+      - run: echo 'GitHub released the candidate review job.'

@@ -742,14 +742,15 @@ def test_accounting_migration_has_explicit_preview_and_apply_inputs():
 
 def test_github_candidate_verification_waits_for_its_review_job():
     entry = WORKFLOW.with_name("main.yml").read_text()
-    review = _job_block(entry, "recovery-review")
-    runtime = _job_block(entry, "deploy")
+    workflow = WORKFLOW.read_text()
+    review = _job_block(workflow, "recovery-review")
+    runtime = _job_block(workflow, "deploy")
     assert "environment: binance-recovery-review" in review
     assert "permissions: {}" in review
     assert "needs: recovery-review-input" in review
     assert "needs: recovery-review" in runtime
     assert "inputs.recovery_action != 'verify-github' || needs.recovery-review.result == 'success'" in runtime
-    assert "recovery_candidate_sha256: ${{ inputs.recovery_candidate_sha256 }}" in runtime
+    assert "recovery_candidate_sha256: ${{ inputs.recovery_candidate_sha256 }}" in entry
 
 
 @pytest.mark.parametrize(
