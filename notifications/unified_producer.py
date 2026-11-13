@@ -16,18 +16,44 @@ from .notification_store import NotificationStore
 
 def _source(report, *, archived):
     from .unified_notifications import report_issue
-    issue = report_issue(report) if archived else None
+    issue = report_issue(report, archived_counts=True) if archived else None
     # Free-form text, balances, raw order IDs and selectors never enter this ledger.
+    digest = (report.get("summary") or {}).get("notification_digest")
+    if archived and digest is None and not issue:
+        digest = _archived_receipt_counts(report)
     return {
         "run_id": report["run_id"], "started_at": report["started_at"],
         "status": report["status"], "dry_run": report["dry_run"], "archived": archived,
-        "summary": {"notification_digest": deepcopy((report.get("summary") or {}).get("notification_digest"))
-            if archived and not issue else None},
+        "summary": {"notification_digest": deepcopy(digest) if archived and not issue else None},
         "notification_evidence_issue": issue[0] if issue else None,
         "error_summary": {"errors": [{"message": "source_cycle_alert"}] if (
             report.get("errors") or (report.get("error_summary") or {}).get("errors")
             or report.get("execution_blocked_reason") or report.get("circuit_breaker_triggered") or issue) else []},
     }
+
+
+def _archived_receipt_counts(report):
+    """Keep the completed run's counts separate from broker-wide coverage."""
+    from application.execution_receipt_adapter import validate_report_execution_receipt
+
+    try:
+        receipt = validate_report_execution_receipt(report)
+    except (ValueError, TypeError, KeyError):
+        return None
+    counters = report.get("execution_receipt_observation")
+    fields = ("submission_attempted_count", "filled_count", "partially_filled_count",
+              "broker_acknowledged_count", "transport_uncertain_count", "failed_count")
+    if (report.get("dry_run") is not False or receipt["execution_mode"] != "live"
+            or not isinstance(counters, dict)
+            or any(type(counters.get(k)) is not int or counters[k] < 0 for k in fields)):
+        return None
+    attempted, filled, partial, acknowledged, uncertain, failed = (counters[k] for k in fields)
+    if attempted != filled or any((partial, acknowledged, uncertain, failed)):
+        return None
+    if receipt["outcome"] != ("filled" if filled else "no_action"):
+        return None
+    return {"schema_version": "qsl.notification_cycle.v1", "dry_run": False, "routine": True,
+            "order_count": attempted, "fill_count": 0 if attempted == 0 else None}
 
 
 def _report(source, target):
@@ -206,8 +232,9 @@ def emit_archive(env, *, now=None, read=_read, store=None):
     # them as event facts; only completed source facts determine window totals.
     update_window(env, reports=reports, archived=True, complete_archive=True,
         day=window.business_day.isoformat(), store=store)
-    from .unified_notifications import observe_archived_report
-    observe_archived_report(max(reports, key=lambda report: report["started_at"]), env=env, store=store)
+    from .unified_notifications import enabled, observe_archived_report
+    if enabled(env):
+        observe_archived_report(max(reports, key=lambda report: report["started_at"]), env=env, store=store)
     return {"status": "projected", "uploaded": True, "runs": len({r["run_id"] for r in reports}),
         "window_id": window.window_id, "source_set_sha256": hashlib.sha256(
             json.dumps(sorted({r["run_id"] for r in reports})).encode()).hexdigest()}

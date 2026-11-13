@@ -230,7 +230,7 @@ jobs:
 
       - name: Publish existing reports as unified digest candidates
         id: digest_projection
-        if: ${{ success() && steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
+        if: ${{ success() && vars.BINANCE_DIGEST_CANDIDATES_ENABLED == 'true' && steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
         env:
           BINANCE_UNIFIED_NOTIFICATION_ENABLED: ${{ vars.BINANCE_UNIFIED_NOTIFICATION_ENABLED || 'false' }}
           QSL_ROUTINE_NOTIFICATION_MODE: ${{ vars.QSL_ROUTINE_NOTIFICATION_MODE || 'immediate' }}

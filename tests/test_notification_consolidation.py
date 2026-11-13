@@ -134,6 +134,37 @@ def configure(monkeypatch):
     return env
 
 
+@pytest.mark.parametrize(("change", "expected"), [
+    ({}, (0, 0)),
+    ({"submission_attempted_count": 1}, (None, None)),
+    ({"submission_attempted_count": False}, (None, None)),
+    ({"transport_uncertain_count": 1}, (None, None)),
+])
+def test_archive_projects_no_action_from_bound_legacy_receipt(change, expected):
+    report = source(archived=True)
+    report["summary"].pop("notification_digest")
+    report["execution_receipt_observation"] = {**dict.fromkeys((
+        "submission_attempted_count", "filled_count", "partially_filled_count",
+        "broker_acknowledged_count", "transport_uncertain_count", "failed_count",
+    ), 0), **change}
+    env, store = environment(), MemoryStore()
+    assert producer.update_window(env, reports=[report], archived=True, store=store)
+    row, = next(iter(store.values.values()))[1]["runs"]
+    assert (row["order_count"], row["fill_count"]) == expected
+    assert unified.report_issue(report)[0] == "receipt_unacceptable"
+
+
+def test_archive_without_unified_routing_never_sends_incidents(monkeypatch):
+    env = {**environment(), unified.FLAG: "false", "RUNTIME_TARGET_ENABLED": "true",
+           "EXECUTION_REPORT_GCS_URI": "gs://example-reports/archive"}
+    report = source(stamp=STAMP - timedelta(hours=2), archived=True)
+    monkeypatch.setattr(unified, "observe_archived_report", lambda *a, **k: pytest.fail("unexpected send path"))
+    def read(args):
+        return [{"url": "gs://example-reports/archive/binance/example.json"}] if args[0] == "ls" else report
+    result = producer.emit_archive(env, now=STAMP + timedelta(hours=10), read=read, store=MemoryStore())
+    assert result["uploaded"] is True and result["runs"] == 1
+
+
 def test_routine_writes_real_candidate_before_deferral_and_replays_do_not_add_cycles(monkeypatch):
     env, store, sends = configure(monkeypatch), MemoryStore(), []
     for _ in range(2):
