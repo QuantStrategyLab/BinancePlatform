@@ -192,7 +192,7 @@ jobs:
 
       - name: Publish monitor execution evidence
         if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.execution-heartbeat.outcome == 'success' }}
-        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-execution-evidence@2cb9834dc34b8a23e1b261457e1e077bfc414386
+        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-execution-evidence@29f31f1ac8a934cbeee5a37607e1aa896c3c42b7
         with:
           source-id: runtime-reports-binance
           report-platform: binance
