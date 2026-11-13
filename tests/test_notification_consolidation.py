@@ -165,6 +165,56 @@ def test_archive_without_unified_routing_never_sends_incidents(monkeypatch):
     assert result["uploaded"] is True and result["runs"] == 1
 
 
+
+def test_monitor_stages_open_window_and_finalizes_previous_only_before_digest(monkeypatch):
+    env = {**environment(), unified.FLAG: "false", "RUNTIME_TARGET_ENABLED": "true",
+           "EXECUTION_REPORT_GCS_URI": "gs://example-reports/archive"}
+    monkeypatch.setattr(unified, "observe_archived_report", lambda *a, **k: pytest.fail("unexpected send path"))
+    reports = {}
+    for name, stamp in (("old", STAMP - timedelta(minutes=10)),
+                        ("first", STAMP + timedelta(minutes=10)),
+                        ("last", STAMP + timedelta(hours=23, minutes=50)),
+                        ("next", STAMP + timedelta(days=1, minutes=2))):
+        reports[name] = source(name, stamp=stamp, archived=True)
+
+    def read(args):
+        base = "gs://example-reports/archive/binance/"
+        if args[0] == "ls":
+            return [{"url": base + name, "metadata": {"timeCreated": stamp["started_at"]}}
+                    for name, stamp in reports.items()]
+        return reports[args[1].removeprefix(base)]
+
+    store = MemoryStore()
+    def run(now):
+        return producer.emit_archive(env, now=now, read=read, store=store, prepare_open_window=True)
+
+    run(STAMP + timedelta(hours=12))
+    assert list(store.values) == ["binance/2026-10-17/example-slot.json"]
+    first, = store.load("binance/2026-10-17/example-slot.json")[0]["runs"]
+    assert first["source_run_id"] == "first"
+
+    run(STAMP + timedelta(days=1, minutes=15))
+    assert set(store.values) == {"binance/2026-10-17/example-slot.json", "binance/2026-10-18/example-slot.json"}
+    previous, generation = store.load("binance/2026-10-17/example-slot.json")
+    assert [r["source_run_id"] for r in previous["runs"]] == ["first", "last"]
+    reports["late"] = source("late", stamp=STAMP + timedelta(hours=21), archived=True)
+    run(STAMP + timedelta(days=1, hours=1))
+    assert store.load("binance/2026-10-17/example-slot.json") == (previous, generation)
+
+
+def test_empty_month_listing_is_not_a_permission_failure(monkeypatch):
+    from subprocess import CompletedProcess
+    from notifications.digest_snapshot import digest_archive
+    monkeypatch.setattr(digest_archive.subprocess, "run",
+        lambda *a, **k: CompletedProcess(a, 1, "", "ERROR: One or more URLs matched no objects."))
+    assert digest_archive._read(["ls", "--json", "gs://example-bucket/missing/*.json"]) == []
+    with pytest.raises(ValueError, match="candidate_archive_read_failed"):
+        digest_archive._read(["cat", "gs://example-bucket/missing.json"])
+    monkeypatch.setattr(digest_archive.subprocess, "run",
+        lambda *a, **k: CompletedProcess(a, 1, "", "ERROR: (gcloud.storage.ls) HTTP 403."))
+    with pytest.raises(ValueError, match="candidate_archive_read_failed"):
+        digest_archive._read(["ls", "--json", "gs://example-bucket/private/*.json"])
+
 def test_routine_writes_real_candidate_before_deferral_and_replays_do_not_add_cycles(monkeypatch):
     env, store, sends = configure(monkeypatch), MemoryStore(), []
     for _ in range(2):

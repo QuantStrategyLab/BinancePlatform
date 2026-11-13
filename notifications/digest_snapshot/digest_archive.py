@@ -18,8 +18,11 @@ _SAFE = re.compile(r"[a-z0-9][a-z0-9_-]{0,40}\Z")
 
 
 def _read(args):
-    result = subprocess.run(["gcloud", "storage", *args], capture_output=True, text=True, check=False)
+    result = subprocess.run(["gcloud", "storage", *args], capture_output=True, text=True, check=False, timeout=30)
     if result.returncode:
+        detail = (result.stderr or result.stdout).lower()
+        if args[0] == "ls" and ("matched no objects" in detail or "no urls matched" in detail):
+            return []
         raise ValueError("candidate_archive_read_failed")
     return json.loads(result.stdout)
 
