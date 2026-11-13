@@ -324,10 +324,12 @@ class _BinanceMainFacade(types.ModuleType):
 
     def __setattr__(self, name: str, value):
         super().__setattr__(name, value)
+        # Sync every implementation module that owns the name. Returning after
+        # the first match left later modules (e.g. http_routes.run_cli_entrypoint)
+        # stale when the same alias also exists on runtime_wiring for re-export.
         for module in _IMPL_MODULES:
             if name in module.__dict__ or name in _MUTABLE_PROCESS_GLOBALS:
                 setattr(module, name, value)
-                return
 
     def __delattr__(self, name: str):
         # patch.object may delattr when the name was not local; tolerate that
