@@ -300,8 +300,9 @@ _IMPL_MODULES = (
     _http_routes,
 )
 
-# Rebound by runtime_wiring during activate / universe updates. Keep them off
-# this module's __dict__ so reads always see the live implementation binding.
+# Rebound by runtime_wiring during activate / universe updates. Seeded into
+# this module's __dict__ so unittest.mock.patch.object treats them as local
+# (restore via setattr on exit) while writes still sync to runtime_wiring.
 _MUTABLE_PROCESS_GLOBALS = frozenset({
     "DEFAULT_LIVE_POOL_LEGACY_PATH",
     "DEFAULT_TREND_POOL_ACCEPTABLE_MODES",
@@ -322,19 +323,33 @@ class _BinanceMainFacade(types.ModuleType):
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
     def __setattr__(self, name: str, value):
-        if name in _MUTABLE_PROCESS_GLOBALS:
-            for module in _IMPL_MODULES:
-                if name in module.__dict__:
-                    setattr(module, name, value)
-                    return
-            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
         super().__setattr__(name, value)
         for module in _IMPL_MODULES:
-            if name in module.__dict__:
+            if name in module.__dict__ or name in _MUTABLE_PROCESS_GLOBALS:
                 setattr(module, name, value)
+                return
+
+    def __delattr__(self, name: str):
+        # patch.object may delattr when the name was not local; tolerate that
+        # for forwarded symbols while keeping the implementation binding.
+        if name in self.__dict__:
+            super().__delattr__(name)
+            return
+        for module in _IMPL_MODULES:
+            if name in module.__dict__:
+                return
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-sys.modules[__name__].__class__ = _BinanceMainFacade
+_facade = sys.modules[__name__]
+_facade.__class__ = _BinanceMainFacade
+for _mutable_name in _MUTABLE_PROCESS_GLOBALS:
+    types.ModuleType.__setattr__(
+        _facade,
+        _mutable_name,
+        getattr(_runtime_wiring, _mutable_name),
+    )
+del _facade, _mutable_name
 
 if __name__ == "__main__":
     main()

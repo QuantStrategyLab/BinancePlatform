@@ -145,6 +145,16 @@ def _notify_send_tg_msg(token, chat_id, text):
     return nr.send_tg_msg(token, chat_id, text)
 
 
+def _publish_mutable_to_main(**values):
+    """Keep ``main`` facade bindings aligned after local ``global`` rebinds."""
+    main_module = sys.modules.get("main")
+    if main_module is None:
+        return
+    for name, value in values.items():
+        # Bypass facade setattr recursion; mirror the new binding directly.
+        main_module.__dict__[name] = value
+
+
 _SAFE_RUNTIME_SETUP_REASONS = frozenset({
     "recovery_control_read_failed",
     "runtime_recovery_not_active",
@@ -296,8 +306,21 @@ def _activate_execution_strategy_runtime(profile: str, *, runtime_target=None, v
     ctx = get_active_run_context()
     if ctx is not None:
         ctx.strategy_runtime = activated
+        _publish_mutable_to_main(
+            TREND_POOL_SIZE=TREND_POOL_SIZE,
+            DEFAULT_LIVE_POOL_LEGACY_PATH=DEFAULT_LIVE_POOL_LEGACY_PATH,
+            DEFAULT_TREND_POOL_MAX_AGE_DAYS=DEFAULT_TREND_POOL_MAX_AGE_DAYS,
+            DEFAULT_TREND_POOL_ACCEPTABLE_MODES=DEFAULT_TREND_POOL_ACCEPTABLE_MODES,
+        )
         return activated
     STRATEGY_RUNTIME = activated
+    _publish_mutable_to_main(
+        STRATEGY_RUNTIME=STRATEGY_RUNTIME,
+        TREND_POOL_SIZE=TREND_POOL_SIZE,
+        DEFAULT_LIVE_POOL_LEGACY_PATH=DEFAULT_LIVE_POOL_LEGACY_PATH,
+        DEFAULT_TREND_POOL_MAX_AGE_DAYS=DEFAULT_TREND_POOL_MAX_AGE_DAYS,
+        DEFAULT_TREND_POOL_ACCEPTABLE_MODES=DEFAULT_TREND_POOL_ACCEPTABLE_MODES,
+    )
     return activated
 
 
@@ -850,6 +873,7 @@ def build_live_runtime(now_utc=None, *, retain_interval_receipts=False, validati
 def _module_set_trend_universe(resolved_trend_universe):
     global TREND_UNIVERSE
     TREND_UNIVERSE = resolved_trend_universe
+    _publish_mutable_to_main(TREND_UNIVERSE=TREND_UNIVERSE)
 
 
 def _set_runtime_trend_universe(resolved_trend_universe):
