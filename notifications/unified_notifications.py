@@ -301,7 +301,7 @@ def recover(event, *, store=None):
     return immediate_event(event, lambda: False, state="recovered", severity=0, recovered=True, store=store)
 
 
-def report_issue(report):
+def report_issue(report, *, archived_counts=False):
     """Notification classification only; never changes acceptance or a report."""
     if report.get("status") != "ok" or report.get("errors") or (report.get("error_summary") or {}).get("errors"):
         failure = (report.get("diagnostics") or {}).get("cycle_failure") or {}
@@ -324,7 +324,11 @@ def report_issue(report):
         return "order_status_unknown", "execution_receipt", 2
     if outcome not in {"no_action", "no_signal", "no_rebalance", "filled"}:
         return "receipt_unacceptable", "execution_receipt", 1
-    if ((report.get("summary") or {}).get("notification_digest") or {}).get("routine") is not True:
+    digest = (report.get("summary") or {}).get("notification_digest")
+    if digest is None and archived_counts:
+        from .unified_producer import _archived_receipt_counts
+        digest = _archived_receipt_counts(report)
+    if not isinstance(digest, dict) or digest.get("routine") is not True:
         return "receipt_unacceptable", "execution_receipt", 1
     return None
 
