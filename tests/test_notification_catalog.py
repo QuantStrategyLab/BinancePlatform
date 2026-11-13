@@ -19,7 +19,14 @@ def test_chinese_locale_variants_use_chinese(locale, monkeypatch):
 def test_catalog_covers_literal_runtime_keys_and_matching_placeholders():
     root = Path(__file__).resolve().parents[1]
     keys = set()
-    for relative in ("main.py", "reporting/status_reports.py", "live_services.py"):
+    for relative in (
+        "main.py",
+        "runtime_wiring.py",
+        "notifications_runtime.py",
+        "http_routes.py",
+        "reporting/status_reports.py",
+        "live_services.py",
+    ):
         for node in ast.walk(ast.parse((root / relative).read_text())):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                     and node.func.id in {"t", "translate_fn"} and node.args

@@ -79,7 +79,7 @@ class ContractTests(unittest.TestCase):
 
 class AssemblyTests(unittest.TestCase):
     def test_standard_snapshot_still_calls_original_enrichment(self):
-        tree = ast.parse(Path("main.py").read_text())
+        tree = ast.parse(Path("runtime_wiring.py").read_text())
         function = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                         and n.name == "resolve_runtime_btc_snapshot")
         module = ast.Module(body=[function], type_ignores=[])
@@ -89,7 +89,7 @@ class AssemblyTests(unittest.TestCase):
                  "BTC_MARKET_SNAPSHOT_RETRY_DELAYS": (), "time": SimpleNamespace(sleep=None),
                  "append_log": None, "t": lambda *a, **k: "",
                  "enrich_btc_snapshot_with_cycle_indicators": lambda snapshot, log: seen.append(snapshot) or snapshot}
-        exec(compile(module, "main.py", "exec"), scope)
+        exec(compile(module, "runtime_wiring.py", "exec"), scope)
         runtime = SimpleNamespace(strategy_profile="crypto_btc_dca")
         scope["resolve_runtime_btc_snapshot"](runtime, 1, [], validation_scope="standard")
         self.assertEqual(seen, [{"ma200": 5}])
@@ -97,7 +97,7 @@ class AssemblyTests(unittest.TestCase):
         self.assertEqual(len(seen), 1)
 
     def test_isolated_trend_plan_uses_cached_input_twice(self):
-        main_tree = ast.parse(Path("main.py").read_text())
+        main_tree = ast.parse(Path("runtime_wiring.py").read_text())
         service_tree = ast.parse(Path("application/execution_service.py").read_text())
         names = {"_resolve_strategy_plan", "_execute_trend_rotation"}
         module = ast.Module(body=[n for n in main_tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
@@ -137,7 +137,7 @@ class AssemblyTests(unittest.TestCase):
         from crypto_strategies.entrypoints import evaluate_crypto_btc_dca
         from crypto_strategies.strategies import crypto_btc_dca
 
-        tree = ast.parse(Path("main.py").read_text())
+        tree = ast.parse(Path("runtime_wiring.py").read_text())
         names = {"_resolve_strategy_evaluation", "_compute_portfolio_allocation"}
         module = ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names],
                             type_ignores=[])
@@ -161,7 +161,7 @@ class AssemblyTests(unittest.TestCase):
                  "t": lambda key, **kwargs: key, "get_symbol_trade_state": None, "set_symbol_trade_state": None,
                  "map_decision_to_allocation": lambda *a, **k: {"execution_permitted": False},
                  "public_stoploss_observation": lambda _: None}
-        exec(compile(module, "main.py", "exec"), scope)
+        exec(compile(module, "runtime_wiring.py", "exec"), scope)
         runtime = SimpleNamespace(now_utc=NOW, strategy_profile="crypto_btc_dca", dry_run=True)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "cycle.json"

@@ -138,8 +138,8 @@ class ReviewedGateTests(unittest.TestCase):
 
 class AllocationProjectionTests(unittest.TestCase):
     def test_main_allocation_whitelists_observation_without_changing_decision(self):
-        # Compile the actual adapter function without starting main's runtime imports.
-        source = ast.parse((Path(__file__).resolve().parents[1] / "main.py").read_text())
+        # Compile the adapter from its owning module without starting runtime imports.
+        source = ast.parse((Path(__file__).resolve().parents[1] / "runtime_wiring.py").read_text())
         function = next(node for node in source.body if isinstance(node, ast.FunctionDef)
                         and node.name == "_compute_portfolio_allocation")
         observation = PortfolioStoplossObservationTests().observe(
@@ -158,7 +158,7 @@ class AllocationProjectionTests(unittest.TestCase):
         namespace = {"Mapping": Mapping, "public_stoploss_observation": public_stoploss_observation,
                      "_resolve_strategy_evaluation": lambda *args, **kwargs: evaluation,
                      "map_decision_to_allocation": mapper}
-        exec(compile(ast.Module(body=[function], type_ignores=[]), "main.py", "exec"), namespace)
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "runtime_wiring.py", "exec"), namespace)
         result = namespace["_compute_portfolio_allocation"](*([None] * 9))
         self.assertEqual(mapped, [(decision, metrics)])
         self.assertEqual(result, {"execution_permitted": True, "original": True,
