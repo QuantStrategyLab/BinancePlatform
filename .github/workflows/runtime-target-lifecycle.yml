@@ -230,7 +230,7 @@ jobs:
 
       - name: Publish existing reports as unified digest candidates
         id: digest_projection
-        if: ${{ success() && vars.BINANCE_DIGEST_CANDIDATES_ENABLED == 'true' && steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
+        if: ${{ success() && github.event_name == 'schedule' && vars.BINANCE_DIGEST_CANDIDATES_ENABLED == 'true' && steps.target.outputs.configured_state == 'enabled' && steps.target.outputs.runtime_guard == 'pass' }}
         env:
           BINANCE_UNIFIED_NOTIFICATION_ENABLED: ${{ vars.BINANCE_UNIFIED_NOTIFICATION_ENABLED || 'false' }}
           QSL_ROUTINE_NOTIFICATION_MODE: ${{ vars.QSL_ROUTINE_NOTIFICATION_MODE || 'immediate' }}
@@ -243,6 +243,7 @@ jobs:
           DIGEST_TARGET_ID: ${{ secrets.DIGEST_TARGET_ID }}
           DIGEST_TARGET_BINDINGS_JSON: ${{ secrets.DIGEST_TARGET_BINDINGS_JSON }}
           DIGEST_NOTIFICATION_SCHEDULE_JSON: ${{ vars.DIGEST_NOTIFICATION_SCHEDULE_JSON }}
+          DIGEST_PREPARE_OPEN_WINDOW: "true"
           BINANCE_DIGEST_OPAQUE_ACCOUNT_UID: ${{ secrets.BINANCE_DIGEST_OPAQUE_ACCOUNT_UID }}
           BINANCE_DIGEST_TARGET_ID: ${{ secrets.BINANCE_DIGEST_TARGET_ID }}
           BINANCE_DIGEST_STORE_TARGET: ${{ secrets.BINANCE_DIGEST_STORE_TARGET }}

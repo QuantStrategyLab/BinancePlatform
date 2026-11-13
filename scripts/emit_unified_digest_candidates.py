@@ -14,7 +14,7 @@ def emit(env, **kwargs):
 
 def main():
     try:
-        print(json.dumps(emit(os.environ), sort_keys=True))
+        print(json.dumps(emit(os.environ, prepare_open_window=os.environ.get("DIGEST_PREPARE_OPEN_WINDOW") == "true"), sort_keys=True))
         return 0
     except Exception:
         print(json.dumps({"status": "blocked", "uploaded": False, "reason": "candidate_projection_failed"}))

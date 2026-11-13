@@ -179,15 +179,15 @@ def persist_event(event, *, env, report=None, store=None):
     return update_window(env, events=[event], reports=[report] if report is not None else [], store=store)
 
 
-def emit_archive(env, *, now=None, read=_read, store=None):
+def emit_archive(env, *, now=None, read=_read, store=None, prepare_open_window=False):
     from .unified_notifications import identity
     bindings = env.get("DIGEST_TARGET_BINDINGS_JSON", "").strip()
     if bindings:
         values = json.loads(bindings)
         if not isinstance(values, list) or not values or len(values) > 100 or not all(isinstance(v, dict) for v in values):
             raise ValueError("candidate_bindings_invalid")
-        results = [emit_archive({**env, **value, "DIGEST_TARGET_BINDINGS_JSON": ""}, now=now, read=read, store=store)
-            for value in values]
+        results = [emit_archive({**env, **value, "DIGEST_TARGET_BINDINGS_JSON": ""}, now=now, read=read,
+            store=store, prepare_open_window=prepare_open_window) for value in values]
         return {"status": "projected", "uploaded": any(v["uploaded"] for v in results), "targets": len(results)}
     if env.get("RUNTIME_TARGET_ENABLED") == "false":
         return {"status": "target_disabled", "uploaded": False}
@@ -196,11 +196,26 @@ def emit_archive(env, *, now=None, read=_read, store=None):
     identity(env)
     target = json.loads(env["RUNTIME_TARGET_JSON"])
     current = now or datetime.now(timezone.utc)
-    window = sgt_business_window(current - timedelta(days=1))
+    open_window = sgt_business_window(current)
+    closed_window = sgt_business_window(current - timedelta(days=1))
+    if not prepare_open_window:
+        return _emit_window(env, target, closed_window, current=current, read=read, store=store)
+    # Stage known evidence throughout the business day. Only finish the
+    # previous window before the 07:00 digest; never rewrite a sent day here.
+    results = [_emit_window(env, target, open_window, current=current, read=read, store=store)]
+    if current < open_window.start + timedelta(hours=1):
+        results.append(_emit_window(env, target, closed_window, current=current, read=read, store=store))
+    return {"status": "projected" if any(v["uploaded"] for v in results) else "source_pending",
+        "uploaded": any(v["uploaded"] for v in results), "runs": sum(v["runs"] for v in results)}
+
+
+def _emit_window(env, target, window, *, current, read, store):
+    closed = window.end <= current
     prefix = env.get("EXECUTION_REPORT_GCS_URI", "").rstrip("/")
     if not re.fullmatch(r"gs://[a-z0-9][a-z0-9._-]+/[^\s?#*]+", prefix):
         raise ValueError("candidate_archive_configuration_missing")
-    months = {stamp.astimezone(timezone.utc).strftime("%Y-%m") for stamp in (window.start, window.end)}
+    last = min(current, window.end - timedelta(microseconds=1))
+    months = {stamp.astimezone(timezone.utc).strftime("%Y-%m") for stamp in (window.start, last)}
     entries = []
     for month in sorted(months):
         entries.extend(read(["ls", "--json", f"{prefix}/binance/**/{month}/*.json"]))
@@ -214,6 +229,12 @@ def emit_archive(env, *, now=None, read=_read, store=None):
         seen_uris.add(uri)
         if not uri.startswith(f"{prefix}/binance/"):
             raise ValueError("candidate_source_locator_mismatch")
+        metadata = entry.get("metadata") or {}
+        created = metadata.get("timeCreated") or metadata.get("updated")
+        if created:
+            created_at = datetime.fromisoformat(created.replace("Z", "+00:00"))
+            if created_at.tzinfo is not None and created_at < window.start:
+                continue
         report = read(["cat", uri])
         source_target = report.get("runtime_target") or {}
         fields = ("platform_id", "strategy_profile", "service_name", "account_scope", "account_selector",
@@ -223,17 +244,19 @@ def emit_archive(env, *, now=None, read=_read, store=None):
         stamp = datetime.fromisoformat(str(report.get("started_at", "")).replace("Z", "+00:00"))
         if stamp.tzinfo is None:
             raise ValueError("candidate_source_time_invalid")
-        if window.start <= stamp < window.end:
+        if window.start <= stamp < window.end and stamp <= current:
             reports.append(report)
     if not reports:
+        if not closed:
+            return {"status": "source_pending", "uploaded": False, "runs": 0}
         # Crypto is continuous. Absence cannot establish an idle healthy day.
         raise ValueError("candidate_due_source_absent")
     # Runtime observations of this same run can have unknown counts. Preserve
     # them as event facts; only completed source facts determine window totals.
-    update_window(env, reports=reports, archived=True, complete_archive=True,
+    update_window(env, reports=reports, archived=True, complete_archive=closed,
         day=window.business_day.isoformat(), store=store)
     from .unified_notifications import enabled, observe_archived_report
-    if enabled(env):
+    if closed and enabled(env):
         observe_archived_report(max(reports, key=lambda report: report["started_at"]), env=env, store=store)
     return {"status": "projected", "uploaded": True, "runs": len({r["run_id"] for r in reports}),
         "window_id": window.window_id, "source_set_sha256": hashlib.sha256(
