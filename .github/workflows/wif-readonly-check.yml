@@ -1,0 +1,68 @@
+name: Read-only WIF metadata check
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  check:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: binance-runtime
+    steps:
+      - name: Checkout reviewed main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Authenticate with the existing WIF identity
+        id: auth
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+          token_format: access_token
+          create_credentials_file: false
+          export_environment_variables: false
+
+      - name: Read Firestore database metadata
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCP_READ_ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.error
+          import urllib.request
+
+          project = os.environ["GCP_PROJECT_ID"]
+          if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", project):
+              raise SystemExit("GCP_PROJECT_ID is missing or invalid")
+          request = urllib.request.Request(
+              f"https://firestore.googleapis.com/v1/projects/{project}/databases",
+              headers={"Authorization": "Bearer " + os.environ["GCP_READ_ACCESS_TOKEN"]},
+              method="GET",
+          )
+          try:
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  data = json.load(response)
+                  unreachable = len(data.get("unreachable", []))
+                  print(json.dumps({"gcp_read_http": response.status,
+                                    "database_count": None if unreachable else len(data.get("databases", [])),
+                                    "unreachable_count": unreachable}))
+                  if unreachable:
+                      raise SystemExit(1)
+          except urllib.error.HTTPError as exc:
+              print(json.dumps({"gcp_read_http": exc.code}))
+              raise SystemExit(1)
+          except (urllib.error.URLError, TimeoutError, ValueError):
+              print(json.dumps({"gcp_read_error": "metadata_request_failed"}))
+              raise SystemExit(1)
+          PY
