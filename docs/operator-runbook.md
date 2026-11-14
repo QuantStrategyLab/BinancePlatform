@@ -1289,3 +1289,32 @@ alone do not supply acquisition cost, so this wiring cannot protect holdings
 until a complete, verified cost input is available. The report-only
 `portfolio_stoploss` observation describes the MEMBER gate; it is not evidence
 that the additional platform check had complete cost coverage.
+
+## R2 execution archive mirror
+
+Google Cloud Storage is the primary archive. An `OBJECT_FINALIZE` notification
+for the configured execution-report prefix sends the bucket, key and generation
+to an authenticated Pub/Sub push subscription. Deploy the isolated image from
+`infra/archive_mirror` by digest in Cloud Run with zero minimum instances. Its
+runtime identity needs object read access for that prefix and access to the
+dedicated Secret Manager version. Mount the credential JSON at
+`R2_CREDENTIALS_FILE` and set `SOURCE_BUCKET`, `SOURCE_PREFIX`,
+`R2_ACCOUNT_ID` and `R2_BUCKET` through deployment configuration. Give the
+push identity only invocation access to the mirror service.
+
+The mirror reads the exact source generation and keeps its object key on R2.
+The first upload uses conditional creation. A repeated event is acknowledged
+only when the stored generation and bytes match. A conflict or temporary
+failure returns an error to Pub/Sub. Check mirror warning logs and the
+subscription backlog before redriving a failed delivery. The logs contain the
+source generation, result and byte count. Report data and credential values
+stay in their respective stores.
+
+To pause the mirror, detach the push endpoint by converting the subscription
+to pull without deleting the subscription. Pub/Sub then retains pending
+messages up to the configured retention period. Keep the GCS notification
+while the pause is temporary so events can queue. Restore the previous Cloud
+Run revision if needed, then restore the subscription's authenticated push
+endpoint. Verify the queued event and compare the destination bytes with the
+source generation. For permanent shutdown, remove the GCS notification and
+drain or retire the subscription before revoking the writer credential.
