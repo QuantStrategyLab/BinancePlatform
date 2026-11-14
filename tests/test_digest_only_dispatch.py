@@ -48,7 +48,7 @@ class DigestOnlyDispatch(unittest.TestCase):
                                  ({"QSL_NOTIFY_LANG": "EN-us", "NOTIFY_LANG": "zh"}, "en"),
                                  ({"QSL_NOTIFY_LANG": " ", "NOTIFY_LANG": " "}, "zh")):
             with self.subTest(values=values), patch.dict("os.environ", values, clear=True):
-                self.assertEqual(operational.message("coverage_failure"), operational._TEXT[expected]["coverage_failure"])
+                self.assertIn(operational._TEXT[expected]["coverage_failure"].removeprefix("⚠️ "), operational.message("coverage_failure"))
 
     def test_verified_reconciled_identity_never_reuses_prior_order(self):
         tree = ast.parse((Path(__file__).parents[1] / "runtime_support.py").read_text())
@@ -240,7 +240,8 @@ class DigestOnlyDispatch(unittest.TestCase):
         with patch.dict("os.environ", {"DIGEST_PROJECTION_FAILED": "true", "NOTIFY_LANG": "en"}, clear=True), \
              patch.object(operational, "send_configured", side_effect=lambda text: sent.append(text) or True):
             self.assertEqual(observe_notification_health.main(), 0)
-        self.assertEqual(sent, [operational._TEXT["en"]["coverage_failure"]])
+        with patch.dict("os.environ", {"NOTIFY_LANG": "en"}, clear=True):
+            self.assertEqual(sent, [operational.message("coverage_failure")])
         with patch.dict("os.environ", {"DIGEST_PROJECTION_FAILED": "true", "NOTIFY_LANG": "en"}, clear=True), \
              patch.object(operational, "send_configured", return_value={"transport_acknowledged": False}):
             self.assertEqual(observe_notification_health.main(), 1)

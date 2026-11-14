@@ -13,6 +13,8 @@ def routine_notification(sender, runtime, report, text, *, routine_order=True):
 
 
 def immediate_notification(sender, runtime, report, text, *, reason, kind="real_error", severity=1):
+    from .operational import message
+    text = message("runtime_failure", observed_at=report.get("started_at"))
     if not unified.enabled():
         return sender(runtime, report, text)
     token = unified._ORDER_SEND.set(True)

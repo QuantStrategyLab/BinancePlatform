@@ -441,6 +441,9 @@ def next_order_id(runtime, prefix, symbol):
 
 def runtime_notify(runtime, report, text, *, urgent=True):
     from notifications import unified_notifications as unified
+    if urgent and not getattr(runtime, "dry_run", False) and not unified.sending_order():
+        from notifications.operational import message
+        text = message("runtime_failure", observed_at=report.get("started_at"))
     if not getattr(runtime, "dry_run", False):
         if unified.sending_order():
             return _legacy_runtime_notify(runtime, report, text, urgent=True)
