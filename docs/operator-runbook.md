@@ -1318,3 +1318,22 @@ Run revision if needed, then restore the subscription's authenticated push
 endpoint. Verify the queued event and compare the destination bytes with the
 source generation. For permanent shutdown, remove the GCS notification and
 drain or retire the subscription before revoking the writer credential.
+
+### Archive backlog alert
+
+A Cloud Monitoring policy tracks the per-region age of the oldest unacknowledged
+Pub/Sub message for the archive subscription. The policy opens an incident
+when the age exceeds 1,800 seconds. The notification topic is separate from
+the archive topic. It pushes through an authenticated subscription to the
+zero-minimum-instance relay built from `infra/archive_alert`. The relay uses
+the existing Quant Sentinel bot and chat, provided through Secret Manager.
+Configure the policy and subscription names in `PRODUCTION_POLICY` and
+`PRODUCTION_SUBSCRIPTION`. Only incident openings for this exact pair are
+forwarded. Delivery failures return a retryable response to Pub/Sub.
+
+For an end-to-end check, point a short-lived policy at a disposable pull
+subscription, allow that specific pair through `TEST_POLICY` and
+`TEST_SUBSCRIPTION`, and publish one synthetic message. Confirm the relay
+records Telegram's message ID and then remove the test policy, topic,
+subscription and test environment variables. Verify the production policy
+still uses the original threshold and production subscription.
