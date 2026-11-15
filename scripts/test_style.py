@@ -158,7 +158,7 @@ class LeakTest(CheckerTestCase):
                 self.assertEqual(self.findings(text), [])
 
     def test_real_subdomain_is_reported(self):
-        found = self.findings("Open https://pigbibi.workers.dev/admin.\n")
+        found = self.findings("Open https://ops-portal.workers.dev/status.\n")
         self.assertTrue(any("personal subdomain" in m for m in found))
 
     def test_subdomain_in_a_fenced_block_is_an_example(self):
@@ -450,7 +450,7 @@ class VisibilityTest(CheckerTestCase):
     def deploy_doc(self) -> None:
         self.write(
             "docs/deployment.md",
-            "Callback: https://invoice.pigbibi.workers.dev/auth/github/callback\n"
+            "Endpoint: https://billing.ops-portal.workers.dev/v1/health\n"
             "Data lives in /home/ubuntu/app/data.\n",
         )
 

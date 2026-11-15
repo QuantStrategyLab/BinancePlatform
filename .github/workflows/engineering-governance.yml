@@ -18,10 +18,30 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Scan added commits with redacted findings
-        uses: Pigbibi/PrGovernance/pr-governance@ccda8de572d2893272b0137526ef3e2d45e5eee7
+      - name: Checkout pinned PrGovernance scanner
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          mode: scan
+          repository: Pigbibi/PrGovernance
+          ref: ccda8de572d2893272b0137526ef3e2d45e5eee7
+          path: .pr-governance-tool
+          persist-credentials: false
+      - name: Scan added commits with redacted findings
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv .pr-governance-tool "$RUNNER_TEMP/pr-governance"
+          bash "$RUNNER_TEMP/pr-governance/pr-governance/scripts/install-gitleaks.sh"
+          base="$(jq -r '.pull_request.base.sha // .before // empty' "$GITHUB_EVENT_PATH")"
+          head="$(jq -r '.pull_request.head.sha // .after // .sha // empty' "$GITHUB_EVENT_PATH")"
+          if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+            echo "No base commit is available for this event; the pull request scan covers the branch" >&2
+            exit 0
+          fi
+          python3 "$RUNNER_TEMP/pr-governance/pr-governance/scripts/secret_scan.py" range \
+            --root "$GITHUB_WORKSPACE" \
+            --base "$base" \
+            --head "$head" \
+            --gitleaks "$RUNNER_TEMP/gitleaks-bin/gitleaks"
 
   commitlint:
     name: Commit message convention
