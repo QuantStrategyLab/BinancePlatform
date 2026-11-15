@@ -15,7 +15,6 @@ docs/superpowers/
 # personal global ignore excludes Markdown.
 !AGENTS.md
 !CLAUDE.md
-!.github/engineering.md
 
 # Local editor, OS and tool cache files.
 .ruff_cache/
@@ -35,3 +34,9 @@ docs/handoffs/
 ops-notes/
 *.local.md
 *.internal.md
+
+# Working notes are drafts, not documentation.
+docs/changes/
+docs/acceptance-policy.md
+.claude/
+.codex/
