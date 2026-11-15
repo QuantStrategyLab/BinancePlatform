@@ -1958,3 +1958,25 @@ def test_receiver_diagnosis_workflow_is_manual_main_only_and_get_only():
     assert "read_binance_account_facts.py" not in workflow
     assert "workflow_run:" not in workflow and "schedule:" not in workflow and "push:" not in workflow
     assert "RUNTIME_TARGET_ENABLED" not in workflow and "BINANCE_ACCOUNT_FACTS_ENABLED" not in workflow
+
+
+def test_collect_filters_ld_earn_receipt_tokens_and_preserves_ldo():
+    class ReceiptTokenBinance(FakeBinance):
+        def get_account(self):
+            result = super().get_account()
+            result["balances"].extend(
+                [
+                    {"asset": "LDBTC", "free": "0.25", "locked": "0"},
+                    {"asset": "O", "free": "1", "locked": "0"},
+                    {"asset": "LDO", "free": "3.5", "locked": "0"},
+                ]
+            )
+            return result
+
+    payload = _collect(ReceiptTokenBinance())
+    by_asset = {row["asset"]: row for row in payload["assets"]}
+    assert "LDBTC" not in by_asset
+    assert "BTC" in by_asset
+    assert "LDO" in by_asset and by_asset["LDO"]["quantity"] == "3.5"
+    assert "O" in by_asset
+    validate_account_facts_payload(payload)

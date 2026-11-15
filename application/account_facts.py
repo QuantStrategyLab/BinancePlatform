@@ -413,11 +413,26 @@ def collect_account_facts(
     try:
         with localcontext() as context:
             context.prec = 100
+            nonzero_assets = {
+                asset
+                for asset, row in assets.items()
+                if (row["spot_free"] + row["spot_locked"] + row["flexible_earn"]) != 0
+            }
+            non_receipt_ld_assets = frozenset({"LDO"})
             asset_rows = []
             for asset in sorted(assets):
                 row = assets[asset]
                 quantity = row["spot_free"] + row["spot_locked"] + row["flexible_earn"]
                 if quantity == 0:
+                    continue
+                # Binance Simple Earn receipt tokens appear as LD<base> in spot balances alongside <base>.
+                if (
+                    asset.startswith("LD")
+                    and len(asset) > 2
+                    and asset not in non_receipt_ld_assets
+                    and row["flexible_earn"] == 0
+                    and asset[2:] in nonzero_assets
+                ):
                     continue
                 asset_rows.append(
                     {
