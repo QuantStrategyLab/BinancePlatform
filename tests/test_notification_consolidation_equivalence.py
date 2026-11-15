@@ -173,7 +173,10 @@ def test_flags_off_transport_receipts_and_http_calls_match_main(monkeypatch, fla
                 SimpleNamespace(status_code=status, json=lambda: payload))
             result = sender("fixture-token", "fixture-chat", "示例" if locale == "zh-CN" else "Example")
             return calls, result
-        assert record(live_services.send_tg_msg) == record(scope["send_tg_msg"])
+        calls, receipt = record(live_services.send_tg_msg)
+        if status >= 400:
+            assert receipt.pop("http_status") == status
+        assert (calls, receipt) == record(scope["send_tg_msg"])
 
 
 @pytest.mark.parametrize("flag", [None, "", "false", "invalid"])

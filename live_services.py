@@ -413,8 +413,9 @@ def send_tg_msg(token, chat_id, text):
             data={"chat_id": chat_id, "text": message},
             timeout=10,
         )
-        if int(getattr(response, "status_code", 500)) >= 400:
-            return {**receipt, "error_type": "http_error"}
+        status_code = int(getattr(response, "status_code", 500))
+        if status_code >= 400:
+            return {**receipt, "error_type": "http_error", "http_status": status_code}
         payload = response.json()
         if not isinstance(payload, dict) or payload.get("ok") is not True:
             return {**receipt, "error_type": "telegram_rejected"}
