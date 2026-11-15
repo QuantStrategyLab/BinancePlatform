@@ -51,7 +51,6 @@ from runtime_support import (
     OrderReconciliationError,
     build_runtime_evidence_aggregate,
     build_execution_report,
-    finalize_notification_delivery,
     record_gating_event,
     runtime_call_client,
     runtime_notify,
@@ -1438,17 +1437,19 @@ class TestBuildExecutionReport(unittest.TestCase):
                 "sink": "telegram",
                 "delivery_status": "failed",
                 "transport_acknowledged": False,
-                "error_type": "telegram_rejected",
+                "error_type": "http_error",
+                "http_status": 429,
             },
         )
         report = build_execution_report(runtime)
 
         acknowledged = runtime_notify(runtime, report, "sensitive notification body")
-        finalize_notification_delivery(report)
 
         serialized = str(report)
         self.assertFalse(acknowledged)
-        self.assertEqual(report["status"], "error")
+        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["error_summary"]["errors"], [])
+        self.assertEqual(report["notifications"][0]["http_status"], 429)
         self.assertFalse(
             report["summary"]["notification_delivery_summary"]["all_acknowledged"]
         )
