@@ -21,7 +21,7 @@ from application.execution_kernel_adapter import consult_t2_unknown_new_cycle
 from application.portfolio_service import EARN_FORWARD_REASON_CODES
 from runtime_logging import RuntimeLogContext, emit_runtime_log
 from runtime_support import (
-    append_report_error, finalize_notification_delivery, acquire_runtime_state_owner,
+    append_report_error, acquire_runtime_state_owner,
     release_runtime_state_owner, reconcile_pending_funding_submission,
     reconcile_runtime_cash_effects, ExecutionIntegrityError, StatePersistenceError,
     OrderReconciliationError, ClientCallError,
@@ -604,7 +604,7 @@ def execute_strategy_cycle(
                 report["status"] = "error"
                 append_report_error(report, "state_owner_release_uncertain", stage="state_release")
         report["log_lines"] = list(log_buffer)
-        finalize_notification_delivery(report)
+        # Keep delivery results in the notification summary.
         attach_execution_receipt_from_report(report)
         if enabled():
             observation = report.get("execution_receipt_observation") or {}

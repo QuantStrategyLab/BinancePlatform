@@ -496,6 +496,9 @@ def _legacy_runtime_notify(runtime, report, text, *, urgent=True):
         ):
             if key in receipt:
                 safe_event[key] = receipt[key]
+        status = receipt.get("http_status")
+        if type(status) is int and 400 <= status <= 599:
+            safe_event["http_status"] = status
         acknowledged = receipt.get("transport_acknowledged") is True
     else:
         acknowledged = receipt is True
@@ -531,23 +534,6 @@ def _legacy_runtime_notify(runtime, report, text, *, urgent=True):
         executed=acknowledged,
     )
     return acknowledged
-
-
-def finalize_notification_delivery(report):
-    delivery_summary = report.get("summary", {}).get("notification_delivery_summary")
-    if not isinstance(delivery_summary, dict) or delivery_summary.get("all_acknowledged") is not False:
-        return
-    errors = report.setdefault("error_summary", {}).setdefault("errors", [])
-    if not any(error.get("stage") == "notification_delivery" for error in errors if isinstance(error, dict)):
-        errors.append(
-            {
-                "stage": "notification_delivery",
-                "message": "Telegram delivery was not acknowledged.",
-            }
-        )
-    if report.get("status") == "ok":
-        report["status"] = "error"
-
 
 
 def acquire_runtime_state_owner(runtime):
