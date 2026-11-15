@@ -72,6 +72,7 @@ class BinanceAccountFactsRefreshWorkflowTests(unittest.TestCase):
         gate = workflow.split("    if: >-\n", 1)[1].split("    runs-on:", 1)[0]
 
         assert 'cron: "17 6 * * *"' in workflow
+        assert 'cron: "35 21 * * *"' in workflow
         assert "default: false" in workflow
         assert "type: boolean" in workflow
         assert "inputs.enabled == true" in gate

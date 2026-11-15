@@ -3,6 +3,7 @@ name: Refresh Binance Account Facts
 "on":
   schedule:
     - cron: "17 6 * * *"
+    - cron: "35 21 * * *"
   workflow_dispatch:
     inputs:
       enabled:
