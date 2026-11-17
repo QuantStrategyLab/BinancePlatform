@@ -16,11 +16,7 @@ updates:
   directory: "/"
   schedule:
     interval: "weekly"
-  groups:
-    actions-minor-and-patch:
-      patterns:
-        - "*"
-  open-pull-requests-limit: 3
+  open-pull-requests-limit: 5
   commit-message:
     prefix: "chore"
     include: "scope"
