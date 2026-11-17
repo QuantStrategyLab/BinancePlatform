@@ -1,5 +1,7 @@
 # Unknown-outcome query-before-submit 契约
 
+[English](unknown-outcome-submission-contract.md) | 简体中文
+
 ## 目的与范围
 
 此契约防止订单提交调用的崩溃恢复或异常处理造成重复 submit。仅约束订单调用前后的 durable `order_submission` 状态；不改变 receipt reducer、`quoteOrderQty`、资金/持仓、重试/退避、策略、provider、replay、broker、部署、Scheduler、QPK 或依赖。

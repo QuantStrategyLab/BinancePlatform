@@ -1,5 +1,7 @@
 # Binance 冻结实盘基线的只读对账
 
+[English](binance-reconciliation-recovery.md) | 简体中文
+
 当 Binance target 处于 `RECONCILE_ONLY` 时，可在自托管运行器手动启动 Runtime
 workflow，并选择 `reconcile_only=true`。默认使用 `--no-persist`，仅输出脱敏候选，
 不生成 artifact、运行报告或通知；只有在人工明确选择
