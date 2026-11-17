@@ -35,8 +35,8 @@ may be mixed in. Repository variable `BINANCE_RECOVERY_WORKFLOW_SHA` must pin th
 corresponding prepare/verify/activate steps; normal runs do not obtain them. The console
 remains the fixed QSL private console with redirects and custom targets disallowed.
 
-This adapter binds strictly to the existing 2026-09-03 frozen receipt (Runtime `33768005187`
-/ artifact `9898377291`), the original six expected digests, and the 13 verified managed
+This adapter binds strictly to the existing 2026-09-03 frozen receipt (Runtime `<frozen-baseline-run-id>`
+/ artifact `<frozen-baseline-artifact-id>`), the original six expected digests, and the 13 verified managed
 symbols. It reads full open orders, recent 7-day trades, the unnormalized real local ledger,
 and up to 7 days of funding history starting from the frozen sample timestamp. Account,
 orders, trades, and ledger must all match; balances may only match the original balance
@@ -44,11 +44,11 @@ digest by rolling back verified BONUS ledger entries item by item. Other capital
 unexplained deltas, incomplete reads, window overflows, or balance changes during sampling
 all block cleanly. Original frozen digests are never overwritten.
 
-The controller uses QPK `c4f9b7599041406d4693083bf2eb4e85d6e10059` source-bound candidate
+The controller uses QPK `<approved-qpk-commit-sha>` source-bound candidate
 v2: at least one complete, fresh, verifiable reconciliation evidence item is required; model
 review is optional advisory context and stays explicitly `unavailable` when absent without
 fabricating review tickets. The candidate stores sanitized evidence and the real `main` run
-source at `strategy/MULTI_ASSET_STATE__recovery` in Firestore, while the console receives
+source at `strategy/<target-state>__recovery` in Firestore, while the console receives
 only summaries. Before saving, a transaction checks that no account execution lock exists,
 the ledger digest is unchanged, and the prior control document is unchanged. Subsequent
 steps also verify candidate provenance via GitHub API as a successful run of the matching
@@ -214,9 +214,9 @@ prior recovery confirmation before reading account state. Candidate bindings pla
 - Remains fail-closed: validates account identity, Spot, Flexible Earn, and current ledger/control beforehand; rejects open/pending/unknown orders, in-window trades, and unexplained external cash-flow shifts; requires Spot/Earn conservation across dual reads; and binds encrypted candidates to `GITHUB_RUN_ID` (`proposal_run_id`), `GITHUB_SHA`, ledger/control digests, and observation time.
 - `rebase-proposal` writes local encrypted artifacts only, never writing Firestore, placing orders, or altering `RUNTIME_TARGET_ENABLED` / `RECONCILE_ONLY`.
 - `prospective-rebase-apply` reads the **full approved proposal JSON** exclusively from protected environment secret/var `BINANCE_APPROVED_PROSPECTIVE_OPENING` (gated by environment/operator approval), deletes it from environment memory right after validation, and never places full JSON in `workflow_dispatch` inputs, Git, logs, or plaintext artifacts.
-- Old proposals or fixed digests cannot substitute for new proposals. One-time execution is enforced by exact proposal digest plus dynamic archive existence guard on `MULTI_ASSET_STATE__before_rebase_{proposal_run_id}`: re-applying fails the archive guard without overwriting or clearing prior archive chains.
+- Old proposals or fixed digests cannot substitute for new proposals. One-time execution is enforced by exact proposal digest plus dynamic archive existence guard on `<target-state>__before_rebase_{proposal_run_id}`: re-applying fails the archive guard without overwriting or clearing prior archive chains.
 - Before applying, account identity is verified via protected confirmation chains / control source validation rather than hard-requiring optional `source.original_evidence`; structural mismatches return fixed sanitized reason codes (such as `prospective_control_identity_unverified`) instead of swallowing into contextless `migration_blocked`.
-- Downstream `diagnose`/`prepare`/`verify` pass `proposal_run_id` + `source_sha` + dynamic archive/digest for new baselines; the historical `34690028846` archive is recognized read-only and never grants new approvals.
+- Downstream `diagnose`/`prepare`/`verify` pass `proposal_run_id` + `source_sha` + dynamic archive/digest for new baselines; the historical `<legacy-rebase-run-id>` archive is recognized read-only and never grants new approvals.
 
 `application/earn_accrual.py` provides pure-`Decimal` incremental conservation
 reconciliation requiring callers to supply independently verified non-interest net changes
@@ -273,24 +273,24 @@ unchanged. New migrations require human confirmation on concrete snapshots follo
 recovery binding over real migration and complete archives; this does not switch baselines,
 clear circuit breakers, or authorize live trading.
 
-## History: Approved One-Shot New Opening Migration (2026-09-12, Runtime `34690028846`)
+## History: Approved One-Shot New Opening Migration (2026-09-12, Runtime `<legacy-rebase-run-id>`)
 
 The record below documents a completed historical DB migration and is **not** a current
 operating instruction. Current `prospective-rebase-apply` binds to the active
 `rebase-proposal`'s `proposal_run_id` and full approved proposal; the old fixed digest and
-`MULTI_ASSET_STATE__before_rebase_34690028846` serve solely to recognize that archived
+`<target-state>__before_rebase_<legacy-rebase-run-id>` serve solely to recognize that archived
 baseline and cannot approve new proposals.
 
-At that time, the user approved Runtime `34690028846`, read in memory via temporary
+At that time, the user approved Runtime `<legacy-rebase-run-id>`, read in memory via temporary
 protected `BINANCE_APPROVED_PROSPECTIVE_OPENING` without persisting account content into
 Git, logs, or plaintext artifacts. A single transaction archived the whole legacy ledger to
-`MULTI_ASSET_STATE__before_rebase_34690028846`, preserving prior archive chains without
+`<target-state>__before_rebase_<legacy-rebase-run-id>`, preserving prior archive chains without
 clearing circuit breakers, changing strategies, or resuming schedules/trading.
 
 ## Read-Only Verification of the New Opening Baseline (2026-09-12)
 
 When the ledger points to the approved new archive, `recovery_action=diagnose` verifies the
-real migration `34690695663@a3ef5660e6d25fcfd5a7dedd10536a32eedde203` against the frozen
+real migration `<migration-run-id>@<approved-migration-sha>` against the frozen
 ledger, archive, and approval materials. Reusing the forward accounting consumer, it checks
 dual Spot/Earn samples, reward counters, and verified flows in memory while enforcing
 conservation between both samples without guessing principal from balance deltas. It
