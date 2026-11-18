@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from notifications import unified_notifications as unified
+from binance_platform.notifications import unified_notifications as unified
 
 
 @pytest.mark.parametrize(

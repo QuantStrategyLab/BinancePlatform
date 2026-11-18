@@ -151,7 +151,7 @@ def test_preflight_allows_only_continuous_income_since_approved_snapshot(monkeyp
 
 
 def test_preflight_accepts_reconciled_enrollment_control_and_rejects_forged_identity(monkeypatch):
-    from application.reconciliation_recovery import collect_recovery_source
+    from binance_platform.application.reconciliation_recovery import collect_recovery_source
     from tests.test_reconciliation_recovery import inputs
 
     refs, _archive, approved, checkpoint = setup(monkeypatch)
@@ -242,7 +242,7 @@ def test_apply_surfaces_control_identity_reason_not_generic_blocked(monkeypatch,
 
 
 def test_dynamic_archive_handoff_to_material_and_migration_binding(monkeypatch):
-    from application import rebased_recovery as recovery
+    from binance_platform.application import rebased_recovery as recovery
 
     refs, archive_ref, proposal, _ = setup(monkeypatch, run_id="35527010135")
     tx = ArchiveTransaction()

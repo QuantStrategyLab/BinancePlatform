@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from notifications.operational import notify_workflow  # noqa: E402
+from binance_platform.notifications.operational import notify_workflow  # noqa: E402
 
 
 def main():

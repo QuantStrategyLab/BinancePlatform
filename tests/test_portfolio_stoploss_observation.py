@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 from quant_platform_kit import PortfolioSnapshot, Position
 
-from portfolio_stoploss_observation import observe_portfolio_stoploss, public_stoploss_observation
+from binance_platform.portfolio_stoploss_observation import observe_portfolio_stoploss, public_stoploss_observation
 
 
 class PortfolioStoplossObservationTests(unittest.TestCase):
@@ -21,7 +21,7 @@ class PortfolioStoplossObservationTests(unittest.TestCase):
     def observe(self, snapshot, known=True, assessment=None):
         if assessment is None:
             assessment = {"scope": "MEMBER", "outcome": "PASS"}
-        with patch("portfolio_stoploss_observation._reviewed_member_gate", return_value=known):
+        with patch("binance_platform.portfolio_stoploss_observation._reviewed_member_gate", return_value=known):
             return observe_portfolio_stoploss(snapshot, entrypoint=None, assessment=assessment)
 
     def test_cost_coverage_is_position_count_and_never_a_pass(self):
@@ -90,19 +90,19 @@ class PortfolioStoplossObservationTests(unittest.TestCase):
 
 class ReviewedGateTests(unittest.TestCase):
     def setUp(self):
-        from strategy_runtime import load_research_only_strategy_runtime
+        from binance_platform.strategy_runtime import load_research_only_strategy_runtime
         self.runtime = load_research_only_strategy_runtime("crypto_live_pool_rotation")
         self.assessment = {"contract_version": "qsl.risk_gate_assessment.v2",
                            "scope": "MEMBER", "outcome": "APPROVE"}
 
     def test_review_requires_exact_installed_revisions_and_gate_contract(self):
-        from portfolio_stoploss_observation import _reviewed_member_gate, _REVIEWED_REVISIONS
+        from binance_platform.portfolio_stoploss_observation import _reviewed_member_gate, _REVIEWED_REVISIONS
 
         def installed(package):
             return SimpleNamespace(read_text=lambda _: json.dumps({
                 "vcs_info": {"commit_id": _REVIEWED_REVISIONS[package]}}))
 
-        with patch("portfolio_stoploss_observation.distribution", side_effect=installed):
+        with patch("binance_platform.portfolio_stoploss_observation.distribution", side_effect=installed):
             self.assertTrue(_reviewed_member_gate(self.runtime.entrypoint, self.assessment))
             for assessment in (None, {}, {**self.assessment, "scope": "ACCOUNT"},
                                {**self.assessment, "contract_version": "future"},
@@ -112,13 +112,13 @@ class ReviewedGateTests(unittest.TestCase):
             self.assertFalse(_reviewed_member_gate(custom, self.assessment))
         for provenance in ({}, {"dir_info": {"editable": True}},
                            {"vcs_info": {"commit_id": "future"}}, []):
-            with patch("portfolio_stoploss_observation.distribution", return_value=SimpleNamespace(
+            with patch("binance_platform.portfolio_stoploss_observation.distribution", return_value=SimpleNamespace(
                 read_text=lambda _: json.dumps(provenance)
             )):
                 self.assertFalse(_reviewed_member_gate(self.runtime.entrypoint, self.assessment))
 
     def test_phase_projection_preserves_existing_risk_and_redacts_metadata(self):
-        from application.cycle_service import _record_risk_diagnostics
+        from binance_platform.application.cycle_service import _record_risk_diagnostics
         report = {"status": "ok", "diagnostics": {"existing": True}}
         observation = PortfolioStoplossObservationTests().observe(
             PortfolioStoplossObservationTests().snapshot())
@@ -139,7 +139,7 @@ class ReviewedGateTests(unittest.TestCase):
 class AllocationProjectionTests(unittest.TestCase):
     def test_main_allocation_whitelists_observation_without_changing_decision(self):
         # Compile the adapter from its owning module without starting runtime imports.
-        source = ast.parse((Path(__file__).resolve().parents[1] / "runtime_wiring.py").read_text())
+        source = ast.parse((Path(__file__).resolve().parents[1] / "src/binance_platform/runtime_wiring.py").read_text())
         function = next(node for node in source.body if isinstance(node, ast.FunctionDef)
                         and node.name == "_compute_portfolio_allocation")
         observation = PortfolioStoplossObservationTests().observe(

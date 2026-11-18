@@ -4,8 +4,8 @@ from decimal import Decimal
 
 import pytest
 
-from application.broker_reconciliation import collect_bnb_dividend_quantity
-from application.earn_accrual import prepare_forward_earn_state
+from binance_platform.application.broker_reconciliation import collect_bnb_dividend_quantity
+from binance_platform.application.earn_accrual import prepare_forward_earn_state
 from tests.test_forward_earn_accounting import materials
 
 

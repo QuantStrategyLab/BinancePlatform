@@ -43,7 +43,7 @@ class CountingRef(Ref):
 
 
 def _post_rebase_setup(monkeypatch, tmp_path, accounts):
-    from application import rebased_recovery
+    from binance_platform.application import rebased_recovery
 
     refs, archive_ref, old_ledger, old_control = setup_rebase(monkeypatch)
     old_control["source"]["original_evidence"]["account_scope_sha256"] = (

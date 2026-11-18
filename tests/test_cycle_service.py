@@ -9,21 +9,21 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from portfolio_stoploss_observation import unevaluated_stoploss_observation
-from application.cycle_service import (
+from binance_platform.portfolio_stoploss_observation import unevaluated_stoploss_observation
+from binance_platform.application.cycle_service import (
     _write_lifecycle_export,
     execute_strategy_cycle,
     run_live_cycle,
     try_record_platform_execution,
     write_execution_report,
 )
-from application.execution_service import execute_trend_buys
-from application.portfolio_service import (
+from binance_platform.application.execution_service import execute_trend_buys
+from binance_platform.application.portfolio_service import (
     maybe_rebase_daily_state_for_balance_change,
     maybe_reset_daily_state,
 )
-from infra.binance_runtime import ensure_runtime_client
-from runtime_support import (
+from binance_platform.infra.binance_runtime import ensure_runtime_client
+from binance_platform.runtime_support import (
     ExecutionIntegrityError,
     ExecutionRuntime,
     StatePersistenceError,
@@ -154,12 +154,12 @@ class CycleServiceTests(unittest.TestCase):
         return report, events
 
     def test_stoploss_reporting_preserves_execution_and_notifications(self):
-        from portfolio_stoploss_observation import observe_portfolio_stoploss
+        from binance_platform.portfolio_stoploss_observation import observe_portfolio_stoploss
         from quant_platform_kit import PortfolioSnapshot, Position
 
         now = datetime(2026, 10, 1, tzinfo=timezone.utc)
         observations = []
-        with patch("portfolio_stoploss_observation._reviewed_member_gate", return_value=True):
+        with patch("binance_platform.portfolio_stoploss_observation._reviewed_member_gate", return_value=True):
             for costs in ((None, None), (1.0, None), (1.0, 2.0)):
                 snapshot = PortfolioSnapshot(as_of=now, total_equity=1000.0, positions=tuple(
                     Position("SYNTHETIC", 1.0, 3.0, cost) for cost in costs
@@ -226,7 +226,7 @@ class CycleServiceTests(unittest.TestCase):
         self.assertFalse(owners)
 
     def test_btc_attribution_guard_keeps_owner_and_does_not_record_an_order(self):
-        from application.execution_service import execute_btc_dca_cycle
+        from binance_platform.application.execution_service import execute_btc_dca_cycle
         from unittest.mock import Mock
 
         actual_cycle = execute_strategy_cycle
@@ -418,7 +418,7 @@ class CycleServiceTests(unittest.TestCase):
     def test_public_safe_recorder_preserves_private_call_and_return_contract(self):
         payload = {"platform": "binance", "total_equity_usdt": 918273.625}
         decision = object()
-        with patch("application.cycle_service.PerformanceMonitor") as monitor:
+        with patch("binance_platform.application.cycle_service.PerformanceMonitor") as monitor:
             result = try_record_platform_execution(
                 "crypto_live_pool_rotation", payload, domain="crypto",
                 decision=decision, stream_id="binance",
@@ -430,7 +430,7 @@ class CycleServiceTests(unittest.TestCase):
             decision=decision, stream_id="binance",
         )
         self.assertIs(monitor.return_value.record_execution.call_args.args[1], payload)
-        with patch("application.cycle_service.PerformanceMonitor") as monitor:
+        with patch("binance_platform.application.cycle_service.PerformanceMonitor") as monitor:
             self.assertIsNone(try_record_platform_execution("crypto_live_pool_rotation", None))
             monitor.assert_not_called()
 
@@ -439,8 +439,8 @@ class CycleServiceTests(unittest.TestCase):
         for failure_stage in ("constructor", "write"):
             with self.subTest(failure_stage=failure_stage):
                 with (
-                    patch("application.cycle_service.PerformanceMonitor") as monitor,
-                    patch("application.cycle_service._performance_monitor_logger.warning") as warning,
+                    patch("binance_platform.application.cycle_service.PerformanceMonitor") as monitor,
+                    patch("binance_platform.application.cycle_service._performance_monitor_logger.warning") as warning,
                 ):
                     if failure_stage == "constructor":
                         monitor.side_effect = RuntimeError(sentinel)
@@ -457,8 +457,8 @@ class CycleServiceTests(unittest.TestCase):
             args[2]["status"] = "ok"
 
         with (
-            patch("application.cycle_service.PerformanceMonitor", side_effect=RuntimeError("SYNTHETIC_PRIVATE_STORE_EXCEPTION")),
-            patch("application.cycle_service._performance_monitor_logger.warning") as warning,
+            patch("binance_platform.application.cycle_service.PerformanceMonitor", side_effect=RuntimeError("SYNTHETIC_PRIVATE_STORE_EXCEPTION")),
+            patch("binance_platform.application.cycle_service._performance_monitor_logger.warning") as warning,
         ):
             report, events = self._run_funds_cycle(True, rebase_fn=rebase)
         self.assertEqual(report["status"], "ok")
@@ -466,7 +466,7 @@ class CycleServiceTests(unittest.TestCase):
         warning.assert_called_once_with("platform_execution_record_failed")
 
     def test_platform_performance_record_marks_external_cash_flow_incomparable(self):
-        with patch("application.cycle_service.try_record_platform_execution") as record:
+        with patch("binance_platform.application.cycle_service.try_record_platform_execution") as record:
             self._run_funds_cycle(True)
 
         record.assert_called_once()
@@ -480,7 +480,7 @@ class CycleServiceTests(unittest.TestCase):
         def rebase(*args):
             args[2]["external_cash_flow_interval"] = interval
 
-        with patch("application.cycle_service.try_record_platform_execution") as record:
+        with patch("binance_platform.application.cycle_service.try_record_platform_execution") as record:
             self._run_funds_cycle(True, rebase_fn=rebase)
         self.assertEqual(record.call_args.args[1]["external_cash_flow_interval"], interval)
 
@@ -490,7 +490,7 @@ class CycleServiceTests(unittest.TestCase):
         def rebase(*args):
             args[2]["external_cash_flow_interval"] = interval
 
-        with patch("application.cycle_service.try_record_platform_execution") as record:
+        with patch("binance_platform.application.cycle_service.try_record_platform_execution") as record:
             self._run_funds_cycle(True, rebase_fn=rebase, earn_failure=True)
         self.assertIsNone(record.call_args.args[1]["external_cash_flow_interval"])
 
@@ -1069,7 +1069,7 @@ class CycleServiceTests(unittest.TestCase):
                     private = {"status": status, "execution_receipt_observation": counts,
                                "error_summary": {"errors": []}, "log_lines": [sentinel]}
                     original = copy.deepcopy(private)
-                    with patch("application.cycle_service.persist_runtime_report",
+                    with patch("binance_platform.application.cycle_service.persist_runtime_report",
                                return_value=SimpleNamespace(local_path="synthetic.json", cloud_uri=None)):
                         run_live_cycle(
                             runtime_builder=lambda: SimpleNamespace(run_id="synthetic", dry_run=True),
@@ -1171,7 +1171,7 @@ class CycleServiceTests(unittest.TestCase):
         archived = []
         with tempfile.TemporaryDirectory() as directory:
             with patch(
-                "application.cycle_service.persist_runtime_report",
+                "binance_platform.application.cycle_service.persist_runtime_report",
                 side_effect=lambda value, **kwargs: archived.append(copy.deepcopy(value))
                 or SimpleNamespace(local_path=kwargs["output_path"], cloud_uri=sentinel),
             ):
@@ -1219,8 +1219,8 @@ class CycleServiceTests(unittest.TestCase):
         output = StringIO()
         with tempfile.TemporaryDirectory() as directory:
             with (
-                patch("application.cycle_service.try_record_platform_execution") as recorder,
-                patch("application.cycle_service.persist_runtime_report",
+                patch("binance_platform.application.cycle_service.try_record_platform_execution") as recorder,
+                patch("binance_platform.application.cycle_service.persist_runtime_report",
                       return_value=SimpleNamespace(local_path=None, cloud_uri=None)),
                 redirect_stdout(output), redirect_stderr(output),
             ):
@@ -1254,7 +1254,7 @@ class CycleServiceTests(unittest.TestCase):
                 clear=False,
             ):
                 with patch(
-                    "application.cycle_service.persist_runtime_report",
+                    "binance_platform.application.cycle_service.persist_runtime_report",
                     lambda report, **kwargs: observed.update(
                         {
                             "status": report["status"],
@@ -1318,7 +1318,7 @@ class CycleServiceTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             with patch(
-                "application.cycle_service.persist_runtime_report",
+                "binance_platform.application.cycle_service.persist_runtime_report",
                 side_effect=RuntimeError(sentinel),
             ):
                 report, output_path = run_live_cycle(
@@ -1402,7 +1402,7 @@ class CycleServiceTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             with patch(
-                "application.cycle_service.persist_runtime_report",
+                "binance_platform.application.cycle_service.persist_runtime_report",
                 return_value=SimpleNamespace(local_path=None, cloud_uri=None),
             ):
                 report, output_path = run_live_cycle(
@@ -1512,7 +1512,7 @@ class CycleServiceTests(unittest.TestCase):
         self.assertNotIn("provider-secret-cycle-error", str(report) + str(observed))
 
     def test_owner_failure_is_safe_and_does_not_reach_client_or_release_lock(self):
-        from runtime_support import StatePersistenceError
+        from binance_platform.runtime_support import StatePersistenceError
 
         secret = "private-provider-message"
         custom_error = type("private-provider-class", (Exception,), {})
@@ -1537,8 +1537,8 @@ class CycleServiceTests(unittest.TestCase):
                     allow_new_trend_entries_on_degraded=False,
                 )
                 callbacks["translate_fn"].return_value = "system_crash"
-                with patch("application.cycle_service.acquire_runtime_state_owner", side_effect=error), patch(
-                    "application.cycle_service.release_runtime_state_owner"
+                with patch("binance_platform.application.cycle_service.acquire_runtime_state_owner", side_effect=error), patch(
+                    "binance_platform.application.cycle_service.release_runtime_state_owner"
                 ) as release:
                     report = execute_strategy_cycle(runtime, **callbacks)
                 self.assertEqual(report["status"], "error")
@@ -1689,8 +1689,8 @@ import pytest
 
 def run_bound_source_cycle(*, receipt_enabled=True, failure=None, revoke=False):
     from test_portfolio_service import forward_bound_fixture, consume_forward_bound
-    from runtime_support import runtime_set_trade_state as fenced_write, build_execution_report as full_report
-    from application.portfolio_service import maybe_reset_daily_state as reset_daily
+    from binance_platform.runtime_support import runtime_set_trade_state as fenced_write, build_execution_report as full_report
+    from binance_platform.application.portfolio_service import maybe_reset_daily_state as reset_daily
     runtime, native, observation, cash = forward_bound_fixture(receipt_enabled=receipt_enabled)
     # The cycle must acquire itself and reload under that newly claimed owner.
     assert runtime.bound_state_access.release(runtime.state_owner_id)
@@ -1745,7 +1745,7 @@ def run_bound_source_cycle(*, receipt_enabled=True, failure=None, revoke=False):
 
 @pytest.mark.parametrize('receipt_enabled', [False, True])
 def test_full_candidate_cycle_preserves_ordering_and_forward_checkpoint_through_later_saves(receipt_enabled):
-    with patch('application.cycle_service.try_record_platform_execution'):
+    with patch('binance_platform.application.cycle_service.try_record_platform_execution'):
         runtime, native, report, events, observation = run_bound_source_cycle(receipt_enabled=receipt_enabled)
     assert report['status'] == 'ok'
     assert events == ['metadata', 'forward_verified', 'daily_reset', 'fuel', 'trend', 'dca', 'earn']
@@ -1760,7 +1760,7 @@ def test_full_candidate_cycle_preserves_ordering_and_forward_checkpoint_through_
 
 @pytest.mark.parametrize('failure,revoke', [('before_commit', False), ('after_commit', False), (None, True)])
 def test_full_cycle_uncertainty_or_midcycle_revocation_stops_before_reset_and_broker_stages(failure, revoke):
-    with patch('application.cycle_service.try_record_platform_execution'):
+    with patch('binance_platform.application.cycle_service.try_record_platform_execution'):
         runtime, native, report, events, observation = run_bound_source_cycle(failure=failure, revoke=revoke)
     assert report['status'] == 'error'
     assert report['diagnostics']['cycle_failure']['stage'] == 'daily_state'
@@ -1781,13 +1781,13 @@ def test_production_native_mutation_inventory_has_no_blind_saver_bypass():
     import ast
     from pathlib import Path
     root = Path(__file__).resolve().parents[1]
-    live = ast.parse((root / 'live_services.py').read_text())
+    live = ast.parse((root / 'src/binance_platform/live_services.py').read_text())
     public = next(n for n in live.body if isinstance(n, ast.FunctionDef) and n.name == 'save_trade_state')
     calls = [ast.unparse(n.func) for n in ast.walk(public) if isinstance(n, ast.Call)]
     assert '_get_document_store' not in calls
     assert not any(call.endswith('.set') for call in calls)
     assert 'bound_access.save' in calls
-    support = ast.parse((root / 'runtime_support.py').read_text())
+    support = ast.parse((root / 'src/binance_platform/runtime_support.py').read_text())
     writer_calls = [n for n in ast.walk(support) if isinstance(n, ast.Call)
                     and isinstance(n.func, ast.Attribute) and n.func.attr == 'state_writer']
     assert len(writer_calls) == 1
@@ -1798,7 +1798,9 @@ def test_production_native_mutation_inventory_has_no_blind_saver_bypass():
         assert any(isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                    and n.func.id == '_persist_runtime_state' for n in ast.walk(node))
     assert set(path for path, _, _ in _owned_native_mutation_calls(root)) <= {
-        'live_services.py', 'application/interval_source_receipt_candidate.py'}
+        'src/binance_platform/live_services.py',
+        'src/binance_platform/application/interval_source_receipt_candidate.py',
+    }
 
 
 def _owned_native_mutation_calls(root):
@@ -1806,9 +1808,10 @@ def _owned_native_mutation_calls(root):
     source_calls = []
     # These are this repository's verified production roots. CI's external/
     # checkouts and .venv/ packages are separate dependencies, not owned writers.
-    files = list(root.glob('*.py'))
+    pkg_root = root / 'src' / 'binance_platform' if (root / 'src' / 'binance_platform').is_dir() else root
+    files = list(pkg_root.glob('*.py'))
     for directory in ('application', 'entrypoints', 'infra', 'reporting', 'research', 'strategy'):
-        files.extend((root / directory).rglob('*.py'))
+        files.extend((pkg_root / directory).rglob('*.py'))
     caches = {'__pycache__', '.pytest_cache', '.ruff_cache', '.mypy_cache', '.cache', '.venv'}
     for file in sorted(files):
         if any(part in caches for part in file.relative_to(root).parts[:-1]):

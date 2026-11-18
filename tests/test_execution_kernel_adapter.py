@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from application.execution_kernel_adapter import (
+from binance_platform.application.execution_kernel_adapter import (
     consult_t2_unknown_new_cycle,
     consult_t3_deny_blind_retry,
 )

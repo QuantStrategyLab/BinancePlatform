@@ -1,13 +1,13 @@
 from unittest.mock import Mock, patch
 
-from live_services import load_trade_state, save_trade_state, send_tg_msg
+from binance_platform.live_services import load_trade_state, save_trade_state, send_tg_msg
 
 
 def test_load_trade_state_logs_only_safe_failure_reason():
     store = Mock()
     store.get.side_effect = RuntimeError("SENSITIVE_PROVIDER_SENTINEL")
 
-    with patch("live_services._get_document_store", return_value=store), patch("builtins.print") as print_mock:
+    with patch("binance_platform.live_services._get_document_store", return_value=store), patch("builtins.print") as print_mock:
         result = load_trade_state(normalize_fn=lambda value: value, default_state_factory=dict)
 
     rendered = " ".join(str(call) for call in print_mock.call_args_list)
@@ -20,7 +20,7 @@ def test_save_trade_state_logs_only_safe_failure_reason():
     store = Mock()
     store.set.side_effect = RuntimeError("provider-secret-state-write-error")
 
-    with patch("live_services._get_document_store", return_value=store), patch("builtins.print") as print_mock:
+    with patch("binance_platform.live_services._get_document_store", return_value=store), patch("builtins.print") as print_mock:
         result = save_trade_state({"ok": True}, normalize_fn=lambda value: value)
 
     rendered = " ".join(str(call) for call in print_mock.call_args_list)
@@ -33,7 +33,7 @@ def test_send_tg_msg_rejects_telegram_ok_false():
     response = Mock(status_code=200)
     response.json.return_value = {"ok": False, "description": "rejected"}
 
-    with patch("live_services.requests.post", return_value=response):
+    with patch("binance_platform.live_services.requests.post", return_value=response):
         receipt = send_tg_msg("token-value", "chat-value", "hello")
 
     assert receipt["delivery_status"] == "failed"
@@ -48,7 +48,7 @@ def test_send_tg_msg_records_safe_acknowledged_receipt():
     response = Mock(status_code=200)
     response.json.return_value = {"ok": True, "result": {"message_id": 123}}
 
-    with patch("live_services.requests.post", return_value=response):
+    with patch("binance_platform.live_services.requests.post", return_value=response):
         receipt = send_tg_msg("token-value", "chat-value", "hello")
 
     assert receipt["delivery_status"] == "sent"
@@ -115,8 +115,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from application.interval_source_receipt_candidate import _version
-from live_services import bind_trade_state_access
+from binance_platform.application.interval_source_receipt_candidate import _version
+from binance_platform.live_services import bind_trade_state_access
 
 
 class SessionSnapshot:
@@ -307,7 +307,7 @@ class SessionClient:
 def session_fixture(data=None, *, receipt_enabled=False, normalize_fn=lambda x: x):
     client = SessionClient(data)
     store = Mock(client=client)
-    with patch('live_services._get_document_store', return_value=store) as factory:
+    with patch('binance_platform.live_services._get_document_store', return_value=store) as factory:
         access = bind_trade_state_access(normalize_fn=normalize_fn, default_state_factory=dict,
                                          receipt_enabled=receipt_enabled)
     assert factory.call_count == 1
@@ -315,7 +315,7 @@ def session_fixture(data=None, *, receipt_enabled=False, normalize_fn=lambda x: 
 
 
 def test_unbound_native_save_fails_without_opening_provider():
-    with patch('live_services._get_document_store', side_effect=AssertionError('provider forbidden')) as factory:
+    with patch('binance_platform.live_services._get_document_store', side_effect=AssertionError('provider forbidden')) as factory:
         assert save_trade_state({'ok': True}, normalize_fn=lambda x: x) is False
         factory.assert_not_called()
 
@@ -475,7 +475,7 @@ def native_session_fixture(previous, *, receipt_enabled=False, normalize_fn=lamb
         api = StubNativeAPI(client, previous)
         client._firestore_api_internal = api  # No GAPIC client/channel construction.
         store = Mock(client=client)
-        with patch('live_services._get_document_store', return_value=store):
+        with patch('binance_platform.live_services._get_document_store', return_value=store):
             access = bind_trade_state_access(normalize_fn=normalize_fn, default_state_factory=dict,
                                              receipt_enabled=receipt_enabled)
     return access, api
@@ -604,7 +604,7 @@ def test_forward_uses_raw_source_when_normalizer_adds_defaults_or_filters_future
 @pytest.mark.parametrize('race', ['conflicting_receipt', 'owner_after_commit', 'poststate_after_commit'])
 def test_forward_conflict_or_uncertain_readback_stops_session_and_retains_atomic_result(race):
     from test_interval_source_receipt_candidate import material
-    from application.interval_source_receipt_candidate import build_interval_receipt_plan
+    from binance_platform.application.interval_source_receipt_candidate import build_interval_receipt_plan
     previous, following, interval = material()
     access, client, _ = session_fixture(previous, receipt_enabled=True)
     access.claim('owner-one')
@@ -638,7 +638,7 @@ def test_wrong_backend_reference_is_rejected_before_reads():
     first = SessionClient({'value': 1})
     other = SessionClient({'value': 1})
     with patch.object(first, 'collection', return_value=SessionCollection(other, 'strategy')):
-        with patch('live_services._get_document_store', return_value=Mock(client=first)):
+        with patch('binance_platform.live_services._get_document_store', return_value=Mock(client=first)):
             with pytest.raises(ValueError, match='interval_receipt_backend_mismatch'):
                 bind_trade_state_access(normalize_fn=lambda x: x, default_state_factory=dict)
     assert not first.events and not other.events
@@ -741,10 +741,10 @@ def test_native_claim_lost_response_keeps_lock_but_never_grants_local_authority(
 
 
 def test_native_sdk_actual_normalizer_and_business_forward_preserve_raw_audit_fields():
-    import main
+    import binance_platform.main as main
     from test_forward_earn_accounting import materials, NOW
     from test_portfolio_service import consume_forward_bound
-    from runtime_support import ExecutionRuntime, acquire_runtime_state_owner, build_execution_report, runtime_set_trade_state
+    from binance_platform.runtime_support import ExecutionRuntime, acquire_runtime_state_owner, build_execution_report, runtime_set_trade_state
     previous, observation, cash = materials()
     previous['daily_external_principal_usdt'] = 0.0
     previous['future_audit_field'] = {'keep': True}

@@ -31,13 +31,13 @@ uv run --no-sync python -m unittest discover -s tests -v
 在不接触交易所的情况下，用本地 fixtures 回放一个固定输入的周期（传入 `--help` 可查看 `--fixtures-dir`、`--output` 等选项）：
 
 ```bash
-uv run --no-sync python run_cycle_replay.py
+uv run --no-sync python -m binance_platform.run_cycle_replay
 ```
 
 设置好 runtime target 和凭据后运行 live cycle（默认 dry-run）：
 
 ```bash
-uv run --no-sync python main.py
+uv run --no-sync python -m binance_platform.main
 ```
 
 ## 配置
@@ -56,16 +56,22 @@ uv run --no-sync python main.py
 
 凭据只从环境变量读取，绝不写入仓库。
 
+## 架构
+
+`src/binance_platform/` 下的运行时包按职责拆分为编排入口（`main.py`、`runtime_wiring.py`）、应用服务（`application/`）、交易所与状态适配（`infra/`）、策略加载（`strategy/`）以及通知路由（`notifications/`）。
+
 ## 仓库结构
 
 ```
-main.py                 live cycle 入口
-application/            周期、执行与对账服务
-entrypoints/            CLI 入口辅助
-strategy/               策略加载与注册表胶水代码
-notifications/          通知适配器
-infra/                  基础设施辅助
-scripts/                运维脚本
+src/binance_platform/
+  main.py                 live cycle 入口
+  application/            周期、执行与对账服务
+  accounting_migration/   日度账务迁移辅助模块
+  entrypoints/            CLI 入口辅助
+  strategy/               策略加载与注册表胶水代码
+  notifications/          通知适配器
+  infra/                  基础设施辅助
+scripts/                  运维脚本
 docs/                   运行手册与契约
 tests/                  单元与契约测试
 ```

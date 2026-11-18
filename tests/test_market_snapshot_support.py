@@ -3,8 +3,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from market_snapshot_support import capture_market_snapshot, top_up_bnb_fuel
-from runtime_support import ExecutionRuntime, OrderReconciliationError, build_execution_report, runtime_call_client
+from binance_platform.market_snapshot_support import capture_market_snapshot, top_up_bnb_fuel
+from binance_platform.runtime_support import ExecutionRuntime, OrderReconciliationError, build_execution_report, runtime_call_client
 
 
 class FakeClient:
@@ -98,7 +98,7 @@ class MarketSnapshotSupportTests(unittest.TestCase):
             state_loader=lambda *, normalize=False: {"order_submission": {"state": "RESERVED"}},
             state_writer=lambda _state: True,
         )
-        from runtime_support import acquire_runtime_state_owner
+        from binance_platform.runtime_support import acquire_runtime_state_owner
         runtime.state_owner_claim = lambda _owner: True
         runtime.state_owner_release = lambda _owner: True
         acquire_runtime_state_owner(runtime)

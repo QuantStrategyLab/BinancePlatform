@@ -131,7 +131,7 @@ _AUTHORITY_REASON_CODES = (
 def _authority_reason_code(exc):
     """Return only a fixed authority reason; never expose provider text."""
     try:
-        from live_risk_authority import LiveRiskAuthorityError
+        from binance_platform.live_risk_authority import LiveRiskAuthorityError
     except ImportError:
         return None
     if not isinstance(exc, LiveRiskAuthorityError):
@@ -353,7 +353,7 @@ def _live_pool_readiness(runtime, report):
     if (runtime.trend_pool_payload is not None or not isinstance(pool, Mapping)
             or pool.get("source_kind") != "fresh_upstream" or pool.get("is_fresh") is not True):
         raise FullCycleValidationError("full_cycle_trend_pool_not_fresh", failure_stage="result")
-    from application.execution_receipt_adapter import validate_report_execution_receipt
+    from binance_platform.application.execution_receipt_adapter import validate_report_execution_receipt
 
     try:
         receipt = validate_report_execution_receipt(report)
@@ -369,7 +369,9 @@ def validate_full_cycle(*, runtime_builder=None, client_connector=None):
     import importlib
 
     try:
-        import main
+        import importlib
+
+        main = importlib.import_module("binance_platform.main")
     except Exception as exc:
         raise _wrap_full_cycle_error(
             exc, failure_stage="import", fallback_reason="full_cycle_import_failed"
@@ -489,7 +491,9 @@ def validate_startup():
         raise ValueError("startup_validation_requires_disabled_runtime")
     if os.getenv("BINANCE_API_KEY") or os.getenv("BINANCE_API_SECRET"):
         raise ValueError("startup_validation_broker_credentials_forbidden")
-    import main
+    import importlib
+
+    main = importlib.import_module("binance_platform.main")
 
     runtime = main.build_live_runtime()
     if runtime.standard_execution_permitted:

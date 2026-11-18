@@ -2,9 +2,9 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from runtime_support import ExecutionIntegrityError
+from binance_platform.runtime_support import ExecutionIntegrityError
 
-from application.portfolio_service import (
+from binance_platform.application.portfolio_service import (
     append_portfolio_report,
     build_balance_snapshot,
     compute_daily_pnls,
@@ -410,7 +410,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from runtime_support import build_execution_report, runtime_set_trade_state, StatePersistenceError
+from binance_platform.runtime_support import build_execution_report, runtime_set_trade_state, StatePersistenceError
 
 
 def forward_bound_fixture(*, receipt_enabled=True):

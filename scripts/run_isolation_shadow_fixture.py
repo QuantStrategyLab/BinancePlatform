@@ -17,7 +17,7 @@ from assert_no_order_shadow_report import (  # noqa: E402
     validate_no_order_report,
 )
 
-import run_cycle_replay  # noqa: E402
+import binance_platform.run_cycle_replay as run_cycle_replay  # noqa: E402
 
 
 FIXED_RUN_ID = "runtime-isolation-fixture-shadow"

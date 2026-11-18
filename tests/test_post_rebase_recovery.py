@@ -150,7 +150,7 @@ class Client:
 
 
 def _configure_anchors(monkeypatch, current, archive, control, opening):
-    import application.rebased_recovery as rebased
+    import binance_platform.application.rebased_recovery as rebased
 
     monkeypatch.setattr(rebased, "APPROVED_OLD_LEDGER_SHA256", digest(archive["ledger"]))
     monkeypatch.setattr(rebased, "APPROVED_OLD_CONTROL_SHA256", digest(control))
@@ -159,7 +159,7 @@ def _configure_anchors(monkeypatch, current, archive, control, opening):
 
 
 def _collect(monkeypatch, *, client=None, current=None, archive=None, now=NOW, observe_only_non_managed_spot=False):
-    from application.rebased_recovery import collect_post_rebase_source
+    from binance_platform.application.rebased_recovery import collect_post_rebase_source
 
     base_current, base_archive, control, opening = _material()
     current = copy.deepcopy(current if current is not None else base_current)
@@ -180,7 +180,7 @@ def _collect(monkeypatch, *, client=None, current=None, archive=None, now=NOW, o
 
 
 def test_post_rebase_source_enrolls_exact_opening_without_raw_balances(monkeypatch):
-    from application.rebased_recovery import SOURCE_KIND, validate_post_rebase_source
+    from binance_platform.application.rebased_recovery import SOURCE_KIND, validate_post_rebase_source
 
     package = _collect(monkeypatch)
     candidate = validate_post_rebase_source(
@@ -202,7 +202,7 @@ def test_post_rebase_source_enrolls_exact_opening_without_raw_balances(monkeypat
 
 
 def test_real_rebase_producer_archive_and_ledger_feed_post_rebase_consumer(monkeypatch):
-    from application import rebased_recovery as rebased
+    from binance_platform.application import rebased_recovery as rebased
     from scripts import migrate_daily_accounting_state as migration
     from tests.test_daily_accounting_migration import Ref as MigrationRef
     from tests.test_daily_accounting_migration import Snapshot as MigrationSnapshot
@@ -266,7 +266,7 @@ def test_real_rebase_producer_archive_and_ledger_feed_post_rebase_consumer(monke
 
 
 def test_post_rebase_anchor_constants_are_imported_from_rebase_producer():
-    from application import rebased_recovery as rebased
+    from binance_platform.application import rebased_recovery as rebased
     from scripts import migrate_daily_accounting_state as migration
 
     assert rebased.APPROVED_OLD_LEDGER_SHA256 == migration.APPROVED_REBASE_LEDGER_SHA256
@@ -379,7 +379,7 @@ def test_post_rebase_source_allows_reward_rows_without_using_them_as_an_explanat
 
 @pytest.mark.parametrize("field,value", [("id", 34606795876), ("head_sha", "f" * 40)])
 def test_stored_post_rebase_source_binds_exact_migration_run(monkeypatch, field, value):
-    from application.rebased_recovery import validate_post_rebase_source
+    from binance_platform.application.rebased_recovery import validate_post_rebase_source
 
     package = _collect(monkeypatch)
     package["source"]["migration_run"][field] = value
@@ -656,7 +656,7 @@ def _active_post_rebase_control(monkeypatch):
 
 
 def test_active_post_rebase_control_remains_valid_after_candidate_freshness_window(monkeypatch):
-    from application.reconciliation_recovery import activated_target
+    from binance_platform.application.reconciliation_recovery import activated_target
 
     control = _active_post_rebase_control(monkeypatch)
     result = activated_target(_target(), control, expected=_legacy_expected())
@@ -665,7 +665,7 @@ def test_active_post_rebase_control_remains_valid_after_candidate_freshness_wind
 
 
 def test_active_post_rebase_control_still_rejects_source_semantic_tampering(monkeypatch):
-    from application.reconciliation_recovery import activated_target
+    from binance_platform.application.reconciliation_recovery import activated_target
 
     control = _active_post_rebase_control(monkeypatch)
     control["source"]["proof"]["history_counts"]["deposits"] = 1
@@ -1128,7 +1128,7 @@ def test_controller_post_rebase_bad_confirmation_stops_before_broker_and_write(
 
 @pytest.mark.parametrize("change", [None, "second_read", "locked", "managed_quantity"])
 def test_observed_assets_remain_in_full_account_evidence(monkeypatch, change):
-    from application.rebased_recovery import validate_post_rebase_source
+    from binance_platform.application.rebased_recovery import validate_post_rebase_source
 
     client = Client()
     client.balances.append({"asset": "PASSIVE", "free": "2", "locked": "0"})
@@ -1159,7 +1159,7 @@ def test_observed_assets_remain_in_full_account_evidence(monkeypatch, change):
 
 @pytest.mark.parametrize("policy,count", [("ignore", 1), ("reject", 1), ("observe_only", -1), ("observe_only", True)])
 def test_source_rejects_invalid_passive_scope_proof(monkeypatch, policy, count):
-    from application.rebased_recovery import validate_post_rebase_source
+    from binance_platform.application.rebased_recovery import validate_post_rebase_source
 
     package = _collect(monkeypatch)
     package["source"]["proof"].update(

@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from application.trend_pool_service import resolve_runtime_trend_pool
+from binance_platform.application.trend_pool_service import resolve_runtime_trend_pool
 
 
 class TrendPoolServiceTests(unittest.TestCase):

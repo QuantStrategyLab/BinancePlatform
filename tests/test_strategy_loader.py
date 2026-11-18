@@ -14,7 +14,7 @@ for path in (PROJECT_ROOT, QPK_SRC, CRYPTO_STRATEGIES_SRC):
 class StrategyLoaderTests(unittest.TestCase):
     def test_load_research_entrypoint_for_profile_returns_unified_entrypoint(self):
         try:
-            from strategy_loader import load_research_strategy_entrypoint_for_profile
+            from binance_platform.strategy_loader import load_research_strategy_entrypoint_for_profile
         except ModuleNotFoundError as exc:
             if exc.name == "pandas":
                 self.skipTest("pandas is not installed")

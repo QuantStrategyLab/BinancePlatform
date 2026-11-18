@@ -1,8 +1,8 @@
 from types import SimpleNamespace
 
 from unittest.mock import Mock
-from notifications.digest_snapshot.digest_routing import routine_notification
-from runtime_support import runtime_notify
+from binance_platform.notifications.digest_snapshot.digest_routing import routine_notification
+from binance_platform.runtime_support import runtime_notify
 
 
 def test_classified_routine_order_skips_transport_and_opt_out_keeps_sender(monkeypatch):

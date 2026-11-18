@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from application.broker_reconciliation import diagnose_balance_snapshot
-from application.broker_reconciliation import diagnose_bonus_reward_balance
+from binance_platform.application.broker_reconciliation import diagnose_balance_snapshot
+from binance_platform.application.broker_reconciliation import diagnose_bonus_reward_balance
 from quant_platform_kit.common.broker_reconciliation import calculate_broker_observation_sha256 as digest
 
 

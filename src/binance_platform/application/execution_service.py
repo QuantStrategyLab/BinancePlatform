@@ -1,0 +1,971 @@
+"""Application-level trade execution helpers for BinancePlatform."""
+
+from __future__ import annotations
+
+from binance_platform.notifications.routing import immediate_notification, routine_notification
+
+import math
+from collections.abc import Mapping
+
+from binance_platform.runtime_support import ExecutionIntegrityError, record_gating_event
+
+
+_SAFE_ORDER_FAILURE_REASON = "order_execution_failed"
+_FILLED_ACCOUNTING_PENDING = "FILLED_ACCOUNTING_PENDING"
+
+
+def _required_number(value, *, positive=False):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable") from None
+    if not math.isfinite(number) or number < 0 or (positive and number <= 0):
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable") from None
+    return number
+
+
+def _parse_filled_order(response, *, symbol, side, prices):
+    if not isinstance(response, Mapping) or str(response.get("status") or "").upper() != "FILLED":
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+    if str(response.get("symbol") or symbol).upper() != symbol or str(response.get("side") or side).upper() != side:
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+
+    executed_qty = _required_number(response.get("executedQty"), positive=True)
+    quote_qty = _required_number(response.get("cummulativeQuoteQty"), positive=True)
+    fills = response.get("fills")
+    if not isinstance(fills, list) or not fills:
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+
+    fill_qty = 0.0
+    fill_quote = 0.0
+    commissions = {}
+    for fill in fills:
+        if not isinstance(fill, Mapping):
+            raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+        price = _required_number(fill.get("price"), positive=True)
+        qty = _required_number(fill.get("qty"), positive=True)
+        commission = _required_number(fill.get("commission"))
+        commission_asset = str(fill.get("commissionAsset") or "").strip().upper()
+        if not commission_asset:
+            raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+        fill_qty += qty
+        fill_quote += price * qty
+        commissions[commission_asset] = commissions.get(commission_asset, 0.0) + commission
+
+    tolerance = max(1e-8, executed_qty * 1e-8)
+    quote_tolerance = max(1e-8, quote_qty * 1e-8)
+    if abs(fill_qty - executed_qty) > tolerance or abs(fill_quote - quote_qty) > quote_tolerance:
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+
+    base_asset = symbol[:-4] if symbol.endswith("USDT") else ""
+    if not base_asset:
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+    base_fee = commissions.pop(base_asset, 0.0)
+    quote_fee = commissions.pop("USDT", 0.0)
+    third_fees = {}
+    third_fee_usdt = 0.0
+    for asset, quantity in commissions.items():
+        price_key = f"{asset}USDT"
+        fee_price = _required_number(prices.get(price_key), positive=True)
+        third_fees[price_key] = quantity
+        third_fee_usdt += quantity * fee_price
+    return {
+        "executed_qty": executed_qty,
+        "quote_qty": quote_qty,
+        "average_price": quote_qty / executed_qty,
+        "base_asset": base_asset,
+        "base_fee": base_fee,
+        "quote_fee": quote_fee,
+        "third_fees": third_fees,
+        "third_fee_usdt": third_fee_usdt,
+    }
+
+
+def _estimated_fill(*, symbol, qty, price):
+    return {
+        "executed_qty": float(qty),
+        "quote_qty": float(qty) * float(price),
+        "average_price": float(price),
+        "base_asset": symbol[:-4],
+        "base_fee": 0.0,
+        "quote_fee": 0.0,
+        "third_fees": {},
+        "third_fee_usdt": 0.0,
+    }
+
+
+def _resolve_fill(runtime, response, *, symbol, side, qty, price, prices):
+    if bool(getattr(runtime, "dry_run", False)):
+        return _estimated_fill(symbol=symbol, qty=qty, price=price)
+    return _parse_filled_order(response, symbol=symbol, side=side, prices=prices)
+
+
+def _apply_fill_balances(fill, *, side, symbol, balances, u_total):
+    base_delta = fill["executed_qty"] - fill["base_fee"]
+    quote_delta = -(fill["quote_qty"] + fill["quote_fee"])
+    if side == "SELL":
+        base_delta = -(fill["executed_qty"] + fill["base_fee"])
+        quote_delta = fill["quote_qty"] - fill["quote_fee"]
+    new_base = float(balances.get(symbol, 0.0)) + base_delta
+    if new_base < -1e-10:
+        raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+    third_updates = {}
+    for fee_symbol, fee_qty in fill["third_fees"].items():
+        if fee_symbol not in balances:
+            raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+        updated = float(balances[fee_symbol]) - fee_qty
+        if not math.isfinite(updated) or updated < -1e-10:
+            raise ExecutionIntegrityError("filled_order_accounting_unverifiable")
+        third_updates[fee_symbol] = max(0.0, updated)
+    balances[symbol] = max(0.0, new_base)
+    balances.update(third_updates)
+    return u_total + quote_delta, quote_delta
+
+
+def _record_trend_fill(state, fill, *, quote_delta):
+    state["daily_trend_cash_flow_usdt"] = float(state.get("daily_trend_cash_flow_usdt", 0.0)) + quote_delta
+    principal_delta = fill["quote_qty"] if quote_delta < 0 else -fill["quote_qty"]
+    net_invested = float(state.get("daily_trend_net_invested_usdt", 0.0)) + principal_delta
+    state["daily_trend_net_invested_usdt"] = net_invested
+    opening_base = float(state.get("daily_trend_equity_base", 0.0) or 0.0)
+    state["daily_trend_risk_base_usdt"] = max(
+        float(state.get("daily_trend_risk_base_usdt", opening_base) or 0.0),
+        opening_base + max(0.0, net_invested),
+    )
+    state["daily_trend_third_fee_usdt"] = (
+        float(state.get("daily_trend_third_fee_usdt", 0.0)) + fill["third_fee_usdt"]
+    )
+
+
+def _prepare_accounting_state(state, *, symbol, base_asset, balances, u_total):
+    snapshot = state.setdefault("last_balance_snapshot", {})
+    if isinstance(snapshot, dict):
+        snapshot["USDT"] = round(float(u_total), 8)
+        snapshot[base_asset] = round(float(balances[symbol]), 8)
+        for fee_symbol in balances:
+            if fee_symbol.endswith("USDT") and fee_symbol not in {symbol, "BTCUSDT"}:
+                snapshot[fee_symbol[:-4]] = round(float(balances[fee_symbol]), 8)
+    if state.get("order_submission", {}).get("state") == _FILLED_ACCOUNTING_PENDING:
+        from binance_platform.runtime_support import account_known_fill_for_earn
+        account_known_fill_for_earn(state)
+        state["order_submission"] = {"state": "TERMINAL"}
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
+def _is_missing(value) -> bool:
+    if value is None:
+        return True
+    try:
+        return value != value
+    except Exception:
+        return False
+
+
+def build_trend_candidate_filter_diagnostics(
+    active_trend_pool,
+    trend_indicators,
+    btc_snapshot,
+    prices,
+):
+    diagnostics = {}
+    btc_regime_on = bool(btc_snapshot.get("regime_on", True))
+    btc_required = ("btc_roc20", "btc_roc60", "btc_roc120")
+    missing_btc_fields = [field for field in btc_required if _is_missing(btc_snapshot.get(field))]
+    for symbol in active_trend_pool:
+        symbol = str(symbol)
+        reasons = []
+        indicators = trend_indicators.get(symbol)
+        if not btc_regime_on:
+            reasons.append("btc_regime_off")
+        if missing_btc_fields:
+            reasons.append("missing_btc_momentum")
+        if not isinstance(indicators, dict):
+            diagnostics[symbol] = {"reasons": reasons + ["missing_indicators"]}
+            continue
+
+        required_fields = ("sma20", "sma60", "sma200", "roc20", "roc60", "roc120", "vol20")
+        missing_fields = [field for field in required_fields if _is_missing(indicators.get(field))]
+        if missing_fields:
+            reasons.append("missing_fields:" + ",".join(missing_fields))
+
+        raw_price = prices.get(symbol)
+        if _is_missing(raw_price):
+            reasons.append("missing_price")
+            diagnostics[symbol] = {"reasons": reasons}
+            continue
+
+        price = _safe_float(raw_price)
+        for field in ("sma20", "sma60", "sma200"):
+            value = indicators.get(field)
+            if not _is_missing(value) and price <= _safe_float(value):
+                reasons.append(f"price_lte_{field}")
+
+        vol20 = _safe_float(indicators.get("vol20"))
+        if not _is_missing(indicators.get("vol20")) and vol20 <= 0:
+            reasons.append("vol20_lte_zero")
+
+        relative_score = None
+        abs_momentum = None
+        if (
+            not missing_btc_fields
+            and not any(_is_missing(indicators.get(field)) for field in ("roc20", "roc60", "roc120", "vol20"))
+            and vol20 > 0
+        ):
+            rel_20 = _safe_float(indicators.get("roc20")) - _safe_float(btc_snapshot.get("btc_roc20"))
+            rel_60 = _safe_float(indicators.get("roc60")) - _safe_float(btc_snapshot.get("btc_roc60"))
+            rel_120 = _safe_float(indicators.get("roc120")) - _safe_float(btc_snapshot.get("btc_roc120"))
+            abs_momentum = (
+                0.5 * _safe_float(indicators.get("roc20"))
+                + 0.3 * _safe_float(indicators.get("roc60"))
+                + 0.2 * _safe_float(indicators.get("roc120"))
+            )
+            relative_score = (0.5 * rel_20 + 0.3 * rel_60 + 0.2 * rel_120) / vol20
+            if relative_score <= 0:
+                reasons.append("relative_score_lte_zero")
+            if abs_momentum <= 0:
+                reasons.append("abs_momentum_lte_zero")
+
+        payload = {"reasons": reasons or ["unknown_filter"]}
+        if relative_score is not None:
+            payload["relative_score"] = round(float(relative_score), 6)
+        if abs_momentum is not None:
+            payload["abs_momentum"] = round(float(abs_momentum), 6)
+        diagnostics[symbol] = payload
+    return diagnostics
+
+
+def run_daily_circuit_breaker(
+    runtime,
+    report,
+    state,
+    runtime_trend_universe,
+    balances,
+    u_total,
+    prices,
+    trend_daily_pnl,
+    circuit_breaker_pct,
+    log_buffer,
+    *,
+    format_qty_fn,
+    runtime_notify_fn,
+    ensure_asset_available_fn,
+    runtime_call_client_fn,
+    set_symbol_trade_state_fn,
+    runtime_set_trade_state_fn,
+    build_balance_snapshot_fn,
+    translate_fn,
+):
+    if trend_daily_pnl > circuit_breaker_pct:
+        return False
+
+    for symbol, config in runtime_trend_universe.items():
+        tradable_qty = balances[symbol]
+        if tradable_qty * prices[symbol] <= 10:
+            record_gating_event(
+                report,
+                gate="circuit_breaker_sell_below_min_position",
+                category="trend",
+                symbol=symbol,
+                detail={"position_value_usdt": round(tradable_qty * prices[symbol], 4)},
+            )
+            continue
+        qty = format_qty_fn(runtime.client, symbol, tradable_qty)
+        report["buy_sell_intents"].append(
+            {
+                "category": "trend",
+                "action": "sell",
+                "symbol": symbol,
+                "reason": "daily_circuit_breaker",
+                "quantity": float(qty),
+            }
+        )
+        try:
+            if qty <= 0:
+                immediate_notification(runtime_notify_fn,
+                    runtime,
+                    report,
+                    f"{translate_fn('circuit_breaker_sell_skipped')} {symbol}\n"
+                    f"{translate_fn('qty_zero_msg')}",
+                    reason="circuit_breaker_sell_skipped", kind="risk_escalation", severity=2,
+                )
+                continue
+            if not ensure_asset_available_fn(runtime, report, config["base_asset"], qty, log_buffer):
+                raise RuntimeError(
+                    translate_fn("asset_unavailable_for_circuit_breaker_sell", asset=config["base_asset"])
+                )
+            response = runtime_call_client_fn(
+                runtime,
+                report,
+                method_name="order_market_sell",
+                payload={"symbol": symbol, "quantity": qty},
+                effect_type="order_sell",
+            )
+            fill = _resolve_fill(
+                runtime, response, symbol=symbol, side="SELL", qty=qty, price=prices[symbol], prices=prices
+            )
+            u_total, quote_delta = _apply_fill_balances(
+                fill, side="SELL", symbol=symbol, balances=balances, u_total=u_total
+            )
+            _record_trend_fill(state, fill, quote_delta=quote_delta)
+            _prepare_accounting_state(
+                state, symbol=symbol, base_asset=config["base_asset"], balances=balances, u_total=u_total
+            )
+            set_symbol_trade_state_fn(
+                state,
+                symbol,
+                {"is_holding": False, "entry_price": 0.0, "highest_price": 0.0},
+            )
+        except ExecutionIntegrityError:
+            raise
+        except Exception:
+            immediate_notification(runtime_notify_fn,
+                runtime,
+                report,
+                f"{translate_fn('circuit_breaker_sell_failed')} {symbol}\n"
+                f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
+                reason="circuit_breaker_sell_failed",
+            )
+
+    state.update({"is_circuit_broken": True})
+    state["last_balance_snapshot"] = build_balance_snapshot_fn(runtime_trend_universe, balances, u_total)
+    report["circuit_breaker_triggered"] = True
+    runtime_set_trade_state_fn(runtime, report, state, reason="daily_circuit_breaker")
+    immediate_notification(runtime_notify_fn,
+        runtime,
+        report,
+        f"{translate_fn('circuit_breaker')}\n"
+        f"{translate_fn('circuit_msg', pnl=f'{trend_daily_pnl:.2%}')}",
+        reason="circuit_msg", kind="risk_escalation", severity=2,
+    )
+    return True
+
+
+def execute_trend_sells(
+    runtime,
+    report,
+    state,
+    runtime_trend_universe,
+    sell_reasons,
+    prices,
+    balances,
+    u_total,
+    log_buffer,
+    today_id_str,
+    *,
+    should_skip_duplicate_trend_action_fn,
+    append_log_fn,
+    translate_fn,
+    format_qty_fn,
+    ensure_asset_available_fn,
+    runtime_call_client_fn,
+    next_order_id_fn,
+    set_symbol_trade_state_fn,
+    record_trend_action_fn,
+    runtime_set_trade_state_fn,
+    runtime_notify_fn,
+):
+    for symbol, config in runtime_trend_universe.items():
+        curr_price = prices[symbol]
+        sell_reason = str(sell_reasons.get(symbol, "")).strip()
+        if not sell_reason:
+            continue
+
+        if should_skip_duplicate_trend_action_fn(state, symbol, "sell", today_id_str):
+            append_log_fn(log_buffer, translate_fn("duplicate_sell_skipped", symbol=symbol))
+            continue
+
+        qty = format_qty_fn(runtime.client, symbol, balances[symbol])
+        report["buy_sell_intents"].append(
+            {
+                "category": "trend",
+                "action": "sell",
+                "symbol": symbol,
+                "reason": sell_reason,
+                "quantity": float(qty),
+                "price": float(curr_price),
+            }
+        )
+        try:
+            if qty <= 0:
+                routine_notification(runtime_notify_fn,
+                    runtime,
+                    report,
+                    f"{translate_fn('trend_sell_skipped')} {symbol}\n"
+                    f"{translate_fn('reason_label')}: {sell_reason}\n"
+                    f"{translate_fn('qty_zero_msg')}",
+                routine_order=False,
+                )
+                continue
+            if not ensure_asset_available_fn(runtime, report, config["base_asset"], qty, log_buffer):
+                raise RuntimeError(translate_fn("asset_unavailable_for_trend_sell", asset=config["base_asset"]))
+            response = runtime_call_client_fn(
+                runtime,
+                report,
+                method_name="order_market_sell",
+                payload={
+                    "symbol": symbol,
+                    "quantity": qty,
+                    "newClientOrderId": next_order_id_fn(runtime, "T_SELL", symbol),
+                },
+                effect_type="order_sell",
+            )
+            fill = _resolve_fill(
+                runtime, response, symbol=symbol, side="SELL", qty=qty, price=curr_price, prices=prices
+            )
+            u_total, quote_delta = _apply_fill_balances(
+                fill, side="SELL", symbol=symbol, balances=balances, u_total=u_total
+            )
+            _record_trend_fill(state, fill, quote_delta=quote_delta)
+            _prepare_accounting_state(
+                state, symbol=symbol, base_asset=config["base_asset"], balances=balances, u_total=u_total
+            )
+            set_symbol_trade_state_fn(
+                state,
+                symbol,
+                {"is_holding": False, "entry_price": 0.0, "highest_price": 0.0},
+            )
+            record_trend_action_fn(state, symbol, "sell", today_id_str)
+            runtime_set_trade_state_fn(runtime, report, state, reason=f"trend_sell:{symbol}")
+            routine_notification(runtime_notify_fn,
+                runtime,
+                report,
+                f"{translate_fn('trend_sell')} {symbol}\n"
+                f"{translate_fn('reason_label')}: {sell_reason}\n"
+                f"{translate_fn('price_label')}: ${curr_price:.2f}",
+            routine_order=True,
+            )
+        except ExecutionIntegrityError:
+            raise
+        except Exception:
+            immediate_notification(runtime_notify_fn,
+                runtime,
+                report,
+                f"{translate_fn('trend_sell_failed')} {symbol}\n"
+                f"{translate_fn('reason_label')}: {sell_reason}\n"
+                f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
+                reason="trend_sell_failed",
+            )
+
+    return u_total
+
+
+def execute_trend_buys(
+    runtime,
+    report,
+    state,
+    selected_candidates,
+    eligible_buy_symbols,
+    planned_trend_buys,
+    prices,
+    balances,
+    u_total,
+    log_buffer,
+    today_id_str,
+    *,
+    should_skip_duplicate_trend_action_fn,
+    append_log_fn,
+    translate_fn,
+    format_qty_fn,
+    ensure_asset_available_fn,
+    runtime_call_client_fn,
+    next_order_id_fn,
+    set_symbol_trade_state_fn,
+    record_trend_action_fn,
+    runtime_set_trade_state_fn,
+    runtime_notify_fn,
+):
+    for symbol in eligible_buy_symbols:
+        curr_price = prices[symbol]
+        candidate_meta = selected_candidates[symbol]
+        buy_u = planned_trend_buys.get(symbol, 0.0)
+        if buy_u <= 15:
+            record_gating_event(
+                report,
+                gate="trend_buy_below_min_budget",
+                category="trend",
+                symbol=symbol,
+                detail={"budget_usdt": round(float(buy_u), 4)},
+            )
+            continue
+
+        if should_skip_duplicate_trend_action_fn(state, symbol, "buy", today_id_str):
+            record_gating_event(
+                report,
+                gate="trend_buy_duplicate_cooldown",
+                category="trend",
+                symbol=symbol,
+            )
+            append_log_fn(log_buffer, translate_fn("duplicate_buy_skipped", symbol=symbol))
+            continue
+
+        qty = format_qty_fn(runtime.client, symbol, buy_u * 0.985 / curr_price)
+        usdt_cost = qty * curr_price
+        report["buy_sell_intents"].append(
+            {
+                "category": "trend",
+                "action": "buy",
+                "symbol": symbol,
+                "quantity": float(qty),
+                "budget": float(buy_u),
+                "weight": float(candidate_meta["weight"]),
+                "relative_score": float(candidate_meta["relative_score"]),
+            }
+        )
+        try:
+            if qty <= 0 or usdt_cost <= 0:
+                record_gating_event(
+                    report,
+                    gate="trend_buy_zero_order_size",
+                    category="trend",
+                    symbol=symbol,
+                    detail={"budget_usdt": round(float(buy_u), 4)},
+                )
+                routine_notification(runtime_notify_fn,
+                    runtime,
+                    report,
+                    f"{translate_fn('trend_buy_skipped')} {symbol}\n"
+                    f"{translate_fn('budget_label')}: ${buy_u:.2f}\n"
+                    f"{translate_fn('qty_zero_msg')}",
+                routine_order=False,
+                )
+                continue
+            if not ensure_asset_available_fn(runtime, report, "USDT", usdt_cost, log_buffer):
+                raise RuntimeError(translate_fn("usdt_unavailable_for_trend_buy"))
+            response = runtime_call_client_fn(
+                runtime,
+                report,
+                method_name="order_market_buy",
+                payload={
+                    "symbol": symbol,
+                    "quantity": qty,
+                    "newClientOrderId": next_order_id_fn(runtime, "T_BUY", symbol),
+                },
+                effect_type="order_buy",
+            )
+            fill = _resolve_fill(
+                runtime, response, symbol=symbol, side="BUY", qty=qty, price=curr_price, prices=prices
+            )
+            u_total, quote_delta = _apply_fill_balances(
+                fill, side="BUY", symbol=symbol, balances=balances, u_total=u_total
+            )
+            _record_trend_fill(state, fill, quote_delta=quote_delta)
+            _prepare_accounting_state(
+                state, symbol=symbol, base_asset=fill["base_asset"], balances=balances, u_total=u_total
+            )
+            set_symbol_trade_state_fn(
+                state,
+                symbol,
+                {
+                    "is_holding": True,
+                    "entry_price": fill["average_price"],
+                    "highest_price": fill["average_price"],
+                },
+            )
+            record_trend_action_fn(state, symbol, "buy", today_id_str)
+            runtime_set_trade_state_fn(runtime, report, state, reason=f"trend_buy:{symbol}")
+            routine_notification(runtime_notify_fn,
+                runtime,
+                report,
+                f"{translate_fn('trend_buy')} {symbol}\n"
+                f"{translate_fn('price_label')}: ${curr_price:.2f}\n"
+                f"{translate_fn('budget_label')}: ${buy_u:.2f}\n"
+                f"{translate_fn('weight_label')}: {candidate_meta['weight']:.0%}\n"
+                f"{translate_fn('rel_score_label')}: {candidate_meta['relative_score']:.2f}",
+            routine_order=True,
+            )
+        except ExecutionIntegrityError:
+            raise
+        except Exception:
+            immediate_notification(runtime_notify_fn,
+                runtime,
+                report,
+                f"{translate_fn('trend_buy_failed')} {symbol}\n"
+                f"{translate_fn('budget_label')}: ${buy_u:.2f}\n"
+                f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
+                reason="trend_buy_failed",
+            )
+
+    return u_total
+
+
+def execute_trend_rotation(
+    runtime,
+    report,
+    state,
+    runtime_trend_universe,
+    trend_indicators,
+    btc_snapshot,
+    prices,
+    balances,
+    u_total,
+    fuel_val,
+    log_buffer,
+    today_id_str,
+    allow_new_trend_entries,
+    allow_pool_refresh,
+    *,
+    resolve_strategy_plan,
+    append_rotation_summary,
+    execute_trend_sells,
+    execute_trend_buys,
+    append_trend_symbol_status,
+    official_trend_pool_symbols,
+):
+    strategy_plan = resolve_strategy_plan(
+        state,
+        runtime_trend_universe,
+        trend_indicators,
+        btc_snapshot,
+        prices,
+        balances,
+        u_total,
+        fuel_val,
+        allow_new_trend_entries=allow_new_trend_entries,
+        allow_pool_refresh=allow_pool_refresh,
+    )
+    active_trend_pool = list(strategy_plan["active_trend_pool"])
+    selected_candidates = dict(strategy_plan["selected_candidates"])
+    sell_reasons = dict(strategy_plan["sell_reasons"])
+    combo_diagnostics = dict(strategy_plan.get("combo_diagnostics", {}))
+    if combo_diagnostics:
+        report.setdefault("diagnostics", {})["combo"] = combo_diagnostics
+    report["selected_symbols"]["active_trend_pool"] = list(active_trend_pool)
+    report["selected_symbols"]["selected_candidates"] = list(selected_candidates.keys())
+    if not selected_candidates:
+        record_gating_event(
+            report,
+            gate="trend_no_selected_candidate",
+            category="trend",
+            detail={
+                "active_trend_pool_size": len(active_trend_pool),
+                "candidate_filter_reasons": build_trend_candidate_filter_diagnostics(
+                    active_trend_pool,
+                    trend_indicators,
+                    btc_snapshot,
+                    prices,
+                ),
+            },
+        )
+
+    append_rotation_summary(
+        log_buffer,
+        official_trend_pool_symbols,
+        active_trend_pool,
+        selected_candidates,
+    )
+    u_total = execute_trend_sells(
+        runtime,
+        report,
+        state,
+        runtime_trend_universe,
+        sell_reasons,
+        prices,
+        balances,
+        u_total,
+        log_buffer,
+        today_id_str,
+    )
+
+    post_sell_plan = resolve_strategy_plan(
+        state,
+        runtime_trend_universe,
+        trend_indicators,
+        btc_snapshot,
+        prices,
+        balances,
+        u_total,
+        fuel_val,
+        allow_new_trend_entries=allow_new_trend_entries,
+        allow_pool_refresh=allow_pool_refresh,
+    )
+    selected_candidates = dict(post_sell_plan["selected_candidates"])
+    eligible_buy_symbols = list(post_sell_plan["eligible_buy_symbols"])
+    planned_trend_buys = dict(post_sell_plan["planned_trend_buys"])
+    if selected_candidates and not eligible_buy_symbols:
+        record_gating_event(
+            report,
+            gate="trend_no_eligible_buy",
+            category="trend",
+            detail={
+                "selected_candidate_count": len(selected_candidates),
+                "allow_new_trend_entries": bool(allow_new_trend_entries),
+            },
+        )
+    u_total = execute_trend_buys(
+        runtime,
+        report,
+        state,
+        selected_candidates,
+        eligible_buy_symbols,
+        planned_trend_buys,
+        prices,
+        balances,
+        u_total,
+        log_buffer,
+        today_id_str,
+    )
+    append_trend_symbol_status(
+        log_buffer,
+        runtime_trend_universe,
+        prices,
+        trend_indicators,
+        state,
+        btc_snapshot,
+    )
+    return u_total
+
+
+def _resolve_btc_buy_multiplier(ahr):
+    if ahr < 0.45:
+        return 5
+    if ahr < 0.8:
+        return 2
+    if ahr < 1.2:
+        return 1
+    return 0
+
+
+def _resolve_btc_trim_sell_pct(zscore):
+    sell_pct = 0.1
+    if zscore > 4.0:
+        sell_pct = 0.3
+    if zscore > 5.0:
+        sell_pct = 0.5
+    return sell_pct
+
+
+def _require_btc_strategy_attribution():
+    """Block BTC trims until a trusted strategy-owned inventory source exists."""
+    raise ExecutionIntegrityError("btc_strategy_attribution_unavailable")
+
+
+def execute_btc_dca_cycle(
+    runtime,
+    report,
+    state,
+    balances,
+    prices,
+    u_total,
+    total_equity,
+    dca_usdt_pool,
+    dca_val,
+    btc_snapshot,
+    btc_target_ratio,
+    btc_base_order_usdt,
+    today_id_str,
+    log_buffer,
+    *,
+    append_log_fn,
+    translate_fn,
+    format_qty_fn,
+    ensure_asset_available_fn,
+    runtime_call_client_fn,
+    next_order_id_fn,
+    runtime_notify_fn,
+    runtime_set_trade_state_fn,
+):
+    if dca_usdt_pool <= 10 and dca_val <= 10:
+        record_gating_event(
+            report,
+            gate="btc_dca_pool_too_small",
+            category="btc_dca",
+            detail={
+                "dca_usdt_pool": round(float(dca_usdt_pool), 4),
+                "dca_val": round(float(dca_val), 4),
+            },
+        )
+        return u_total
+
+    btc_price = prices["BTCUSDT"]
+    ahr = btc_snapshot.get("ahr999", 0.0)
+    zscore = btc_snapshot.get("zscore", 0.0)
+    sell_trigger = btc_snapshot.get("sell_trigger", False)
+    append_log_fn(
+        log_buffer,
+        translate_fn(
+            "btc_accumulation_radar_line",
+            ahr=ahr,
+            zscore=zscore,
+            sell_trigger=sell_trigger,
+        ),
+    )
+
+    base_order = float(btc_base_order_usdt)
+    multiplier = _resolve_btc_buy_multiplier(ahr)
+
+    if multiplier <= 0:
+        record_gating_event(
+            report,
+            gate="btc_dca_buy_valuation_gate_off",
+            category="btc_dca",
+            detail={"ahr999": round(float(ahr), 4)},
+        )
+    elif dca_usdt_pool <= 15:
+        record_gating_event(
+            report,
+            gate="btc_dca_buy_below_min_budget",
+            category="btc_dca",
+            detail={"dca_usdt_pool": round(float(dca_usdt_pool), 4)},
+        )
+    elif state.get("dca_last_buy_date") == today_id_str:
+        record_gating_event(
+            report,
+            gate="btc_dca_buy_duplicate_cooldown",
+            category="btc_dca",
+        )
+
+    if multiplier > 0 and dca_usdt_pool > 15 and state.get("dca_last_buy_date") != today_id_str:
+        budget = min(dca_usdt_pool, base_order * multiplier)
+        qty = format_qty_fn(runtime.client, "BTCUSDT", budget * 0.985 / btc_price)
+        buy_cost = qty * btc_price
+        report["btc_dca_intents"].append(
+            {
+                "action": "buy",
+                "symbol": "BTCUSDT",
+                "quantity": float(qty),
+                "budget": float(budget),
+                "ahr999": float(ahr),
+            }
+        )
+        try:
+            if qty <= 0 or buy_cost <= 0:
+                routine_notification(runtime_notify_fn,
+                    runtime,
+                    report,
+                    f"{translate_fn('btc_dca_buy_skipped')}\n"
+                    f"{translate_fn('qty_zero_msg')}",
+                routine_order=False,
+                )
+            else:
+                if not ensure_asset_available_fn(runtime, report, "USDT", buy_cost, log_buffer):
+                    raise RuntimeError(translate_fn("usdt_unavailable_for_btc_dca_buy"))
+                response = runtime_call_client_fn(
+                    runtime,
+                    report,
+                    method_name="order_market_buy",
+                    payload={
+                        "symbol": "BTCUSDT",
+                        "quantity": qty,
+                        "newClientOrderId": next_order_id_fn(runtime, "D_BUY", "BTCUSDT"),
+                    },
+                    effect_type="order_buy",
+                )
+                fill = _resolve_fill(
+                    runtime, response, symbol="BTCUSDT", side="BUY", qty=qty, price=btc_price, prices=prices
+                )
+                u_total, _quote_delta = _apply_fill_balances(
+                    fill, side="BUY", symbol="BTCUSDT", balances=balances, u_total=u_total
+                )
+                _prepare_accounting_state(
+                    state, symbol="BTCUSDT", base_asset="BTC", balances=balances, u_total=u_total
+                )
+                state["dca_last_buy_date"] = today_id_str
+                routine_notification(runtime_notify_fn,
+                    runtime,
+                    report,
+                    f"{translate_fn('btc_dca_buy')} BTC\n"
+                    f"{translate_fn('ahr999')}: {ahr:.2f}\n"
+                    f"{translate_fn('target_alloc_label')}: {btc_target_ratio:.1%}\n"
+                    f"{translate_fn('quantity_label')}: {qty} BTC",
+                routine_order=True,
+                )
+                runtime_set_trade_state_fn(runtime, report, state, reason="btc_dca_buy")
+        except ExecutionIntegrityError:
+            raise
+        except Exception:
+            immediate_notification(runtime_notify_fn,
+                runtime,
+                report,
+                f"{translate_fn('btc_dca_buy_failed')} BTC\n"
+                f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
+                reason="btc_dca_buy_failed",
+            )
+
+    if zscore > sell_trigger and dca_val <= 20:
+        record_gating_event(
+            report,
+            gate="btc_dca_sell_below_min_position",
+            category="btc_dca",
+            detail={"dca_val": round(float(dca_val), 4), "zscore": round(float(zscore), 4)},
+        )
+    elif zscore > sell_trigger and state.get("dca_last_sell_date") == today_id_str:
+        record_gating_event(
+            report,
+            gate="btc_dca_sell_duplicate_cooldown",
+            category="btc_dca",
+            detail={"zscore": round(float(zscore), 4)},
+        )
+
+    if zscore > sell_trigger and dca_val > 20 and state.get("dca_last_sell_date") != today_id_str:
+        _require_btc_strategy_attribution()
+        sell_pct = _resolve_btc_trim_sell_pct(zscore)
+        qty = format_qty_fn(runtime.client, "BTCUSDT", balances["BTCUSDT"] * sell_pct)
+        report["btc_dca_intents"].append(
+            {
+                "action": "sell",
+                "symbol": "BTCUSDT",
+                "quantity": float(qty),
+                "sell_pct": float(sell_pct),
+                "zscore": float(zscore),
+            }
+        )
+        try:
+            if qty <= 0:
+                routine_notification(runtime_notify_fn,
+                    runtime,
+                    report,
+                    f"{translate_fn('btc_dca_trim_skipped')}\n"
+                    f"{translate_fn('qty_zero_msg')}",
+                routine_order=False,
+                )
+            else:
+                if not ensure_asset_available_fn(runtime, report, "BTC", qty, log_buffer):
+                    raise RuntimeError(translate_fn("btc_unavailable_for_dca_sell"))
+                response = runtime_call_client_fn(
+                    runtime,
+                    report,
+                    method_name="order_market_sell",
+                    payload={
+                        "symbol": "BTCUSDT",
+                        "quantity": qty,
+                        "newClientOrderId": next_order_id_fn(runtime, "D_SELL", "BTCUSDT"),
+                    },
+                    effect_type="order_sell",
+                )
+                fill = _resolve_fill(
+                    runtime, response, symbol="BTCUSDT", side="SELL", qty=qty, price=btc_price, prices=prices
+                )
+                u_total, _quote_delta = _apply_fill_balances(
+                    fill, side="SELL", symbol="BTCUSDT", balances=balances, u_total=u_total
+                )
+                _prepare_accounting_state(
+                    state, symbol="BTCUSDT", base_asset="BTC", balances=balances, u_total=u_total
+                )
+                state["dca_last_sell_date"] = today_id_str
+                routine_notification(runtime_notify_fn,
+                    runtime,
+                    report,
+                    f"{translate_fn('btc_dca_trim')} BTC\n"
+                    f"{translate_fn('ratio_label')}: {sell_pct*100}%\n"
+                    f"{translate_fn('quantity_label')}: {qty} BTC",
+                routine_order=True,
+                )
+                runtime_set_trade_state_fn(runtime, report, state, reason="btc_dca_sell")
+        except ExecutionIntegrityError:
+            raise
+        except Exception:
+            immediate_notification(runtime_notify_fn,
+                runtime,
+                report,
+                f"{translate_fn('btc_dca_trim_failed')} BTC\n"
+                f"{translate_fn('error_label')}: {_SAFE_ORDER_FAILURE_REASON}",
+                reason="btc_dca_trim_failed",
+            )
+
+    return u_total

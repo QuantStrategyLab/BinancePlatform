@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from notifications import operational, unified_notifications as unified  # noqa: E402
+from binance_platform.notifications import operational, unified_notifications as unified  # noqa: E402
 
 
 def observe(workflow, execution):

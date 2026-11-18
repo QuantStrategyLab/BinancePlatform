@@ -6,7 +6,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-from research import backtest
+from binance_platform.research import backtest
 
 
 class ResearchBacktestContractTests(unittest.TestCase):

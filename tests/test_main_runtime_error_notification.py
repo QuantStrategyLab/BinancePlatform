@@ -102,7 +102,7 @@ for path in (PLATFORM_KIT_SRC, CRYPTO_STRATEGIES_SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-import main
+import binance_platform.main as main
 
 
 class MainRuntimeErrorNotificationTests(unittest.TestCase):

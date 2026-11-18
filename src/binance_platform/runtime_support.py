@@ -1,0 +1,1447 @@
+import hashlib
+import json
+import math
+import os
+import re
+import time
+import uuid
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from decimal import Decimal, InvalidOperation
+from datetime import datetime, timezone
+from typing import Any, Callable, Optional
+
+import requests
+from quant_platform_kit.common.runtime_reports import build_runtime_report_base
+from binance_platform.application.execution_kernel_adapter import consult_t3_deny_blind_retry
+from binance_platform.application.execution_receipt_adapter import (
+    record_order_failure,
+    record_order_response,
+    record_order_submission_attempt,
+    record_order_transport_uncertainty,
+)
+from binance_platform.live_risk_authority import LiveRiskAuthority
+from binance_platform.runtime_scheduler_observation import observe_runtime_scheduler_state
+
+# Binance rate limits (public API: 1200 weight/min, order placement: 50 orders/10s)
+_BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC = 0.25  # max ~4 orders/sec
+_BINANCE_ORDER_TRANSPORT_UNCERTAINTY_CODES = frozenset({-1001, -1006, -1007})
+_BINANCE_ORDER_NOT_FOUND_CODE = -2013
+_BINANCE_ORDER_FILLED_STATUS = "FILLED"
+_BINANCE_ORDER_FAILED_STATUSES = frozenset({"CANCELED", "EXPIRED", "REJECTED"})
+_ORDER_SUBMISSION_STATE_KEY = "order_submission"
+_ORDER_SUBMISSION_RESERVED = "RESERVED"
+_ORDER_SUBMISSION_UNKNOWN = "SUBMISSION_UNKNOWN"
+_ORDER_SUBMISSION_TERMINAL = "TERMINAL"
+_ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING = "FILLED_ACCOUNTING_PENDING"
+_ORDER_CLIENT_ID_PREFIX = "QSL_"
+_EARN_METHOD_BY_EFFECT_TYPE = {
+    "earn_redeem": "redeem_simple_earn_flexible_product",
+    "earn_subscribe": "subscribe_simple_earn_flexible_product",
+}
+_EARN_SUCCESS_ID_BY_METHOD = {
+    "redeem_simple_earn_flexible_product": "redeemId",
+    "subscribe_simple_earn_flexible_product": "purchaseId",
+}
+_LAST_API_CALL_TS: float = 0.0
+RUNTIME_EVIDENCE_CONTRACT_VERSION = "qsl.runtime_evidence_aggregate.v1"
+RECONCILIATION_STATUSES = frozenset({"MISSING", "MATCHED", "MISMATCHED"})
+_RUNTIME_EVIDENCE_FORBIDDEN_FIELDS = frozenset(
+    {
+        "api_key",
+        "api_secret",
+        "authorization",
+        "balances",
+        "credentials",
+        "headers",
+        "orders",
+        "positions",
+        "provider_rows",
+        "secret",
+        "token",
+    }
+)
+
+
+class ExecutionIntegrityError(RuntimeError):
+    """Execution integrity is uncertain and the cycle must stop."""
+
+
+class StatePersistenceError(ExecutionIntegrityError):
+    """State persistence did not complete durably."""
+
+
+class OrderReconciliationError(ExecutionIntegrityError):
+    """An uncertain order could not be reconciled safely."""
+
+
+class ClientCallError(RuntimeError):
+    """A client call failed without exposing provider details."""
+
+
+def _rate_limit_pause():
+    """Enforce minimum interval between Binance API calls."""
+    global _LAST_API_CALL_TS
+    elapsed = time.monotonic() - _LAST_API_CALL_TS
+    if elapsed < _BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC:
+        time.sleep(_BINANCE_ORDER_RATE_LIMIT_INTERVAL_SEC - elapsed)
+    _LAST_API_CALL_TS = time.monotonic()
+
+
+def _is_sha256(value: Any) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"[0-9a-f]{64}", value.strip()))
+
+
+def _is_git_revision(value: Any) -> bool:
+    return isinstance(value, str) and bool(re.fullmatch(r"[0-9a-f]{40}", value.strip()))
+
+
+def _is_utc_timestamp(value: Any) -> bool:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
+
+
+def _append_missing_fields(payload: Mapping[str, Any], fields: tuple[str, ...], errors: list[str], label: str) -> None:
+    for field_name in fields:
+        if field_name not in payload:
+            errors.append(f"{label} missing field: {field_name}")
+
+
+def _append_forbidden_field_errors(value: Any, errors: list[str]) -> None:
+    if isinstance(value, Mapping):
+        for field, nested_value in value.items():
+            if str(field).lower() in _RUNTIME_EVIDENCE_FORBIDDEN_FIELDS:
+                errors.append(f"runtime_evidence_aggregate contains forbidden field: {field}")
+            _append_forbidden_field_errors(nested_value, errors)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _append_forbidden_field_errors(item, errors)
+
+
+def _validate_release_identity(identity: Any, errors: list[str]) -> None:
+    label = "runtime_evidence_aggregate release_identity"
+    if not isinstance(identity, Mapping):
+        errors.append(f"{label} must be an object")
+        return
+    _append_missing_fields(
+        identity,
+        (
+            "strategy_profile",
+            "mode",
+            "source_revision",
+            "input_timestamp",
+            "artifact_contract",
+            "artifact_version",
+            "artifacts",
+        ),
+        errors,
+        label,
+    )
+    for field_name in ("strategy_profile", "mode", "artifact_contract", "artifact_version"):
+        if not isinstance(identity.get(field_name), str) or not identity[field_name].strip():
+            errors.append(f"{label} {field_name} must be a non-empty string")
+    if not _is_git_revision(identity.get("source_revision")):
+        errors.append(f"{label} source_revision must be a 40-character lowercase git SHA")
+    if not _is_utc_timestamp(identity.get("input_timestamp")):
+        errors.append(f"{label} input_timestamp must be a UTC timestamp")
+    artifacts = identity.get("artifacts")
+    if not isinstance(artifacts, Mapping) or not artifacts:
+        errors.append(f"{label} artifacts must be a non-empty object")
+        return
+    for artifact_name, artifact in artifacts.items():
+        if not isinstance(artifact_name, str) or not artifact_name.strip() or not isinstance(artifact, Mapping):
+            errors.append(f"{label} artifacts must contain named objects")
+            continue
+        if not _is_sha256(artifact.get("sha256")):
+            errors.append(f"{label} artifacts.{artifact_name}.sha256 must be a SHA-256 digest")
+
+
+def _validate_reconciliation(reconciliation: Any, errors: list[str]) -> None:
+    label = "runtime_evidence_aggregate reconciliation"
+    if not isinstance(reconciliation, Mapping):
+        errors.append(f"{label} must be an object")
+        return
+    status = reconciliation.get("status")
+    if status not in RECONCILIATION_STATUSES:
+        errors.append(f"{label} status must be one of MISSING, MATCHED, MISMATCHED")
+        return
+    if status == "MATCHED":
+        for field in ("durable_receipt_sha256", "identity_sha256"):
+            if not _is_sha256(reconciliation.get(field)):
+                errors.append(f"{label}.MATCHED requires {field}")
+        errors.append(f"{label}.MATCHED is not valid for static acceptance")
+    elif status == "MISMATCHED":
+        for field in ("durable_receipt_sha256", "identity_sha256", "observed_identity_sha256"):
+            if not _is_sha256(reconciliation.get(field)):
+                errors.append(f"{label}.MISMATCHED requires {field}")
+        if reconciliation.get("identity_sha256") == reconciliation.get("observed_identity_sha256"):
+            errors.append(f"{label}.MISMATCHED identity digests must differ")
+
+
+def validate_runtime_evidence_aggregate(aggregate: Any) -> dict[str, Any]:
+    """Validate a redacted, static-only runtime evidence aggregate."""
+    errors: list[str] = []
+    label = "runtime_evidence_aggregate"
+    if not isinstance(aggregate, Mapping):
+        return {"ok": False, "errors": [f"{label} must be an object"]}
+
+    _append_forbidden_field_errors(aggregate, errors)
+    _append_missing_fields(
+        aggregate,
+        (
+            "contract_version",
+            "release_identity",
+            "risk_engine",
+            "effective_exposure_cap",
+            "stop_breaker_evaluation",
+            "reconciliation",
+            "static_validation_only",
+            "execution_permitted",
+            "verified_active",
+            "fills_verified",
+            "capital_use_verified",
+        ),
+        errors,
+        label,
+    )
+    if aggregate.get("contract_version") != RUNTIME_EVIDENCE_CONTRACT_VERSION:
+        errors.append(f"{label} contract_version must be {RUNTIME_EVIDENCE_CONTRACT_VERSION}")
+    _validate_release_identity(aggregate.get("release_identity"), errors)
+
+    risk_engine = aggregate.get("risk_engine")
+    if not isinstance(risk_engine, Mapping):
+        errors.append(f"{label} risk_engine must be an object")
+    else:
+        if risk_engine.get("outcome") != "APPROVE":
+            errors.append(f"{label} risk_engine.outcome must be APPROVE")
+        if not isinstance(risk_engine.get("policy_version"), str) or not risk_engine["policy_version"].strip():
+            errors.append(f"{label} risk_engine.policy_version must be a non-empty string")
+
+    cap = aggregate.get("effective_exposure_cap")
+    if not isinstance(cap, Mapping):
+        errors.append(f"{label} effective_exposure_cap must be an object")
+    else:
+        value = cap.get("value")
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value <= 1:
+            errors.append(f"{label} effective_exposure_cap.value must be in (0, 1]")
+        for field in ("mandate_version", "source"):
+            if not isinstance(cap.get(field), str) or not cap[field].strip():
+                errors.append(f"{label} effective_exposure_cap.{field} must be a non-empty string")
+
+    stop_breaker = aggregate.get("stop_breaker_evaluation")
+    if not isinstance(stop_breaker, Mapping):
+        errors.append(f"{label} stop_breaker_evaluation must be an object")
+    else:
+        if stop_breaker.get("stop_evaluated") is not True:
+            errors.append(f"{label} stop_breaker_evaluation.stop_evaluated must be true")
+        if stop_breaker.get("breaker_evaluated") is not True:
+            errors.append(f"{label} stop_breaker_evaluation.breaker_evaluated must be true")
+        if stop_breaker.get("outcome") != "CLEAR":
+            errors.append(f"{label} stop_breaker_evaluation.outcome must be CLEAR")
+        if not isinstance(stop_breaker.get("policy_version"), str) or not stop_breaker["policy_version"].strip():
+            errors.append(f"{label} stop_breaker_evaluation.policy_version must be a non-empty string")
+
+    _validate_reconciliation(aggregate.get("reconciliation"), errors)
+    for field in ("static_validation_only", "execution_permitted", "verified_active", "fills_verified", "capital_use_verified"):
+        expected = field == "static_validation_only"
+        if aggregate.get(field) is not expected:
+            errors.append(f"{label} {field} must be {str(expected).lower()} for static acceptance")
+    return {"ok": not errors, "errors": errors}
+
+
+def build_runtime_evidence_aggregate(
+    *,
+    release_identity: Mapping[str, Any],
+    risk_engine: Mapping[str, Any],
+    effective_exposure_cap: Mapping[str, Any],
+    stop_breaker_evaluation: Mapping[str, Any],
+    reconciliation: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build a fail-closed aggregate that cannot claim runtime activity."""
+    aggregate = {
+        "contract_version": RUNTIME_EVIDENCE_CONTRACT_VERSION,
+        "release_identity": dict(release_identity),
+        "risk_engine": dict(risk_engine),
+        "effective_exposure_cap": dict(effective_exposure_cap),
+        "stop_breaker_evaluation": dict(stop_breaker_evaluation),
+        "reconciliation": dict(reconciliation),
+        "static_validation_only": True,
+        "execution_permitted": False,
+        "verified_active": False,
+        "fills_verified": False,
+        "capital_use_verified": False,
+    }
+    validation = validate_runtime_evidence_aggregate(aggregate)
+    if not validation["ok"]:
+        raise ValueError("Runtime evidence aggregate validation failed: " + "; ".join(validation["errors"]))
+    return aggregate
+
+
+@dataclass
+class ExecutionRuntime:
+    dry_run: bool = False
+    run_id: str = ""
+    now_utc: Optional[datetime] = None
+    strategy_profile: str = ""
+    strategy_domain: str = ""
+    strategy_display_name: str = ""
+    strategy_display_name_localized: str = ""
+    client: Any = None
+    api_key: str = ""
+    api_secret: str = ""
+    tg_token: str = ""
+    tg_chat_id: str = ""
+    state_loader: Optional[Callable[..., Any]] = None
+    state_writer: Optional[Callable[[dict[str, Any]], Any]] = None
+    notifier: Optional[Callable[..., Any]] = None
+    runtime_target: Any = None
+    standard_execution_permitted: bool = True
+    trend_pool_payload: Optional[dict[str, Any]] = None
+    btc_market_snapshot: Optional[dict[str, Any]] = None
+    trend_indicator_snapshots: Optional[dict[str, Any]] = None
+    mandate_provenance: Optional[dict[str, Any]] = None
+    candidate_risk_identity: Any = None
+    risk_authority: Any = None
+    trend_pool_contract: Optional[dict[str, Any]] = None
+    research_cycle_settings: Any = None
+    print_traceback: bool = True
+    order_sequence: int = 0
+    trade_state: Optional[dict[str, Any]] = None
+    bound_state_access: Any = None
+    state_owner_claim: Optional[Callable[[str], bool]] = None
+    state_owner_release: Optional[Callable[[str], bool]] = None
+    state_owner_id: str = ""
+    state_owner_held: bool = False
+    pending_funds: list[dict[str, Any]] = field(default_factory=list)
+    cash_balance_observation: dict[str, float] = field(default_factory=dict)
+    fuel_symbol: str = "BNBUSDT"
+    fuel_asset: str = "BNB"
+    side_effect_log: list[dict[str, Any]] = field(default_factory=list)
+    run_context: Any = None
+    strategy_runtime: Any = None  # B09 PR-2: activated handle; cycle mounts onto RunContext
+
+    def __post_init__(self):
+        if self.now_utc is None:
+            self.now_utc = datetime.now(timezone.utc)
+        if not self.run_id:
+            self.run_id = self.now_utc.strftime("%Y%m%dT%H%M%SZ")
+
+
+def build_execution_report(runtime):
+    runtime_target = getattr(runtime, "runtime_target", None)
+    runtime_service_name = (
+        getattr(runtime_target, "service_name", None)
+        or os.getenv("SERVICE_NAME")
+        or "binance-platform"
+    )
+    report = build_runtime_report_base(
+        platform="binance",
+        deploy_target=os.getenv("LOG_DEPLOY_TARGET", "vps"),
+        service_name=runtime_service_name,
+        strategy_profile=str(runtime.strategy_profile or os.getenv("STRATEGY_PROFILE", "crypto_live_pool_rotation")),
+        strategy_domain=str(runtime.strategy_domain or os.getenv("STRATEGY_DOMAIN", "crypto")),
+        run_id=str(runtime.run_id),
+        run_source="github_actions" if os.getenv("GITHUB_RUN_ID") or os.getenv("GITHUB_ACTIONS") else "runtime",
+        dry_run=bool(runtime.dry_run),
+        started_at=runtime.now_utc,
+        status="ok",
+        runtime_target=runtime_target.to_dict() if runtime_target is not None else None,
+    )
+    report.update({
+        "status": "ok",
+        "run_id": str(runtime.run_id),
+        "dry_run": bool(runtime.dry_run),
+        "standard_execution_permitted": bool(getattr(runtime, "standard_execution_permitted", True)),
+        "selected_symbols": {
+            "active_trend_pool": [],
+            "selected_candidates": [],
+        },
+        "buy_sell_intents": [],
+        "btc_dca_intents": [],
+        "redemption_subscription_intents": [],
+        "notifications": [],
+        "state_write_intents": [],
+        "side_effect_summary": {
+            "executed_call_count": 0,
+            "suppressed_call_count": 0,
+        },
+        "gating_summary": {},
+        "gating_events": [],
+        "error_summary": {
+            "errors": [],
+        },
+        "log_lines": [],
+        "total_equity_usdt": None,
+        "trend_equity_usdt": None,
+        "circuit_breaker_triggered": False,
+        "degraded_mode_level": None,
+        "scheduler_state": observe_runtime_scheduler_state(),
+        "upstream_pool_symbols": [],
+        "summary": {
+            "strategy_display_name": str(runtime.strategy_display_name or ""),
+            "strategy_display_name_localized": str(runtime.strategy_display_name_localized or ""),
+        },
+    })
+    authority = getattr(runtime, "risk_authority", None)
+    if (isinstance(authority, LiveRiskAuthority)
+            and getattr(runtime_target, "execution_mode", None) == "live"
+            and not getattr(runtime_target, "strategy_release", None)):
+        report["binance_live_authority"] = {
+            "strategy_revision": authority.strategy_revision,
+            "runtime_revision": authority.runner_revision,
+            "config_sha256": authority.config_sha256,
+        }
+    return report
+
+
+def append_report_error(report, message, *, stage="runtime"):
+    report["error_summary"]["errors"].append({"stage": str(stage), "message": str(message)})
+
+
+def record_gating_event(report, *, gate, category, symbol=None, detail=None):
+    gate_name = str(gate)
+    category_name = str(category)
+    summary = report.setdefault("gating_summary", {})
+    events = report.setdefault("gating_events", [])
+    summary[gate_name] = int(summary.get(gate_name, 0) or 0) + 1
+
+    event = {
+        "gate": gate_name,
+        "category": category_name,
+    }
+    if symbol:
+        event["symbol"] = str(symbol)
+    if detail is not None:
+        event["detail"] = detail
+    events.append(event)
+
+
+def record_side_effect(runtime, report, *, effect_type, target, payload, executed):
+    entry = {
+        "effect_type": str(effect_type),
+        "target": str(target),
+        "payload": payload,
+        "executed": bool(executed),
+    }
+    runtime.side_effect_log.append(entry)
+    summary_key = "executed_call_count" if executed else "suppressed_call_count"
+    report["side_effect_summary"][summary_key] += 1
+
+
+def next_order_id(runtime, prefix, symbol):
+    runtime.order_sequence += 1
+    safe_run_id = "".join(ch if ch.isalnum() else "_" for ch in str(runtime.run_id))[:24] or "run"
+    return f"{prefix}_{symbol}_{safe_run_id}_{runtime.order_sequence:03d}"
+
+
+def runtime_notify(runtime, report, text, *, urgent=True):
+    from binance_platform.notifications import unified_notifications as unified
+    if not getattr(runtime, "dry_run", False):
+        if unified.sending_order():
+            return _legacy_runtime_notify(runtime, report, text, urgent=True)
+        return unified.runtime_notice(runtime, report, text, urgent=urgent,
+            send=lambda: _legacy_runtime_notify(runtime, report, text, urgent=True),
+            send_coverage=lambda: _legacy_runtime_notify(runtime, report, unified._coverage_message(), urgent=True))
+    return _legacy_runtime_notify(runtime, report, text, urgent=urgent)
+
+
+def _legacy_runtime_notify(runtime, report, text, *, urgent=True):
+    message = str(text)
+    safe_event = {
+        "sink": "telegram",
+        "compact_text_sha256": hashlib.sha256(message.encode("utf-8")).hexdigest(),
+        "compact_text_length": len(message),
+        "run_id": str(runtime.run_id),
+        "dry_run": bool(runtime.dry_run),
+    }
+    from binance_platform.notifications.digest_snapshot.digest_routing import daily_digest_enabled
+    if not urgent and daily_digest_enabled():
+        safe_event.update(delivery_status="deferred_digest", transport_acknowledged=False)
+        report["notifications"].append(safe_event)
+        return False
+    if runtime.dry_run:
+        safe_event.update(
+            {
+                "delivery_status": "suppressed",
+                "transport_acknowledged": False,
+            }
+        )
+        report["notifications"].append(safe_event)
+        record_side_effect(
+            runtime,
+            report,
+            effect_type="notify",
+            target="telegram",
+            payload=safe_event,
+            executed=False,
+        )
+        return False
+    if runtime.notifier is None:
+        raise RuntimeError("runtime.notifier is not configured")
+    receipt = runtime.notifier(
+        token=str(runtime.tg_token),
+        chat_id=str(runtime.tg_chat_id),
+        text=message,
+        run_id=str(runtime.run_id),
+        dry_run=False,
+    )
+    if isinstance(receipt, Mapping):
+        for key in (
+            "sink",
+            "delivery_status",
+            "transport_acknowledged",
+            "error_type",
+            "compact_text_sha256",
+            "compact_text_length",
+        ):
+            if key in receipt:
+                safe_event[key] = receipt[key]
+        status = receipt.get("http_status")
+        if type(status) is int and 400 <= status <= 599:
+            safe_event["http_status"] = status
+        acknowledged = receipt.get("transport_acknowledged") is True
+    else:
+        acknowledged = receipt is True
+    safe_event.setdefault("delivery_status", "sent" if acknowledged else "failed")
+    from binance_platform.notifications.unified_notifications import enabled
+    if enabled() and isinstance(receipt, Mapping) and receipt.get("transport_receipt_id"):
+        safe_event["transport_receipt_id"] = receipt["transport_receipt_id"]
+    safe_event["transport_acknowledged"] = acknowledged
+    report["notifications"].append(safe_event)
+    delivery_events = [
+        event
+        for event in report["notifications"]
+        if event.get("delivery_status") not in {"suppressed", "deferred_digest"}
+    ]
+    report.setdefault("summary", {})["notification_delivery_summary"] = {
+        "event_count": len(delivery_events),
+        "sent_count": sum(
+            event.get("transport_acknowledged") is True for event in delivery_events
+        ),
+        "failed_count": sum(
+            event.get("transport_acknowledged") is not True for event in delivery_events
+        ),
+        "all_acknowledged": all(
+            event.get("transport_acknowledged") is True for event in delivery_events
+        ),
+    }
+    record_side_effect(
+        runtime,
+        report,
+        effect_type="notify",
+        target="telegram",
+        payload=safe_event,
+        executed=acknowledged,
+    )
+    return acknowledged
+
+
+def acquire_runtime_state_owner(runtime):
+    if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
+        return True
+    if getattr(runtime, "state_owner_held", False):
+        raise StatePersistenceError("state_owner_already_held") from None
+    if not callable(getattr(runtime, "state_owner_claim", None)) or not callable(getattr(runtime, "state_owner_release", None)):
+        raise StatePersistenceError("state_owner_unavailable") from None
+    runtime.state_owner_id = uuid.uuid4().hex
+    try:
+        held = runtime.state_owner_claim(runtime.state_owner_id)
+    except Exception:
+        raise StatePersistenceError("state_owner_claim_uncertain") from None
+    runtime.state_owner_held = held is True
+    if runtime.state_owner_held:
+        runtime.trade_state = None  # Never reuse a pre-claim cached state.
+        runtime.pending_funds = []
+        runtime.cash_balance_observation = {}
+    return runtime.state_owner_held
+
+
+def require_runtime_state_owner(runtime):
+    if not getattr(runtime, "state_owner_held", False) or not getattr(runtime, "state_owner_id", ""):
+        raise StatePersistenceError("state_owner_required") from None
+    access = getattr(runtime, "bound_state_access", None)
+    if access is not None:
+        try:
+            access.ensure_active()
+        except Exception:
+            runtime.state_owner_held = False
+            raise StatePersistenceError("state_session_inactive") from None
+
+
+def _persist_runtime_state(runtime, state, *, interval=None):
+    """One persistence admission seam for ordinary and submission mutations."""
+    access = getattr(runtime, "bound_state_access", None)
+    try:
+        if access is not None:
+            if runtime.state_writer != access.save:
+                raise StatePersistenceError("state_session_writer_mismatch")
+            persisted = access.save(state, interval=interval)
+        else:
+            if interval is not None:
+                raise StatePersistenceError("state_session_receipt_unavailable")
+            if runtime.state_writer is None:
+                raise StatePersistenceError("state_persistence_unavailable")
+            persisted = runtime.state_writer(state)
+        if persisted is not True:
+            raise StatePersistenceError("state_persistence_failed")
+    except Exception:
+        if access is not None:
+            runtime.state_owner_held = False
+            access.invalidate()
+        raise StatePersistenceError("state_persistence_failed") from None
+
+
+def release_runtime_state_owner(runtime):
+    require_runtime_state_owner(runtime)
+    record = (runtime.trade_state or {}).get(_ORDER_SUBMISSION_STATE_KEY, {})
+    if runtime.pending_funds or record.get("state") in {
+        _ORDER_SUBMISSION_UNKNOWN,
+        _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING,
+    }:
+        return False
+    try:
+        released = runtime.state_owner_release(runtime.state_owner_id)
+    except Exception:
+        raise StatePersistenceError("state_owner_release_uncertain") from None
+    finally:
+        # An uncertain release never authorizes further work by this owner.
+        runtime.state_owner_held = False
+    if released is not True:
+        raise StatePersistenceError("state_owner_release_failed") from None
+    return True
+
+
+def read_managed_balance(client, asset):
+    """Value approved Spot + Flexible holdings; this is not available Spot cash."""
+    try:
+        spot = client.get_asset_balance(asset=asset)
+        if not isinstance(spot, Mapping) or spot.get("asset", asset) != asset:
+            raise ValueError("spot_balance_invalid")
+        amounts = [_funding_amount(spot[key]) for key in ("free", "locked")]
+        earn = client.get_simple_earn_flexible_product_position(asset=asset, current=1, size=100)
+        rows = earn.get("rows") if isinstance(earn, Mapping) else None
+        count = earn.get("total") if isinstance(earn, Mapping) else None
+        if not isinstance(rows, list) or type(count) is not int or len(rows) != count or count >= 100:
+            raise ValueError("earn_balance_incomplete")
+        seen = set()
+        for row in rows:
+            if (not isinstance(row, Mapping) or row.get("asset") != asset
+                    or not isinstance(row.get("productId"), str) or not row["productId"] or row["productId"] in seen):
+                raise ValueError("earn_balance_invalid")
+            seen.add(row["productId"])
+            amounts.append(_funding_amount(row["totalAmount"]))
+        total = float(sum(amounts))
+        if not math.isfinite(total):
+            raise ValueError("balance_invalid")
+        return total
+    except Exception:
+        raise ExecutionIntegrityError("managed_balance_unavailable") from None
+
+
+def account_known_fill_for_earn(state):
+    """Accumulate broker-confirmed quantity/fee deltas in the accounting write."""
+    if "earn_accrual_checkpoint" not in state:
+        return
+    record = state.get(_ORDER_SUBMISSION_STATE_KEY, {})
+    if record.get("state") != _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING:
+        return
+    from binance_platform.application.earn_accrual import _amount
+    from decimal import localcontext
+    try:
+        assets = set(state["earn_accrual_checkpoint"]["assets"])
+        net = state["earn_accounted_net_changes"]
+        symbol = record["symbol"]
+        if set(net) != assets or not symbol.endswith("USDT") or symbol[:-4] not in assets:
+            raise ValueError
+        fill = record["known_fill"]
+        if fill.get("side") not in {"BUY", "SELL"} or not _known_fill_is_complete(fill, allowed_fee_assets=assets):
+            raise ValueError
+        with localcontext() as context:
+            context.prec = 100
+            updated = {a: _amount(net[a], signed=True) for a in assets}
+            sign = Decimal(1) if fill["side"] == "BUY" else Decimal(-1)
+            updated[symbol[:-4]] += sign * _amount(fill["executed_qty"])
+            updated["USDT"] -= sign * _amount(fill["cummulative_quote_qty"])
+            for item in fill["commissions"]:
+                updated[item["commission_asset"]] -= _amount(item["commission"])
+            state["earn_accounted_net_changes"] = {a: str(v) for a, v in updated.items()}
+    except Exception:
+        raise ExecutionIntegrityError("earn_fill_accounting_unverified") from None
+
+
+def reconcile_runtime_cash_effects(runtime, state):
+    """Refresh confirmed Earn/fuel balances; no receipt or status word substitutes for this read."""
+    pending = getattr(runtime, "pending_funds", [])
+    assets = {item["asset"] for item in pending if item.get("confirmed") and item.get("asset")}
+    if not assets:
+        return
+    require_runtime_state_owner(runtime)
+    prospective = "earn_accrual_checkpoint" in state
+    submission = state.get(_ORDER_SUBMISSION_STATE_KEY, {})
+    fuel_pending = (submission.get("state") == _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING
+                    and submission.get("symbol") == getattr(runtime, "fuel_symbol", None))
+    if prospective:
+        import copy
+        from binance_platform.application.earn_accrual import collect_earn_checkpoint, compare_earn_checkpoints, _amount, _time
+        from binance_platform.application.broker_reconciliation import collect_bnb_dividend_quantity
+        try:
+            pending_state = copy.deepcopy(state)
+            if fuel_pending:
+                account_known_fill_for_earn(pending_state)
+            previous = state["earn_accrual_checkpoint"]
+            current = collect_earn_checkpoint(runtime.client, assets=previous["assets"],
+                observed_at=datetime.now(timezone.utc),
+                expected_account_scope_sha256=previous["account_scope_sha256"])
+            try:
+                compare_earn_checkpoints(previous, current,
+                    verified_net_changes=pending_state["earn_accounted_net_changes"])
+            except ValueError as exc:
+                if str(exc) != "earn_quantity_change_unexplained" or "BNB" not in previous["assets"]:
+                    raise
+                dividend = collect_bnb_dividend_quantity(
+                    runtime.client,
+                    start=_time(previous["observed_at"]),
+                    end=_time(current["observed_at"]),
+                )
+                verified = dict(pending_state["earn_accounted_net_changes"])
+                verified["BNB"] = str(
+                    _amount(verified["BNB"], signed=True) + dividend["quantity"]
+                )
+                compare_earn_checkpoints(previous, current, verified_net_changes=verified)
+            observations = {a: float(current["assets"][a]["quantity"]) for a in assets | {"USDT"}}
+        except Exception:
+            raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None
+        if fuel_pending:
+            state["earn_accounted_net_changes"] = pending_state["earn_accounted_net_changes"]
+            state[_ORDER_SUBMISSION_STATE_KEY] = {"state": _ORDER_SUBMISSION_TERMINAL}
+    else:
+        observations = {}
+        try:
+            for asset in assets | {"USDT"}:
+                observations[asset] = read_managed_balance(runtime.client, asset)
+        except Exception:
+            raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None
+        submission = state.get(_ORDER_SUBMISSION_STATE_KEY, {})
+        if (
+            submission.get("state") == _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING
+            and submission.get("symbol") == getattr(runtime, "fuel_symbol", None)
+        ):
+            if not _known_fill_is_complete(
+                submission.get("known_fill"),
+                allowed_fee_assets={str(getattr(runtime, "fuel_asset", "BNB") or "BNB"), "USDT"},
+            ):
+                raise ExecutionIntegrityError("filled_order_accounting_unverifiable") from None
+            if not _fuel_fill_matches_observed_balances(
+                submission.get("known_fill"),
+                previous=state.get("last_balance_snapshot"),
+                observed=observations,
+                fuel_asset=str(getattr(runtime, "fuel_asset", "BNB") or "BNB"),
+            ):
+                raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None
+            account_known_fill_for_earn(state)
+            state[_ORDER_SUBMISSION_STATE_KEY] = {"state": _ORDER_SUBMISSION_TERMINAL}
+    state.setdefault("last_balance_snapshot", {}).update(observations)
+    runtime.cash_balance_observation = observations
+
+
+def _accounted_funds(runtime, state, reason, item):
+    if not item.get("confirmed"):
+        return False
+    today = runtime.now_utc.strftime("%Y%m%d")
+    action, symbol = item.get("action"), item.get("symbol")
+    if reason == f"trend_{action}:{symbol}":
+        return state.get("trend_action_history", {}).get(symbol) == {"action": action, "date": today}
+    if reason == f"btc_dca_{action}" and symbol == "BTCUSDT":
+        return state.get(f"dca_last_{action}_date") == today
+    if reason == "daily_circuit_breaker" and action == "sell":
+        return state.get("is_circuit_broken") is True and isinstance(state.get("last_balance_snapshot"), dict)
+    asset = item.get("asset")
+    observed = getattr(runtime, "cash_balance_observation", {})
+    return bool(asset and asset in observed and reason in {"cycle_complete", "cash_reconciliation"}
+                and all(state.get("last_balance_snapshot", {}).get(key) == value for key, value in observed.items()))
+
+def runtime_set_trade_state(runtime, report, state, *, reason, interval=None):
+    payload = {"reason": str(reason)}
+    report["state_write_intents"].append(payload)
+    if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
+        record_side_effect(runtime, report, effect_type="state_write", target="firestore", payload=payload, executed=False)
+        return
+    require_runtime_state_owner(runtime)
+    access = getattr(runtime, "bound_state_access", None)
+    if access is not None and access.receipt_enabled and reason == "earn_forward_accounting" and interval is None:
+        access.invalidate()
+        runtime.state_owner_held = False
+        raise StatePersistenceError("state_session_interval_required")
+    if interval is not None and reason != "earn_forward_accounting":
+        if access is not None:
+            access.invalidate()
+        runtime.state_owner_held = False
+        raise StatePersistenceError("state_session_interval_reason_invalid")
+    import copy
+    before_write = copy.deepcopy(state)
+    try:
+        _persist_runtime_state(runtime, state, interval=interval)
+    except Exception:
+        state.clear()
+        state.update(before_write)
+        raise StatePersistenceError("state_persistence_failed") from None
+    runtime.trade_state = state
+    runtime.pending_funds = [item for item in runtime.pending_funds if not _accounted_funds(runtime, state, reason, item)]
+    record_side_effect(runtime, report, effect_type="state_write", target="firestore", payload=payload, executed=True)
+
+
+def _ensure_order_logical_identity(runtime, method_name, payload):
+    order_payload = dict(payload)
+    supplied_identity = str(order_payload.get("newClientOrderId") or "").strip()
+    logical_order = (
+        {"supplied_client_order_id": supplied_identity}
+        if supplied_identity
+        else {
+            "run_id": str(runtime.run_id),
+            "method_name": str(method_name),
+            "payload": order_payload,
+        }
+    )
+    encoded = json.dumps(logical_order, sort_keys=True, separators=(",", ":"), default=str)
+    identity_sha256 = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    order_payload["newClientOrderId"] = _client_order_id_from_digest(identity_sha256)
+    return order_payload, identity_sha256
+
+
+def _client_order_id_from_digest(identity_sha256):
+    if not _is_sha256(identity_sha256):
+        raise StatePersistenceError("submission_state_invalid") from None
+    return f"{_ORDER_CLIENT_ID_PREFIX}{identity_sha256[:28]}"
+
+
+def _build_order_request_association(method_name, order_payload):
+    symbol = str(order_payload.get("symbol") or "").strip().upper()
+    if not re.fullmatch(r"[A-Z0-9]{3,30}", symbol):
+        raise StatePersistenceError("submission_state_invalid") from None
+
+    method_to_side = {
+        "order_market_buy": "BUY",
+        "order_market_sell": "SELL",
+    }
+    side = method_to_side.get(str(method_name))
+    client_order_id = str(order_payload.get("newClientOrderId") or "").strip()
+    quantity_fields = [name for name in ("quantity", "quoteOrderQty") if name in order_payload]
+    if side is None or not client_order_id or len(quantity_fields) != 1:
+        raise StatePersistenceError("submission_state_invalid") from None
+
+    quantity_field = quantity_fields[0]
+    try:
+        quantity = Decimal(str(order_payload[quantity_field]))
+    except (InvalidOperation, ValueError):
+        raise StatePersistenceError("submission_state_invalid") from None
+    if not quantity.is_finite() or quantity <= 0:
+        raise StatePersistenceError("submission_state_invalid") from None
+    return {
+        "symbol": symbol,
+        "side": side,
+        "client_order_id": client_order_id,
+        "quantity_field": quantity_field,
+        "quantity": quantity,
+    }
+
+
+def _reconciled_order_matches_request(response, association):
+    if not isinstance(response, Mapping):
+        return False
+    # This association is built only for order_market_buy/sell requests.
+    if response.get("type") != "MARKET":
+        return False
+    if str(response.get("clientOrderId") or "").strip() != association["client_order_id"]:
+        return False
+    if str(response.get("symbol") or "").strip().upper() != association["symbol"]:
+        return False
+    if str(response.get("side") or "").strip().upper() != association["side"]:
+        return False
+    response_quantity_field = (
+        "origQty" if association["quantity_field"] == "quantity" else "origQuoteOrderQty"
+    )
+    try:
+        response_quantity = Decimal(str(response[response_quantity_field]))
+    except (KeyError, InvalidOperation, ValueError):
+        return False
+    return response_quantity.is_finite() and response_quantity == association["quantity"]
+
+
+def _load_order_submission_state(runtime):
+    state = runtime.trade_state
+    if state is None:
+        if runtime.state_loader is None:
+            raise StatePersistenceError("state_persistence_unavailable") from None
+        try:
+            state = runtime.state_loader(normalize=False)
+        except Exception:
+            raise StatePersistenceError("state_persistence_failed") from None
+    if not isinstance(state, dict):
+        raise StatePersistenceError("submission_state_invalid") from None
+
+    record = state.get(_ORDER_SUBMISSION_STATE_KEY, {"state": _ORDER_SUBMISSION_RESERVED})
+    if not isinstance(record, Mapping):
+        raise StatePersistenceError("submission_state_invalid") from None
+    record = dict(record)
+    status = record.get("state")
+    if status in {_ORDER_SUBMISSION_RESERVED, _ORDER_SUBMISSION_TERMINAL}:
+        if set(record) != {"state"}:
+            raise StatePersistenceError("submission_state_invalid") from None
+    elif status == _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING:
+        required = {"state", "identity_sha256", "symbol", "known_fill"}
+        if set(record) != required or not _is_sha256(record.get("identity_sha256")):
+            raise StatePersistenceError("submission_state_invalid") from None
+        if not re.fullmatch(r"[A-Z0-9]{3,30}", str(record.get("symbol") or "")):
+            raise StatePersistenceError("submission_state_invalid") from None
+        if not isinstance(record.get("known_fill"), Mapping):
+            raise StatePersistenceError("submission_state_invalid") from None
+    elif status == _ORDER_SUBMISSION_UNKNOWN:
+        if not _is_sha256(record.get("identity_sha256")):
+            raise StatePersistenceError("submission_state_invalid") from None
+        if set(record) == {"state", "identity_sha256", "symbol"}:
+            if not re.fullmatch(r"[A-Z0-9]{3,30}", str(record.get("symbol") or "")):
+                raise StatePersistenceError("submission_state_invalid") from None
+        elif set(record) in ({"state", "identity_sha256", "method_name"}, {"state", "identity_sha256", "method_name", "funding_receipt"}):
+            if (str(record.get("method_name") or "") not in _EARN_SUCCESS_ID_BY_METHOD
+                    or ("funding_receipt" in record and not _valid_funding_receipt(record["funding_receipt"]))):
+                raise StatePersistenceError("submission_state_invalid") from None
+        else:
+            raise StatePersistenceError("submission_state_invalid") from None
+    else:
+        raise StatePersistenceError("submission_state_invalid") from None
+    runtime.trade_state = state
+    return state, record
+
+
+def _persist_order_submission_state(runtime, state, record):
+    require_runtime_state_owner(runtime)
+    updated_state = dict(state)
+    updated_state[_ORDER_SUBMISSION_STATE_KEY] = dict(record)
+    _persist_runtime_state(runtime, updated_state)
+    state[_ORDER_SUBMISSION_STATE_KEY] = dict(record)
+    runtime.trade_state = state
+
+
+def _known_fill_record(response):
+    fills = response.get("fills") if isinstance(response, Mapping) else None
+    commissions = []
+    if isinstance(fills, list):
+        for fill in fills:
+            if not isinstance(fill, Mapping):
+                continue
+            commissions.append(
+                {
+                    "price": str(fill.get("price", "")),
+                    "qty": str(fill.get("qty", "")),
+                    "commission": str(fill.get("commission", "")),
+                    "commission_asset": str(fill.get("commissionAsset", "")),
+                }
+            )
+    return {
+        "client_order_id": str(response.get("clientOrderId", "")),
+        "side": str(response.get("side", "")),
+        "executed_qty": str(response.get("executedQty", "")),
+        "cummulative_quote_qty": str(response.get("cummulativeQuoteQty", "")),
+        "commissions": commissions,
+    }
+
+
+def _known_fill_is_complete(known_fill, *, allowed_fee_assets):
+    if not isinstance(known_fill, Mapping):
+        return False
+    try:
+        executed = Decimal(str(known_fill["executed_qty"]))
+        quote = Decimal(str(known_fill["cummulative_quote_qty"]))
+    except (KeyError, InvalidOperation, TypeError):
+        return False
+    fills = known_fill.get("commissions")
+    if not executed.is_finite() or executed <= 0 or not quote.is_finite() or quote <= 0:
+        return False
+    if not isinstance(fills, list) or not fills:
+        return False
+    fill_qty = Decimal("0")
+    fill_quote = Decimal("0")
+    for fill in fills:
+        if not isinstance(fill, Mapping):
+            return False
+        try:
+            price = Decimal(str(fill["price"]))
+            qty = Decimal(str(fill["qty"]))
+            commission = Decimal(str(fill["commission"]))
+        except (KeyError, InvalidOperation, TypeError):
+            return False
+        asset = str(fill.get("commission_asset") or "").upper()
+        if (
+            not price.is_finite()
+            or price <= 0
+            or not qty.is_finite()
+            or qty <= 0
+            or not commission.is_finite()
+            or commission < 0
+            or asset not in allowed_fee_assets
+        ):
+            return False
+        fill_qty += qty
+        fill_quote += price * qty
+    return abs(fill_qty - executed) <= max(Decimal("1e-8"), executed * Decimal("1e-8")) and abs(
+        fill_quote - quote
+    ) <= max(Decimal("1e-8"), quote * Decimal("1e-8"))
+
+
+def _fuel_fill_matches_observed_balances(known_fill, *, previous, observed, fuel_asset):
+    if not isinstance(previous, Mapping) or not isinstance(observed, Mapping):
+        return False
+    try:
+        executed = Decimal(str(known_fill["executed_qty"]))
+        quote = Decimal(str(known_fill["cummulative_quote_qty"]))
+        previous_fuel = Decimal(str(previous[fuel_asset]))
+        previous_usdt = Decimal(str(previous["USDT"]))
+        observed_fuel = Decimal(str(observed[fuel_asset]))
+        observed_usdt = Decimal(str(observed["USDT"]))
+    except (KeyError, InvalidOperation, TypeError):
+        return False
+    fuel_fee = Decimal("0")
+    usdt_fee = Decimal("0")
+    for fill in known_fill.get("commissions", []):
+        try:
+            commission = Decimal(str(fill["commission"]))
+        except (KeyError, InvalidOperation, TypeError):
+            return False
+        asset = str(fill.get("commission_asset") or "").upper()
+        if asset == fuel_asset:
+            fuel_fee += commission
+        elif asset == "USDT":
+            usdt_fee += commission
+        else:
+            return False
+    expected_fuel = previous_fuel + executed - fuel_fee
+    expected_usdt = previous_usdt - quote - usdt_fee
+    return (
+        abs(observed_fuel - expected_fuel) <= Decimal("1e-8")
+        and abs(observed_usdt - expected_usdt) <= Decimal("1e-4")
+    )
+
+
+def _complete_order_response(runtime, report, state, response, *, fill_accounting_required=False):
+    record_order_response(report, response)
+    status = str(response.get("status") or "").strip().upper() if isinstance(response, Mapping) else ""
+    if status in _BINANCE_ORDER_FAILED_STATUSES:
+        try:
+            executed = Decimal(str(response["executedQty"]))
+            no_fill = executed.is_finite() and executed == 0
+        except (KeyError, InvalidOperation, TypeError):
+            no_fill = False
+        if not no_fill:
+            raise OrderReconciliationError("order_reconciliation_uncertain") from None
+    if status == _BINANCE_ORDER_FILLED_STATUS or status in _BINANCE_ORDER_FAILED_STATUSES:
+        terminal_record = {"state": _ORDER_SUBMISSION_TERMINAL}
+        if status == _BINANCE_ORDER_FILLED_STATUS and fill_accounting_required:
+            previous = state.get(_ORDER_SUBMISSION_STATE_KEY, {})
+            terminal_record = {
+                "state": _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING,
+                "identity_sha256": str(previous.get("identity_sha256") or ""),
+                "symbol": str(previous.get("symbol") or response.get("symbol") or "").upper(),
+                "known_fill": _known_fill_record(response),
+            }
+        _persist_order_submission_state(runtime, state, terminal_record)
+        if runtime.pending_funds:
+            if status == _BINANCE_ORDER_FILLED_STATUS:
+                runtime.pending_funds[-1]["confirmed"] = True
+            else:
+                runtime.pending_funds.pop()
+    return _require_filled_order_response(response)
+
+
+def _binance_error_code(exc):
+    try:
+        return int(getattr(exc, "code"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _is_order_transport_uncertainty(exc):
+    transport_exceptions = (TimeoutError, ConnectionError)
+    if hasattr(requests, "exceptions"):
+        transport_exceptions += (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+    return isinstance(exc, transport_exceptions) or (
+        _binance_error_code(exc) in _BINANCE_ORDER_TRANSPORT_UNCERTAINTY_CODES
+    )
+
+
+def _funding_amount(value):
+    amount = Decimal(str(value))
+    if not amount.is_finite() or amount < 0:
+        raise ValueError("funding_amount_invalid")
+    return amount
+
+
+def _valid_funding_receipt(receipt):
+    try:
+        return (isinstance(receipt, Mapping)
+                and set(receipt) == {"id", "asset", "product_id", "amount", "spot_before"}
+                and type(receipt["id"]) is int and receipt["id"] > 0
+                and isinstance(receipt["asset"], str) and bool(re.fullmatch(r"[A-Z0-9]{1,20}", receipt["asset"]))
+                and isinstance(receipt["product_id"], str) and bool(receipt["product_id"])
+                and _funding_amount(receipt["amount"]) > 0
+                and _funding_amount(receipt["spot_before"]) >= 0)
+    except (KeyError, TypeError, ValueError, InvalidOperation):
+        return False
+
+
+def _confirm_funding_settlement(client, method, receipt):
+    """One ID-bound history GET plus actual Spot cash; never another POST."""
+    try:
+        if not _valid_funding_receipt(receipt):
+            raise ValueError("funding_receipt_invalid")
+        redeem = method == "redeem_simple_earn_flexible_product"
+        id_key = "redeemId" if redeem else "purchaseId"
+        path = "redemptionRecord" if redeem else "subscriptionRecord"
+        response = client._request_margin_api("get", "simple-earn/flexible/history/" + path, signed=True,
+            data={id_key: receipt["id"], "productId": receipt["product_id"], "asset": receipt["asset"], "current": 1, "size": 100})
+        if (not isinstance(response, Mapping) or type(response.get("total")) is not int
+                or response["total"] != 1 or not isinstance(response.get("rows"), list) or len(response["rows"]) != 1):
+            raise ValueError("funding_history_incomplete")
+        row = response["rows"][0]
+        amount = _funding_amount(receipt["amount"])
+        if (not isinstance(row, Mapping) or type(row.get(id_key)) is not int or row[id_key] != receipt["id"]
+                or row.get("asset") != receipt["asset"]
+                or row.get("projectId" if redeem else "productId") != receipt["product_id"]
+                or row.get("status") != ("PAID" if redeem else "SUCCESS")
+                or row.get("destAccount" if redeem else "sourceAccount") != "SPOT"
+                or _funding_amount(row.get("amount")) != amount):
+            raise ValueError("funding_history_mismatch")
+        spot = client.get_asset_balance(asset=receipt["asset"])
+        free = _funding_amount(spot["free"])
+        expected = _funding_amount(receipt["spot_before"]) + (amount if redeem else -amount)
+        if free != expected:
+            raise ValueError("funding_cash_mismatch")
+    except Exception:
+        raise OrderReconciliationError("funding_settlement_unverified") from None
+
+
+def reconcile_pending_funding_submission(runtime):
+    """Finish one durable Earn receipt using reads only, then account for it."""
+    if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
+        return False
+    require_runtime_state_owner(runtime)
+    state, record = _load_order_submission_state(runtime)
+    if record.get("state") != _ORDER_SUBMISSION_UNKNOWN or "funding_receipt" not in record:
+        return False
+
+    receipt = record["funding_receipt"]
+    opening_snapshot = state.get("last_balance_snapshot")
+    if not isinstance(opening_snapshot, Mapping):
+        raise OrderReconciliationError("funding_balance_conservation_unverified") from None
+    opening_snapshot = dict(opening_snapshot)
+    _confirm_funding_settlement(runtime.client, record["method_name"], receipt)
+
+    pending = {
+        "confirmed": True,
+        "action": "funding",
+        "symbol": None,
+        "asset": receipt["asset"],
+    }
+    runtime.pending_funds.append(pending)
+    reconcile_runtime_cash_effects(runtime, state)
+    try:
+        if any(
+            asset not in opening_snapshot
+            or _funding_amount(opening_snapshot[asset]) != _funding_amount(observed)
+            for asset, observed in runtime.cash_balance_observation.items()
+        ):
+            raise ValueError("managed_balance_changed")
+    except (InvalidOperation, TypeError, ValueError):
+        state["last_balance_snapshot"] = opening_snapshot
+        runtime.cash_balance_observation = {}
+        raise OrderReconciliationError("funding_balance_conservation_unverified") from None
+    state["last_balance_snapshot"] = opening_snapshot
+    _persist_order_submission_state(runtime, state, {"state": _ORDER_SUBMISSION_TERMINAL})
+    runtime.pending_funds.remove(pending)
+    return True
+
+
+def _is_confirmed_earn_success(method_name, response):
+    response_id_field = _EARN_SUCCESS_ID_BY_METHOD.get(str(method_name))
+    if not response_id_field or not isinstance(response, Mapping) or response.get("success") is not True:
+        return False
+    response_id = response.get(response_id_field)
+    return isinstance(response_id, int) and not isinstance(response_id, bool) and response_id > 0
+
+
+def _reconcile_uncertain_order(client, symbol, identity_sha256):
+    if not symbol or not identity_sha256:
+        raise OrderReconciliationError("order_reconciliation_uncertain") from None
+    try:
+        response = client.get_order(
+            symbol=symbol,
+            origClientOrderId=_client_order_id_from_digest(identity_sha256),
+        )
+    except Exception as exc:
+        if _binance_error_code(exc) == _BINANCE_ORDER_NOT_FOUND_CODE:
+            raise OrderReconciliationError("order_reconciliation_uncertain") from None
+        raise OrderReconciliationError("order_reconciliation_uncertain") from None
+    if not isinstance(response, Mapping):
+        raise OrderReconciliationError("order_reconciliation_uncertain") from None
+    return response
+
+
+def _require_filled_order_response(response):
+    if not isinstance(response, Mapping):
+        raise OrderReconciliationError("order_reconciliation_uncertain") from None
+    status = str(response.get("status") or "").strip().upper()
+    if status == _BINANCE_ORDER_FILLED_STATUS:
+        return response
+    if status in _BINANCE_ORDER_FAILED_STATUSES:
+        raise ClientCallError("order_submission_failed") from None
+    raise OrderReconciliationError("order_reconciliation_uncertain") from None
+
+
+def _notification_order_identity(*, begin=False, client_order_id=None):
+    """Notification bookkeeping must never change a broker call or its result."""
+    try:
+        from binance_platform.notifications import unified_notifications as unified
+        if begin:
+            unified.begin_order_attempt()
+        else:
+            unified.record_confirmed_order_identity(client_order_id)
+    except Exception:
+        try:
+            unified._ORDER_IDENTITY.set("")
+        except Exception:
+            pass
+        print("notification_order_identity_unavailable", flush=True)
+
+
+def runtime_call_client(runtime, report, *, method_name, payload, effect_type,
+                        max_retries: int = 3, retry_base_sec: float = 1.0, accounting_asset=None):
+    if str(effect_type or "").startswith("order_"):
+        _notification_order_identity(begin=True)
+    if runtime.dry_run or not getattr(runtime, "standard_execution_permitted", True):
+        record_side_effect(
+            runtime, report, effect_type=effect_type,
+            target=method_name, payload=dict(payload), executed=False,
+        )
+        return {"status": "suppressed", "method": method_name, "payload": dict(payload)}
+    require_runtime_state_owner(runtime)
+    if runtime.client is None:
+        raise RuntimeError("runtime.client is not configured")
+
+    is_order_call = str(effect_type or "").startswith("order_")
+    fill_accounting_required = is_order_call
+    earn_method = _EARN_METHOD_BY_EFFECT_TYPE.get(str(effect_type or ""))
+    is_earn_call = earn_method == str(method_name)
+    if (str(effect_type or "").startswith("earn_") or str(method_name) in _EARN_SUCCESS_ID_BY_METHOD) and not is_earn_call:
+        raise StatePersistenceError("submission_state_invalid") from None
+    is_funding_mutation = is_order_call or is_earn_call
+    client_payload = dict(payload)
+    trade_state = None
+    identity_sha256 = None
+    if is_funding_mutation:
+        trade_state, submission_record = _load_order_submission_state(runtime)
+        submission_status = submission_record["state"]
+        if submission_status == _ORDER_SUBMISSION_UNKNOWN:
+            if "method_name" in submission_record or is_earn_call:
+                # N13: redundant T3 consult; local raise always wins (no behavior change).
+                consult_t3_deny_blind_retry(transport_uncertain=True, reconciled=False)
+                raise OrderReconciliationError("order_reconciliation_uncertain") from None
+            current_payload, current_identity_sha256 = _ensure_order_logical_identity(runtime, method_name, payload)
+            if current_identity_sha256 != submission_record["identity_sha256"]:
+                raise OrderReconciliationError("order_reconciliation_intent_mismatch") from None
+            association = _build_order_request_association(method_name, current_payload)
+            reconciled_response = _reconcile_uncertain_order(
+                runtime.client,
+                submission_record["symbol"],
+                submission_record["identity_sha256"],
+            )
+            if not _reconciled_order_matches_request(reconciled_response, association):
+                raise OrderReconciliationError("order_reconciliation_intent_mismatch") from None
+            if not runtime.pending_funds:
+                runtime.pending_funds.append({"confirmed": False, "action": association["side"].lower(), "symbol": association["symbol"], "asset": None})
+            result = _complete_order_response(
+                runtime,
+                report,
+                trade_state,
+                reconciled_response,
+                fill_accounting_required=fill_accounting_required,
+            )
+            _notification_order_identity(client_order_id=association["client_order_id"])
+            return result
+        if submission_status == _ORDER_SUBMISSION_FILLED_ACCOUNTING_PENDING:
+            raise OrderReconciliationError("filled_order_accounting_unverifiable") from None
+        if submission_status == _ORDER_SUBMISSION_TERMINAL:
+            _persist_order_submission_state(
+                runtime,
+                trade_state,
+                {"state": _ORDER_SUBMISSION_RESERVED},
+            )
+        if is_earn_call:
+            try:
+                if not isinstance(accounting_asset, str) or not re.fullmatch(r"[A-Z0-9]{1,20}", accounting_asset):
+                    raise ValueError("funding_asset_missing")
+                amount = _funding_amount(client_payload.get("amount"))
+                if amount <= 0 or not isinstance(client_payload.get("productId"), str) or not client_payload["productId"]:
+                    raise ValueError("funding_request_invalid")
+                account_key = "destAccount" if effect_type == "earn_redeem" else "sourceAccount"
+                if client_payload.get(account_key, "SPOT") != "SPOT":
+                    raise ValueError("funding_account_invalid")
+                client_payload[account_key] = "SPOT"
+                spot_before = _funding_amount(runtime.client.get_asset_balance(asset=accounting_asset)["free"])
+                if effect_type == "earn_subscribe" and amount > spot_before:
+                    raise ValueError("funding_spot_insufficient")
+            except Exception:
+                raise ExecutionIntegrityError("funding_preflight_failed") from None
+        if is_order_call:
+            client_payload, identity_sha256 = _ensure_order_logical_identity(runtime, method_name, payload)
+            association = _build_order_request_association(method_name, client_payload)
+            symbol = association["symbol"]
+            unknown_record = {
+                "state": _ORDER_SUBMISSION_UNKNOWN,
+                "identity_sha256": identity_sha256,
+                "symbol": symbol,
+            }
+        else:
+            _unused_order_payload, identity_sha256 = _ensure_order_logical_identity(runtime, method_name, payload)
+            unknown_record = {
+                "state": _ORDER_SUBMISSION_UNKNOWN,
+                "identity_sha256": identity_sha256,
+                "method_name": str(method_name),
+            }
+        _persist_order_submission_state(
+            runtime,
+            trade_state,
+            unknown_record,
+        )
+        runtime.pending_funds.append({
+            "confirmed": False,
+            "action": "buy" if method_name == "order_market_buy" else "sell",
+            "symbol": client_payload.get("symbol"),
+            "asset": accounting_asset if is_earn_call else (
+                runtime.fuel_asset if client_payload.get("symbol") == runtime.fuel_symbol else None
+            ),
+        })
+        record_order_submission_attempt(report)
+    if is_earn_call:
+        _rate_limit_pause()
+        try:
+            response = getattr(runtime.client, method_name)(**client_payload)
+        except Exception as exc:
+            if _is_order_transport_uncertainty(exc):
+                record_order_transport_uncertainty(report)
+            record_side_effect(
+                runtime,
+                report,
+                effect_type=f"{effect_type}_failed",
+                target=method_name,
+                payload={"payload": dict(client_payload), "reason": "order_reconciliation_uncertain", "retries": 0},
+                executed=False,
+            )
+            # N13: redundant T3 consult; local raise always wins (no behavior change).
+            consult_t3_deny_blind_retry(transport_uncertain=True, reconciled=False)
+            raise OrderReconciliationError("order_reconciliation_uncertain") from None
+        if not _is_confirmed_earn_success(method_name, response):
+            record_side_effect(
+                runtime,
+                report,
+                effect_type=f"{effect_type}_failed",
+                target=method_name,
+                payload={"payload": dict(client_payload), "reason": "order_reconciliation_uncertain", "retries": 0},
+                executed=False,
+            )
+            # N13: redundant T3 consult; local raise always wins (no behavior change).
+            consult_t3_deny_blind_retry(transport_uncertain=True, reconciled=False)
+            raise OrderReconciliationError("order_reconciliation_uncertain") from None
+        record_side_effect(
+            runtime,
+            report,
+            effect_type=effect_type,
+            target=method_name,
+            payload=dict(client_payload),
+            executed=True,
+        )
+        receipt = {"id": response[_EARN_SUCCESS_ID_BY_METHOD[method_name]], "asset": accounting_asset,
+                   "product_id": client_payload["productId"], "amount": str(amount), "spot_before": str(spot_before)}
+        _persist_order_submission_state(runtime, trade_state, {**unknown_record, "funding_receipt": receipt})
+        _confirm_funding_settlement(runtime.client, method_name, receipt)
+        _persist_order_submission_state(runtime, trade_state, {"state": _ORDER_SUBMISSION_TERMINAL})
+        runtime.pending_funds[-1]["confirmed"] = True
+        return response
+    _rate_limit_pause()
+    retries_used = max_retries
+    for attempt in range(max_retries + 1):
+        try:
+            response = getattr(runtime.client, method_name)(**client_payload)
+        except Exception as exc:
+            if is_order_call:
+                if _is_order_transport_uncertainty(exc):
+                    record_order_transport_uncertainty(report)
+                try:
+                    reconciled_response = _reconcile_uncertain_order(
+                        runtime.client,
+                        symbol,
+                        identity_sha256,
+                    )
+                except OrderReconciliationError:
+                    record_side_effect(
+                        runtime,
+                        report,
+                        effect_type=f"{effect_type}_failed",
+                        target=method_name,
+                        payload={
+                            "payload": dict(client_payload),
+                            "reason": "order_reconciliation_uncertain",
+                            "retries": attempt,
+                        },
+                        executed=False,
+                    )
+                    record_order_failure(report)
+                    raise
+                if not _reconciled_order_matches_request(reconciled_response, association):
+                    raise OrderReconciliationError("order_reconciliation_intent_mismatch") from None
+                result = _complete_order_response(
+                    runtime,
+                    report,
+                    trade_state,
+                    reconciled_response,
+                    fill_accounting_required=fill_accounting_required,
+                )
+                _notification_order_identity(client_order_id=association["client_order_id"])
+                return result
+            if attempt < max_retries:
+                delay = retry_base_sec * (2 ** attempt)
+                time.sleep(delay)
+        else:
+            record_side_effect(
+                runtime, report, effect_type=effect_type,
+                target=method_name, payload=dict(client_payload), executed=True,
+            )
+            if is_order_call:
+                if not _reconciled_order_matches_request(response, association):
+                    raise OrderReconciliationError("order_reconciliation_uncertain") from None
+                result = _complete_order_response(
+                    runtime,
+                    report,
+                    trade_state,
+                    response,
+                    fill_accounting_required=fill_accounting_required,
+                )
+                _notification_order_identity(client_order_id=client_payload.get("newClientOrderId"))
+                return result
+            return response
+    # All retries exhausted — log and raise
+    record_side_effect(
+        runtime, report,
+        effect_type=f"{effect_type}_failed",
+        target=method_name,
+        payload={"payload": dict(client_payload), "retries": retries_used},
+        executed=False,
+    )
+    if is_order_call:
+        record_order_failure(report)
+    reason = "order_submission_failed" if is_order_call else "client_call_failed"
+    raise ClientCallError(reason) from None
+

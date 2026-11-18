@@ -17,13 +17,13 @@ for path in (QPK_SRC, CRYPTO_STRATEGIES_SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-from runtime_config_support import (
+from binance_platform.runtime_config_support import (
     assert_standard_execution_entry_permitted,
     build_live_runtime,
     load_cycle_execution_settings,
     resolve_runtime_target_enabled_flag,
 )
-from strategy_registry import (
+from binance_platform.strategy_registry import (
     BINANCE_PLATFORM,
     BINANCE_ENABLED_PROFILES,
     CRYPTO_DOMAIN,
@@ -72,20 +72,20 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             with self.subTest(name=name), patch.dict(os.environ, env_updates, clear=True):
                 with (
                     patch(
-                        "runtime_config_support._resolve_runtime_target",
+                        "binance_platform.runtime_config_support._resolve_runtime_target",
                         return_value=(
                             object(),
                             SimpleNamespace(profile="test-profile", domain=CRYPTO_DOMAIN),
                         ),
                     ),
                     patch(
-                        "runtime_config_support.resolve_research_strategy_metadata",
+                        "binance_platform.runtime_config_support.resolve_research_strategy_metadata",
                         return_value=SimpleNamespace(display_name="Test Strategy"),
                     ),
-                    patch("runtime_config_support.get_notify_lang", return_value="en"),
-                    patch("runtime_config_support.build_translator", return_value=object()),
+                    patch("binance_platform.runtime_config_support.get_notify_lang", return_value="en"),
+                    patch("binance_platform.runtime_config_support.build_translator", return_value=object()),
                     patch(
-                        "runtime_config_support.build_strategy_display_name",
+                        "binance_platform.runtime_config_support.build_strategy_display_name",
                         return_value=lambda profile, **kwargs: "Test Strategy",
                     ),
                 ):
@@ -311,7 +311,7 @@ class RuntimeConfigSupportTests(unittest.TestCase):
             platform_id=BINANCE_PLATFORM,
         )
         return patch(
-            "runtime_config_support._resolve_runtime_target",
+            "binance_platform.runtime_config_support._resolve_runtime_target",
             return_value=(runtime_target, definition),
         )
 

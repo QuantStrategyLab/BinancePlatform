@@ -20,7 +20,7 @@ LATER = NOW + timedelta(seconds=1)
 
 
 def _material(monkeypatch):
-    from application import rebased_recovery as recovery
+    from binance_platform.application import rebased_recovery as recovery
     from scripts.migrate_daily_accounting_state import _ACCOUNTING_FIELDS
 
     state, _current, _cash = materials()
@@ -160,7 +160,7 @@ class Client:
 
 
 def _run(monkeypatch, *, change=None, ledger_change=None, archive_change=None):
-    from application.rebased_recovery import collect_prospective_rebase_diagnosis
+    from binance_platform.application.rebased_recovery import collect_prospective_rebase_diagnosis
 
     ledger, archive, control = _material(monkeypatch)
     if ledger_change:
@@ -204,7 +204,7 @@ def test_prospective_diagnosis_accepts_income_growth_without_mutating_ledger(mon
 
 def test_prospective_diagnosis_rejects_history_beyond_max_window(monkeypatch):
     """Opening→now must stay within MAX_HISTORY; do not enlarge or bypass it."""
-    from application.rebased_recovery import MAX_HISTORY, collect_prospective_rebase_diagnosis
+    from binance_platform.application.rebased_recovery import MAX_HISTORY, collect_prospective_rebase_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     too_late = OPENING_AT + MAX_HISTORY + timedelta(seconds=1)
@@ -229,8 +229,8 @@ def test_prospective_diagnosis_rejects_history_beyond_max_window(monkeypatch):
 
 def test_prospective_diagnosis_rejects_ledger_checkpoint_as_continuity_bridge(monkeypatch):
     """Current ledger earn checkpoint is not archive-bound continuous evidence."""
-    from application.earn_accrual import prepare_forward_earn_state
-    from application.rebased_recovery import collect_prospective_rebase_diagnosis
+    from binance_platform.application.earn_accrual import prepare_forward_earn_state
+    from binance_platform.application.rebased_recovery import collect_prospective_rebase_diagnosis
 
     opening, archive, _control = _material(monkeypatch)
     mid_at = OPENING_AT + timedelta(minutes=10)
@@ -378,7 +378,7 @@ def _source_run(run_id=400, sha="b" * 40):
 
 
 def _migration_run():
-    from application import rebased_recovery as recovery
+    from binance_platform.application import rebased_recovery as recovery
 
     return {"id": recovery.PROSPECTIVE_MIGRATION_RUN_ID,
             "head_sha": recovery.PROSPECTIVE_MIGRATION_RUN_SHA,
@@ -437,7 +437,7 @@ def test_verified_run_rejects_wrong_repository_even_for_terminal_failure(monkeyp
 
 
 def _package(monkeypatch, *, client=None, now=NOW, later=LATER):
-    from application.rebased_recovery import collect_prospective_rebase_source
+    from binance_platform.application.rebased_recovery import collect_prospective_rebase_source
 
     ledger, archive, _control = _material(monkeypatch)
     expected = {"account_scope_sha256": digest({"account_uid": "synthetic"})}
@@ -450,7 +450,7 @@ def _package(monkeypatch, *, client=None, now=NOW, later=LATER):
 
 
 def test_prospective_source_enrolls_real_spot_with_forward_proof(monkeypatch):
-    from application.rebased_recovery import validate_prospective_rebase_source
+    from binance_platform.application.rebased_recovery import validate_prospective_rebase_source
 
     package = _package(monkeypatch)
     candidate = validate_prospective_rebase_source(
@@ -469,7 +469,7 @@ def test_prospective_source_enrolls_real_spot_with_forward_proof(monkeypatch):
 
 
 def test_prospective_source_rejects_forged_proof_and_final_spot_drift(monkeypatch):
-    from application.rebased_recovery import validate_prospective_rebase_source
+    from binance_platform.application.rebased_recovery import validate_prospective_rebase_source
 
     with pytest.raises(ValueError, match="prospective_rebase_spot_changed_during_read"):
         _package(monkeypatch, client=Client("final_spot"))
@@ -492,7 +492,7 @@ def test_prospective_source_rejects_forged_proof_and_final_spot_drift(monkeypatc
 
 
 def test_prospective_source_retains_existing_thirty_minute_freshness(monkeypatch):
-    from application.rebased_recovery import validate_prospective_rebase_source
+    from binance_platform.application.rebased_recovery import validate_prospective_rebase_source
 
     package = _package(monkeypatch)
     with pytest.raises(ValueError, match="prospective_rebase_candidate_source_mismatch"):
@@ -740,7 +740,7 @@ def test_controller_diagnose_accepts_only_original_or_strict_prospective_control
 def test_controller_prospective_confirmation_rechecks_and_runtime_consumes_active(
     monkeypatch, action
 ):
-    from application.reconciliation_recovery import activated_target
+    from binance_platform.application.reconciliation_recovery import activated_target
 
     controller, target, expected, recovery_id, docs, writes, requests = _controller_setup(
         monkeypatch, prepared=True
@@ -830,7 +830,7 @@ def test_github_verify_requires_bound_owner_review_before_broker_reads(monkeypat
 
 @pytest.mark.parametrize("separate_activation_approval", [False, True])
 def test_github_activation_cannot_reuse_read_only_approval(monkeypatch, separate_activation_approval):
-    from application.reconciliation_recovery import activated_target
+    from binance_platform.application.reconciliation_recovery import activated_target
 
     controller, target, expected, recovery_id, docs, writes, _requests = _controller_setup(
         monkeypatch, prepared=True

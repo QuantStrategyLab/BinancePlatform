@@ -9,12 +9,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from application.interval_source_receipt_candidate import (
+from binance_platform.application.interval_source_receipt_candidate import (
     IntervalReceiptBlocked,
     IntervalReceiptConflict,
     build_interval_receipt_plan,
 )
-from application.interval_receipt_reader_candidate import prepare_retained_interval_preview
+from binance_platform.application.interval_receipt_reader_candidate import prepare_retained_interval_preview
 
 
 LEDGER = "strategy/SYNTHETIC_STATE"

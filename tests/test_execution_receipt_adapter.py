@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from application.execution_receipt_adapter import (
+from binance_platform.application.execution_receipt_adapter import (
     attach_execution_receipt_from_report,
     record_order_response,
     record_order_submission_attempt,

@@ -122,7 +122,7 @@ def test_preview_script_has_no_broker_or_execution_imports():
             name == forbidden or name.startswith(f"{forbidden}.") for name in imported
         )
 
-    assert "live_services" in imported
+    assert "binance_platform.live_services" in imported
 
 
 def test_send_preview_fails_closed_without_telegram_target(monkeypatch):

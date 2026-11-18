@@ -88,9 +88,9 @@ for path in (PLATFORM_KIT_SRC, CRYPTO_STRATEGIES_SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-import main
-from degraded_mode_support import format_trend_pool_source_logs
-import degraded_mode_support
+import binance_platform.main as main
+from binance_platform.degraded_mode_support import format_trend_pool_source_logs
+import binance_platform.degraded_mode_support as degraded_mode_support
 from crypto_strategies.strategies.crypto_live_pool_rotation.core import allocate_trend_buy_budget
 from crypto_strategies.strategies.crypto_live_pool_rotation.rotation import refresh_rotation_pool
 

@@ -2,12 +2,12 @@ import copy
 import unittest
 from unittest.mock import patch
 
-from runtime_support import (
+from binance_platform.runtime_support import (
     ExecutionRuntime, OrderReconciliationError, ClientCallError, StatePersistenceError,
     acquire_runtime_state_owner, release_runtime_state_owner, build_execution_report,
     runtime_call_client,
 )
-from application.execution_service import execute_btc_dca_cycle, execute_trend_buys, execute_trend_sells
+from binance_platform.application.execution_service import execute_btc_dca_cycle, execute_trend_buys, execute_trend_sells
 
 
 class Store:
@@ -55,8 +55,8 @@ class DirectAssociationTests(unittest.TestCase):
         acquire_runtime_state_owner(runtime)
         return runtime, store
 
-    @patch("runtime_support._rate_limit_pause")
-    @patch("runtime_support._notification_order_identity")
+    @patch("binance_platform.runtime_support._rate_limit_pause")
+    @patch("binance_platform.runtime_support._notification_order_identity")
     def test_direct_response_binding_and_ack(self, _notification, _pause):
         cases = [
             ("FILLED", lambda r: r.update(clientOrderId="different"), False),
@@ -89,8 +89,8 @@ class DirectAssociationTests(unittest.TestCase):
                     self.assertEqual(store.data["order_submission"]["state"], "TERMINAL")
                 self.assertEqual(len(client.submits), 1)
 
-    @patch("runtime_support._rate_limit_pause")
-    @patch("runtime_support._notification_order_identity")
+    @patch("binance_platform.runtime_support._rate_limit_pause")
+    @patch("binance_platform.runtime_support._notification_order_identity")
     def test_conflict_stops_actual_btc_buy_consumer(self, _notification, _pause):
         client = Client(mutation=lambda r: r.update(clientOrderId="different"))
         runtime, store = self.make_runtime(client)
@@ -112,8 +112,8 @@ class DirectAssociationTests(unittest.TestCase):
         self.assertFalse(release_runtime_state_owner(runtime))
         self.assertEqual(len(client.submits), 1)
 
-    @patch("runtime_support._rate_limit_pause")
-    @patch("runtime_support._notification_order_identity")
+    @patch("binance_platform.runtime_support._rate_limit_pause")
+    @patch("binance_platform.runtime_support._notification_order_identity")
     def test_quote_order_binding(self, _notification, _pause):
         for mismatch in (False, True):
             client = Client(mutation=(lambda r: r.update(origQuoteOrderQty="101")) if mismatch else None)
@@ -140,8 +140,8 @@ class DirectAssociationTests(unittest.TestCase):
         self.assertEqual(client.submits, [])
         self.assertNotEqual(store.data["order_submission"]["state"], "SUBMISSION_UNKNOWN")
 
-    @patch("runtime_support._rate_limit_pause")
-    @patch("runtime_support._notification_order_identity")
+    @patch("binance_platform.runtime_support._rate_limit_pause")
+    @patch("binance_platform.runtime_support._notification_order_identity")
     def test_conflict_stops_actual_trend_buy_and_sell_consumers(self, _notification, _pause):
         for side in ("BUY", "SELL"):
             with self.subTest(side=side):

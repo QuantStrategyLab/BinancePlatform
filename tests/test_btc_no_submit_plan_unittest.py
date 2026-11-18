@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from infra.btc_no_submit import approved_buy_amount
+from binance_platform.infra.btc_no_submit import approved_buy_amount
 
 
 def decision(amount=100.0, *, current=200.0, exit_applied=False, route="", no_execute=False):

@@ -25,8 +25,8 @@ if "requests" not in sys.modules:
 from quant_platform_kit import PortfolioSnapshot
 from quant_platform_kit.common.strategy_contracts import StrategyManifest, StrategyRuntimeAdapter
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
-from decision_mapper import map_strategy_decision_to_rotation_plan
-from strategy_registry import BINANCE_ENABLED_PROFILES, ELIGIBLE_STRATEGY_PROFILES
+from binance_platform.decision_mapper import map_strategy_decision_to_rotation_plan
+from binance_platform.strategy_registry import BINANCE_ENABLED_PROFILES, ELIGIBLE_STRATEGY_PROFILES
 
 
 def _synthetic_candidate_identity() -> CandidateRiskIdentity:
@@ -94,7 +94,7 @@ def _evaluate_minimal_runtime(
 
 class StrategyRuntimeTests(unittest.TestCase):
     def test_platform_stoploss_defaults_off_for_every_profile(self):
-        import strategy_runtime as module
+        import binance_platform.strategy_runtime as module
 
         for profile in sorted(ELIGIBLE_STRATEGY_PROFILES):
             for raw in (None, "", " ", "false", "0", "off"):
@@ -109,7 +109,7 @@ class StrategyRuntimeTests(unittest.TestCase):
                     self.assertEqual(runtime.effective_runtime_config, runtime.entrypoint.manifest.default_config)
 
     def test_platform_stoploss_rejects_invalid_flag(self):
-        import strategy_runtime as module
+        import binance_platform.strategy_runtime as module
 
         entrypoint = module.load_research_strategy_entrypoint_for_profile("crypto_live_pool_rotation")
         with patch.dict(os.environ, {"PORTFOLIO_LOSS_STOPLOSS_ENABLED": "typo"}):
@@ -117,7 +117,7 @@ class StrategyRuntimeTests(unittest.TestCase):
                 module._build_loaded_strategy_runtime(entrypoint)
 
     def test_direct_runtime_construction_defaults_stoploss_off(self):
-        import strategy_runtime as module
+        import binance_platform.strategy_runtime as module
 
         with patch.dict(os.environ, {"PORTFOLIO_LOSS_STOPLOSS_ENABLED": "true"}):
             loaded = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
@@ -126,10 +126,10 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertIs(runtime.portfolio_loss_stoploss_enabled, False)
 
     def test_platform_stoploss_requires_explicit_opt_in_after_member_approval(self):
-        import strategy_runtime as module
+        import binance_platform.strategy_runtime as module
         from quant_platform_kit import Position
         from quant_platform_kit.common.strategy_contracts import BudgetIntent, PositionTarget, StrategyDecision
-        from decision_mapper import map_strategy_decision_to_allocation
+        from binance_platform.decision_mapper import map_strategy_decision_to_allocation
 
         decision = StrategyDecision(
             positions=(PositionTarget(symbol="BTCUSDT", target_weight=0.2),),
@@ -172,7 +172,7 @@ class StrategyRuntimeTests(unittest.TestCase):
                     ))
 
     def test_stoploss_observation_does_not_mutate_strategy_decision(self):
-        import strategy_runtime as module
+        import binance_platform.strategy_runtime as module
         from quant_platform_kit.common.strategy_contracts import StrategyDecision
 
         runtime = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
@@ -204,7 +204,7 @@ class StrategyRuntimeTests(unittest.TestCase):
 
 
     def test_build_portfolio_snapshot_values_all_non_usdt_risk_assets(self):
-        import strategy_runtime as strategy_runtime_module
+        import binance_platform.strategy_runtime as strategy_runtime_module
 
         runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
         snapshot = runtime.build_portfolio_snapshot(
@@ -227,7 +227,7 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot.metadata["observed_effective_exposure"], 0.52)
 
     def test_build_portfolio_snapshot_rejects_incomplete_or_invalid_risk_assets(self):
-        import strategy_runtime as strategy_runtime_module
+        import binance_platform.strategy_runtime as strategy_runtime_module
 
         runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
         base = {
@@ -256,7 +256,7 @@ class StrategyRuntimeTests(unittest.TestCase):
                     runtime.build_portfolio_snapshot(**kwargs)
 
     def test_build_portfolio_snapshot_rejects_missing_bnb_quote_when_bnb_is_required(self):
-        import strategy_runtime as strategy_runtime_module
+        import binance_platform.strategy_runtime as strategy_runtime_module
 
         runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
         with self.assertRaisesRegex(ValueError, "prices missing BNBUSDT"):
@@ -275,7 +275,7 @@ class StrategyRuntimeTests(unittest.TestCase):
             )
 
     def test_pinned_crypto_qpk_gate_approves_bound_synthetic_fixture_and_mapper(self):
-        import strategy_runtime as strategy_runtime_module
+        import binance_platform.strategy_runtime as strategy_runtime_module
 
         runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
         now = datetime.now(timezone.utc)
@@ -321,7 +321,7 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertTrue(map_strategy_decision_to_rotation_plan(evaluation.decision)["execution_permitted"], evaluation.decision.risk_flags)
 
     def test_candidate_profile_mismatch_keeps_qpk_decision_rejected(self):
-        import strategy_runtime as strategy_runtime_module
+        import binance_platform.strategy_runtime as strategy_runtime_module
 
         runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
         now = datetime.now(timezone.utc)
@@ -355,7 +355,7 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertIn("missing_candidate_identity", assessment["reason_codes"])
 
     def test_incomplete_portfolio_snapshot_reaches_qpk_as_redacted_reject(self):
-        import strategy_runtime as strategy_runtime_module
+        import binance_platform.strategy_runtime as strategy_runtime_module
 
         runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
         now = datetime.now(timezone.utc)
@@ -377,7 +377,7 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertIn("invalid_portfolio_snapshot", assessment["reason_codes"])
 
     def test_expired_mandate_keeps_pinned_qpk_decision_rejected(self):
-        import strategy_runtime as strategy_runtime_module
+        import binance_platform.strategy_runtime as strategy_runtime_module
 
         runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
         now = datetime.now(timezone.utc)
@@ -393,7 +393,7 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertIn("expired_mandate", assessment["reason_codes"])
 
     def test_live_mode_does_not_accept_research_only_mandate(self):
-        import strategy_runtime as strategy_runtime_module
+        import binance_platform.strategy_runtime as strategy_runtime_module
 
         runtime = strategy_runtime_module.load_research_only_strategy_runtime("crypto_live_pool_rotation")
         now = datetime.now(timezone.utc)
@@ -415,7 +415,7 @@ class StrategyRuntimeTests(unittest.TestCase):
 
     def test_research_only_runtime_exposes_explicit_artifact_contract_without_execution_grant(self):
         try:
-            from strategy_runtime import load_research_only_strategy_runtime
+            from binance_platform.strategy_runtime import load_research_only_strategy_runtime
         except ModuleNotFoundError as exc:
             if exc.name == "pandas":
                 self.skipTest("pandas is not installed")
@@ -438,7 +438,7 @@ class StrategyRuntimeTests(unittest.TestCase):
 
     def test_execution_runtime_rejects_profiles_when_the_rollout_allowlist_is_empty(self):
         try:
-            from strategy_runtime import load_strategy_runtime
+            from binance_platform.strategy_runtime import load_strategy_runtime
         except ModuleNotFoundError as exc:
             if exc.name == "pandas":
                 self.skipTest("pandas is not installed")
@@ -455,7 +455,7 @@ class StrategyRuntimeTests(unittest.TestCase):
 
     def test_strategy_runtime_evaluate_returns_decision_with_buy_sell_diagnostics(self):
         try:
-            from strategy_runtime import load_research_only_strategy_runtime
+            from binance_platform.strategy_runtime import load_research_only_strategy_runtime
         except ModuleNotFoundError as exc:
             if exc.name == "pandas":
                 self.skipTest("pandas is not installed")
@@ -537,7 +537,7 @@ class StrategyRuntimeTests(unittest.TestCase):
 
     def test_load_strategy_runtime_uses_entrypoint_only(self):
         try:
-            import strategy_runtime as strategy_runtime_module
+            import binance_platform.strategy_runtime as strategy_runtime_module
         except ModuleNotFoundError as exc:
             if exc.name == "pandas":
                 self.skipTest("pandas is not installed")
@@ -587,7 +587,7 @@ class StrategyRuntimeTests(unittest.TestCase):
 
     def test_strategy_runtime_maps_binance_inputs_into_canonical_strategy_context(self):
         try:
-            import strategy_runtime as strategy_runtime_module
+            import binance_platform.strategy_runtime as strategy_runtime_module
         except ModuleNotFoundError as exc:
             if exc.name == "pandas":
                 self.skipTest("pandas is not installed")
@@ -657,7 +657,7 @@ class StrategyRuntimeTests(unittest.TestCase):
         self.assertEqual(evaluation.metadata["strategy_display_name"], "Crypto Live Pool Rotation")
 
     def test_main_excludes_valuation_only_assets_from_strategy_universe(self):
-        import main
+        import binance_platform.main as main
 
         captured = {}
 
@@ -703,7 +703,7 @@ class StrategyRuntimeTests(unittest.TestCase):
         )
 
     def test_evaluate_stamps_consecutive_losses(self):
-        import strategy_runtime as strategy_runtime_module
+        import binance_platform.strategy_runtime as strategy_runtime_module
         from quant_platform_kit.common.strategy_contracts import StrategyDecision
 
         class FakeEntrypoint:
@@ -780,7 +780,7 @@ class StrategyRuntimeTests(unittest.TestCase):
 
 class PortfolioCostInputTests(unittest.TestCase):
     def test_explicit_average_costs_reach_strategy_snapshot_and_authority_binding(self):
-        import strategy_runtime as module
+        import binance_platform.strategy_runtime as module
         from quant_platform_kit.common.strategy_contracts import StrategyDecision
         from quant_platform_kit.risk.portfolio_diagnostics import compute_unrealized_pnl_pct
 
@@ -808,7 +808,7 @@ class PortfolioCostInputTests(unittest.TestCase):
         self.assertEqual(bind.call_args.kwargs["input_material"]["average_costs"], {"BTCUSDT": 80000.0})
 
     def test_cost_inputs_preserve_unknown_coverage_and_validate_explicit_values(self):
-        import strategy_runtime as module
+        import binance_platform.strategy_runtime as module
         from quant_platform_kit.risk.portfolio_diagnostics import compute_unrealized_pnl_pct
 
         runtime = module.load_research_only_strategy_runtime("crypto_live_pool_rotation")

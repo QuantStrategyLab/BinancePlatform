@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-import notify_i18n_support as subject
+import binance_platform.notify_i18n_support as subject
 
 
 @pytest.fixture

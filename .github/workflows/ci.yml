@@ -66,25 +66,25 @@ jobs:
       - name: Compile scripts
         run: |
           uv run --no-sync python -m py_compile \
-            application/cycle_service.py \
-            application/state_service.py \
-            degraded_mode_support.py \
-            entrypoints/cli.py \
-            infra/state_store.py \
-            market_snapshot_support.py \
-            main.py \
-            notify_i18n_support.py \
-            reporting/status_reports.py \
-            research/backtest.py \
-            run_cycle_replay.py \
-            runtime_config_support.py \
-            runtime_support.py \
-            strategy_loader.py \
-            strategy_runtime.py \
-            decision_mapper.py \
-            live_services.py \
-            trend_pool_support.py \
-            trade_state_support.py
+            src/binance_platform/application/cycle_service.py \
+            src/binance_platform/application/state_service.py \
+            src/binance_platform/degraded_mode_support.py \
+            src/binance_platform/entrypoints/cli.py \
+            src/binance_platform/infra/state_store.py \
+            src/binance_platform/market_snapshot_support.py \
+            src/binance_platform/main.py \
+            src/binance_platform/notify_i18n_support.py \
+            src/binance_platform/reporting/status_reports.py \
+            src/binance_platform/research/backtest.py \
+            src/binance_platform/run_cycle_replay.py \
+            src/binance_platform/runtime_config_support.py \
+            src/binance_platform/runtime_support.py \
+            src/binance_platform/strategy_loader.py \
+            src/binance_platform/strategy_runtime.py \
+            src/binance_platform/decision_mapper.py \
+            src/binance_platform/live_services.py \
+            src/binance_platform/trend_pool_support.py \
+            src/binance_platform/trade_state_support.py
 
       - name: Run ruff
         run: uv run --no-sync ruff check --exclude external .
@@ -123,7 +123,7 @@ jobs:
         # cannot silently be omitted from the protected CI check.  Restrict
         # discovery to this repository: editable dependencies keep their own
         # test suites and may expose same-named helper modules.
-        run: PYTHONPATH=. uv run --no-sync python -m pytest -q tests
+        run: PYTHONPATH=src:. uv run --no-sync python -m pytest -q tests
 
   exact-pin:
     name: Exact pinned dependency contracts
@@ -148,5 +148,5 @@ jobs:
       - name: Verify installed pins and real catalog risk gates
         # No sibling checkouts, editable overrides, credentials, or broker calls.
         run: >-
-          PYTHONPATH=. uv run --no-sync python -m pytest -q
+          PYTHONPATH=src:. uv run --no-sync python -m pytest -q
           tests/test_exact_pin_install.py tests/test_strategy_runtime.py

@@ -6,8 +6,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import main
-from run_context import (
+import binance_platform.main as main
+from binance_platform.run_context import (
     RunContext,
     RunContextError,
     bind_run_context,
@@ -17,7 +17,7 @@ from run_context import (
     resolve_trend_universe,
     set_active_trend_universe,
 )
-from runtime_support import ExecutionRuntime
+from binance_platform.runtime_support import ExecutionRuntime
 
 
 def _baseline_universe():
@@ -158,7 +158,7 @@ class ExecuteCycleUniverseIsolationTests(unittest.TestCase):
             return {"status": "ok"}
 
         runtime = ExecutionRuntime(dry_run=True, strategy_profile="crypto_live_pool_rotation")
-        with patch("main.execute_strategy_cycle", side_effect=fake_cycle):
+        with patch("binance_platform.main.execute_strategy_cycle", side_effect=fake_cycle):
             report = main.execute_cycle(runtime)
         self.assertEqual(report["status"], "ok")
         self.assertEqual(dict(main.TREND_UNIVERSE), self._baseline)
@@ -172,7 +172,7 @@ class ExecuteCycleUniverseIsolationTests(unittest.TestCase):
             raise RuntimeError("boom")
 
         runtime = ExecutionRuntime(dry_run=True, strategy_profile="crypto_live_pool_rotation")
-        with patch("main.execute_strategy_cycle", side_effect=fake_cycle):
+        with patch("binance_platform.main.execute_strategy_cycle", side_effect=fake_cycle):
             with self.assertRaises(RuntimeError):
                 main.execute_cycle(runtime)
         self.assertEqual(dict(main.TREND_UNIVERSE), self._baseline)
@@ -200,7 +200,7 @@ class ExecuteCycleUniverseIsolationTests(unittest.TestCase):
             strategy_profile="crypto_live_pool_rotation",
             strategy_runtime=mounted,
         )
-        with patch("main.execute_strategy_cycle", side_effect=fake_cycle):
+        with patch("binance_platform.main.execute_strategy_cycle", side_effect=fake_cycle):
             report = main.execute_cycle(runtime)
         self.assertEqual(report["status"], "ok")
         self.assertIsNone(get_active_run_context())
@@ -223,7 +223,7 @@ class ExecuteCycleUniverseIsolationTests(unittest.TestCase):
             strategy_runtime=mounted,
         )
         try:
-            with patch("main.execute_strategy_cycle", side_effect=fake_cycle):
+            with patch("binance_platform.main.execute_strategy_cycle", side_effect=fake_cycle):
                 report = main.execute_cycle(runtime)
             self.assertEqual(report["status"], "ok")
             # Poison applied inside cycle must not be "restored over" — we prove
@@ -256,7 +256,7 @@ class ExecuteCycleUniverseIsolationTests(unittest.TestCase):
         )
         token = bind_run_context(ctx)
         try:
-            with patch("main.load_strategy_runtime", return_value=fake) as loader:
+            with patch("binance_platform.main.load_strategy_runtime", return_value=fake) as loader:
                 activated = main._activate_execution_strategy_runtime("crypto_live_pool_rotation")
             loader.assert_called_once_with("crypto_live_pool_rotation")
             self.assertIs(activated, fake)
@@ -290,7 +290,7 @@ class ExecuteCycleUniverseIsolationTests(unittest.TestCase):
         )
         self.assertIsNone(get_active_run_context())
         try:
-            with patch("main.load_strategy_runtime", return_value=fake):
+            with patch("binance_platform.main.load_strategy_runtime", return_value=fake):
                 activated = main._activate_execution_strategy_runtime("crypto_live_pool_rotation")
             self.assertIs(activated, fake)
             self.assertIs(main.STRATEGY_RUNTIME, fake)

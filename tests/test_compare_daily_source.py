@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from application.account_facts import build_source_binding_id
+from binance_platform.application.account_facts import build_source_binding_id
 from scripts import compare_daily_source as module
 from scripts.read_binance_account_facts import APPROVED_APPLICATION_SHA
 

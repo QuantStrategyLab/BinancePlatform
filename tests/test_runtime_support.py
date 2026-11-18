@@ -45,7 +45,7 @@ QPK_SRC = ROOT.parent / "QuantPlatformKit" / "src"
 if str(QPK_SRC) not in sys.path:
     sys.path.insert(0, str(QPK_SRC))
 
-from runtime_support import (
+from binance_platform.runtime_support import (
     ClientCallError,
     ExecutionRuntime,
     OrderReconciliationError,
@@ -195,7 +195,7 @@ class TestBuildExecutionReport(unittest.TestCase):
 
     def test_report_contains_observed_scheduler_state(self):
         runtime = owned_runtime(dry_run=True, run_id="scheduler-state")
-        with patch("runtime_support.observe_runtime_scheduler_state", return_value="enabled"):
+        with patch("binance_platform.runtime_support.observe_runtime_scheduler_state", return_value="enabled"):
             report = build_execution_report(runtime)
 
         self.assertEqual(report["scheduler_state"], "enabled")
@@ -425,7 +425,7 @@ class TestBuildExecutionReport(unittest.TestCase):
                     state_writer=store.write,
                 )
 
-                with patch("runtime_support._rate_limit_pause"), patch("runtime_support.time.sleep"):
+                with patch("binance_platform.runtime_support._rate_limit_pause"), patch("binance_platform.runtime_support.time.sleep"):
                     with self.assertRaises(RuntimeError) as raised:
                         runtime_call_client(
                             runtime,
@@ -742,7 +742,7 @@ class TestBuildExecutionReport(unittest.TestCase):
 
                     runtime = owned_runtime(dry_run=False, client=Client(), run_id="type-check",
                                             state_loader=store.load, state_writer=store.write)
-                    with patch("runtime_support._rate_limit_pause"):
+                    with patch("binance_platform.runtime_support._rate_limit_pause"):
                         with self.assertRaisesRegex(OrderReconciliationError, "order_reconciliation_intent_mismatch"):
                             runtime_call_client(runtime, build_execution_report(runtime),
                                                 method_name="order_market_buy", payload=payload,
@@ -1472,8 +1472,8 @@ def test_unowned_live_call_refuses_before_state_or_broker():
 def test_owner_release_requires_confirmed_fill_and_existing_persisted_action():
     import pytest
     from unittest.mock import Mock
-    from runtime_support import StatePersistenceError
-    from application.execution_service import (
+    from binance_platform.runtime_support import StatePersistenceError
+    from binance_platform.application.execution_service import (
         _parse_filled_order, _apply_fill_balances, _record_trend_fill, _prepare_accounting_state,
     )
     client = Mock()
@@ -1536,7 +1536,7 @@ def test_partial_or_unknown_fill_retains_owner_but_zero_fill_rejection_releases(
 def test_confirmed_earn_and_fuel_require_fresh_balances_and_successful_state_write():
     import pytest
     from unittest.mock import Mock
-    from runtime_support import ExecutionIntegrityError, StatePersistenceError
+    from binance_platform.runtime_support import ExecutionIntegrityError, StatePersistenceError
     for method, payload, effect, asset, response in [
         ('order_market_buy', {'symbol': 'BNBUSDT', 'quantity': 1}, 'order_buy', None,
          {'status': 'FILLED', 'symbol': 'BNBUSDT', 'side': 'BUY', 'executedQty': '1',
@@ -1584,7 +1584,7 @@ def test_confirmed_earn_and_fuel_require_fresh_balances_and_successful_state_wri
 def test_release_uncertainty_does_not_authorize_old_owner_and_readonly_never_claims():
     import pytest
     from unittest.mock import Mock
-    from runtime_support import StatePersistenceError
+    from binance_platform.runtime_support import StatePersistenceError
     runtime = owned_runtime()
     runtime.state_owner_release = Mock(side_effect=TimeoutError('synthetic'))
     with pytest.raises(StatePersistenceError, match='state_owner_release_uncertain'):
@@ -1612,7 +1612,7 @@ def bound_owned_runtime(previous, *, receipt_enabled=False):
 @pytest.mark.parametrize('kind', ['ordinary', 'submission', 'broker_submission'])
 @pytest.mark.parametrize('revocation', ['removed', 'replaced'])
 def test_revoked_owner_cached_local_flag_cannot_mutate_or_submit(kind, revocation):
-    from runtime_support import StatePersistenceError, _persist_order_submission_state
+    from binance_platform.runtime_support import StatePersistenceError, _persist_order_submission_state
     runtime, native = bound_owned_runtime({'order_submission': {'state': 'RESERVED'}, 'value': 1})
     if revocation == 'removed':
         native.data.pop(native.owner)
@@ -1640,7 +1640,7 @@ def test_revoked_owner_cached_local_flag_cannot_mutate_or_submit(kind, revocatio
 
 @pytest.mark.parametrize('failure', ['before_commit', 'after_commit'])
 def test_submission_commit_uncertainty_halts_broker_and_cannot_retry(failure):
-    from runtime_support import StatePersistenceError
+    from binance_platform.runtime_support import StatePersistenceError
     runtime, native = bound_owned_runtime({'order_submission': {'state': 'RESERVED'}})
     native.failure = failure
     report = build_execution_report(runtime)
@@ -1661,7 +1661,7 @@ def test_submission_commit_uncertainty_halts_broker_and_cannot_retry(failure):
 
 
 def test_bound_native_port_rejects_replaced_writer_before_any_mutation():
-    from runtime_support import StatePersistenceError, _persist_order_submission_state
+    from binance_platform.runtime_support import StatePersistenceError, _persist_order_submission_state
     runtime, native = bound_owned_runtime({'order_submission': {'state': 'RESERVED'}})
     rogue = Mock(return_value=True)
     runtime.state_writer = rogue
@@ -1674,7 +1674,7 @@ def test_bound_native_port_rejects_replaced_writer_before_any_mutation():
 
 def test_receipt_forward_requires_interval_and_reason_on_bound_runtime():
     from test_interval_source_receipt_candidate import material
-    from runtime_support import StatePersistenceError
+    from binance_platform.runtime_support import StatePersistenceError
     previous, following, interval = material()
     for reason, payload in [('earn_forward_accounting', None), ('daily_reset', interval)]:
         runtime, native = bound_owned_runtime(previous, receipt_enabled=True)
@@ -1689,7 +1689,7 @@ def test_receipt_forward_requires_interval_and_reason_on_bound_runtime():
 
 def test_ordinary_then_all_submission_transition_saves_preserve_committed_receipt_checkpoint():
     from test_interval_source_receipt_candidate import material
-    from runtime_support import _persist_order_submission_state
+    from binance_platform.runtime_support import _persist_order_submission_state
     previous, following, interval = material()
     runtime, native = bound_owned_runtime(previous, receipt_enabled=True)
     report = build_execution_report(runtime)
@@ -1715,7 +1715,7 @@ def test_ordinary_then_all_submission_transition_saves_preserve_committed_receip
 
 
 def test_external_mid_commit_invalidation_cannot_rearm_runtime_or_continue_broker():
-    from runtime_support import StatePersistenceError
+    from binance_platform.runtime_support import StatePersistenceError
     runtime, native = bound_owned_runtime({'order_submission': {'state': 'RESERVED'}, 'value': 1})
     native.after_commit = lambda _native: runtime.bound_state_access.invalidate()
     report = build_execution_report(runtime)

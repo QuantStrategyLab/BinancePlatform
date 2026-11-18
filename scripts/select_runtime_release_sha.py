@@ -7,10 +7,12 @@ import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+_SRC_ROOT = _REPO_ROOT / "src"
+for _path in (_SRC_ROOT, _REPO_ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
-from runtime_release_selection import main  # noqa: E402
+from binance_platform.runtime_release_selection import main  # noqa: E402
 
 if __name__ == "__main__":
     raise SystemExit(main())

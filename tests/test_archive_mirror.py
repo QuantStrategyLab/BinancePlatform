@@ -4,7 +4,7 @@ from unittest.mock import Mock
 import pytest
 from botocore.exceptions import ClientError
 
-from infra.archive_mirror import mirror
+from binance_platform.infra.archive_mirror import mirror
 
 
 @pytest.fixture

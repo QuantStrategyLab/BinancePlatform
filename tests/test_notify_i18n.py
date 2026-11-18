@@ -76,10 +76,10 @@ for path in (PLATFORM_KIT_SRC, CRYPTO_STRATEGIES_SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-import main
-from degraded_mode_support import format_trend_pool_source_logs
-from market_snapshot_support import capture_market_snapshot
-from notify_i18n_support import build_strategy_display_name, build_translator, get_notify_lang
+import binance_platform.main as main
+from binance_platform.degraded_mode_support import format_trend_pool_source_logs
+from binance_platform.market_snapshot_support import capture_market_snapshot
+from binance_platform.notify_i18n_support import build_strategy_display_name, build_translator, get_notify_lang
 
 
 class FakeClient:

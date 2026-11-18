@@ -2,9 +2,9 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from infra.btc_no_submit import approved_exit_proposal
+from binance_platform.infra.btc_no_submit import approved_exit_proposal
 
-from infra.btc_attribution import AttributionBlocked, read_btc_balance_with_parts, reconstruct
+from binance_platform.infra.btc_attribution import AttributionBlocked, read_btc_balance_with_parts, reconstruct
 
 NOW = datetime(2026, 10, 30, tzinfo=timezone.utc)
 

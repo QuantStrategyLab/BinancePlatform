@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from infra.archive_alert import relay
+from binance_platform.infra.archive_alert import relay
 
 
 @pytest.fixture

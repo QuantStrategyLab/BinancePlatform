@@ -15,7 +15,7 @@ for candidate in (ROOT, QPK_SRC, CRYPTO_STRATEGIES_SRC):
     if candidate_str not in sys.path:
         sys.path.insert(0, candidate_str)
 
-from strategy_registry import (  # noqa: E402
+from binance_platform.strategy_registry import (  # noqa: E402
     BINANCE_PLATFORM,
     get_platform_profile_status_matrix,
     resolve_research_strategy_definition,
