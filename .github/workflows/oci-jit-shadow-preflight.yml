@@ -49,7 +49,7 @@ jobs:
           set -euo pipefail
           args=(
             preflight
-            --contract infra/oci-jit-shadow/contract.json
+            --contract src/binance_platform/infra/oci-jit-shadow/contract.json
             --attestations-env OCI_JIT_ATTESTATIONS_JSON
             --output reports/oci_jit_shadow_preflight.json
           )
@@ -62,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           python scripts/oci_jit_shadow_preflight.py audit-orphans \
-            --contract infra/oci-jit-shadow/contract.json \
+            --contract src/binance_platform/infra/oci-jit-shadow/contract.json \
             --inventory tests/fixtures/oci_jit_shadow/clean_inventory.json \
             --output reports/oci_jit_shadow_orphan_audit.json \
             --require-ready
