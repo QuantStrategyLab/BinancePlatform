@@ -831,8 +831,8 @@ jobs:
             echo "::error::Live strategy entry requires RUNTIME_TARGET_ENABLED=true."
             exit 1
           fi
-          "$VENV_PATH/bin/python" -c "from runtime_config_support import assert_standard_execution_entry_permitted; assert_standard_execution_entry_permitted(); print('runtime_control_ok')"
-          "$VENV_PATH/bin/python" main.py
+          "$VENV_PATH/bin/python" -c "from binance_platform.runtime_config_support import assert_standard_execution_entry_permitted; assert_standard_execution_entry_permitted(); print('runtime_control_ok')"
+          "$VENV_PATH/bin/python" -m binance_platform.main
         env:
           RECOVERY_ACTION: ${{ inputs.recovery_action || 'none' }}
           RECOVERY_ID: ${{ inputs.recovery_id }}

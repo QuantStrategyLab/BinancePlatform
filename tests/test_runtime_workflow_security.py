@@ -341,7 +341,7 @@ def test_reconciliation_only_can_collect_evidence_while_normal_runtime_is_disabl
     reconciliation_gate = "env.RUNTIME_TARGET_ENABLED == 'true' || github.event.inputs.reconcile_only == 'true'"
     assert broker_job.count(reconciliation_gate) >= 4
     assert 'if [ "${RECONCILE_ONLY:-false}" = "true" ]; then' in broker_job
-    assert '"$VENV_PATH/bin/python" main.py' in broker_job
+    assert '"$VENV_PATH/bin/python" -m binance_platform.main' in broker_job
 
 
 def test_strategy_step_passes_and_revalidates_runtime_controls_before_main() -> None:
@@ -367,7 +367,7 @@ def test_strategy_step_passes_and_revalidates_runtime_controls_before_main() -> 
     )
     assert "assert_standard_execution_entry_permitted" in strategy
     assert strategy.index("assert_standard_execution_entry_permitted") < strategy.index(
-        '"$VENV_PATH/bin/python" main.py'
+        '"$VENV_PATH/bin/python" -m binance_platform.main'
     )
     assert (
         'if [ "${RUNTIME_TARGET_ENABLED:-}" != "true" ]; then'
@@ -722,7 +722,7 @@ def test_recovery_credentials_are_scoped_to_explicit_recovery_actions():
     assert "inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate'" in workflow
     step = workflow.split("      - name: 4. Run trading strategy", 1)[1].split("        env:", 1)[0]
     assert 'scripts/binance_recovery_controller.py "$RECOVERY_ACTION"' in step
-    assert step.index("binance_recovery_controller.py") < step.index('main.py')
+    assert step.index("binance_recovery_controller.py") < step.index("binance_platform.main")
     token_lines = [line for line in workflow.splitlines() if line.strip().startswith(("RECONCILIATION_RECOVERY_SYNC_TOKEN:", "RECONCILIATION_RECOVERY_CONTROLLER_TOKEN:"))]
     assert all("diagnose" not in line for line in token_lines)
     controller_token_line = next(
