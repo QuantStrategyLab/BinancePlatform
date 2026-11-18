@@ -192,7 +192,7 @@ jobs:
 
       - name: Publish monitor execution evidence
         if: ${{ steps.target.outputs.configured_state == 'enabled' && steps.execution-heartbeat.outcome == 'success' }}
-        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-execution-evidence@2cb9834dc34b8a23e1b261457e1e077bfc414386
+        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-execution-evidence@5d518e3363cdbad6e21102677a71cb5d036d3d74
         with:
           source-id: runtime-reports-binance
           report-platform: binance
@@ -214,7 +214,7 @@ jobs:
         run: python scripts/runtime_target_lifecycle_monitoring.py
 
       - name: Publish target lifecycle snapshot
-        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-target-lifecycle@2cb9834dc34b8a23e1b261457e1e077bfc414386
+        uses: QuantStrategyLab/QuantRuntimeSettings/actions/publish-runtime-target-lifecycle@5d518e3363cdbad6e21102677a71cb5d036d3d74
         with:
           source-id: binance.runtime-target-lifecycle
           target-id: ${{ steps.target.outputs.target_id }}
