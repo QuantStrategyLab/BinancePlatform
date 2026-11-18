@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from application.portfolio_service import maybe_rebase_daily_state_for_balance_change, compute_daily_pnls
-from runtime_support import ExecutionIntegrityError
+from binance_platform.application.portfolio_service import maybe_rebase_daily_state_for_balance_change, compute_daily_pnls
+from binance_platform.runtime_support import ExecutionIntegrityError
 
 NOW = datetime(2026, 9, 12, 14, 1, tzinfo=timezone.utc)
 
@@ -199,7 +199,7 @@ def test_write_failure_does_not_advance_in_memory_checkpoint():
 
 
 def test_fill_accumulator_is_exact_and_terminal_transition_is_idempotent():
-    from runtime_support import account_known_fill_for_earn
+    from binance_platform.runtime_support import account_known_fill_for_earn
     state, _, _ = materials()
     state['order_submission'] = {'state': 'FILLED_ACCOUNTING_PENDING', 'symbol': 'BNBUSDT', 'known_fill': {
         'side': 'BUY', 'executed_qty': '0.02', 'cummulative_quote_qty': '10',
@@ -212,7 +212,7 @@ def test_fill_accumulator_is_exact_and_terminal_transition_is_idempotent():
 
 
 def test_normalizer_preserves_checkpoint_and_pending_fill_deltas():
-    from trade_state_support import normalize_trade_state
+    from binance_platform.trade_state_support import normalize_trade_state
     state, _, _ = materials()
     result = normalize_trade_state(state, trend_universe={}, last_good_payload_key='pool',
                                    action_history_key='history', retired_positions_key='retired')
@@ -223,7 +223,7 @@ def test_normalizer_preserves_checkpoint_and_pending_fill_deltas():
 
 
 def test_cash_refresh_checks_income_and_fill_without_advancing_unread_flow_cursor(monkeypatch):
-    from runtime_support import reconcile_runtime_cash_effects
+    from binance_platform.runtime_support import reconcile_runtime_cash_effects
     state, new, cash = materials()
     state['order_submission'] = {'state': 'FILLED_ACCOUNTING_PENDING', 'symbol': 'BNBUSDT', 'known_fill': {
         'side': 'BUY', 'executed_qty': '0.02', 'cummulative_quote_qty': '10',
@@ -232,7 +232,7 @@ def test_cash_refresh_checks_income_and_fill_without_advancing_unread_flow_curso
     new['assets']['BNB'].update(spot_free='1.01999', quantity='3.01999001')
     before_checkpoint = copy.deepcopy(state['earn_accrual_checkpoint'])
     before_cursor = copy.deepcopy(state['external_cash_flow_cursor'])
-    monkeypatch.setattr('application.earn_accrual.collect_earn_checkpoint', lambda *a, **kw: new)
+    monkeypatch.setattr('binance_platform.application.earn_accrual.collect_earn_checkpoint', lambda *a, **kw: new)
     runtime = SimpleNamespace(client=object(), state_owner_held=True, state_owner_id='synthetic',
         fuel_symbol='BNBUSDT', pending_funds=[{'asset': 'BNB', 'confirmed': True}])
     reconcile_runtime_cash_effects(runtime, state)
@@ -246,7 +246,7 @@ def test_cash_refresh_checks_income_and_fill_without_advancing_unread_flow_curso
 
 
 def test_cash_refresh_bridges_verified_bnb_dividend_without_advancing_checkpoint(monkeypatch):
-    from runtime_support import reconcile_runtime_cash_effects
+    from binance_platform.runtime_support import reconcile_runtime_cash_effects
 
     state, new, _cash = materials()
     new['assets']['BNB']['products']['BNB001']['realtime_rewards'] = '0.1'
@@ -261,7 +261,7 @@ def test_cash_refresh_bridges_verified_bnb_dividend_without_advancing_checkpoint
                 'amount': '0.00000001', 'direction': 1,
             }]}
 
-    monkeypatch.setattr('application.earn_accrual.collect_earn_checkpoint', lambda *a, **kw: new)
+    monkeypatch.setattr('binance_platform.application.earn_accrual.collect_earn_checkpoint', lambda *a, **kw: new)
     runtime = SimpleNamespace(
         client=Client(), state_owner_held=True, state_owner_id='synthetic',
         fuel_symbol='BNBUSDT', pending_funds=[{'asset': 'BNB', 'confirmed': True}],
@@ -277,13 +277,13 @@ def test_cash_refresh_bridges_verified_bnb_dividend_without_advancing_checkpoint
 
 
 def test_market_valuation_uses_same_checkpoint_not_independent_balance_reads(monkeypatch):
-    from market_snapshot_support import capture_market_snapshot
+    from binance_platform.market_snapshot_support import capture_market_snapshot
     state, new, _ = materials()
     for checkpoint in (state['earn_accrual_checkpoint'], new):
         checkpoint['assets']['BTC'] = {'spot_free': '0', 'spot_locked': '0', 'quantity': '0', 'products': {}}
     c = SimpleNamespace(get_avg_price=lambda **kw: {'price': '500'})
     runtime = SimpleNamespace(client=c, trade_state=state, now_utc=NOW)
-    monkeypatch.setattr('application.earn_accrual.collect_earn_checkpoint', lambda *a, **kw: new)
+    monkeypatch.setattr('binance_platform.application.earn_accrual.collect_earn_checkpoint', lambda *a, **kw: new)
     def forbidden(*a, **kw): raise AssertionError('separate balance read')
     result = capture_market_snapshot(runtime, {}, {}, [], get_total_balance_fn=forbidden,
         resolve_btc_snapshot_fn=lambda *a: {'ready': True}, resolve_trend_indicators_fn=lambda *a: {})
@@ -294,7 +294,7 @@ def test_market_valuation_uses_same_checkpoint_not_independent_balance_reads(mon
 
 
 def test_accounting_terminal_hook_records_raw_fill_before_discarding_it():
-    from application.execution_service import _prepare_accounting_state
+    from binance_platform.application.execution_service import _prepare_accounting_state
     state, _, _ = materials()
     state['order_submission'] = {'state': 'FILLED_ACCOUNTING_PENDING', 'symbol': 'BNBUSDT', 'known_fill': {
         'side': 'BUY', 'executed_qty': '0.02', 'cummulative_quote_qty': '10',
@@ -307,8 +307,8 @@ def test_accounting_terminal_hook_records_raw_fill_before_discarding_it():
 @pytest.mark.parametrize('persist_ok', [False, True])
 def test_forward_status_requires_durable_write_and_survives_normalized_reload(tmp_path, persist_ok):
     import json
-    from runtime_support import ExecutionRuntime, StatePersistenceError, runtime_set_trade_state
-    from trade_state_support import normalize_trade_state
+    from binance_platform.runtime_support import ExecutionRuntime, StatePersistenceError, runtime_set_trade_state
+    from binance_platform.trade_state_support import normalize_trade_state
 
     state, current, cash = materials()
     before = copy.deepcopy(state)

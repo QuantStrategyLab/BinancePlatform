@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from application.account_facts import AccountFactsUnavailable, validate_account_facts_payload  # noqa: E402
+from binance_platform.application.account_facts import AccountFactsUnavailable, validate_account_facts_payload  # noqa: E402
 
 
 QRS_ENDPOINT = "https://qsl-strategy-switch-console.pigbibi.workers.dev/api/internal/binance-account-facts"

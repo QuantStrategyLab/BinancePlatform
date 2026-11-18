@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Callable
+
+from quant_platform_kit.common.runtime_target import (
+    RuntimeTarget,
+    build_runtime_target,
+    resolve_runtime_target_from_env,
+)
+from quant_platform_kit.common.live_continuity import runtime_target_permits_standard_execution
+
+from binance_platform.notify_i18n_support import build_strategy_display_name, build_translator, get_notify_lang
+from binance_platform.runtime_support import ExecutionRuntime
+from binance_platform.strategy_registry import (
+    BINANCE_PLATFORM,
+    FULL_CYCLE_NO_SUBMIT,
+    resolve_strategy_definition,
+    resolve_research_strategy_metadata,
+    resolve_research_strategy_definition,
+    resolve_runtime_target_strategy,
+)
+
+
+def get_env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except Exception:
+        return int(default)
+
+
+def _resolve_btc_status_report_interval_hours() -> int:
+    configured_hours = get_env_int("BTC_STATUS_REPORT_INTERVAL_HOURS", 24)
+    if configured_hours == 0:
+        return 0
+    return max(1, min(24, configured_hours))
+
+
+def get_env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return bool(default)
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def resolve_runtime_target_enabled_flag() -> bool:
+    """Return the operator stop-control flag.
+
+    Missing or blank values fail closed as disabled.  Non-literal values raise
+    so a misconfigured environment cannot silently reopen trading.  This flag
+    alone never grants orders; continuity must also permit standard execution.
+    """
+
+    raw = os.getenv("RUNTIME_TARGET_ENABLED")
+    if raw is None or not str(raw).strip():
+        return False
+    value = str(raw).strip().lower()
+    if value not in {"true", "false"}:
+        raise ValueError("RUNTIME_TARGET_ENABLED must be true or false")
+    return value == "true"
+
+
+def get_env_csv(name: str, default_values: list[str] | tuple[str, ...]) -> list[str]:
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return list(default_values)
+    return [item.strip() for item in str(raw).split(",") if item.strip()]
+
+
+@dataclass(frozen=True)
+class CycleExecutionSettings:
+    btc_status_report_interval_hours: int
+    allow_new_trend_entries_on_degraded: bool
+    strategy_profile: str
+    strategy_display_name: str
+    strategy_display_name_localized: str
+    strategy_domain: str
+    runtime_target: RuntimeTarget
+    runtime_target_enabled: bool
+
+
+def load_cycle_execution_settings(*, validation_scope: str = "standard") -> CycleExecutionSettings:
+    notify_lang = get_notify_lang()
+    runtime_target, strategy_definition = _resolve_runtime_target(validation_scope=validation_scope)
+    strategy_metadata = resolve_research_strategy_metadata(
+        strategy_definition.profile,
+        platform_id=BINANCE_PLATFORM,
+    )
+    strategy_display_name_localized = build_strategy_display_name(build_translator(notify_lang))(
+        strategy_definition.profile,
+        fallback_name=strategy_metadata.display_name,
+        metadata=strategy_metadata,
+    )
+    return CycleExecutionSettings(
+        btc_status_report_interval_hours=_resolve_btc_status_report_interval_hours(),
+        allow_new_trend_entries_on_degraded=get_env_bool(
+            "STRATEGY_ARTIFACT_ALLOW_NEW_ENTRIES_ON_DEGRADED",
+            False,
+        ),
+        strategy_profile=strategy_definition.profile,
+        strategy_display_name=strategy_metadata.display_name,
+        strategy_display_name_localized=strategy_display_name_localized,
+        strategy_domain=strategy_definition.domain,
+        runtime_target=runtime_target,
+        runtime_target_enabled=(
+            resolve_runtime_target_enabled_flag()
+            and runtime_target_permits_standard_execution(runtime_target)
+        ),
+    )
+
+
+def assert_standard_execution_entry_permitted() -> CycleExecutionSettings:
+    """Fail closed before the live strategy entrypoint may run.
+
+    Used by the Runtime workflow so a false switch, missing switch, or
+    RECONCILE_ONLY continuity cannot reach ``main.py`` even when dry-run is
+    false.  validate_only / reconcile_only paths must not call this helper.
+    """
+
+    settings = load_cycle_execution_settings()
+    if not settings.runtime_target_enabled:
+        raise RuntimeError(
+            "standard execution not permitted by RUNTIME_TARGET_ENABLED/"
+            "live_continuity; refusing live strategy entry"
+        )
+    return settings
+
+
+def _resolve_runtime_target(*, validation_scope: str = "standard"):
+    if validation_scope not in {"standard", FULL_CYCLE_NO_SUBMIT}:
+        raise ValueError("unsupported_strategy_validation_scope")
+    if validation_scope == FULL_CYCLE_NO_SUBMIT and os.getenv("RUNTIME_TARGET_ENABLED") != "false":
+        raise ValueError("full_cycle_no_submit_requires_disabled_runtime")
+    raw_runtime_target = str(os.getenv("RUNTIME_TARGET_JSON") or "").strip()
+    raw_strategy_profile = str(os.getenv("STRATEGY_PROFILE") or "").strip()
+    if raw_runtime_target:
+        runtime_target = resolve_runtime_target_from_env(
+            env=os.environ,
+            expected_platform_id=BINANCE_PLATFORM,
+        )
+        runtime_target, strategy_definition = resolve_runtime_target_strategy(
+            runtime_target, validation_scope=validation_scope,
+        )
+        if raw_strategy_profile:
+            legacy_definition = resolve_research_strategy_definition(
+                raw_strategy_profile,
+                platform_id=BINANCE_PLATFORM,
+            )
+            if legacy_definition.profile != strategy_definition.profile:
+                raise ValueError(
+                    "STRATEGY_PROFILE does not match RUNTIME_TARGET_JSON.strategy_profile"
+                )
+        if "BINANCE_DRY_RUN" in os.environ:
+            legacy_dry_run = get_env_bool("BINANCE_DRY_RUN", default=True)
+            if legacy_dry_run != runtime_target.dry_run_only:
+                raise ValueError(
+                    "BINANCE_DRY_RUN does not match RUNTIME_TARGET_JSON.dry_run_only"
+                )
+        return runtime_target, strategy_definition
+
+    if validation_scope == FULL_CYCLE_NO_SUBMIT:
+        raise ValueError("full_cycle_no_submit_requires_runtime_target")
+
+    strategy_definition = resolve_strategy_definition(
+        raw_strategy_profile or None,
+        platform_id=BINANCE_PLATFORM,
+    )
+    runtime_target = build_runtime_target(
+        platform_id=BINANCE_PLATFORM,
+        strategy_profile=strategy_definition.profile,
+        dry_run_only=get_env_bool("BINANCE_DRY_RUN", default=True),
+        deployment_selector=os.getenv("DEPLOYMENT_SELECTOR") or "default",
+        account_selector=os.getenv("ACCOUNT_SELECTOR") or "default",
+        account_scope=os.getenv("ACCOUNT_SCOPE") or "default",
+        service_name=os.getenv("SERVICE_NAME") or "binance-platform",
+    )
+    return runtime_target, strategy_definition
+
+
+def _load_live_risk_authority(runtime_target, strategy_profile: str, now_utc: datetime, *, version_diagnostics: bool = False):
+    authority_env_names = (
+        "BINANCE_RISK_AUTHORITY_FILE",
+        "BINANCE_RISK_AUTHORITY_SHA256",
+        "BINANCE_RISK_AUTHORITY_SOURCE_REVISION",
+    )
+    if not any(str(os.getenv(name) or "").strip() for name in authority_env_names):
+        return None
+    from binance_platform.live_risk_authority import config_sha256, load_live_risk_authority
+    from binance_platform.strategy_runtime import load_research_only_strategy_runtime, load_strategy_runtime
+
+    try:
+        strategy_runtime = load_strategy_runtime(strategy_profile, runtime_target=runtime_target)
+    except ValueError:
+        # The config digest is still derived from the pinned installed
+        # manifest for a disabled target; execution activation remains gated
+        # by the normal strategy policy in main.py.
+        strategy_runtime = load_research_only_strategy_runtime(strategy_profile)
+    effective_config = dict(strategy_runtime.merged_runtime_config)
+    effective_config.update(strategy_runtime.runtime_overrides)
+    return load_live_risk_authority(
+        runtime_target=runtime_target,
+        strategy_revision=None,
+        runner_revision=None,
+        config_sha256=config_sha256(effective_config),
+        now_utc=now_utc,
+        version_diagnostics=version_diagnostics,
+    )
+
+
+def build_live_runtime(
+    *,
+    validation_scope: str = "standard",
+    now_utc: datetime | None = None,
+    state_loader: Callable[..., Any] | None = None,
+    state_writer: Callable[[dict[str, Any]], Any] | None = None,
+    notifier: Callable[..., Any] | None = None,
+) -> ExecutionRuntime:
+    runtime_now = now_utc or datetime.now(timezone.utc)
+    cycle_settings = load_cycle_execution_settings(validation_scope=validation_scope)
+    risk_authority = _load_live_risk_authority(
+        cycle_settings.runtime_target,
+        cycle_settings.strategy_profile,
+        runtime_now,
+        version_diagnostics=validation_scope == "full_cycle_no_submit",
+    )
+    return ExecutionRuntime(
+        dry_run=cycle_settings.runtime_target.dry_run_only,
+        now_utc=runtime_now,
+        strategy_profile=cycle_settings.strategy_profile,
+        strategy_domain=cycle_settings.strategy_domain,
+        strategy_display_name=cycle_settings.strategy_display_name,
+        strategy_display_name_localized=cycle_settings.strategy_display_name_localized,
+        api_key=os.getenv("BINANCE_API_KEY", ""),
+        api_secret=os.getenv("BINANCE_API_SECRET", ""),
+        tg_token=os.getenv("TG_TOKEN", ""),
+        tg_chat_id=os.getenv("QSL_GLOBAL_TELEGRAM_CHAT_ID") or os.getenv("GLOBAL_TELEGRAM_CHAT_ID", ""),
+        state_loader=state_loader,
+        state_writer=state_writer,
+        notifier=notifier,
+        runtime_target=cycle_settings.runtime_target,
+        standard_execution_permitted=cycle_settings.runtime_target_enabled,
+        risk_authority=risk_authority,
+    )

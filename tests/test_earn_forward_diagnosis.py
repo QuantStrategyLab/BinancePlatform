@@ -117,7 +117,7 @@ def install_read_stubs(monkeypatch, migration, refs, *, current=None, history=No
     monkeypatch.setattr(migration, "_expected_digests", lambda: {"account_scope_sha256": SCOPE})
     monkeypatch.setattr(migration, "digest", lambda _value: SCOPE)
     monkeypatch.setattr(
-        "application.earn_accrual.collect_earn_checkpoint",
+        "binance_platform.application.earn_accrual.collect_earn_checkpoint",
         lambda *args, **kwargs: copy.deepcopy(current),
     )
     monkeypatch.setattr(migration, "collect_spot_usdt_external_cash_flows", lambda *a, **k: copy.deepcopy(flows))
@@ -151,7 +151,7 @@ def test_existing_owner_is_reported_but_does_not_block_read_only_diagnosis(monke
 
 
 def test_stable_reward_only_interval_is_eligible_for_forward_accounting(monkeypatch):
-    from application import earn_accrual
+    from binance_platform.application import earn_accrual
     from scripts import migrate_daily_accounting_state as migration
 
     real_collect = earn_accrual.collect_earn_checkpoint
@@ -260,7 +260,7 @@ def test_realtime_only_change_is_zero_after_counter_and_not_bonus(monkeypatch):
         },
     }
     install_read_stubs(monkeypatch, migration, refs, current=current, history=history)
-    from application.broker_reconciliation import diagnose_balance_flows as real_diagnose_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_balance_flows as real_diagnose_balance_flows
 
     class EmptyHistoryClient:
         def _request_margin_api(self, _method, path, *, signed, data):
@@ -293,7 +293,7 @@ def test_realtime_only_change_is_zero_after_counter_and_not_bonus(monkeypatch):
 def test_sampling_distinguishes_normal_realtime_growth_from_mixed_snapshot(
     monkeypatch, second_amount, second_reward, expected_stable
 ):
-    from application import earn_accrual
+    from binance_platform.application import earn_accrual
     from scripts import migrate_daily_accounting_state as migration
 
     real_collect = earn_accrual.collect_earn_checkpoint

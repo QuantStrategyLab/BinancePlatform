@@ -13,16 +13,16 @@ from unittest.mock import patch
 
 import pytest
 
-from notifications.digest_snapshot.digest_routing import routine_notification
-from reporting.status_reports import maybe_send_periodic_btc_status_report
-from runtime_support import runtime_notify
+from binance_platform.notifications.digest_snapshot.digest_routing import routine_notification
+from binance_platform.reporting.status_reports import maybe_send_periodic_btc_status_report
+from binance_platform.runtime_support import runtime_notify
 
 
 GOLDEN = Path(__file__).parent / "fixtures" / "notification_main_3974b72.json"
 
 
 def record_execution_calls():
-    from application.execution_service import execute_trend_buys, execute_trend_sells
+    from binance_platform.application.execution_service import execute_trend_buys, execute_trend_sells
     from tests.test_execution_service import _filled_response
 
     results = []
@@ -61,8 +61,8 @@ def record_execution_calls():
 
 
 def record_main_calls(monkeypatch, mode):
-    import main
-    from notify_i18n_support import translate
+    import binance_platform.main as main
+    from binance_platform.notify_i18n_support import translate
     from tests.test_cycle_service import CycleServiceTests
 
     monkeypatch.setenv("QSL_ROUTINE_NOTIFICATION_MODE", mode)
@@ -117,7 +117,7 @@ def test_flags_off_matches_main_entrypoint_and_renderer_call_recordings(monkeypa
         monkeypatch.delenv("BINANCE_UNIFIED_NOTIFICATION_ENABLED", raising=False)
     else:
         monkeypatch.setenv("BINANCE_UNIFIED_NOTIFICATION_ENABLED", flag)
-    from notifications import unified_notifications as unified
+    from binance_platform.notifications import unified_notifications as unified
     original_route = unified.route
     deferred = []
     def route_with_confirmed_candidate(send, *, kind, **kwargs):
@@ -157,7 +157,7 @@ def test_flags_off_matches_main_entrypoint_and_renderer_call_recordings(monkeypa
 @pytest.mark.parametrize("flag", [None, "", "false", "invalid"])
 @pytest.mark.parametrize("locale", ["zh-CN", "en"])
 def test_flags_off_transport_receipts_and_http_calls_match_main(monkeypatch, flag, locale):
-    import live_services
+    import binance_platform.live_services as live_services
     scope = dict(vars(live_services))
     exec(compile((GOLDEN.parent / "send_tg_msg_main_3974b72.source").read_text(), "<main-transport>", "exec"), scope)
     monkeypatch.setenv("NOTIFY_LANG", locale)

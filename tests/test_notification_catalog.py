@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from notify_i18n_support import _TEXTS, build_translator, get_notify_lang
-from reporting.status_reports import maybe_send_periodic_btc_status_report
+from binance_platform.notify_i18n_support import _TEXTS, build_translator, get_notify_lang
+from binance_platform.reporting.status_reports import maybe_send_periodic_btc_status_report
 
 
 @pytest.mark.parametrize("locale", ["zh-CN", "zh_TW", "ZH-hans", "zh"])
@@ -20,12 +20,12 @@ def test_catalog_covers_literal_runtime_keys_and_matching_placeholders():
     root = Path(__file__).resolve().parents[1]
     keys = set()
     for relative in (
-        "main.py",
-        "runtime_wiring.py",
-        "notifications_runtime.py",
-        "http_routes.py",
-        "reporting/status_reports.py",
-        "live_services.py",
+        "src/binance_platform/main.py",
+        "src/binance_platform/runtime_wiring.py",
+        "src/binance_platform/notifications_runtime.py",
+        "src/binance_platform/http_routes.py",
+        "src/binance_platform/reporting/status_reports.py",
+        "src/binance_platform/live_services.py",
     ):
         for node in ast.walk(ast.parse((root / relative).read_text())):
             if (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)

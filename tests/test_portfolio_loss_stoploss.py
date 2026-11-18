@@ -6,7 +6,7 @@ from quant_platform_kit import PortfolioSnapshot, Position
 from quant_platform_kit.common.strategy_contracts import BudgetIntent, PositionTarget, StrategyDecision
 from quant_platform_kit.risk.gate import _STOP_LOSS_THRESHOLD
 
-from portfolio_loss_stoploss import apply_portfolio_loss_stoploss
+from binance_platform.portfolio_loss_stoploss import apply_portfolio_loss_stoploss
 
 
 def snapshot(pnl, *, cost=100.0):
@@ -40,7 +40,7 @@ def test_below_original_threshold_rejects_without_replacing_member_evidence():
     assert result.risk_flags == ("existing:flag", "rejected:stop_loss")
     assert result.diagnostics == original.diagnostics
     assert original.positions and original.budgets
-    from decision_mapper import map_strategy_decision_to_allocation
+    from binance_platform.decision_mapper import map_strategy_decision_to_allocation
     allocation = map_strategy_decision_to_allocation(result, account_metrics={
         "total_equity": 100, "trend_value": 0, "dca_value": 79,
     })
@@ -57,5 +57,5 @@ def test_existing_threshold_is_reused_and_other_legacy_checks_are_not_enabled():
     original = decision()
     # This flag would reject via the whole legacy gate; only stoploss is wired.
     original.diagnostics["consecutive_losses"] = 100
-    with patch("portfolio_loss_stoploss.compute_unrealized_pnl_pct", return_value=None):
+    with patch("binance_platform.portfolio_loss_stoploss.compute_unrealized_pnl_pct", return_value=None):
         assert apply_portfolio_loss_stoploss(original, snapshot(0)) is original

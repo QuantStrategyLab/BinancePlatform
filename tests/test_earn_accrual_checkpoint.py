@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from application.earn_accrual import collect_earn_checkpoint, compare_earn_checkpoints
+from binance_platform.application.earn_accrual import collect_earn_checkpoint, compare_earn_checkpoints
 
 NOW = datetime(2026, 9, 12, 14, tzinfo=timezone.utc)
 

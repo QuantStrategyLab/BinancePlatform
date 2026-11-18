@@ -755,7 +755,7 @@ def test_inspect_control_classifies_invalid_prospective_rebase_without_private_r
 
 def _audit_setup(monkeypatch):
     from scripts import migrate_daily_accounting_state as migration
-    from application.reconciliation_recovery import collect_recovery_source
+    from binance_platform.application.reconciliation_recovery import collect_recovery_source
     from tests.test_reconciliation_recovery import inputs
     args = inputs()
     expected = args["expected"]
@@ -1103,7 +1103,7 @@ def test_prospective_proposal_runtime_binds_run_fingerprint_without_ledger_or_or
     monkeypatch, tmp_path, capsys, control_state
 ):
     from scripts import migrate_daily_accounting_state as migration
-    from application import reconciliation_recovery
+    from binance_platform.application import reconciliation_recovery
 
     now = datetime.now(timezone.utc)
     ledger = _ledger(

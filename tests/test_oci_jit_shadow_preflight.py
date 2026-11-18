@@ -9,11 +9,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "oci_jit_shadow_preflight.py"
-CONTRACT = ROOT / "infra" / "oci-jit-shadow" / "contract.json"
-ATTESTATIONS = ROOT / "infra" / "oci-jit-shadow" / "preflight-attestations.example.json"
+CONTRACT = ROOT / "src" / "binance_platform" / "infra" / "oci-jit-shadow" / "contract.json"
+ATTESTATIONS = ROOT / "src" / "binance_platform" / "infra" / "oci-jit-shadow" / "preflight-attestations.example.json"
 FIXTURES = ROOT / "tests" / "fixtures" / "oci_jit_shadow"
 WORKFLOW = ROOT / ".github" / "workflows" / "oci-jit-shadow-preflight.yml"
-README = ROOT / "infra" / "oci-jit-shadow" / "README.md"
+README = ROOT / "src" / "binance_platform" / "infra" / "oci-jit-shadow" / "README.md"
 FULL_SHA_ACTION = re.compile(r"(?:-\s+)?uses:\s+[^\s@]+@[0-9a-f]{40}(?:\s+#\s+v\d+)?$")
 
 

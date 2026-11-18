@@ -778,7 +778,7 @@ which operator-owned OCI repository variables are still missing; exercises the
 fail-closed orphan audit; and reruns the no-order fixture. It has no OCI OIDC,
 broker secret, environment, or mutation authority. The required variables and
 redacted attestation format are listed in
-[`infra/oci-jit-shadow/README.md`](../infra/oci-jit-shadow/README.md). A clean
+[`src/binance_platform/infra/oci-jit-shadow/README.md`](../src/binance_platform/infra/oci-jit-shadow/README.md). A clean
 fixture audit proves the checker, not the absence of real OCI or GitHub orphans.
 
 ## Degraded Mode Ladder

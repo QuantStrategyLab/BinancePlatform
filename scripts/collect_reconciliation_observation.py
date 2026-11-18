@@ -6,8 +6,8 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from application.reconciliation_observation import collect_mock_observation, parse_time
-from application.forward_reconciliation import build_forward_report, forward_envelope
+from binance_platform.application.reconciliation_observation import collect_mock_observation, parse_time
+from binance_platform.application.forward_reconciliation import build_forward_report, forward_envelope
 
 
 def _read(path):

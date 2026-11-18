@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from reporting.status_reports import (
+from binance_platform.reporting.status_reports import (
     append_rotation_summary,
     build_btc_manual_hint,
     get_periodic_report_bucket,

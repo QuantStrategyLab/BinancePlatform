@@ -6,9 +6,9 @@ from types import SimpleNamespace
 
 import pytest
 from quant_platform_kit.common.broker_reconciliation import calculate_broker_observation_sha256
-from application.broker_reconciliation import build_reconciliation_candidate, collect_read_only_reconciliation_observations
+from binance_platform.application.broker_reconciliation import build_reconciliation_candidate, collect_read_only_reconciliation_observations
 from tests.test_broker_reconciliation import _target
-from application.reconciliation_recovery import collect_recovery_source, validate_source
+from binance_platform.application.reconciliation_recovery import collect_recovery_source, validate_source
 
 NOW = datetime(2026, 9, 8, 17, 0, tzinfo=timezone.utc)
 START = NOW - timedelta(days=5)
@@ -100,8 +100,8 @@ def test_source_digest_is_not_a_substitute_for_verifying_frozen_config():
 
 
 def test_recovery_control_read_failure_is_fixed_and_redacted(monkeypatch):
-    import application.reconciliation_recovery as recovery
-    import live_services
+    import binance_platform.application.reconciliation_recovery as recovery
+    import binance_platform.live_services as live_services
 
     class Ref:
         def get(self, **_kwargs):
@@ -125,8 +125,8 @@ def test_recovery_control_read_failure_is_fixed_and_redacted(monkeypatch):
 
 
 def test_recovery_control_validation_failure_keeps_existing_reason(monkeypatch):
-    import application.reconciliation_recovery as recovery
-    import live_services
+    import binance_platform.application.reconciliation_recovery as recovery
+    import binance_platform.live_services as live_services
 
     class Ref:
         exists = True
@@ -160,7 +160,7 @@ def test_candidate_payload_tampering_rejected():
 
 
 def test_confirmation_requires_real_bounded_console_receipt():
-    from application.reconciliation_recovery import verify_confirmation
+    from binance_platform.application.reconciliation_recovery import verify_confirmation
     args = inputs()
     candidate = validate_source(collect_recovery_source(**args), runtime_target=args["runtime_target"], expected=args["expected"], now=NOW)
     for value in ({}, {"ok": True, "confirmation": {"confirmed_by": "operator"}}):
@@ -205,10 +205,10 @@ def active_control():
 
 
 def test_full_runtime_setup_consumes_recovery_with_empty_catalog_allowlist(monkeypatch):
-    import runtime_config_support
-    import strategy_registry
-    import strategy_runtime
-    import application.reconciliation_recovery as recovery
+    import binance_platform.runtime_config_support as runtime_config_support
+    import binance_platform.strategy_registry as strategy_registry
+    import binance_platform.strategy_runtime as strategy_runtime
+    import binance_platform.application.reconciliation_recovery as recovery
     args, control = active_control()
     monkeypatch.setenv("RUNTIME_TARGET_JSON", json.dumps({key: value for key, value in args["runtime_target"].to_dict().items() if key in {"platform_id", "strategy_profile", "dry_run_only", "deployment_selector", "account_selector", "account_scope", "service_name", "live_continuity"}}))
     monkeypatch.setenv("STRATEGY_PROFILE", "crypto_live_pool_rotation")
@@ -220,7 +220,7 @@ def test_full_runtime_setup_consumes_recovery_with_empty_catalog_allowlist(monke
     loaded = strategy_runtime.load_strategy_runtime(runtime.strategy_profile, runtime_target=runtime.runtime_target)
     assert loaded.profile == "crypto_live_pool_rotation"
     assert runtime.standard_execution_permitted is True
-    import main
+    import binance_platform.main as main
     monkeypatch.setattr(main, "bind_trade_state_access", lambda **_: (None, None, None, None))
     built = main.build_live_runtime(now_utc=NOW)
     assert built.standard_execution_permitted is True
@@ -234,8 +234,8 @@ def test_full_runtime_setup_consumes_recovery_with_empty_catalog_allowlist(monke
 
 @pytest.mark.parametrize("change", ["missing_control", "wrong_account", "wrong_profile", "wrong_confirmation"])
 def test_runtime_setup_never_substitutes_catalog_eligibility_for_recovery(monkeypatch, change):
-    import runtime_config_support
-    import application.reconciliation_recovery as recovery
+    import binance_platform.runtime_config_support as runtime_config_support
+    import binance_platform.application.reconciliation_recovery as recovery
     args, control = active_control()
     target = {key: value for key, value in args["runtime_target"].to_dict().items() if key in {"platform_id", "strategy_profile", "dry_run_only", "deployment_selector", "account_selector", "account_scope", "service_name", "live_continuity"}}
     if change == "missing_control":
@@ -255,7 +255,7 @@ def test_runtime_setup_never_substitutes_catalog_eligibility_for_recovery(monkey
 
 
 def test_active_override_requires_complete_matching_atomic_record():
-    from application.reconciliation_recovery import activated_target
+    from binance_platform.application.reconciliation_recovery import activated_target
     args, control = active_control()
     result = activated_target(args["runtime_target"], control, expected=args["expected"])
     assert result.live_continuity.state == "ACTIVE_LKG"
@@ -270,7 +270,7 @@ def test_active_override_requires_complete_matching_atomic_record():
 
 
 def test_active_override_rejects_wrong_account_and_tampered_plan():
-    from application.reconciliation_recovery import activated_target
+    from binance_platform.application.reconciliation_recovery import activated_target
     args, control = active_control()
     for expected, changes in (({**args["expected"], "account_scope_sha256": "f" * 64}, {}), (args["expected"], {"candidate_sha256": "f" * 64})):
         invalid = copy.deepcopy(control)

@@ -9,12 +9,12 @@ from quant_platform_kit.common.live_continuity import (
     runtime_target_permits_standard_execution,
 )
 from quant_platform_kit.common.runtime_target import build_runtime_target
-from runtime_config_support import (
+from binance_platform.runtime_config_support import (
     assert_standard_execution_entry_permitted,
     build_live_runtime,
     load_cycle_execution_settings,
 )
-from strategy_registry import (
+from binance_platform.strategy_registry import (
     BINANCE_ENABLED_PROFILES,
     FULL_CYCLE_NO_SUBMIT,
     PLATFORM_POLICY,
@@ -69,7 +69,7 @@ def test_full_cycle_config_resolves_only_approved_profile_without_production_gra
 
 def test_activation_uses_separate_policy_and_does_not_activate_recovery(target_env, monkeypatch):
     recovery = Mock(side_effect=AssertionError("recovery must not be read or activated"))
-    monkeypatch.setattr("application.reconciliation_recovery.load_activated_target", recovery)
+    monkeypatch.setattr("binance_platform.application.reconciliation_recovery.load_activated_target", recovery)
     target = build_runtime_target(**target_env, continuity_fingerprint_payload=target_env)
     resolved, definition = resolve_runtime_target_strategy(target, validation_scope=FULL_CYCLE_NO_SUBMIT)
     assert resolved is target
@@ -157,7 +157,7 @@ def test_real_cli_forwards_scope_through_builder_activation_and_loader(target_en
     import runpy
     import sys
     from pathlib import Path
-    import main
+    import binance_platform.main as main
 
     # No risk authority or broker: successful admission must reach the next
     # existing guard, without replacing any builder, resolver or loader.
@@ -175,10 +175,10 @@ def test_real_cli_forwards_scope_through_builder_activation_and_loader(target_en
 
 
 def test_real_default_and_startup_entries_cannot_use_scoped_collection(target_env, monkeypatch):
-    import main
+    import binance_platform.main as main
     from scripts.validate_runtime_startup import validate_startup
-    from strategy_loader import load_strategy_entrypoint_for_profile
-    from strategy_runtime import load_strategy_runtime
+    from binance_platform.strategy_loader import load_strategy_entrypoint_for_profile
+    from binance_platform.strategy_runtime import load_strategy_runtime
 
     monkeypatch.setenv("VALIDATION_SCOPE", FULL_CYCLE_NO_SUBMIT)
     target = build_runtime_target(**target_env, continuity_fingerprint_payload=target_env)
@@ -195,14 +195,14 @@ def test_real_default_and_startup_entries_cannot_use_scoped_collection(target_en
 
 @pytest.mark.parametrize("scope", [FULL_CYCLE_NO_SUBMIT, "dry_run"])
 def test_loader_cannot_apply_scope_without_explicit_target(scope):
-    from strategy_runtime import load_strategy_runtime
+    from binance_platform.strategy_runtime import load_strategy_runtime
 
     with pytest.raises(ValueError, match="requires_runtime_target|unsupported_strategy_validation_scope"):
         load_strategy_runtime("crypto_live_pool_rotation", validation_scope=scope)
 
 
 def test_main_builder_rejects_unknown_scope_or_live_target(target_env, monkeypatch):
-    import main
+    import binance_platform.main as main
 
     with pytest.raises(ValueError, match="unsupported_strategy_validation_scope"):
         main.build_live_runtime(validation_scope="dry_run")
@@ -231,7 +231,7 @@ def test_pinned_crypto_dependency_exposes_separate_collection():
 
 
 def test_default_cycle_does_not_inherit_scope_from_built_runtime(target_env):
-    import main
+    import binance_platform.main as main
 
     runtime = main.build_live_runtime(validation_scope=FULL_CYCLE_NO_SUBMIT)
     with pytest.raises(ValueError, match="Unsupported STRATEGY_PROFILE"):
@@ -242,8 +242,8 @@ def test_default_cycle_does_not_inherit_scope_from_built_runtime(target_env):
 
 @pytest.mark.parametrize("profile", ["crypto_btc_dca", "crypto_trend_rotation"])
 def test_scoped_profiles_use_real_resolver_and_loader_without_production_grant(target_env, monkeypatch, profile):
-    import main
-    from strategy_loader import load_strategy_entrypoint_for_profile
+    import binance_platform.main as main
+    from binance_platform.strategy_loader import load_strategy_entrypoint_for_profile
 
     payload = dry_run_target_payload(strategy_profile=profile)
     monkeypatch.setenv("RUNTIME_TARGET_JSON", json.dumps(payload))

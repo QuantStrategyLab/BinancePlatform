@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from runtime_scheduler_observation import observe_runtime_scheduler_assessment, observe_runtime_scheduler_state
+from binance_platform.runtime_scheduler_observation import observe_runtime_scheduler_assessment, observe_runtime_scheduler_state
 
 
 _SCHEDULER_STATES = frozenset({"enabled", "disabled", "unknown"})

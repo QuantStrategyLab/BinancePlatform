@@ -43,7 +43,7 @@ def test_startup_validation_loads_without_broker_credentials_or_execution(monkey
             },
             True,
         )
-    monkeypatch.setitem(sys.modules, "main", SimpleNamespace(
+    monkeypatch.setitem(sys.modules, "binance_platform.main", SimpleNamespace(
         build_live_runtime=build,
         build_execution_report=lambda _runtime: {"state_write_intents": []},
         _load_cycle_state=load_cycle_state,
@@ -108,11 +108,11 @@ def test_startup_validation_rejects_broker_credentials(monkeypatch):
     ("crypto_trend_rotation", "default"),
 ])
 def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tmp_path, capsys, profile, scenario):
-    import main
-    import run_cycle_replay
-    from live_risk_authority import config_sha256
+    import binance_platform.main as main
+    import binance_platform.run_cycle_replay as run_cycle_replay
+    from binance_platform.live_risk_authority import config_sha256
     from quant_platform_kit.common.runtime_target import build_runtime_target
-    from strategy_runtime import load_research_only_strategy_runtime
+    from binance_platform.strategy_runtime import load_research_only_strategy_runtime
     from quant_platform_kit.common.live_continuity import runtime_target_fingerprint
     from scripts.validate_runtime_startup import FullCycleValidationError, validate_full_cycle
 
@@ -167,7 +167,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
             # With smart multiplication off, a small explicit base is below
             # this fixture's risk/target cap and produces an exact boundary.
             btc_overrides["base_investment_usd"] = 10.0
-        import strategy_runtime
+        import binance_platform.strategy_runtime as strategy_runtime
 
         build_loaded = strategy_runtime._build_loaded_strategy_runtime
 
@@ -250,8 +250,8 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     if scenario in {"strategy_revision_mismatch", "runner_revision_mismatch", "malformed_strategy_revision"}:
         monkeypatch.setattr(sys, "argv", ["validate_runtime_startup.py", "--full-cycle"])
         script = Path(__file__).resolve().parents[1] / "scripts/validate_runtime_startup.py"
-        with patch("live_risk_authority.resolve_strategy_revision", return_value="d" * 40), \
-             patch("live_risk_authority.resolve_runner_revision", return_value=runner_revision), \
+        with patch("binance_platform.live_risk_authority.resolve_strategy_revision", return_value="d" * 40), \
+             patch("binance_platform.live_risk_authority.resolve_runner_revision", return_value=runner_revision), \
              pytest.raises(SystemExit) as exit_error:
             runpy.run_path(str(script), run_name="__main__")
         assert exit_error.value.code == 1
@@ -295,7 +295,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     checkpoint_calls = []
     expected_checkpoint_assets = []
     if scenario == "checkpoint_missing_split":
-        import application.earn_accrual as earn_accrual
+        import binance_platform.application.earn_accrual as earn_accrual
 
         original_load = main._load_cycle_state
 
@@ -450,7 +450,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
     reports = []
     buy_checks = []
     if scenario in spot_scenarios | {"checkpoint_missing_split"}:
-        import infra.btc_no_submit as btc_no_submit
+        import binance_platform.infra.btc_no_submit as btc_no_submit
 
         approve_buy = btc_no_submit.approved_buy_amount
 
@@ -467,7 +467,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         monkeypatch.setattr(btc_no_submit, "approved_buy_amount", observe_buy)
     observed_exit_plans = []
     if scenario == "synthetic_smart":
-        import infra.btc_no_submit as btc_no_submit
+        import binance_platform.infra.btc_no_submit as btc_no_submit
 
         approve_amount = btc_no_submit.approved_buy_amount
 
@@ -488,8 +488,8 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
         return report
 
     monkeypatch.setattr(main, "execute_cycle", capture_cycle)
-    with patch("live_risk_authority.resolve_strategy_revision", return_value="d" * 40), patch(
-        "live_risk_authority.resolve_runner_revision", return_value=runner_revision
+    with patch("binance_platform.live_risk_authority.resolve_strategy_revision", return_value="d" * 40), patch(
+        "binance_platform.live_risk_authority.resolve_runner_revision", return_value=runner_revision
     ), patch("quant_platform_kit.risk.gate._utc_now", return_value=now):
         try:
             result = validate_full_cycle(runtime_builder=build, client_connector=lambda *_args, **_kwargs: replay_client)
@@ -596,8 +596,8 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
                 if scenario == "snapshot_removed":
                     assert len(consumed_inputs) >= 2
                     with pytest.raises(FullCycleValidationError) as error:
-                        with patch("live_risk_authority.resolve_strategy_revision", return_value="d" * 40), patch(
-                            "live_risk_authority.resolve_runner_revision", return_value=runner_revision
+                        with patch("binance_platform.live_risk_authority.resolve_strategy_revision", return_value="d" * 40), patch(
+                            "binance_platform.live_risk_authority.resolve_runner_revision", return_value=runner_revision
                         ), patch("quant_platform_kit.risk.gate._utc_now", return_value=now):
                             validate_full_cycle(runtime_builder=build,
                                                 client_connector=lambda *_args, **_kwargs: replay_client)
@@ -613,7 +613,7 @@ def test_full_cycle_uses_live_builder_and_closes_all_write_ports(monkeypatch, tm
 
 
 def test_btc_validation_clears_prior_split_before_next_snapshot(monkeypatch):
-    import main
+    import binance_platform.main as main
 
     runtime = SimpleNamespace(strategy_profile="crypto_btc_dca")
     btc_parts = {"spot_free": "0.01", "spot_locked": "0", "earn": "0", "managed_total": 0.01}
@@ -645,8 +645,8 @@ def test_full_cycle_without_live_authority_fails_closed(monkeypatch):
 
 
 def test_full_cycle_failure_projection_keeps_reject_and_abort_distinct():
-    import main
-    import run_cycle_replay
+    import binance_platform.main as main
+    import binance_platform.run_cycle_replay as run_cycle_replay
     from scripts.validate_runtime_startup import _full_cycle_failure_metadata, _full_cycle_failure_reason
 
     risk_rejected = run_cycle_replay.run_replay_cycle(
@@ -709,7 +709,7 @@ def test_full_cycle_broker_proxy_allows_only_bounded_bnb_dividend_get():
 
 
 def test_full_cycle_broker_proxy_allows_main_qpk_btc_snapshot_window():
-    import main
+    import binance_platform.main as main
     from scripts.validate_runtime_startup import _ReadOnlyBroker
 
     class Client:
@@ -826,7 +826,7 @@ def test_startup_cli_reports_only_exact_safe_reasons_and_still_fails(monkeypatch
     def build():
         raise ValueError(message)
 
-    monkeypatch.setitem(sys.modules, 'main', SimpleNamespace(build_live_runtime=build))
+    monkeypatch.setitem(sys.modules, 'binance_platform.main', SimpleNamespace(build_live_runtime=build))
     script = Path(__file__).resolve().parents[1] / 'scripts/validate_runtime_startup.py'
     with pytest.raises(SystemExit) as error:
         runpy.run_path(str(script), run_name='__main__')
@@ -841,7 +841,7 @@ def test_startup_cli_reports_only_exact_safe_reasons_and_still_fails(monkeypatch
 
 
 def test_startup_cli_reports_reason_from_safe_runtime_exception(monkeypatch, capsys):
-    from application.reconciliation_recovery import RecoveryControlReadError
+    from binance_platform.application.reconciliation_recovery import RecoveryControlReadError
 
     monkeypatch.setenv('RUNTIME_TARGET_ENABLED', 'false')
     monkeypatch.delenv('BINANCE_API_KEY', raising=False)
@@ -850,7 +850,7 @@ def test_startup_cli_reports_reason_from_safe_runtime_exception(monkeypatch, cap
     def build():
         raise RecoveryControlReadError()
 
-    monkeypatch.setitem(sys.modules, 'main', SimpleNamespace(build_live_runtime=build))
+    monkeypatch.setitem(sys.modules, 'binance_platform.main', SimpleNamespace(build_live_runtime=build))
     script = Path(__file__).resolve().parents[1] / 'scripts/validate_runtime_startup.py'
     with pytest.raises(SystemExit) as error:
         runpy.run_path(str(script), run_name='__main__')
@@ -868,12 +868,12 @@ def test_startup_cli_reports_reason_from_safe_runtime_exception(monkeypatch, cap
 def test_full_cycle_cli_preserves_safe_builder_authority_reason(
     monkeypatch, capsys, authority_message, expected_reason,
 ):
-    from live_risk_authority import LiveRiskAuthorityError
+    from binance_platform.live_risk_authority import LiveRiskAuthorityError
 
     monkeypatch.setenv("RUNTIME_TARGET_ENABLED", "false")
     monkeypatch.setitem(
         sys.modules,
-        "main",
+        "binance_platform.main",
         SimpleNamespace(
             build_live_runtime=lambda **_kwargs: (_ for _ in ()).throw(
                 LiveRiskAuthorityError(authority_message)
@@ -900,7 +900,7 @@ def test_full_cycle_cli_preserves_safe_builder_authority_reason(
 
 
 def test_revision_observation_is_not_carried_from_other_phases():
-    from live_risk_authority import LiveRiskAuthorityError
+    from binance_platform.live_risk_authority import LiveRiskAuthorityError
     from scripts.validate_runtime_startup import _wrap_full_cycle_error
 
     error = LiveRiskAuthorityError("strategy revision mismatch")

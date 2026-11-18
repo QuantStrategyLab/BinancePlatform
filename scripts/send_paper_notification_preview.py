@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from live_services import send_tg_msg  # noqa: E402
+from binance_platform.live_services import send_tg_msg  # noqa: E402
 
 _QRS_SNAPSHOT = ROOT / "tests" / "fixtures" / "qrs_notification_contract"
 _PREVIEW_PLATFORM_ID = "binance"

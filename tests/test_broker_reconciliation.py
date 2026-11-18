@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from application.broker_reconciliation import (
+from binance_platform.application.broker_reconciliation import (
     BinanceReconciliationReadError,
     build_reconciliation_candidate,
     collect_read_only_reconciliation_observations,

@@ -8,7 +8,7 @@ import sys
 import tempfile
 import unittest
 
-from application.reconciliation_observation import collect_mock_observation
+from binance_platform.application.reconciliation_observation import collect_mock_observation
 
 
 FIXTURES = Path(__file__).parent / "fixtures/reconciliation_observation"

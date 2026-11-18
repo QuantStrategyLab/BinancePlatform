@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from application.broker_reconciliation import (
+from binance_platform.application.broker_reconciliation import (
     collect_spot_usdt_external_cash_flows,
     diagnose_balance_flows,
 )
@@ -301,7 +301,7 @@ def test_reward_delta_diagnostic_is_bounded_private_and_not_causal_authority(dup
 
 
 def test_bnb_activity_diagnosis_reads_only_bounded_get_and_never_exports_rows():
-    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    from binance_platform.application.broker_reconciliation import diagnose_bnb_wallet_activity
     calls = []
     def read(method, path, **kwargs):
         calls.append((method, path, kwargs))
@@ -318,7 +318,7 @@ def test_bnb_activity_diagnosis_reads_only_bounded_get_and_never_exports_rows():
 
 
 def test_bnb_activity_diagnosis_can_keep_rows_private_for_bounded_consumer():
-    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    from binance_platform.application.broker_reconciliation import diagnose_bnb_wallet_activity
     def read(method, path, **kwargs):
         if path.endswith('assetDividend'):
             return {'rows': [{'id': 1, 'tranId': 2, 'asset': 'BNB', 'amount': '0.1',
@@ -334,7 +334,7 @@ def test_bnb_activity_diagnosis_can_keep_rows_private_for_bounded_consumer():
 
 @pytest.mark.parametrize('payload', [{'total': 2, 'rows': []}, {'total': 500, 'rows': [{}]*500}, {'total': 1, 'rows': [{'asset': 'BNB', 'amount': 'PRIVATE', 'divTime': 0}]}])
 def test_bnb_activity_diagnosis_rejects_incomplete_or_out_of_window_data(payload):
-    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    from binance_platform.application.broker_reconciliation import diagnose_bnb_wallet_activity
     c = SimpleNamespace(_request_margin_api=lambda *a, **kw: payload)
     result = diagnose_bnb_wallet_activity(c, start=NOW-timedelta(hours=2), end=NOW)
     assert result['requested_surfaces_complete'] is False
@@ -342,7 +342,7 @@ def test_bnb_activity_diagnosis_rejects_incomplete_or_out_of_window_data(payload
 
 
 def test_bnb_wallet_diagnostic_distinguishes_read_failure_from_response_shape():
-    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    from binance_platform.application.broker_reconciliation import diagnose_bnb_wallet_activity
     def broken(*a, **kw):
         raise RuntimeError('private credential response')
     failure = diagnose_bnb_wallet_activity(SimpleNamespace(_request_margin_api=broken), start=NOW-timedelta(hours=2), end=NOW)
@@ -355,7 +355,7 @@ def test_bnb_wallet_diagnostic_distinguishes_read_failure_from_response_shape():
 
 
 def test_bnb_wallet_history_accepts_decimal_string_count_without_accepting_unknown_total():
-    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    from binance_platform.application.broker_reconciliation import diagnose_bnb_wallet_activity
     def read(*a, **kw):
         return {'total': '0', 'rows': [], 'userAssetDribblets': []}
     result = diagnose_bnb_wallet_activity(SimpleNamespace(_request_margin_api=read), start=NOW-timedelta(hours=2), end=NOW)
@@ -366,7 +366,7 @@ def test_bnb_wallet_history_accepts_decimal_string_count_without_accepting_unkno
 
 
 def test_bnb_wallet_diagnostic_accepts_only_empty_missing_total_dust_response():
-    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    from binance_platform.application.broker_reconciliation import diagnose_bnb_wallet_activity
 
     def read(_method, path, **_kwargs):
         if path.endswith("assetDividend"):
@@ -384,7 +384,7 @@ def test_bnb_wallet_diagnostic_accepts_only_empty_missing_total_dust_response():
 
 
 def test_bnb_wallet_dribblet_keeps_readable_rows_when_total_is_missing():
-    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    from binance_platform.application.broker_reconciliation import diagnose_bnb_wallet_activity
 
     stamp = int((NOW - timedelta(hours=1)).timestamp() * 1000)
 
@@ -412,7 +412,7 @@ def test_bnb_wallet_dribblet_keeps_readable_rows_when_total_is_missing():
     {"total": "unknown", "userAssetDribblets": [{"operateTime": int((NOW - timedelta(hours=1)).timestamp() * 1000)}]},
 ])
 def test_bnb_wallet_dribblet_full_or_invalid_total_never_claims_complete(response):
-    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    from binance_platform.application.broker_reconciliation import diagnose_bnb_wallet_activity
 
     def read(_method, path, **_kwargs):
         if path.endswith("assetDividend"):
@@ -428,7 +428,7 @@ def test_bnb_wallet_dribblet_full_or_invalid_total_never_claims_complete(respons
 
 
 def test_bnb_wallet_duplicate_or_non_bnb_rows_never_claim_complete():
-    from application.broker_reconciliation import diagnose_bnb_wallet_activity
+    from binance_platform.application.broker_reconciliation import diagnose_bnb_wallet_activity
 
     stamp = int((NOW - timedelta(hours=1)).timestamp() * 1000)
 

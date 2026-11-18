@@ -30,15 +30,15 @@ from quant_platform_kit.common.reconciliation_recovery import (
     evaluate_reconciliation_recovery_activation,
 )
 from quant_platform_kit.common.runtime_target import resolve_runtime_target_from_env
-from application.broker_reconciliation import _expected_digests, build_reconciliation_candidate, collect_read_only_reconciliation_observations, diagnose_balance_snapshot
-from application.reconciliation_recovery import (
+from binance_platform.application.broker_reconciliation import _expected_digests, build_reconciliation_candidate, collect_read_only_reconciliation_observations, diagnose_balance_snapshot
+from binance_platform.application.reconciliation_recovery import (
     collect_recovery_source,
     console_snapshot,
     validate_source,
     verify_confirmation,
     verify_quiesced_prior_activation,
 )
-from application.rebased_recovery import (
+from binance_platform.application.rebased_recovery import (
     ARCHIVE_DOCUMENT,
     HISTORICAL_CONTINUITY_KIND,
     MAX_HISTORY,
@@ -60,7 +60,7 @@ from application.rebased_recovery import (
     validate_post_rebase_material,
     validate_post_rebase_source,
 )
-from live_services import get_firestore_client
+from binance_platform.live_services import get_firestore_client
 from scripts.migrate_daily_accounting_state import is_prospective_archive_document
 from scripts.reconcile_frozen_live_baseline import _symbols_from_env
 

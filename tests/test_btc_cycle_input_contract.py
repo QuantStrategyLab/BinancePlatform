@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from infra.btc_cycle_input import BtcCycleInputError, adapt_btc_cycle_input, cycle_failure_metadata, read_envelope
+from binance_platform.infra.btc_cycle_input import BtcCycleInputError, adapt_btc_cycle_input, cycle_failure_metadata, read_envelope
 
 NOW = datetime(2026, 10, 25, 12, tzinfo=timezone.utc)
 
@@ -79,7 +79,7 @@ class ContractTests(unittest.TestCase):
 
 class AssemblyTests(unittest.TestCase):
     def test_standard_snapshot_still_calls_original_enrichment(self):
-        tree = ast.parse(Path("runtime_wiring.py").read_text())
+        tree = ast.parse(Path("src/binance_platform/runtime_wiring.py").read_text())
         function = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
                         and n.name == "resolve_runtime_btc_snapshot")
         module = ast.Module(body=[function], type_ignores=[])
@@ -97,8 +97,8 @@ class AssemblyTests(unittest.TestCase):
         self.assertEqual(len(seen), 1)
 
     def test_isolated_trend_plan_uses_cached_input_twice(self):
-        main_tree = ast.parse(Path("runtime_wiring.py").read_text())
-        service_tree = ast.parse(Path("application/execution_service.py").read_text())
+        main_tree = ast.parse(Path("src/binance_platform/runtime_wiring.py").read_text())
+        service_tree = ast.parse(Path("src/binance_platform/application/execution_service.py").read_text())
         names = {"_resolve_strategy_plan", "_execute_trend_rotation"}
         module = ast.Module(body=[n for n in main_tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
                             + [n for n in service_tree.body if isinstance(n, ast.FunctionDef)
@@ -137,7 +137,7 @@ class AssemblyTests(unittest.TestCase):
         from crypto_strategies.entrypoints import evaluate_crypto_btc_dca
         from crypto_strategies.strategies import crypto_btc_dca
 
-        tree = ast.parse(Path("runtime_wiring.py").read_text())
+        tree = ast.parse(Path("src/binance_platform/runtime_wiring.py").read_text())
         names = {"_resolve_strategy_evaluation", "_compute_portfolio_allocation"}
         module = ast.Module(body=[n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names],
                             type_ignores=[])

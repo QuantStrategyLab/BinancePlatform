@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-import runtime_release_selection as selection
+import binance_platform.runtime_release_selection as selection
 
 PIN_A = "a" * 40
 PIN_B = "b" * 40

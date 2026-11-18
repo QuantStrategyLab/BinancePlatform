@@ -20,6 +20,10 @@ updates:
   commit-message:
     prefix: "chore"
     include: "scope"
+  groups:
+    actions:
+      patterns:
+      - "*"
   ignore:
   - dependency-name: "*"
     update-types:

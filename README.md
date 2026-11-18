@@ -44,14 +44,14 @@ Replay one fixed-input cycle from local fixtures without touching the exchange
 (pass `--help` to list options such as `--fixtures-dir` and `--output`):
 
 ```bash
-uv run --no-sync python run_cycle_replay.py
+uv run --no-sync python -m binance_platform.run_cycle_replay
 ```
 
 Run the live cycle (dry-run by default) once a runtime target and credentials
 are set:
 
 ```bash
-uv run --no-sync python main.py
+uv run --no-sync python -m binance_platform.main
 ```
 
 ## Configuration
@@ -80,18 +80,24 @@ it does not expose the binding or establish cloud authentication. Other failures
 retain the generic unavailable status, and successful or preflight output is
 unchanged.
 
+## Architecture
+
+The runtime package under `src/binance_platform/` separates orchestration (`main.py`, `runtime_wiring.py`), application services (`application/`), exchange and state adapters (`infra/`), strategy loading (`strategy/`), and notification routing (`notifications/`).
+
 ## Repository layout
 
 ```
-main.py                 live cycle entrypoint
-application/            cycle, execution, and reconciliation services
-entrypoints/            CLI entrypoint helpers
-strategy/               strategy loading and registry glue
-notifications/          notification adapters
-infra/                  infrastructure helpers
-scripts/                operator scripts
-docs/                   runbooks and contracts
-tests/                  unit and contract tests
+src/binance_platform/
+  main.py                 live cycle entrypoint
+  application/            cycle, execution, and reconciliation services
+  accounting_migration/   daily accounting migration helpers
+  entrypoints/            CLI entrypoint helpers
+  strategy/               strategy loading and registry glue
+  notifications/          notification adapters
+  infra/                  infrastructure helpers
+scripts/                  operator scripts
+docs/                     runbooks and contracts
+tests/                    unit and contract tests
 ```
 
 ## Contributing

@@ -6,10 +6,10 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from notifications import unified_notifications as unified
-from notifications import routing, operational
-from notifications.digest_snapshot.unified_contract import order_identity_digest
-from reporting.status_reports import maybe_send_periodic_btc_status_report
+from binance_platform.notifications import unified_notifications as unified
+from binance_platform.notifications import routing, operational
+from binance_platform.notifications.digest_snapshot.unified_contract import order_identity_digest
+from binance_platform.reporting.status_reports import maybe_send_periodic_btc_status_report
 
 
 TARGET = {"platform_id": "binance", "strategy_profile": "synthetic", "service_name": "synthetic-service",
@@ -51,7 +51,7 @@ class DigestOnlyDispatch(unittest.TestCase):
                 self.assertEqual(operational.message("coverage_failure"), operational._TEXT[expected]["coverage_failure"])
 
     def test_verified_reconciled_identity_never_reuses_prior_order(self):
-        tree = ast.parse((Path(__file__).parents[1] / "runtime_support.py").read_text())
+        tree = ast.parse((Path(__file__).parents[1] / "src" / "binance_platform" / "runtime_support.py").read_text())
         nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in {"_notification_order_identity", "runtime_call_client"}]
         module = ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[]))
         association = {"symbol": "SYNUSDT", "side": "BUY", "client_order_id": "current-id"}
@@ -116,7 +116,7 @@ class DigestOnlyDispatch(unittest.TestCase):
                     self.assertIsNone(unified.current_order_digest(runtime))
 
     def test_runtime_notify_entry_routes_flag_off_and_uses_error_only_fallback(self):
-        tree = ast.parse((Path(__file__).parents[1] / "runtime_support.py").read_text())
+        tree = ast.parse((Path(__file__).parents[1] / "src" / "binance_platform" / "runtime_support.py").read_text())
         function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "runtime_notify")
         module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
         sent = []
@@ -198,7 +198,7 @@ class DigestOnlyDispatch(unittest.TestCase):
         now = datetime(2026, 10, 30, 12, tzinfo=timezone.utc)
         snapshot = {"ahr999": 1.0, "zscore": 0.0, "sell_trigger": 2.0, "regime_on": True}
         with patch.dict("os.environ", env("false"), clear=True), \
-             patch("notifications.unified_producer.persist_event", side_effect=lambda fact, **kw: facts.append(fact) or True):
+             patch("binance_platform.notifications.unified_producer.persist_event", side_effect=lambda fact, **kw: facts.append(fact) or True):
             token = unified.bind_cycle(runtime, source)
             try:
                 result = maybe_send_periodic_btc_status_report({}, "token", "chat", now, 1, 100, 50, 0, 1,
@@ -220,7 +220,7 @@ class DigestOnlyDispatch(unittest.TestCase):
     def test_both_exporter_entrypoints_use_same_writer_with_flags_off(self):
         from scripts import emit_digest_candidates, emit_unified_digest_candidates
         expected = {"status": "projected", "uploaded": True}
-        with patch("notifications.unified_producer.emit_archive", return_value=expected) as archive:
+        with patch("binance_platform.notifications.unified_producer.emit_archive", return_value=expected) as archive:
             self.assertEqual(emit_digest_candidates.emit_digest_candidates(env("false")), expected)
         archive.assert_called_once()
         with patch.object(emit_unified_digest_candidates, "emit_archive", return_value=expected) as archive:

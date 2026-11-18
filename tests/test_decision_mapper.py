@@ -11,8 +11,8 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(QPK_SRC) not in sys.path:
     sys.path.insert(0, str(QPK_SRC))
 
-from decision_mapper import map_strategy_decision_to_allocation, map_strategy_decision_to_rotation_plan
-from application.execution_service import execute_trend_buys
+from binance_platform.decision_mapper import map_strategy_decision_to_allocation, map_strategy_decision_to_rotation_plan
+from binance_platform.application.execution_service import execute_trend_buys
 from quant_platform_kit.common.strategy_contracts import BudgetIntent, PositionTarget, StrategyDecision
 
 

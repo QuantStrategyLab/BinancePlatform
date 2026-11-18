@@ -3,14 +3,14 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, call
 
-from infra.binance_runtime import (
+from binance_platform.infra.binance_runtime import (
     ensure_asset_available_runtime,
     ensure_runtime_client,
     manage_usdt_earn_buffer_runtime,
     resolve_runtime_btc_snapshot,
     resolve_runtime_trend_indicators,
 )
-from runtime_support import ExecutionIntegrityError
+from binance_platform.runtime_support import ExecutionIntegrityError
 
 
 class BinanceRuntimeInfraTests(unittest.TestCase):
@@ -123,7 +123,7 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
         self.assertAlmostEqual(result["BTCUSDT"]["sma200"], sum(range(319, 519)) / 200)
 
     def test_no_submit_trend_rejects_injected_indicators(self):
-        from infra.closed_daily_bars import ClosedDailyBarsError
+        from binance_platform.infra.closed_daily_bars import ClosedDailyBarsError
 
         universe = ["ETHUSDT"]
         supplied = {"ETHUSDT": {"close": 1}, "BTCUSDT": {"close": 2}}
@@ -141,7 +141,7 @@ class BinanceRuntimeInfraTests(unittest.TestCase):
         self.assertEqual(result, {"ETHUSDT": {"close": 1}})
 
     def test_no_submit_trend_insufficient_indicators_fail_closed(self):
-        from infra.closed_daily_bars import ClosedDailyBarsError
+        from binance_platform.infra.closed_daily_bars import ClosedDailyBarsError
 
         as_of = datetime(2026, 1, 4, tzinfo=timezone.utc)
         opened = int(as_of.timestamp() * 1000) - 86400000

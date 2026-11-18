@@ -457,13 +457,13 @@ def _send_telegram(message: str) -> bool:
 
 def _notify_assessment(assessment, message):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from notifications.operational import notify_workflow
+    from binance_platform.notifications.operational import notify_workflow
     return notify_workflow(assessment, message, send=_send_telegram)
 
 
 def _recover_assessment(assessment):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from notifications.operational import recover_workflow
+    from binance_platform.notifications.operational import recover_workflow
     recover_workflow(assessment)
 
 

@@ -2,7 +2,7 @@
 from unittest.mock import Mock
 import pytest
 from tests.test_runtime_support import owned_runtime, DurableSubmissionStateStore
-from runtime_support import (
+from binance_platform.runtime_support import (
     OrderReconciliationError,
     build_execution_report,
     reconcile_pending_funding_submission,
@@ -142,7 +142,7 @@ def test_disabled_funding_recovery_performs_no_reads_or_writes(dry_run, permitte
 
 
 def test_managed_valuation_keeps_earn_but_rejects_unavailable_or_partial_data():
-    from runtime_support import read_managed_balance, ExecutionIntegrityError
+    from binance_platform.runtime_support import read_managed_balance, ExecutionIntegrityError
     client = Mock()
     client.get_asset_balance.return_value = {'free': '6', 'locked': '1'}
     client.get_simple_earn_flexible_product_position.return_value = {'total': 2, 'rows': [

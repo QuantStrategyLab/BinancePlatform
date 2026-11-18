@@ -3,21 +3,21 @@ import copy
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from application.execution_service import execute_trend_buys, execute_trend_sells
-from application.portfolio_service import (
+from binance_platform.application.execution_service import execute_trend_buys, execute_trend_sells
+from binance_platform.application.portfolio_service import (
     compute_daily_pnls,
     maybe_rebase_daily_state_for_balance_change,
     maybe_reset_daily_state,
 )
-from runtime_support import ExecutionIntegrityError
-from runtime_support import (
+from binance_platform.runtime_support import ExecutionIntegrityError
+from binance_platform.runtime_support import (
     build_execution_report,
     reconcile_runtime_cash_effects,
     release_runtime_state_owner,
     runtime_call_client,
     runtime_set_trade_state,
 )
-from market_snapshot_support import top_up_bnb_fuel
+from binance_platform.market_snapshot_support import top_up_bnb_fuel
 from tests.test_runtime_support import owned_runtime
 
 

@@ -5,7 +5,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import Mock, patch
 
-from infra.closed_daily_bars import ClosedDailyBarsError, closed_daily_bars
+from binance_platform.infra.closed_daily_bars import ClosedDailyBarsError, closed_daily_bars
 
 
 class ClosedDailyBarsTest(unittest.TestCase):
@@ -50,7 +50,7 @@ class ClosedDailyBarsTest(unittest.TestCase):
     def test_btc_snapshot_consumer_only_receives_closed_bars(self):
         stub = ModuleType("runtime_support")
         stub.ExecutionIntegrityError = type("ExecutionIntegrityError", (Exception,), {})
-        path = Path(__file__).resolve().parents[1] / "infra" / "binance_runtime.py"
+        path = Path(__file__).resolve().parents[1] / "src" / "binance_platform" / "infra" / "binance_runtime.py"
         spec = spec_from_file_location("isolated_btc_runtime", path)
         module = module_from_spec(spec)
         with patch.dict("sys.modules", {"runtime_support": stub}):
@@ -92,7 +92,7 @@ class ClosedDailyBarsTest(unittest.TestCase):
     def test_real_infra_fetches_closed_bars_for_btc_and_pool_without_mutation(self):
         stub = ModuleType("runtime_support")
         stub.ExecutionIntegrityError = type("ExecutionIntegrityError", (Exception,), {})
-        path = Path(__file__).resolve().parents[1] / "infra" / "binance_runtime.py"
+        path = Path(__file__).resolve().parents[1] / "src" / "binance_platform" / "infra" / "binance_runtime.py"
         spec = spec_from_file_location("isolated_binance_runtime", path)
         module = module_from_spec(spec)
         with patch.dict("sys.modules", {"runtime_support": stub}):
@@ -129,7 +129,7 @@ class ClosedDailyBarsTest(unittest.TestCase):
     def test_real_infra_strict_scope_rejects_injected_snapshot(self):
         stub = ModuleType("runtime_support")
         stub.ExecutionIntegrityError = type("ExecutionIntegrityError", (Exception,), {})
-        path = Path(__file__).resolve().parents[1] / "infra" / "binance_runtime.py"
+        path = Path(__file__).resolve().parents[1] / "src" / "binance_platform" / "infra" / "binance_runtime.py"
         spec = spec_from_file_location("isolated_binance_runtime", path)
         module = module_from_spec(spec)
         with patch.dict("sys.modules", {"runtime_support": stub}):

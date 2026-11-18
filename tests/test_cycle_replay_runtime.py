@@ -78,8 +78,8 @@ for path in (PLATFORM_KIT_SRC, CRYPTO_STRATEGIES_SRC):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
-import main
-import run_cycle_replay
+import binance_platform.main as main
+import binance_platform.run_cycle_replay as run_cycle_replay
 from quant_platform_kit.risk.contracts import CandidateRiskIdentity
 
 
@@ -226,7 +226,7 @@ class CycleReplayRuntimeTests(unittest.TestCase):
             stack.enter_context(
                 patch("quant_platform_kit.risk.gate._utc_now", return_value=FIXTURE_TIME)
             )
-            cycle_service = sys.modules["application.cycle_service"]
+            cycle_service = sys.modules["binance_platform.application.cycle_service"]
             record_platform_execution = stack.enter_context(
                 patch.object(cycle_service, "try_record_platform_execution")
             )

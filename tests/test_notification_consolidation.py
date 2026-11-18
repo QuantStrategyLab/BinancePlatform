@@ -5,10 +5,10 @@ from copy import deepcopy
 
 import pytest
 
-from notifications import unified_notifications as unified
-from notifications.notification_store import NotificationStore
-from notifications.digest_snapshot.unified_contract import NotificationEvent
-from notifications import unified_producer as producer
+from binance_platform.notifications import unified_notifications as unified
+from binance_platform.notifications.notification_store import NotificationStore
+from binance_platform.notifications.digest_snapshot.unified_contract import NotificationEvent
+from binance_platform.notifications import unified_producer as producer
 from datetime import datetime, timedelta, timezone
 
 
@@ -204,7 +204,7 @@ def test_monitor_stages_open_window_and_finalizes_previous_only_before_digest(mo
 
 def test_empty_month_listing_is_not_a_permission_failure(monkeypatch):
     from subprocess import CompletedProcess
-    from notifications.digest_snapshot import digest_archive
+    from binance_platform.notifications.digest_snapshot import digest_archive
     monkeypatch.setattr(digest_archive.subprocess, "run",
         lambda *a, **k: CompletedProcess(a, 1, "", "ERROR: One or more URLs matched no objects."))
     assert digest_archive._read(["ls", "--json", "gs://example-bucket/missing/*.json"]) == []
@@ -408,7 +408,7 @@ def test_local_ack_and_event_hashes_cannot_confirm_delivery(monkeypatch, synthet
     (True, "example-chat", False), (17, "different-example-chat", False), (17, None, False)])
 def test_sender_receipt_requires_positive_provider_message_id_and_matching_recipient(
         monkeypatch, message_id, recipient, confirmed):
-    import live_services
+    import binance_platform.live_services as live_services
     from types import SimpleNamespace
     configure(monkeypatch)
     result = {"message_id": message_id, "chat": {"id": recipient}}
@@ -476,7 +476,7 @@ def test_real_archived_receipt_proves_recovery_but_missing_or_stale_receipt_does
 
 
 def test_workflow_failure_correlates_to_runtime_incident_and_flags_off_delegates_original(monkeypatch):
-    from notifications import operational
+    from binance_platform.notifications import operational
     env, store, sends = configure(monkeypatch), MemoryStore(), []
     monkeypatch.setenv("GITHUB_RUN_ID", "42")
     env["GITHUB_RUN_ID"] = "42"
@@ -502,8 +502,8 @@ def test_workflow_failure_correlates_to_runtime_incident_and_flags_off_delegates
 def test_snapshot_matches_declared_qpk_source_hash_and_new_strings_are_single_language(monkeypatch):
     import hashlib
     from pathlib import Path
-    from notifications import operational
-    root = Path(__file__).resolve().parents[1] / "notifications/digest_snapshot"
+    from binance_platform.notifications import operational
+    root = Path(__file__).resolve().parents[1] / "src/binance_platform/notifications/digest_snapshot"
     provenance = json.loads((root / "provenance.json").read_text())
     assert hashlib.sha256((root / "unified_contract.py").read_bytes()).hexdigest() == provenance["files"]["unified_contract.py"]["sha256"]
     assert provenance["snapshot_commit"] == "2b04882058666ebc81d1650d93fa2105ec4ba3d8"

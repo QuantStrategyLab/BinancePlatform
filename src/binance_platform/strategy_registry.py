@@ -1,0 +1,199 @@
+from __future__ import annotations
+
+from crypto_strategies import get_platform_runtime_adapter, get_strategy_catalog, get_runtime_enabled_profiles
+
+from quant_platform_kit.common.strategies import (
+    CRYPTO_DOMAIN,
+    PlatformCapabilityMatrix,
+    PlatformStrategyPolicy,
+    StrategyDefinition,
+    build_platform_profile_matrix,
+    build_platform_profile_status_matrix,
+    derive_enabled_profiles_for_platform,
+    derive_eligible_profiles_for_platform,
+    get_catalog_strategy_metadata,
+    get_enabled_profiles_for_platform,
+    resolve_catalog_profile,
+    resolve_platform_strategy_definition,
+)
+
+BINANCE_PLATFORM = "binance"
+FULL_CYCLE_NO_SUBMIT = "full_cycle_no_submit"
+
+
+DEFAULT_STRATEGY_PROFILE = "crypto_live_pool_rotation"
+ROLLBACK_STRATEGY_PROFILE = DEFAULT_STRATEGY_PROFILE
+
+STRATEGY_CATALOG = get_strategy_catalog()
+STRATEGY_DEFINITIONS = dict(STRATEGY_CATALOG.definitions)
+BINANCE_ROLLOUT_ALLOWLIST = get_runtime_enabled_profiles()
+
+PLATFORM_SUPPORTED_DOMAINS: dict[str, frozenset[str]] = {
+    BINANCE_PLATFORM: frozenset({CRYPTO_DOMAIN}),
+}
+PLATFORM_CAPABILITY_MATRIX = PlatformCapabilityMatrix(
+    platform_id=BINANCE_PLATFORM,
+    supported_domains=PLATFORM_SUPPORTED_DOMAINS[BINANCE_PLATFORM],
+    supported_target_modes=frozenset({"weight"}),
+    supported_inputs=frozenset(
+        {
+            "market_prices",
+            "derived_indicators",
+            "benchmark_snapshot",
+            "portfolio_snapshot",
+            "universe_snapshot",
+        }
+    ),
+    supported_capabilities=frozenset(),
+)
+ELIGIBLE_STRATEGY_PROFILES = derive_eligible_profiles_for_platform(
+    STRATEGY_CATALOG,
+    capability_matrix=PLATFORM_CAPABILITY_MATRIX,
+    runtime_adapter_loader=lambda profile: get_platform_runtime_adapter(
+        profile,
+        platform_id=BINANCE_PLATFORM,
+    ),
+)
+BINANCE_ENABLED_PROFILES = derive_enabled_profiles_for_platform(
+    STRATEGY_CATALOG,
+    capability_matrix=PLATFORM_CAPABILITY_MATRIX,
+    runtime_adapter_loader=lambda profile: get_platform_runtime_adapter(
+        profile,
+        platform_id=BINANCE_PLATFORM,
+    ),
+    rollout_allowlist=BINANCE_ROLLOUT_ALLOWLIST,
+)
+PLATFORM_POLICY = PlatformStrategyPolicy(
+    platform_id=BINANCE_PLATFORM,
+    supported_domains=PLATFORM_SUPPORTED_DOMAINS[BINANCE_PLATFORM],
+    enabled_profiles=BINANCE_ENABLED_PROFILES,
+    default_profile=DEFAULT_STRATEGY_PROFILE,
+    rollback_profile=ROLLBACK_STRATEGY_PROFILE,
+)
+
+SUPPORTED_STRATEGY_PROFILES = BINANCE_ENABLED_PROFILES
+
+
+def get_eligible_profiles_for_platform(platform_id: str) -> frozenset[str]:
+    if platform_id != BINANCE_PLATFORM:
+        return frozenset()
+    return ELIGIBLE_STRATEGY_PROFILES
+
+
+def get_supported_profiles_for_platform(platform_id: str) -> frozenset[str]:
+    return get_enabled_profiles_for_platform(platform_id, policy=PLATFORM_POLICY)
+
+
+def get_platform_profile_matrix() -> list[dict[str, object]]:
+    return build_platform_profile_matrix(STRATEGY_CATALOG, policy=PLATFORM_POLICY)
+
+
+def get_platform_profile_status_matrix() -> list[dict[str, object]]:
+    return build_platform_profile_status_matrix(
+        STRATEGY_CATALOG,
+        policy=PLATFORM_POLICY,
+        eligible_profiles=ELIGIBLE_STRATEGY_PROFILES,
+    )
+
+
+def resolve_strategy_definition(
+    raw_value: str | None,
+    *,
+    platform_id: str,
+) -> StrategyDefinition:
+    return resolve_platform_strategy_definition(
+        raw_value,
+        platform_id=platform_id,
+        strategy_catalog=STRATEGY_CATALOG,
+        policy=PLATFORM_POLICY,
+    )
+
+
+def resolve_strategy_metadata(
+    raw_value: str | None,
+    *,
+    platform_id: str,
+):
+    definition = resolve_strategy_definition(raw_value, platform_id=platform_id)
+    return get_catalog_strategy_metadata(STRATEGY_CATALOG, definition.profile)
+
+
+def resolve_runtime_target_strategy(runtime_target, *, validation_scope: str = "standard"):
+    """Resolve an explicitly scoped validation, recovery, or production profile.
+
+    Only full_cycle_no_submit may use the separate dry-run allowlist.
+    A target flag is not a recovery grant. Re-read the private committed control
+    and verify its full binding before loading a non-selectable legacy profile.
+    """
+    if validation_scope == FULL_CYCLE_NO_SUBMIT:
+        from crypto_strategies.runtime_allowlist import DRY_RUN_RUNTIME_ALLOWLIST
+
+        if runtime_target.dry_run_only is not True:
+            raise ValueError("full_cycle_no_submit_requires_dry_run_target")
+        if runtime_target.strategy_profile not in DRY_RUN_RUNTIME_ALLOWLIST:
+            raise ValueError("full_cycle_no_submit_profile_not_allowed")
+        # This policy is local to validation; production policy stays untouched.
+        dry_run_policy = PlatformStrategyPolicy(
+            platform_id=BINANCE_PLATFORM,
+            supported_domains=PLATFORM_SUPPORTED_DOMAINS[BINANCE_PLATFORM],
+            enabled_profiles=ELIGIBLE_STRATEGY_PROFILES & DRY_RUN_RUNTIME_ALLOWLIST,
+            default_profile=DEFAULT_STRATEGY_PROFILE,
+            rollback_profile=ROLLBACK_STRATEGY_PROFILE,
+        )
+        definition = resolve_platform_strategy_definition(
+            runtime_target.strategy_profile,
+            platform_id=runtime_target.platform_id,
+            strategy_catalog=STRATEGY_CATALOG,
+            policy=dry_run_policy,
+        )
+        # Do not activate recovery controls or change continuity for validation.
+        return runtime_target, definition
+    if validation_scope != "standard":
+        raise ValueError("unsupported_strategy_validation_scope")
+
+    from dataclasses import replace
+    from binance_platform.application.reconciliation_recovery import load_activated_target
+
+    target = runtime_target
+    if target.strategy_profile in BINANCE_ENABLED_PROFILES:
+        definition = resolve_strategy_definition(target.strategy_profile, platform_id=target.platform_id)
+        return load_activated_target(target), definition
+    continuity = target.live_continuity
+    if (target.platform_id != BINANCE_PLATFORM or target.dry_run_only
+            or target.strategy_profile != "crypto_live_pool_rotation"
+            or continuity is None or continuity.baseline_kind != "legacy_authorized"
+            or continuity.state not in {"RECONCILE_ONLY", "ACTIVE_LKG"}):
+        return target, resolve_strategy_definition(target.strategy_profile, platform_id=target.platform_id)
+    frozen = replace(target, live_continuity=replace(continuity, state="RECONCILE_ONLY"))
+    activated = load_activated_target(frozen)
+    if activated.live_continuity.state != "ACTIVE_LKG":
+        raise ValueError("runtime_recovery_not_active")
+    definition = resolve_research_strategy_definition(activated.strategy_profile, platform_id=activated.platform_id)
+    return activated, definition
+
+
+def resolve_research_strategy_definition(
+    raw_value: str | None,
+    *,
+    platform_id: str,
+) -> StrategyDefinition:
+    """Resolve an eligible catalog profile without granting execution access."""
+
+    if platform_id != BINANCE_PLATFORM:
+        raise ValueError(f"Unsupported platform_id={platform_id!r}")
+    candidate = raw_value or DEFAULT_STRATEGY_PROFILE
+    canonical = resolve_catalog_profile(candidate, strategy_catalog=STRATEGY_CATALOG)
+    if canonical not in ELIGIBLE_STRATEGY_PROFILES:
+        raise ValueError(f"Strategy profile is not research-eligible: {raw_value!r}")
+    return STRATEGY_DEFINITIONS[canonical]
+
+
+def resolve_research_strategy_metadata(
+    raw_value: str | None,
+    *,
+    platform_id: str,
+):
+    """Return catalog metadata for a research-only profile."""
+
+    definition = resolve_research_strategy_definition(raw_value, platform_id=platform_id)
+    return get_catalog_strategy_metadata(STRATEGY_CATALOG, definition.profile)

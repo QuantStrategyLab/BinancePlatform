@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from application.interval_source_receipt_candidate import (
+from binance_platform.application.interval_source_receipt_candidate import (
     IntervalReceiptBlocked,
     IntervalReceiptConflict,
     IntervalReceiptUncertain,
@@ -405,7 +405,7 @@ class IntervalSourceReceiptTests(unittest.TestCase):
         self.assertEqual(self.store.values[LEDGER], self.following)
 
     def test_normalizer_reload_has_no_queue_or_receipt_field_to_drop(self):
-        from trade_state_support import normalize_trade_state
+        from binance_platform.trade_state_support import normalize_trade_state
         self.persist()
         retained = copy.deepcopy(self.receipt())
         reloaded = normalize_trade_state(

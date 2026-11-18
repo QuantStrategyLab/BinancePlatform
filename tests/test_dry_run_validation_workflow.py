@@ -81,7 +81,7 @@ def test_production_defaults_and_entry_remain_separate():
     assert "BINANCE_DRY_RUN: ${{ vars.BINANCE_DRY_RUN || 'true' }}" in production
     assert 'RUNTIME_TARGET_JSON: ${{ secrets.PRIVATE_RUNTIME_TARGET_JSON }}' in production
     assert 'dry_run_full_cycle' not in production
-    assert '"$VENV_PATH/bin/python" main.py' in production
+    assert '"$VENV_PATH/bin/python" -m binance_platform.main' in production
     isolated = WORKFLOW.read_text()
     assert '"scripts/validate_runtime_startup.py", "--full-cycle"' in isolated
     for forbidden in ('binance_recovery_controller.py', 'migrate_daily_accounting_state.py',

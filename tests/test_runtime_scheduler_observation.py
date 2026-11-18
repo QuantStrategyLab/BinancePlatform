@@ -5,7 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from runtime_scheduler_observation import observe_runtime_scheduler_assessment, observe_runtime_scheduler_state
+from binance_platform.runtime_scheduler_observation import observe_runtime_scheduler_assessment, observe_runtime_scheduler_state
 
 
 class RuntimeSchedulerObservationTests(unittest.TestCase):
@@ -34,9 +34,9 @@ class RuntimeSchedulerObservationTests(unittest.TestCase):
     def observe(self, *, crontab, daemon="active\n"):
         run = self.command_runner(crontab=crontab, daemon=(0, daemon, ""))
         with (
-            patch("runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
-            patch("runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
-            patch("runtime_scheduler_observation.os.access", return_value=True),
+            patch("binance_platform.runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
+            patch("binance_platform.runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
+            patch("binance_platform.runtime_scheduler_observation.os.access", return_value=True),
         ):
             return observe_runtime_scheduler_state(environ=self.expected_environment, run_command=run)
 
@@ -64,9 +64,9 @@ class RuntimeSchedulerObservationTests(unittest.TestCase):
         for crontab, daemon, state, reason in cases:
             with (
                 self.subTest(reason=reason),
-                patch("runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
-                patch("runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
-                patch("runtime_scheduler_observation.os.access", return_value=True),
+                patch("binance_platform.runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
+                patch("binance_platform.runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
+                patch("binance_platform.runtime_scheduler_observation.os.access", return_value=True),
             ):
                 result = observe_runtime_scheduler_assessment(
                     environ=self.expected_environment,
@@ -80,8 +80,8 @@ class RuntimeSchedulerObservationTests(unittest.TestCase):
                                 (PermissionError, "host_permission_denied")):
             with (
                 self.subTest(reason=reason),
-                patch("runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
-                patch("runtime_scheduler_observation.os.stat", side_effect=failure("private path")),
+                patch("binance_platform.runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
+                patch("binance_platform.runtime_scheduler_observation.os.stat", side_effect=failure("private path")),
             ):
                 self.assertEqual(observe_runtime_scheduler_assessment(environ=self.expected_environment),
                                  ("unknown", reason))
@@ -93,11 +93,11 @@ class RuntimeSchedulerObservationTests(unittest.TestCase):
                 run = self.command_runner(crontab=(0, exact, ""), daemon=(3, daemon, ""))
                 with (
                     patch(
-                        "runtime_scheduler_observation.pwd.getpwuid",
+                        "binance_platform.runtime_scheduler_observation.pwd.getpwuid",
                         return_value=SimpleNamespace(pw_name="ubuntu"),
                     ),
-                    patch("runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
-                    patch("runtime_scheduler_observation.os.access", return_value=True),
+                    patch("binance_platform.runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
+                    patch("binance_platform.runtime_scheduler_observation.os.access", return_value=True),
                 ):
                     state = observe_runtime_scheduler_state(
                         environ=self.expected_environment,
@@ -124,9 +124,9 @@ class RuntimeSchedulerObservationTests(unittest.TestCase):
             daemon=(0, "active\n", ""),
         )
         with (
-            patch("runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
-            patch("runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
-            patch("runtime_scheduler_observation.os.access", return_value=True),
+            patch("binance_platform.runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
+            patch("binance_platform.runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
+            patch("binance_platform.runtime_scheduler_observation.os.access", return_value=True),
         ):
             self.assertEqual(
                 observe_runtime_scheduler_state(environ=self.expected_environment, run_command=run),
@@ -138,9 +138,9 @@ class RuntimeSchedulerObservationTests(unittest.TestCase):
             daemon=(0, "active\n", ""),
         )
         with (
-            patch("runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
-            patch("runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
-            patch("runtime_scheduler_observation.os.access", return_value=True),
+            patch("binance_platform.runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
+            patch("binance_platform.runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
+            patch("binance_platform.runtime_scheduler_observation.os.access", return_value=True),
         ):
             self.assertEqual(
                 observe_runtime_scheduler_state(
@@ -157,11 +157,11 @@ class RuntimeSchedulerObservationTests(unittest.TestCase):
                 run = self.command_runner(crontab=(0, exact, ""), daemon=daemon)
                 with (
                     patch(
-                        "runtime_scheduler_observation.pwd.getpwuid",
+                        "binance_platform.runtime_scheduler_observation.pwd.getpwuid",
                         return_value=SimpleNamespace(pw_name="ubuntu"),
                     ),
-                    patch("runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
-                    patch("runtime_scheduler_observation.os.access", return_value=True),
+                    patch("binance_platform.runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
+                    patch("binance_platform.runtime_scheduler_observation.os.access", return_value=True),
                 ):
                     state = observe_runtime_scheduler_state(
                         environ=self.expected_environment,
@@ -176,9 +176,9 @@ class RuntimeSchedulerObservationTests(unittest.TestCase):
             daemon=subprocess.TimeoutExpired(["systemctl", "is-active", "cron"], 2),
         )
         with (
-            patch("runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
-            patch("runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
-            patch("runtime_scheduler_observation.os.access", return_value=True),
+            patch("binance_platform.runtime_scheduler_observation.pwd.getpwuid", return_value=SimpleNamespace(pw_name="ubuntu")),
+            patch("binance_platform.runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=0o100755)),
+            patch("binance_platform.runtime_scheduler_observation.os.access", return_value=True),
         ):
             self.assertEqual(
                 observe_runtime_scheduler_state(environ=self.expected_environment, run_command=run),
@@ -208,11 +208,11 @@ class RuntimeSchedulerObservationTests(unittest.TestCase):
                 mode = 0o100755 if is_file else 0o040755
                 with (
                     patch(
-                        "runtime_scheduler_observation.pwd.getpwuid",
+                        "binance_platform.runtime_scheduler_observation.pwd.getpwuid",
                         return_value=SimpleNamespace(pw_name=user),
                     ),
-                    patch("runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=mode)),
-                    patch("runtime_scheduler_observation.os.access", return_value=executable),
+                    patch("binance_platform.runtime_scheduler_observation.os.stat", return_value=SimpleNamespace(st_mode=mode)),
+                    patch("binance_platform.runtime_scheduler_observation.os.access", return_value=executable),
                 ):
                     state = observe_runtime_scheduler_state(environ=environment, run_command=run)
                 self.assertEqual(state, "unknown")

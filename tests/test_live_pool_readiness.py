@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from application.execution_receipt_adapter import attach_execution_receipt_from_report
+from binance_platform.application.execution_receipt_adapter import attach_execution_receipt_from_report
 from scripts.validate_runtime_startup import FullCycleValidationError, _live_pool_readiness
 
 

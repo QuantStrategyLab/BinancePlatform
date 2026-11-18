@@ -11,10 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from notifications import unified_notifications as unified
-from notifications import unified_producer as producer
-from notifications.digest_snapshot.digest_candidates import cycle_evidence
-from notifications.digest_snapshot.unified_contract import order_identity_digest
+from binance_platform.notifications import unified_notifications as unified
+from binance_platform.notifications import unified_producer as producer
+from binance_platform.notifications.digest_snapshot.digest_candidates import cycle_evidence
+from binance_platform.notifications.digest_snapshot.unified_contract import order_identity_digest
 from tests.test_notification_consolidation import MemoryStore, STAMP, TARGET, environment, source
 
 
@@ -152,7 +152,7 @@ def test_real_producer_merge_receiver_roundtrip(monkeypatch, tmp_path, qrs,
 
 
 def test_monitor_fact_attaches_only_to_observed_business_run(monkeypatch, tmp_path, qrs):
-    from notifications.digest_snapshot.unified_contract import NotificationEvent
+    from binance_platform.notifications.digest_snapshot.unified_contract import NotificationEvent
     payload, _ = export_window(monkeypatch, (0, 0))
     store, env = MemoryStore(), environment()
     key = f"binance/{DAY}/example-slot.json"

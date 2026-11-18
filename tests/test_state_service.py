@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from application.state_service import append_trend_pool_source_logs, load_cycle_state
-from infra.state_store import load_runtime_trade_state, save_runtime_trade_state
-from trade_state_support import build_default_state, normalize_trade_state
+from binance_platform.application.state_service import append_trend_pool_source_logs, load_cycle_state
+from binance_platform.infra.state_store import load_runtime_trade_state, save_runtime_trade_state
+from binance_platform.trade_state_support import build_default_state, normalize_trade_state
 
 
 class StateServiceTests(unittest.TestCase):
@@ -340,7 +340,7 @@ def test_rebased_scope_filters_inactive_unapproved_pool_and_keeps_full_approved_
 
 @pytest.mark.parametrize("location", ["direct", "retired"])
 def test_rebased_scope_rejects_active_unapproved_asset_before_any_state_write(location):
-    from runtime_support import ExecutionIntegrityError
+    from binance_platform.runtime_support import ExecutionIntegrityError
 
     raw = _rebased_state()
     active = {"is_holding": True, "entry_price": 1.0, "highest_price": 1.0}
@@ -354,7 +354,7 @@ def test_rebased_scope_rejects_active_unapproved_asset_before_any_state_write(lo
 
 
 def test_rebased_scope_rejects_active_unapproved_asset_even_when_absent_from_source_pool():
-    from runtime_support import ExecutionIntegrityError
+    from binance_platform.runtime_support import ExecutionIntegrityError
 
     raw = _rebased_state()
     raw["ZECUSDT"]["holding_qty"] = 1.0
@@ -377,7 +377,7 @@ def test_rebased_scope_allows_active_top_level_dedicated_asset_state():
 
 @pytest.mark.parametrize("symbol", ["BTCUSDT", "BNBUSDT"])
 def test_rebased_scope_rejects_active_dedicated_asset_in_retired_trend_positions(symbol):
-    from runtime_support import ExecutionIntegrityError
+    from binance_platform.runtime_support import ExecutionIntegrityError
 
     raw = _rebased_state()
     raw["retired_trend_positions"] = {
@@ -389,7 +389,7 @@ def test_rebased_scope_rejects_active_dedicated_asset_in_retired_trend_positions
 
 
 def test_rebased_scope_requires_checkpoint_and_balance_snapshot_asset_keys_to_match():
-    from runtime_support import ExecutionIntegrityError
+    from binance_platform.runtime_support import ExecutionIntegrityError
 
     raw = _rebased_state()
     raw["last_balance_snapshot"].pop("XRP")
@@ -407,14 +407,14 @@ def test_rebased_scope_requires_checkpoint_and_balance_snapshot_asset_keys_to_ma
     ],
 )
 def test_rebased_scope_still_rejects_malformed_or_dedicated_pairs(resolved):
-    from runtime_support import ExecutionIntegrityError
+    from binance_platform.runtime_support import ExecutionIntegrityError
 
     with pytest.raises(ExecutionIntegrityError, match="managed_asset_scope_mismatch"):
         _load_rebased_state(_rebased_state(), resolved)
 
 
 def test_legacy_rebase_snapshot_scope_is_preserved_by_effective_universe():
-    from application.portfolio_service import build_balance_snapshot
+    from binance_platform.application.portfolio_service import build_balance_snapshot
 
     raw = _rebased_state(checkpoint=False)
     result, _observed, _resolution = _load_rebased_state(
@@ -432,14 +432,14 @@ def test_legacy_rebase_snapshot_scope_is_preserved_by_effective_universe():
 
 def test_public_and_infra_native_savers_require_exact_bound_capability_without_provider_lookup():
     from unittest.mock import patch
-    import main
-    from live_services import save_trade_state
+    import binance_platform.main as main
+    from binance_platform.live_services import save_trade_state
     from test_live_services import session_fixture
     access, client, _ = session_fixture({'value': 1}, normalize_fn=main.normalize_trade_state)
     access.claim('owner-one')
     access.load(normalize=False)
     calls = len(client.events)
-    with patch('live_services._get_document_store', side_effect=AssertionError('no provider lookup')) as factory:
+    with patch('binance_platform.live_services._get_document_store', side_effect=AssertionError('no provider lookup')) as factory:
         assert main.set_trade_state({'value': 2}) is False
         assert save_runtime_trade_state({'value': 2}, normalize_fn=main.normalize_trade_state) is False
         assert save_trade_state({'value': 2}, normalize_fn=main.normalize_trade_state,
@@ -467,8 +467,8 @@ def test_memory_saver_keeps_existing_keyword_contract_but_cannot_impersonate_bou
 
 def test_live_builder_binds_one_default_off_port_only_for_permitted_non_dry_runtime():
     from unittest.mock import Mock, patch
-    import main
-    from runtime_support import ExecutionRuntime
+    import binance_platform.main as main
+    from binance_platform.runtime_support import ExecutionRuntime
     for dry_run, permitted in [(True, True), (False, False), (False, True)]:
         rt = ExecutionRuntime(dry_run=dry_run, standard_execution_permitted=permitted)
         bound = Mock()
@@ -488,8 +488,8 @@ def test_live_builder_binds_one_default_off_port_only_for_permitted_non_dry_runt
 
 def test_candidate_receipt_flag_is_explicit_and_not_environment_selected():
     from unittest.mock import Mock, patch
-    import main
-    from runtime_support import ExecutionRuntime
+    import binance_platform.main as main
+    from binance_platform.runtime_support import ExecutionRuntime
     rt = ExecutionRuntime()
     port = Mock()
     port.__iter__ = Mock(return_value=iter((Mock(), Mock(), Mock(), Mock())))
@@ -502,7 +502,7 @@ def test_candidate_receipt_flag_is_explicit_and_not_environment_selected():
 
 def test_invalid_receipt_option_fails_before_live_runtime_builder_or_provider():
     from unittest.mock import patch
-    import main
+    import binance_platform.main as main
     with patch.object(main, 'rc_build_live_runtime') as builder:
         with pytest.raises(ValueError, match='state_session_receipt_flag_invalid'):
             main.build_live_runtime(retain_interval_receipts='true')

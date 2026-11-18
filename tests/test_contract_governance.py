@@ -4,7 +4,7 @@ import unittest
 
 from crypto_strategies import get_platform_runtime_adapter, get_strategy_definitions
 
-from strategy_registry import (
+from binance_platform.strategy_registry import (
     BINANCE_PLATFORM,
     BINANCE_ENABLED_PROFILES,
     BINANCE_ROLLOUT_ALLOWLIST,

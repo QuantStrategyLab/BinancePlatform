@@ -17,7 +17,7 @@ for path in (ROOT, QPK_SRC, CRYPTO_STRATEGIES_SRC):
 
 from quant_platform_kit.common.runtime_target import build_runtime_target
 
-from live_risk_authority import (
+from binance_platform.live_risk_authority import (
     LiveRiskAuthorityError,
     bind_live_risk_authority,
     config_sha256,
@@ -146,8 +146,8 @@ def test_authority_is_bound_to_actual_runtime_and_dynamic_input_digest_changes(t
         "os.environ",
         _env(path, digest),
         clear=False,
-    ), patch("live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION), patch(
-        "live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION
+    ), patch("binance_platform.live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION), patch(
+        "binance_platform.live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION
     ):
         authority = load_live_risk_authority(
             env=_env(path, digest),
@@ -193,8 +193,8 @@ def test_authority_is_bound_to_actual_runtime_and_dynamic_input_digest_changes(t
 def test_dynamic_managed_usdt_policy_derives_qpk_budget_and_snapshot_expiry(tmp_path):
     now = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
     path, digest = _write_authority(tmp_path, _dynamic_payload(now))
-    with patch("live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION), patch(
-        "live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION
+    with patch("binance_platform.live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION), patch(
+        "binance_platform.live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION
     ):
         authority = load_live_risk_authority(
             env=_env(path, digest),
@@ -226,8 +226,8 @@ def test_dynamic_managed_usdt_policy_derives_qpk_budget_and_snapshot_expiry(tmp_
 def test_dynamic_managed_usdt_policy_rejects_invalid_budget_observation(tmp_path):
     now = datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc)
     path, digest = _write_authority(tmp_path, _dynamic_payload(now))
-    with patch("live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION), patch(
-        "live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION
+    with patch("binance_platform.live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION), patch(
+        "binance_platform.live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION
     ):
         authority = load_live_risk_authority(
             env=_env(path, digest),
@@ -258,8 +258,8 @@ def test_dynamic_managed_usdt_policy_clamps_normal_overexposure_headroom(tmp_pat
     payload = _dynamic_payload(now)
     payload["mandate"]["effective_exposure_cap"] = 0.5
     path, digest = _write_authority(tmp_path, payload)
-    with patch("live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION), patch(
-        "live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION
+    with patch("binance_platform.live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION), patch(
+        "binance_platform.live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION
     ):
         authority = load_live_risk_authority(
             env=_env(path, digest),
@@ -390,8 +390,8 @@ def test_authority_rejects_research_scope_and_expiry(tmp_path):
 
 @pytest.mark.parametrize("payload_builder", [_payload, _dynamic_payload], ids=["fixed", "managed_usdt_dynamic"])
 def test_loaded_authority_reaches_pinned_crypto_qpk_and_mapper(tmp_path, payload_builder):
-    from decision_mapper import map_strategy_decision_to_rotation_plan
-    from strategy_runtime import load_research_only_strategy_runtime
+    from binance_platform.decision_mapper import map_strategy_decision_to_rotation_plan
+    from binance_platform.strategy_runtime import load_research_only_strategy_runtime
 
     now = datetime.now(timezone.utc).replace(microsecond=0)
     runtime = load_research_only_strategy_runtime(PROFILE)
@@ -399,8 +399,8 @@ def test_loaded_authority_reaches_pinned_crypto_qpk_and_mapper(tmp_path, payload
     effective_config_digest = config_sha256(runtime.effective_runtime_config)
     payload["config_sha256"] = effective_config_digest
     path, digest = _write_authority(tmp_path, payload)
-    with patch("live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION), patch(
-        "live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION
+    with patch("binance_platform.live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION), patch(
+        "binance_platform.live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION
     ):
         authority = load_live_risk_authority(
             env=_env(path, digest),
@@ -453,8 +453,8 @@ def test_loaded_authority_reaches_pinned_crypto_qpk_and_mapper(tmp_path, payload
 
 
 def test_build_live_runtime_reads_authority_into_existing_runtime(tmp_path):
-    from runtime_config_support import build_live_runtime
-    from strategy_runtime import load_research_only_strategy_runtime
+    from binance_platform.runtime_config_support import build_live_runtime
+    from binance_platform.strategy_runtime import load_research_only_strategy_runtime
 
     now = datetime.now(timezone.utc).replace(microsecond=0)
     target = _target()
@@ -482,15 +482,15 @@ def test_build_live_runtime_reads_authority_into_existing_runtime(tmp_path):
         "RUNTIME_TARGET_ENABLED": "true",
         **_env(path, digest),
     }
-    import runtime_config_support
+    import binance_platform.runtime_config_support as runtime_config_support
 
     definition = runtime_config_support.resolve_research_strategy_definition(
         PROFILE, platform_id="binance"
     )
     with patch.dict("os.environ", env, clear=True), patch(
-        "live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION
-    ), patch("live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION), patch(
-        "runtime_config_support.resolve_runtime_target_strategy",
+        "binance_platform.live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION
+    ), patch("binance_platform.live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION), patch(
+        "binance_platform.runtime_config_support.resolve_runtime_target_strategy",
         return_value=(target, definition),
     ):
         runtime = build_live_runtime(now_utc=now)
@@ -501,10 +501,10 @@ def test_build_live_runtime_reads_authority_into_existing_runtime(tmp_path):
 
 
 def test_build_runtime_main_allocation_and_qpk_gate_reject_limits(tmp_path):
-    import main
-    from decision_mapper import map_strategy_decision_to_rotation_plan
-    from runtime_config_support import build_live_runtime
-    from strategy_runtime import load_research_only_strategy_runtime
+    import binance_platform.main as main
+    from binance_platform.decision_mapper import map_strategy_decision_to_rotation_plan
+    from binance_platform.runtime_config_support import build_live_runtime
+    from binance_platform.strategy_runtime import load_research_only_strategy_runtime
 
     now = datetime.now(timezone.utc).replace(microsecond=0)
     target = _target()
@@ -523,7 +523,7 @@ def test_build_runtime_main_allocation_and_qpk_gate_reject_limits(tmp_path):
         "STRATEGY_PROFILE": PROFILE, "RUNTIME_TARGET_JSON": json.dumps(target_json),
         "BINANCE_DRY_RUN": "false", "RUNTIME_TARGET_ENABLED": "true", **_env(path, digest),
     }
-    import runtime_config_support
+    import binance_platform.runtime_config_support as runtime_config_support
 
     definition = runtime_config_support.resolve_research_strategy_definition(
         PROFILE, platform_id="binance"
@@ -545,9 +545,9 @@ def test_build_runtime_main_allocation_and_qpk_gate_reject_limits(tmp_path):
     prices = {"ETHUSDT": 3000.0, "SOLUSDT": 180.0, "BTCUSDT": 60000.0, "BNBUSDT": 100.0}
     balances = {"BTCUSDT": 0.02, "ETHUSDT": 0.0, "SOLUSDT": 0.0, "BNBUSDT": 0.5}
     with patch.dict("os.environ", env, clear=True), patch(
-        "live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION
-    ), patch("live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION), patch(
-        "runtime_config_support.resolve_runtime_target_strategy", return_value=(target, definition)
+        "binance_platform.live_risk_authority.resolve_strategy_revision", return_value=STRATEGY_REVISION
+    ), patch("binance_platform.live_risk_authority.resolve_runner_revision", return_value=RUNNER_REVISION), patch(
+        "binance_platform.runtime_config_support.resolve_runtime_target_strategy", return_value=(target, definition)
     ):
         runtime = build_live_runtime(now_utc=now)
         runtime.trend_pool_contract = {"source_kind": "fixture", "symbols": ["ETHUSDT", "SOLUSDT"]}

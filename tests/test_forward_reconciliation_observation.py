@@ -11,7 +11,7 @@ import pytest
 def build_forward_report(*args, **kwargs):
     # Import inside each test so an unimplemented report path records individual
     # adverse failures, rather than preventing the entire module's collection.
-    from application.forward_reconciliation import build_forward_report as build
+    from binance_platform.application.forward_reconciliation import build_forward_report as build
 
     return build(*args, **kwargs)
 
@@ -312,7 +312,7 @@ def test_replay_recomputes_from_current_inputs_and_does_not_trust_saved_match():
 
 
 def test_public_envelope_omits_all_private_inputs():
-    from application.forward_reconciliation import forward_envelope
+    from binance_platform.application.forward_reconciliation import forward_envelope
     f = fixture()
     f["closing"]["wallets"]["spot"]["receipt"]["pages"][0]["revision"] = "sensitive-private-value"
     text = json.dumps(forward_envelope(build_forward_report(f)))
@@ -403,7 +403,7 @@ def test_native_inventory_unknown_semantics_are_not_zero(problem):
 
 
 def test_spot_fill_projection_requires_native_quote_and_preserves_symbol_identity():
-    from application.forward_reconciliation import project_spot_fill
+    from binance_platform.application.forward_reconciliation import project_spot_fill
     row = {"symbol": "BTCUSDT", "id": 1, "time": 1793754000000, "isBuyer": True,
            "qty": "0.01", "quoteQty": "10.001", "price": "1000",
            "commission": "0.001", "commissionAsset": "BNB"}

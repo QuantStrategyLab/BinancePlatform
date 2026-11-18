@@ -11,7 +11,7 @@ from urllib.error import URLError
 
 import pytest
 
-from application.account_facts import (
+from binance_platform.application.account_facts import (
     AccountFactsUnavailable,
     ReadOnlyBinanceClient,
     build_source_binding_id,
@@ -292,7 +292,7 @@ def test_wallet_request_uses_locked_sdk_signed_get_once_without_redirect():
         """
         import requests
         from binance.client import Client
-        from application.account_facts import ReadOnlyBinanceClient
+        from binance_platform.application.account_facts import ReadOnlyBinanceClient
 
         raw_client = Client(
             "synthetic-key", "synthetic-secret", requests_params={"timeout": 15}, ping=False
@@ -1008,14 +1008,14 @@ def test_flexible_earn_aggregation_preserves_full_decimal_precision():
 
 @pytest.mark.parametrize("amount", ["1e999999999", "1e-999999999", "1234567890123456789012345678901"])
 def test_decimal_canonicalizer_rejects_unbounded_or_over_precision_values(amount):
-    from application.account_facts import _decimal
+    from binance_platform.application.account_facts import _decimal
 
     with pytest.raises(AccountFactsUnavailable, match="amount_invalid"):
         _decimal(amount)
 
 
 def test_decimal_canonicalizer_removes_non_significant_zeros():
-    from application.account_facts import _decimal, _decimal_text
+    from binance_platform.application.account_facts import _decimal, _decimal_text
 
     assert _decimal_text(_decimal("1.000000")) == "1"
 

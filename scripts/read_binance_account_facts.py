@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from application.account_facts import (  # noqa: E402
+from binance_platform.application.account_facts import (  # noqa: E402
     AccountFactsUnavailable,
     ReadOnlyBinanceClient,
     build_source_binding_id,
@@ -669,7 +669,7 @@ def _validate_execution_receipt_status(report: Mapping[str, Any]) -> None:
             return
         raise _stop("strategy_execution_receipt_required")
     try:
-        from application.execution_receipt_adapter import validate_report_execution_receipt
+        from binance_platform.application.execution_receipt_adapter import validate_report_execution_receipt
 
         receipt = validate_report_execution_receipt(report)
     except (ValueError, TypeError, KeyError):

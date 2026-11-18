@@ -81,8 +81,8 @@ def _empty_history_client(*, reward_rows_by_window=None, page_full_surface=None)
 
 
 def test_chunked_balance_flows_accepts_explicit_span_beyond_max_history_when_complete():
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
-    from application.rebased_recovery import MAX_HISTORY
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.rebased_recovery import MAX_HISTORY
 
     assert NOW_BEYOND - OPENING_AT > MAX_HISTORY
     client, calls = _empty_history_client()
@@ -105,7 +105,7 @@ def test_chunked_balance_flows_accepts_explicit_span_beyond_max_history_when_com
 
 def test_chunked_balance_flows_accepts_exact_full_single_page_when_total_matches():
     """A page at the API size limit is complete when total equals the row count."""
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     end = OPENING_AT + timedelta(days=1)
 
@@ -142,7 +142,7 @@ def test_chunked_balance_flows_accepts_exact_full_single_page_when_total_matches
 
 def test_chunked_balance_flows_paginates_full_reward_pages():
     """Full pages must continue until the final short page; identities stay unique."""
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     end = OPENING_AT + timedelta(days=1)
     start_ms = int(OPENING_AT.timestamp() * 1000)
@@ -198,7 +198,7 @@ def test_chunked_balance_flows_paginates_full_reward_pages():
 
 def test_chunked_balance_flows_rejects_full_page_when_total_exceeds_visible_rows():
     """Full page with a larger total and no further pages must fail closed."""
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     def read(method, path, **kwargs):
         data = kwargs.get("data") or {}
@@ -235,7 +235,7 @@ def test_chunked_balance_flows_rejects_full_page_when_total_exceeds_visible_rows
 
 
 def test_chunked_balance_flows_rejects_duplicate_boundary_reward_identity():
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     stamp = int((OPENING_AT + timedelta(days=1)).timestamp() * 1000)
     row = {
@@ -275,7 +275,7 @@ def test_chunked_balance_flows_rejects_duplicate_boundary_reward_identity():
 
 
 def test_historical_continuity_diagnosis_accepts_earn_only_beyond_max_history(monkeypatch):
-    from application.rebased_recovery import (
+    from binance_platform.application.rebased_recovery import (
         MAX_HISTORY,
         collect_historical_continuity_diagnosis,
     )
@@ -327,8 +327,8 @@ def test_historical_continuity_diagnosis_accepts_earn_only_beyond_max_history(mo
 
 
 def test_historical_continuity_rejects_ledger_checkpoint_as_continuity_bridge(monkeypatch):
-    from application.earn_accrual import prepare_forward_earn_state
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.earn_accrual import prepare_forward_earn_state
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     opening, archive, _control = _material(monkeypatch)
     mid_at = OPENING_AT + timedelta(minutes=10)
@@ -385,7 +385,7 @@ def test_historical_continuity_rejects_ledger_checkpoint_as_continuity_bridge(mo
 def test_historical_continuity_fails_closed_on_unsupported_or_open_activity(
     monkeypatch, change, reason
 ):
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -445,8 +445,8 @@ def test_historical_continuity_fails_closed_on_unsupported_or_open_activity(
 
 def test_single_window_max_history_guard_unchanged():
     """Do not enlarge MAX_HISTORY; single-window diagnose still rejects >7d."""
-    from application.broker_reconciliation import diagnose_balance_flows
-    from application.rebased_recovery import MAX_HISTORY
+    from binance_platform.application.broker_reconciliation import diagnose_balance_flows
+    from binance_platform.application.rebased_recovery import MAX_HISTORY
 
     client, calls = _empty_history_client()
     with pytest.raises(ValueError, match="balance_history_window_invalid"):
@@ -559,8 +559,8 @@ def test_controller_prepare_still_rejects_forged_quiesced_confirmation(monkeypat
 
 def test_chunked_reward_totals_use_first_pass_only_no_second_read():
     """P1-2: summing must not re-fetch rewards and double-count across chunks."""
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
-    from application.rebased_recovery import MAX_HISTORY
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.rebased_recovery import MAX_HISTORY
 
     stamp = int((OPENING_AT + timedelta(days=1)).timestamp() * 1000)
     row = {
@@ -606,7 +606,7 @@ def test_chunked_reward_sum_preserves_sub_default_precision_addends():
     """Default Decimal prec=28 truncates 0.1+1.4e-29; sums must not quietly drop the tiny addend."""
     from decimal import Decimal, getcontext, localcontext
 
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     assert getcontext().prec == 28
     assert Decimal("0.1") + Decimal("1.4E-29") == Decimal("0.1")
@@ -643,7 +643,7 @@ def test_chunked_reward_sum_preserves_sub_default_precision_addends():
 
 def test_historical_continuity_rejects_ledger_when_reward_sum_loses_tiny_addend(monkeypatch):
     """History 0.1+1.4e-29 must not conserve against a ledger advanced by only 0.1."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -716,7 +716,7 @@ def test_historical_continuity_rejects_ledger_when_reward_sum_loses_tiny_addend(
 )
 def test_chunked_invalid_reward_rows_fail_closed(bad_row):
     """P1-3: unknown type / illegal timestamp / illegal amount must not be skipped."""
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     stamp = int((OPENING_AT + timedelta(hours=2)).timestamp() * 1000)
     good = {
@@ -750,7 +750,7 @@ def test_historical_continuity_rejects_tail_activity_between_observed_and_final(
     monkeypatch,
 ):
     """P1-5: history must cover through final_at so late deposits cannot slip past."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -803,7 +803,7 @@ def test_historical_continuity_rejects_unproven_ledger_fields_when_rewards_nonze
     monkeypatch, tamper
 ):
     """P1-1: reward-nonzero path must verify principal/cursor/scope/snapshot, not digest alone."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -885,7 +885,7 @@ def test_historical_continuity_rejects_unproven_ledger_fields_when_rewards_nonze
 
 def test_historical_continuity_rejects_earn_product_or_collateral_change(monkeypatch):
     """P1-4: must reuse strict Earn checkpoint semantics, not totalAmount alone."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -924,7 +924,7 @@ def test_validate_historical_continuity_source_require_fresh_false_ignores_age(
     monkeypatch,
 ):
     """P1-6: require_fresh=False keeps binding checks but skips 30-minute window."""
-    from application.rebased_recovery import (
+    from binance_platform.application.rebased_recovery import (
         collect_historical_continuity_source,
         validate_historical_continuity_source,
     )
@@ -977,7 +977,7 @@ def test_validate_historical_continuity_source_require_fresh_false_ignores_age(
 
 def test_historical_continuity_rejects_float_truncated_reward_delta(monkeypatch):
     """A: Decimal exactness — 0.000000014 must not round-accept as 0.00000001."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -1040,7 +1040,7 @@ def test_historical_continuity_rejects_float_truncated_reward_delta(monkeypatch)
 
 def test_historical_continuity_rejects_checkpoint_after_final_at(monkeypatch):
     """A: current checkpoint/evidence must not observe after final_at."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -1078,7 +1078,7 @@ def test_historical_continuity_rejects_checkpoint_after_final_at(monkeypatch):
 
 def test_chunked_rejects_reward_product_without_lifecycle_evidence():
     """Reward projectId outside opening set still fails without subscription proof."""
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
     row = {
@@ -1112,7 +1112,7 @@ def test_chunked_rejects_reward_product_without_lifecycle_evidence():
 
 def test_chunked_accepts_reward_product_proven_by_subscription_lifecycle():
     """Managed asset + SUCCESS subscription evidence may admit a post-opening product."""
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     sub_stamp = int((OPENING_AT + timedelta(minutes=30)).timestamp() * 1000)
     reward_stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
@@ -1165,7 +1165,7 @@ def test_chunked_accepts_reward_product_proven_by_subscription_lifecycle():
 
 
 def test_chunked_rejects_out_of_scope_reward_product_even_with_subscription():
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
     subscription = {
@@ -1214,8 +1214,8 @@ def test_chunked_rejects_out_of_scope_reward_product_even_with_subscription():
 
 def test_chunked_covers_final_millisecond_when_span_is_max_chunk_plus_one_ms():
     """C: end = start + 7d + 1ms must still query the inclusive final millisecond."""
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
-    from application.rebased_recovery import MAX_HISTORY
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.rebased_recovery import MAX_HISTORY
 
     end = OPENING_AT + MAX_HISTORY + timedelta(milliseconds=1)
     end_ms = int(end.timestamp() * 1000)
@@ -1276,7 +1276,7 @@ def test_validate_require_fresh_false_still_rejects_binding_tamper(monkeypatch, 
     from quant_platform_kit.common.broker_reconciliation_enrollment import (
         calculate_broker_reconciliation_baseline_candidate_sha256,
     )
-    from application.rebased_recovery import (
+    from binance_platform.application.rebased_recovery import (
         collect_historical_continuity_source,
         validate_historical_continuity_source,
     )
@@ -1362,7 +1362,7 @@ def test_validate_require_fresh_false_still_rejects_binding_tamper(monkeypatch, 
 
 def test_historical_continuity_accepts_evidenced_cursor_advancement(monkeypatch):
     """Cursor observed_at may advance with identical records when rewards conserve."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -1450,7 +1450,7 @@ def test_historical_continuity_accepts_evidenced_cursor_advancement(monkeypatch)
 
 def test_historical_continuity_bonus_and_realtime_conserve_separately(monkeypatch):
     """BONUS credits Spot; REALTIME accrues in Earn — both raise total once."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -1544,7 +1544,7 @@ def test_historical_continuity_bonus_and_realtime_conserve_separately(monkeypatc
 
 def test_historical_continuity_rejects_treating_bonus_as_realtime_earn(monkeypatch):
     """Applying BONUS into Earn totals (and not Spot) must not conserve."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -1623,7 +1623,7 @@ def test_historical_continuity_rejects_treating_bonus_as_realtime_earn(monkeypat
 
 def test_historical_continuity_accepts_lifecycle_product_with_subscription(monkeypatch):
     """Post-opening subscribed product rewards may conserve when evidence is complete."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -1761,7 +1761,7 @@ def test_historical_continuity_accepts_lifecycle_product_with_subscription(monke
     ],
 )
 def test_chunked_rejects_invalid_subscription_lifecycle_rows(bad_subscription):
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     def read(method, path, **kwargs):
         if path.startswith("capital/"):
@@ -1787,7 +1787,7 @@ def test_chunked_rejects_invalid_subscription_lifecycle_rows(bad_subscription):
 
 
 def test_chunked_rejects_duplicate_subscription_identity():
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
     row = {
@@ -1825,7 +1825,7 @@ def test_chunked_rejects_duplicate_subscription_identity():
 
 
 def test_chunked_rejects_reward_before_subscription_for_new_product():
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     reward_stamp = int((OPENING_AT + timedelta(minutes=10)).timestamp() * 1000)
     sub_stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
@@ -1869,7 +1869,7 @@ def test_chunked_rejects_reward_before_subscription_for_new_product():
 
 
 def test_chunked_rejects_later_page_total_disagreement():
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     start_ms = int(OPENING_AT.timestamp() * 1000)
 
@@ -1925,7 +1925,7 @@ def test_chunked_rejects_later_page_total_disagreement():
     ["daily_equity_base", "daily_trend_cash_flow_usdt", "daily_trend_risk_base_usdt"],
 )
 def test_historical_continuity_rejects_unverified_daily_loss_field_change(monkeypatch, field):
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -1968,7 +1968,7 @@ def test_historical_continuity_rejects_unverified_daily_loss_field_change(monkey
 
 def test_historical_continuity_allows_checkpoint_observed_at_without_activity(monkeypatch):
     """No earn activity: checkpoint/cursor timestamps may advance; quantities stay fixed."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -2018,7 +2018,7 @@ def test_historical_continuity_rejects_product_add_with_only_count_not_matching_
     monkeypatch,
 ):
     """Subscription count alone cannot authorize a new product without matching facts."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -2118,7 +2118,7 @@ def test_historical_continuity_rejects_product_removal_with_underfunded_redempti
     monkeypatch,
 ):
     """Removing BNB001 total=2 cannot be diagnosed from a 0.001 redemption alone."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -2201,7 +2201,7 @@ def test_historical_continuity_rejects_shared_product_principal_drop_without_red
     monkeypatch,
 ):
     """Shared BNB001 principal drop is not covered by adding BNB002 alone."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -2310,7 +2310,7 @@ def test_historical_continuity_rejects_shared_product_principal_drop_without_red
 
 
 def test_chunked_rejects_lifecycle_row_with_product_bound_to_other_asset():
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
     subscription = {
@@ -2353,7 +2353,7 @@ def test_chunked_rejects_lifecycle_row_with_product_bound_to_other_asset():
 def test_historical_continuity_rejects_no_activity_nontime_checkpoint_field(
     monkeypatch, tamper
 ):
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -2402,7 +2402,7 @@ def test_historical_continuity_rejects_no_activity_nontime_checkpoint_field(
 
 
 def test_chunked_rejects_reward_when_subscription_shares_exact_millisecond():
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     stamp = int((OPENING_AT + timedelta(hours=1)).timestamp() * 1000)
     subscription = {
@@ -2445,7 +2445,7 @@ def test_chunked_rejects_reward_when_subscription_shares_exact_millisecond():
 
 
 def test_chunked_rejects_transfer_page_identity_repeat_even_when_total_matches():
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     start_ms = int(OPENING_AT.timestamp() * 1000)
 
@@ -2499,7 +2499,7 @@ def test_historical_continuity_rejects_removal_redeem_rounded_equal_to_total(
     monkeypatch,
 ):
     """Removal redeem must not equal product total via Decimal context rounding."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -2587,7 +2587,7 @@ def test_historical_continuity_rejects_lifecycle_nontime_checkpoint_tamper(
     monkeypatch, tamper
 ):
     """Valid subscription lifecycle still requires nontime checkpoint fields."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -2719,7 +2719,7 @@ def test_historical_continuity_rejects_lifecycle_nontime_checkpoint_tamper(
     ],
 )
 def test_chunked_rejects_transfer_row_without_strict_tran_id(bad_row):
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     def read(method, path, **kwargs):
         data = kwargs.get("data") or {}
@@ -2744,7 +2744,7 @@ def test_historical_continuity_rejects_removal_redeem_sum_hiding_extreme_tail(
     monkeypatch,
 ):
     """2 + 1e-1001 must not conserve as product total 2 under capped Decimal prec."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -2846,7 +2846,7 @@ def test_historical_continuity_rejects_lifecycle_execution_authority_zero(
     monkeypatch,
 ):
     """Integer 0 must not satisfy execution_authority_granted is False."""
-    from application.rebased_recovery import collect_historical_continuity_diagnosis
+    from binance_platform.application.rebased_recovery import collect_historical_continuity_diagnosis
 
     ledger, archive, _control = _material(monkeypatch)
     ledger = copy.deepcopy(ledger)
@@ -2966,7 +2966,7 @@ def test_historical_continuity_rejects_lifecycle_execution_authority_zero(
 )
 def test_chunked_rejects_lifecycle_order_and_post_liquidation_rewards(scenario):
     """Rewards need a strictly earlier positive product balance; same-ms sub fails."""
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     sub_stamp = int((OPENING_AT + timedelta(minutes=10)).timestamp() * 1000)
     mid_stamp = int((OPENING_AT + timedelta(minutes=20)).timestamp() * 1000)
@@ -3042,7 +3042,7 @@ def test_chunked_rejects_lifecycle_order_and_post_liquidation_rewards(scenario):
 
 def test_chunked_rejects_product_gap_masked_by_sibling_product_balance():
     """Sibling product inventory must not cover another product's post-liquidation reward."""
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     sub_a = int((OPENING_AT + timedelta(minutes=5)).timestamp() * 1000)
     sub_b = int((OPENING_AT + timedelta(minutes=6)).timestamp() * 1000)
@@ -3120,7 +3120,7 @@ def test_chunked_rejects_product_gap_masked_by_sibling_product_balance():
 
 
 def test_chunked_rejects_over_redemption_without_reporting_amounts():
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     sub_stamp = int((OPENING_AT + timedelta(minutes=10)).timestamp() * 1000)
     redeem_stamp = int((OPENING_AT + timedelta(minutes=20)).timestamp() * 1000)
@@ -3176,7 +3176,7 @@ def test_chunked_rejects_over_redemption_without_reporting_amounts():
 
 def test_chunked_rejects_over_redeem_after_tiny_redeem_without_decimal_rounding():
     """Subscribe 1, redeem 1e-40, then redeem 1 must fail; default Decimal prec must not hide remainder."""
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     sub_stamp = int((OPENING_AT + timedelta(minutes=10)).timestamp() * 1000)
     tiny_stamp = int((OPENING_AT + timedelta(minutes=20)).timestamp() * 1000)
@@ -3248,7 +3248,7 @@ def test_chunked_rejects_over_redeem_after_tiny_redeem_without_decimal_rounding(
 
 def test_chunked_failure_classification_excludes_prior_success_counts():
     """A later over-redeem must not leave lifecycle_subscription_proven from earlier rewards."""
-    from application.broker_reconciliation import diagnose_chunked_balance_flows
+    from binance_platform.application.broker_reconciliation import diagnose_chunked_balance_flows
 
     sub_stamp = int((OPENING_AT + timedelta(minutes=5)).timestamp() * 1000)
     reward_stamp = int((OPENING_AT + timedelta(minutes=15)).timestamp() * 1000)

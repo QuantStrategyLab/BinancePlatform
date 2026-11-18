@@ -2,14 +2,14 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from application.execution_service import (
+from binance_platform.application.execution_service import (
     execute_btc_dca_cycle,
     execute_trend_buys,
     execute_trend_rotation,
     execute_trend_sells,
     run_daily_circuit_breaker,
 )
-from runtime_support import (
+from binance_platform.runtime_support import (
     ExecutionIntegrityError,
     OrderReconciliationError,
     build_execution_report,
@@ -772,7 +772,7 @@ class ExecutionServiceTests(unittest.TestCase):
 
         self.assertEqual(observed["methods"], ["order_market_buy"])
 
-    @patch("application.execution_service._require_btc_strategy_attribution")
+    @patch("binance_platform.application.execution_service._require_btc_strategy_attribution")
     def test_execute_btc_dca_cycle_executes_trim_branch(self, _guard):
         runtime = SimpleNamespace(client=object())
         report = {"btc_dca_intents": [], "gating_summary": {}, "gating_events": []}
@@ -819,7 +819,7 @@ class ExecutionServiceTests(unittest.TestCase):
         self.assertEqual(observed["client_calls"][0][0], "order_market_sell")
         self.assertEqual(observed["persist_reasons"], ["btc_dca_sell"])
 
-    @patch("application.execution_service._require_btc_strategy_attribution")
+    @patch("binance_platform.application.execution_service._require_btc_strategy_attribution")
     def test_btc_trim_reconciliation_uncertainty_propagates(self, _guard):
         with self.assertRaises(OrderReconciliationError):
             execute_btc_dca_cycle(

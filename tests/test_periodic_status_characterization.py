@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from types import ModuleType
 from unittest.mock import patch
 
-from reporting.status_reports import maybe_send_periodic_btc_status_report
+from binance_platform.reporting.status_reports import maybe_send_periodic_btc_status_report
 
 
 TRANSLATIONS = {
@@ -215,7 +215,7 @@ class PeriodicStatusCharacterizationTests(unittest.TestCase):
         self.assertEqual(self.state, {"unrelated": "preserved"})
 
     def test_default_route_preserves_kind_callbacks_and_transport_arguments(self):
-        fake = ModuleType("notifications.unified_notifications")
+        fake = ModuleType("binance_platform.notifications.unified_notifications")
         fake._coverage_message = lambda: "fixture coverage"
 
         def external_notice(send, *, kind, send_coverage):
