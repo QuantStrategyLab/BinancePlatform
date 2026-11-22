@@ -5,6 +5,9 @@ on:
   schedule:
     - cron: "47 * * * *"
 
+permissions:
+  contents: read
+
 jobs:
   runtime-daily:
     name: Publish scheduled runtime daily projection
