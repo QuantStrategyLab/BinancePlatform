@@ -89,6 +89,12 @@ jobs:
       - name: Run ruff
         run: uv run --no-sync ruff check --exclude external .
 
+      - name: Check architecture boundaries
+        run: PYTHONPATH=src uvx --from import-linter lint-imports
+
+      - name: Run pyright on typed core modules
+        run: uvx pyright
+
       - name: Check QPK pin and lock consistency
         run: |
           set -euo pipefail

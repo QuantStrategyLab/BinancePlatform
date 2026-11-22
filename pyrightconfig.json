@@ -1,0 +1,15 @@
+{
+  "include": [
+    "src/binance_platform/portfolio_loss_stoploss.py",
+    "src/binance_platform/run_context.py",
+    "src/binance_platform/strategy_artifact_support.py",
+    "src/binance_platform/runtime_logging.py"
+  ],
+  "extraPaths": [
+    "src",
+    "external/QuantPlatformKit/src",
+    "external/CryptoStrategies/src"
+  ],
+  "pythonVersion": "3.11",
+  "typeCheckingMode": "basic"
+}
