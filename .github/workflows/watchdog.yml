@@ -49,6 +49,9 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.12"
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
+        with:
+          enable-cache: true
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
@@ -61,7 +64,6 @@ jobs:
       - name: Install deps
         run: |
           set -euo pipefail
-          python -m pip install --upgrade pip uv
           uv sync --frozen --no-dev
       - name: Run watchdog
         id: check
