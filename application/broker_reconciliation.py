@@ -758,6 +758,417 @@ def collect_bnb_dividend_quantity(
     }
 
 
+_SPOT_TRANSFER_DIRECTIONS: tuple[tuple[str, int], ...] = (
+    ("FUNDING_MAIN", 1),
+    ("UMFUTURE_MAIN", 1),
+    ("CMFUTURE_MAIN", 1),
+    ("MARGIN_MAIN", 1),
+    ("OPTION_MAIN", 1),
+    ("PORTFOLIO_MARGIN_MAIN", 1),
+    ("MAIN_FUNDING", -1),
+    ("MAIN_UMFUTURE", -1),
+    ("MAIN_CMFUTURE", -1),
+    ("MAIN_MARGIN", -1),
+    ("MAIN_OPTION", -1),
+    ("MAIN_PORTFOLIO_MARGIN", -1),
+)
+
+
+def _manual_flow_decimal(value: object) -> Decimal:
+    if not isinstance(value, str) or not value or len(value) > 80:
+        raise ValueError("manual_flow_row_invalid")
+    try:
+        decimal_value = Decimal(value)
+    except DecimalException:
+        raise ValueError("manual_flow_row_invalid") from None
+    if (
+        not decimal_value.is_finite()
+        or decimal_value <= 0
+        or abs(decimal_value) > Decimal("1e30")
+        or decimal_value.as_tuple().exponent < -30
+    ):
+        raise ValueError("manual_flow_row_invalid")
+    return decimal_value
+
+
+def _manual_flow_count(total: object) -> int | None:
+    if type(total) is int:
+        return total if total >= 0 else None
+    if isinstance(total, str) and total.isascii() and total.isdecimal() and len(total) <= 10:
+        return int(total)
+    return None
+
+
+def _manual_flow_asset(value: object) -> str:
+    if (
+        not isinstance(value, str)
+        or not 0 < len(value) <= 128
+        or not value.isprintable()
+        or any(ch.isspace() for ch in value)
+    ):
+        raise ValueError("manual_flow_row_invalid")
+    return value
+
+
+def _manual_flow_timestamp(value: object, *, start_ms: int, end_ms: int) -> int:
+    if type(value) is not int or not start_ms <= value <= end_ms:
+        raise ValueError("manual_flow_row_invalid")
+    return value
+
+
+def _manual_flow_get(
+    client: Any, path: str, *, data: Mapping[str, object]
+) -> Mapping[str, object]:
+    try:
+        response = client._request_margin_api("get", path, signed=True, data=dict(data))
+    except Exception:
+        raise ValueError("manual_flow_read_failed") from None
+    if not isinstance(response, Mapping):
+        raise ValueError("manual_flow_response_invalid")
+    return response
+
+
+def _collect_manual_convert_flows(
+    client: Any,
+    *,
+    start_ms: int,
+    end_ms: int,
+    tracked_set: frozenset[str],
+    asset_deltas: dict[str, Decimal],
+    identities: list[tuple[object, ...]],
+) -> tuple[int, Decimal]:
+    response = _manual_flow_get(
+        client,
+        "convert/tradeFlow",
+        data={"startTime": start_ms, "endTime": end_ms, "limit": 1000},
+    )
+    rows = response.get("list")
+    more_data = response.get("moreData")
+    if not isinstance(rows, list) or type(more_data) is not bool or more_data or len(rows) >= 1000:
+        raise ValueError("manual_flow_history_incomplete")
+    seen_ids: set[tuple[type, object]] = set()
+    convert_count = 0
+    usdt_principal = Decimal(0)
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("manual_flow_row_invalid")
+        order_id = row.get("orderId")
+        if not (
+            (isinstance(order_id, str) and 0 < len(order_id) <= 160)
+            or (type(order_id) is int and order_id >= 0)
+        ):
+            raise ValueError("manual_flow_row_invalid")
+        create_time = _manual_flow_timestamp(
+            row.get("createTime"), start_ms=start_ms, end_ms=end_ms
+        )
+        identity_key = (type(order_id), order_id)
+        if identity_key in seen_ids:
+            raise ValueError("manual_flow_row_invalid")
+        seen_ids.add(identity_key)
+        if create_time == start_ms:
+            continue
+        status = row.get("orderStatus")
+        if not isinstance(status, str):
+            raise ValueError("manual_flow_row_invalid")
+        if status in {"PROCESS", "ACCEPT_SUCCESS"}:
+            raise ValueError("manual_flow_unsettled")
+        if status == "FAIL":
+            continue
+        if status != "SUCCESS":
+            raise ValueError("manual_flow_row_invalid")
+        from_asset = _manual_flow_asset(row.get("fromAsset"))
+        to_asset = _manual_flow_asset(row.get("toAsset"))
+        if from_asset == to_asset:
+            raise ValueError("manual_flow_row_invalid")
+        from_amount = _manual_flow_decimal(row.get("fromAmount"))
+        to_amount = _manual_flow_decimal(row.get("toAmount"))
+        if from_asset not in tracked_set and to_asset not in tracked_set:
+            continue
+        non_usdt_tracked = tracked_set - {"USDT"}
+        if from_asset in non_usdt_tracked or to_asset in non_usdt_tracked:
+            raise ValueError("manual_flow_scope_unsupported")
+        if to_asset == "USDT":
+            asset_deltas["USDT"] += to_amount
+            usdt_principal += to_amount
+        else:
+            asset_deltas["USDT"] -= from_amount
+            usdt_principal -= from_amount
+        convert_count += 1
+        identities.append(("convert", order_id, create_time))
+    return convert_count, usdt_principal
+
+
+def _collect_manual_transfer_flows(
+    client: Any,
+    *,
+    start_ms: int,
+    end_ms: int,
+    tracked_set: frozenset[str],
+    asset_deltas: dict[str, Decimal],
+    identities: list[tuple[object, ...]],
+) -> tuple[int, Decimal]:
+    transfer_count = 0
+    usdt_principal = Decimal(0)
+    for transfer_type, sign in _SPOT_TRANSFER_DIRECTIONS:
+        response = _manual_flow_get(
+            client,
+            "asset/transfer",
+            data={
+                "type": transfer_type,
+                "startTime": start_ms,
+                "endTime": end_ms,
+                "current": 1,
+                "size": 100,
+            },
+        )
+        count = _manual_flow_count(response.get("total"))
+        rows = response.get("rows")
+        if count == 0 and "rows" not in response:
+            rows = []
+        if not isinstance(rows, list) or count is None or count != len(rows) or count >= 100:
+            raise ValueError("manual_flow_history_incomplete")
+        seen_ids: set[int] = set()
+        for row in rows:
+            if not isinstance(row, Mapping):
+                raise ValueError("manual_flow_row_invalid")
+            tran_id = row.get("tranId")
+            if type(tran_id) is not int or tran_id < 0 or tran_id in seen_ids:
+                raise ValueError("manual_flow_row_invalid")
+            seen_ids.add(tran_id)
+            ts = _manual_flow_timestamp(row.get("timestamp"), start_ms=start_ms, end_ms=end_ms)
+            if ts == start_ms:
+                continue
+            status = row.get("status")
+            if not isinstance(status, str):
+                raise ValueError("manual_flow_row_invalid")
+            if status == "PENDING":
+                raise ValueError("manual_flow_unsettled")
+            if status == "FAILED":
+                continue
+            if status != "CONFIRMED":
+                raise ValueError("manual_flow_row_invalid")
+            asset = _manual_flow_asset(row.get("asset"))
+            amount = _manual_flow_decimal(row.get("amount"))
+            if asset not in tracked_set:
+                continue
+            if asset != "USDT":
+                raise ValueError("manual_flow_scope_unsupported")
+            signed = amount if sign > 0 else -amount
+            asset_deltas["USDT"] += signed
+            usdt_principal += signed
+            transfer_count += 1
+            identities.append(("transfer", transfer_type, tran_id, ts))
+    return transfer_count, usdt_principal
+
+
+def _collect_manual_dribblet_flows(
+    client: Any,
+    *,
+    start_ms: int,
+    end_ms: int,
+    tracked_set: frozenset[str],
+    asset_deltas: dict[str, Decimal],
+    identities: list[tuple[object, ...]],
+) -> int:
+    response = _manual_flow_get(
+        client,
+        "asset/dribblet",
+        data={"startTime": start_ms, "endTime": end_ms},
+    )
+    rows = response.get("userAssetDribblets")
+    if not isinstance(rows, list) or len(rows) >= 100:
+        raise ValueError("manual_flow_history_incomplete")
+    if "total" in response:
+        count = _manual_flow_count(response.get("total"))
+        if count is None or count != len(rows) or count >= 100:
+            raise ValueError("manual_flow_history_incomplete")
+    elif rows:
+        raise ValueError("manual_flow_history_incomplete")
+    seen_ids: set[int] = set()
+    dribblet_count = 0
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("manual_flow_row_invalid")
+        trans_id = row.get("transId")
+        if type(trans_id) is not int or trans_id < 0 or trans_id in seen_ids:
+            raise ValueError("manual_flow_row_invalid")
+        seen_ids.add(trans_id)
+        operate_time = _manual_flow_timestamp(
+            row.get("operateTime"), start_ms=start_ms, end_ms=end_ms
+        )
+        if operate_time == start_ms:
+            continue
+        total_transferred = _manual_flow_decimal(row.get("totalTransferedAmount"))
+        details = row.get("userAssetDribbletDetails")
+        if not isinstance(details, list) or not details:
+            raise ValueError("manual_flow_row_invalid")
+        parsed_details: list[tuple[str, Decimal]] = []
+        for detail in details:
+            if not isinstance(detail, Mapping):
+                raise ValueError("manual_flow_row_invalid")
+            target_asset = detail.get("targetAsset")
+            if target_asset is not None and _manual_flow_asset(target_asset) != "BNB":
+                raise ValueError("manual_flow_row_invalid")
+            from_asset = _manual_flow_asset(detail.get("fromAsset"))
+            detail_amount = _manual_flow_decimal(detail.get("amount"))
+            parsed_details.append((from_asset, detail_amount))
+        touches_tracked = "BNB" in tracked_set or any(
+            from_asset in tracked_set for from_asset, _ in parsed_details
+        )
+        if not touches_tracked:
+            continue
+        if "BNB" not in tracked_set or any(
+            from_asset != "USDT" for from_asset, _ in parsed_details
+        ):
+            raise ValueError("manual_flow_scope_unsupported")
+        asset_deltas["BNB"] += total_transferred
+        for _from_asset, detail_amount in parsed_details:
+            asset_deltas["USDT"] -= detail_amount
+        dribblet_count += 1
+        identities.append(("dribblet", trans_id, operate_time))
+    return dribblet_count
+
+
+def _collect_manual_dividend_flows(
+    client: Any,
+    *,
+    start_ms: int,
+    end_ms: int,
+    tracked_set: frozenset[str],
+    asset_deltas: dict[str, Decimal],
+    identities: list[tuple[object, ...]],
+) -> int:
+    response = _manual_flow_get(
+        client,
+        "asset/assetDividend",
+        data={"startTime": start_ms, "endTime": end_ms, "limit": _BNB_DIVIDEND_PAGE_SIZE},
+    )
+    rows = response.get("rows")
+    count = _manual_flow_count(response.get("total"))
+    if (
+        not isinstance(rows, list)
+        or count is None
+        or count != len(rows)
+        or count >= _BNB_DIVIDEND_PAGE_SIZE
+    ):
+        raise ValueError("manual_flow_history_incomplete")
+    seen_ids: set[tuple[int, int, int]] = set()
+    dividend_count = 0
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise ValueError("manual_flow_row_invalid")
+        row_id, tran_id = row.get("id"), row.get("tranId")
+        if (
+            type(row_id) is not int
+            or row_id < 0
+            or type(tran_id) is not int
+            or tran_id < 0
+        ):
+            raise ValueError("manual_flow_row_invalid")
+        div_time = _manual_flow_timestamp(
+            row.get("divTime"), start_ms=start_ms, end_ms=end_ms
+        )
+        identity = (row_id, tran_id, div_time)
+        if identity in seen_ids:
+            raise ValueError("manual_flow_row_invalid")
+        seen_ids.add(identity)
+        if div_time == start_ms:
+            continue
+        asset = _manual_flow_asset(row.get("asset"))
+        direction = row.get("direction")
+        if type(direction) is not int or direction != 1:
+            raise ValueError("manual_flow_row_invalid")
+        amount = _manual_flow_decimal(row.get("amount"))
+        if asset not in tracked_set:
+            continue
+        if asset not in {"USDT", "BNB"}:
+            raise ValueError("manual_flow_scope_unsupported")
+        asset_deltas[asset] += amount
+        dividend_count += 1
+        identities.append(("dividend", row_id, tran_id, div_time))
+    return dividend_count
+
+
+def collect_manual_account_flows(
+    client: Any,
+    *,
+    start: datetime,
+    end: datetime,
+    tracked_assets: Sequence[str] = ("USDT",),
+) -> dict[str, object]:
+    """Read verified Spot manual operations (Convert, transfers, dust, all dividends) in (start, end]."""
+    if (
+        not isinstance(start, datetime)
+        or not isinstance(end, datetime)
+        or start.tzinfo is None
+        or end.tzinfo is None
+        or not start < end
+    ):
+        raise ValueError("manual_flow_window_invalid")
+    start_ms = int(start.astimezone(timezone.utc).timestamp() * 1000)
+    end_ms = int(end.astimezone(timezone.utc).timestamp() * 1000)
+    if not start_ms < end_ms:
+        raise ValueError("manual_flow_window_invalid")
+    if isinstance(tracked_assets, (str, bytes)) or not isinstance(tracked_assets, Sequence):
+        raise ValueError("manual_flow_scope_invalid")
+    tracked_list = list(tracked_assets)
+    if not tracked_list or any(
+        not isinstance(asset, str) or not 0 < len(asset) <= 128 or not asset.isprintable() or any(ch.isspace() for ch in asset)
+        for asset in tracked_list
+    ):
+        raise ValueError("manual_flow_scope_invalid")
+    tracked_set = frozenset(tracked_list)
+    if "USDT" not in tracked_set:
+        raise ValueError("manual_flow_scope_invalid")
+
+    asset_deltas: dict[str, Decimal] = {asset: Decimal(0) for asset in tracked_set}
+    identities: list[tuple[object, ...]] = []
+    with localcontext() as context:
+        context.prec = 100
+        convert_count, convert_principal = _collect_manual_convert_flows(
+            client,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            tracked_set=tracked_set,
+            asset_deltas=asset_deltas,
+            identities=identities,
+        )
+        transfer_count, transfer_principal = _collect_manual_transfer_flows(
+            client,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            tracked_set=tracked_set,
+            asset_deltas=asset_deltas,
+            identities=identities,
+        )
+        dribblet_count = _collect_manual_dribblet_flows(
+            client,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            tracked_set=tracked_set,
+            asset_deltas=asset_deltas,
+            identities=identities,
+        )
+        dividend_count = _collect_manual_dividend_flows(
+            client,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            tracked_set=tracked_set,
+            asset_deltas=asset_deltas,
+            identities=identities,
+        )
+        usdt_external_principal = convert_principal + transfer_principal
+    return {
+        "asset_deltas": {asset: delta for asset, delta in asset_deltas.items() if delta != 0},
+        "usdt_external_principal": usdt_external_principal,
+        "convert_count": convert_count,
+        "transfer_count": transfer_count,
+        "dribblet_count": dribblet_count,
+        "dividend_count": dividend_count,
+        "identities": tuple(identities),
+    }
+
+
 def _canonical_records(records: Sequence[Mapping[str, object]]) -> tuple[dict[str, object], ...]:
     return tuple(sorted((dict(item) for item in records), key=lambda item: json.dumps(item, sort_keys=True)))
 

@@ -682,8 +682,17 @@ def reconcile_runtime_cash_effects(runtime, state):
                     and submission.get("symbol") == getattr(runtime, "fuel_symbol", None))
     if prospective:
         import copy
-        from application.earn_accrual import collect_earn_checkpoint, compare_earn_checkpoints, _amount, _time
-        from application.broker_reconciliation import collect_bnb_dividend_quantity
+        from application.earn_accrual import (
+            _amount,
+            _time,
+            collect_earn_checkpoint,
+            compare_earn_checkpoints,
+            has_positive_unexplained_bnb_delta,
+        )
+        from application.broker_reconciliation import (
+            collect_bnb_dividend_quantity,
+            collect_manual_account_flows,
+        )
         try:
             pending_state = copy.deepcopy(state)
             if fuel_pending:
@@ -696,18 +705,35 @@ def reconcile_runtime_cash_effects(runtime, state):
                 compare_earn_checkpoints(previous, current,
                     verified_net_changes=pending_state["earn_accounted_net_changes"])
             except ValueError as exc:
-                if str(exc) != "earn_quantity_change_unexplained" or "BNB" not in previous["assets"]:
+                if str(exc) != "earn_quantity_change_unexplained":
                     raise
-                dividend = collect_bnb_dividend_quantity(
-                    runtime.client,
-                    start=_time(previous["observed_at"]),
-                    end=_time(current["observed_at"]),
-                )
-                verified = dict(pending_state["earn_accounted_net_changes"])
-                verified["BNB"] = str(
-                    _amount(verified["BNB"], signed=True) + dividend["quantity"]
-                )
-                compare_earn_checkpoints(previous, current, verified_net_changes=verified)
+                resolved = False
+                start_at, end_at = _time(previous["observed_at"]), _time(current["observed_at"])
+                if has_positive_unexplained_bnb_delta(
+                    previous, current, pending_state["earn_accounted_net_changes"]
+                ):
+                    dividend = collect_bnb_dividend_quantity(runtime.client, start=start_at, end=end_at)
+                    verified = dict(pending_state["earn_accounted_net_changes"])
+                    verified["BNB"] = str(
+                        _amount(verified["BNB"], signed=True) + dividend["quantity"]
+                    )
+                    try:
+                        compare_earn_checkpoints(previous, current, verified_net_changes=verified)
+                        resolved = True
+                    except ValueError as bnb_exc:
+                        if str(bnb_exc) != "earn_quantity_change_unexplained":
+                            raise
+                if not resolved:
+                    manual = collect_manual_account_flows(
+                        runtime.client,
+                        start=start_at,
+                        end=end_at,
+                        tracked_assets=tuple(previous["assets"]),
+                    )
+                    verified = dict(pending_state["earn_accounted_net_changes"])
+                    for asset_key, delta in manual["asset_deltas"].items():
+                        verified[asset_key] = str(_amount(verified[asset_key], signed=True) + delta)
+                    compare_earn_checkpoints(previous, current, verified_net_changes=verified)
             observations = {a: float(current["assets"][a]["quantity"]) for a in assets | {"USDT"}}
         except Exception:
             raise ExecutionIntegrityError("cash_reconciliation_uncertain") from None

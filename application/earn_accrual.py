@@ -180,6 +180,33 @@ def compare_earn_checkpoints(previous, current, *, verified_net_changes):
                 'absolute_principal_proven': False, 'execution_authority_granted': False}
 
 
+def has_positive_unexplained_bnb_delta(previous, current, net_changes):
+    """Return True when BNB quantity exceeds Earn rewards plus known net changes."""
+    with localcontext() as context:
+        context.prec = 100
+        previous_bnb = previous.get('assets', {}).get('BNB')
+        current_bnb = current.get('assets', {}).get('BNB')
+        if not isinstance(previous_bnb, Mapping) or not isinstance(current_bnb, Mapping):
+            return False
+        prev_products = previous_bnb.get('products')
+        curr_products = current_bnb.get('products')
+        if not isinstance(prev_products, Mapping) or not isinstance(curr_products, Mapping):
+            return False
+        reward_delta = Decimal(0)
+        for product, before in prev_products.items():
+            after = curr_products.get(product)
+            if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+                return False
+            reward_delta += _amount(after.get('realtime_rewards')) - _amount(before.get('realtime_rewards'))
+        net_bnb = (
+            _amount(str(net_changes.get('BNB', '0')), signed=True)
+            if isinstance(net_changes, Mapping)
+            else Decimal(0)
+        )
+        unexplained = _amount(current_bnb.get('quantity')) - _amount(previous_bnb.get('quantity')) - reward_delta - net_bnb
+        return unexplained > 0
+
+
 def prepare_forward_earn_state(state, current, cash_flows):
     """Pure next ledger from verified counters, known fills and deposit records.
 
@@ -214,6 +241,15 @@ def prepare_forward_earn_state(state, current, cash_flows):
             raise ValueError('earn_cash_flow_unsupported')
         principal = _amount(cash_flows['new_deposit_principal_usdt'])
         dividend_quantity = _amount(cash_flows.get('bnb_dividend_quantity', '0'))
+        manual_asset_deltas = cash_flows.get('manual_asset_deltas', {})
+        if not isinstance(manual_asset_deltas, Mapping):
+            raise ValueError('earn_cash_flow_invalid')
+        parsed_manual_deltas = {}
+        for asset_key, delta_value in manual_asset_deltas.items():
+            if asset_key not in assets:
+                raise ValueError('earn_cash_flow_invalid')
+            parsed_manual_deltas[asset_key] = _amount(delta_value, signed=True)
+        manual_external_principal = _amount(cash_flows.get('manual_external_principal_usdt', '0'), signed=True)
         completed = cash_flows['new_deposit_completed_at']
         if (not isinstance(completed, list) or len(completed) != cash_flows['new_confirmed_deposit_count']
                 or (principal == 0) != (not completed)
@@ -225,10 +261,13 @@ def prepare_forward_earn_state(state, current, cash_flows):
             if 'BNB' not in verified:
                 raise ValueError('earn_cash_flow_invalid')
             verified['BNB'] += dividend_quantity
+        for asset_key, delta_decimal in parsed_manual_deltas.items():
+            verified[asset_key] += delta_decimal
         compare_earn_checkpoints(previous, current, verified_net_changes={a: str(v) for a, v in verified.items()})
         updated = copy.deepcopy(state)
-        if principal and state.get('last_reset_date') == cutoff.date().isoformat():
-            accumulated = _amount(str(state.get('daily_external_principal_usdt', 0))) + principal
+        total_external_principal = principal + manual_external_principal
+        if total_external_principal and state.get('last_reset_date') == cutoff.date().isoformat():
+            accumulated = _amount(str(state.get('daily_external_principal_usdt', 0)), signed=True) + total_external_principal
             updated['daily_external_principal_usdt'] = float(accumulated)
         updated['earn_accrual_checkpoint'] = copy.deepcopy(current)
         updated['earn_accounted_net_changes'] = {a: '0' for a in assets}

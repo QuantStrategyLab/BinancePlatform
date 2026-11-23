@@ -42,6 +42,14 @@ _EARN_FORWARD_REASON_CODES = frozenset({
     "external_cash_flow_record_invalid",
     "external_cash_flow_record_changed",
     "external_cash_flow_cursor_capacity_exceeded",
+    "manual_flow_window_invalid",
+    "manual_flow_scope_invalid",
+    "manual_flow_read_failed",
+    "manual_flow_response_invalid",
+    "manual_flow_history_incomplete",
+    "manual_flow_row_invalid",
+    "manual_flow_unsettled",
+    "manual_flow_scope_unsupported",
 })
 
 _SAFE_CYCLE_FAILURE_STAGES = frozenset({
@@ -207,6 +215,9 @@ class _ReadOnlyBroker:
         "capital/deposit/hisrec",
         "capital/withdraw/history",
         "asset/assetDividend",
+        "convert/tradeFlow",
+        "asset/transfer",
+        "asset/dribblet",
     })
 
     def __init__(self, client, *, symbols):
@@ -279,8 +290,12 @@ class _ReadOnlyBroker:
             raise RuntimeError("full_cycle_broker_request_forbidden")
         if path == "asset/assetDividend":
             if (
-                set(data) != {"asset", "startTime", "endTime", "limit"}
-                or data.get("asset") != "BNB"
+                not isinstance(data, Mapping)
+                or set(data) not in (
+                    {"asset", "startTime", "endTime", "limit"},
+                    {"startTime", "endTime", "limit"},
+                )
+                or ("asset" in data and data.get("asset") != "BNB")
                 or type(data.get("startTime")) is not int
                 or type(data.get("endTime")) is not int
                 or not data["startTime"] < data["endTime"]
@@ -288,6 +303,31 @@ class _ReadOnlyBroker:
                 or data.get("limit") != 500
             ):
                 raise RuntimeError("full_cycle_broker_dividend_window_forbidden")
+        elif path in {"convert/tradeFlow", "asset/transfer", "asset/dribblet"}:
+            if (
+                not isinstance(data, Mapping)
+                or type(data.get("startTime")) is not int
+                or type(data.get("endTime")) is not int
+                or not data["startTime"] < data["endTime"]
+                or data["endTime"] - data["startTime"] > 7 * 24 * 60 * 60 * 1000
+            ):
+                raise RuntimeError("full_cycle_broker_manual_flow_window_forbidden")
+            if path == "convert/tradeFlow" and (
+                set(data) != {"startTime", "endTime", "limit"}
+                or type(data.get("limit")) is not int
+                or not 0 < data["limit"] <= 1000
+            ):
+                raise RuntimeError("full_cycle_broker_manual_flow_window_forbidden")
+            if path == "asset/transfer" and (
+                set(data) != {"type", "startTime", "endTime", "current", "size"}
+                or not isinstance(data.get("type"), str)
+                or data.get("current") != 1
+                or type(data.get("size")) is not int
+                or not 0 < data["size"] <= 100
+            ):
+                raise RuntimeError("full_cycle_broker_manual_flow_window_forbidden")
+            if path == "asset/dribblet" and set(data) != {"startTime", "endTime"}:
+                raise RuntimeError("full_cycle_broker_manual_flow_window_forbidden")
         return self._read("_request_margin_api", method, path, signed=signed, data=dict(data))
 
     def __getattr__(self, _name):
