@@ -32,6 +32,13 @@ EARN_FORWARD_REASON_CODES = frozenset({
     "external_cash_flow_record_invalid",
     "external_cash_flow_record_changed",
     "external_cash_flow_cursor_capacity_exceeded",
+    "manual_flow_window_invalid",
+    "manual_flow_scope_invalid",
+    "manual_flow_read_failed",
+    "manual_flow_response_invalid",
+    "manual_flow_history_incomplete",
+    "manual_flow_row_invalid",
+    "manual_flow_unsettled",
 })
 
 
@@ -89,7 +96,11 @@ def maybe_rebase_daily_state_for_balance_change(
     if receipt_enabled and "earn_accrual_checkpoint" not in state:
         raise ExecutionIntegrityError("earn_checkpoint_required_for_receipt")
     if "earn_accrual_checkpoint" in state:
-        from binance_platform.application.earn_accrual import prepare_forward_earn_state, _time
+        from binance_platform.application.earn_accrual import (
+            _time,
+            has_positive_unexplained_bnb_delta,
+            prepare_forward_earn_state,
+        )
         try:
             current = runtime.earn_accrual_observation
             if {a: round(float(r['quantity']), 8) for a, r in current['assets'].items()} != current_balance_snapshot:
@@ -101,37 +112,44 @@ def maybe_rebase_daily_state_for_balance_change(
             except ValueError as exc:
                 if str(exc) != 'earn_quantity_change_unexplained':
                     raise
+                updated = None
                 previous = state['earn_accrual_checkpoint']
-                previous_bnb = previous.get('assets', {}).get('BNB')
-                current_bnb = current.get('assets', {}).get('BNB')
-                net_bnb = state.get('earn_accounted_net_changes', {}).get('BNB', '0')
-                if not isinstance(previous_bnb, dict) or not isinstance(current_bnb, dict):
-                    raise
-                try:
-                    reward_delta = sum(
-                        Decimal(str(current_bnb['products'][product]['realtime_rewards']))
-                        - Decimal(str(previous_bnb['products'][product]['realtime_rewards']))
-                        for product in previous_bnb['products']
+                start_at, end_at = _time(previous['observed_at']), _time(current['observed_at'])
+                if has_positive_unexplained_bnb_delta(
+                    previous, current, state.get('earn_accounted_net_changes', {})
+                ):
+                    from binance_platform.application.broker_reconciliation import collect_bnb_dividend_quantity
+                    dividend = collect_bnb_dividend_quantity(
+                        runtime.client,
+                        start=start_at,
+                        end=end_at,
                     )
-                    unexplained_bnb = (
-                        Decimal(str(current_bnb['quantity']))
-                        - Decimal(str(previous_bnb['quantity']))
-                        - reward_delta
-                        - Decimal(str(net_bnb))
+                    bnb_cash = dict(cash)
+                    bnb_cash['bnb_dividend_quantity'] = format(dividend['quantity'], 'f')
+                    try:
+                        updated = prepare_forward_earn_state(state, current, bnb_cash)
+                        cash = bnb_cash
+                    except ValueError as bnb_exc:
+                        if str(bnb_exc) != 'earn_quantity_change_unexplained':
+                            raise
+                if updated is None:
+                    from binance_platform.application.broker_reconciliation import collect_manual_account_flows
+                    manual = collect_manual_account_flows(
+                        runtime.client,
+                        start=start_at,
+                        end=end_at,
+                        tracked_assets=tuple(previous['assets']),
                     )
-                except (KeyError, TypeError, InvalidOperation):
-                    raise
-                if unexplained_bnb <= 0:
-                    raise
-                from binance_platform.application.broker_reconciliation import collect_bnb_dividend_quantity
-                dividend = collect_bnb_dividend_quantity(
-                    runtime.client,
-                    start=_time(previous['observed_at']),
-                    end=_time(current['observed_at']),
-                )
-                cash = dict(cash)
-                cash['bnb_dividend_quantity'] = format(dividend['quantity'], 'f')
-                updated = prepare_forward_earn_state(state, current, cash)
+                    manual_cash = dict(cash)
+                    manual_cash['manual_asset_deltas'] = {
+                        asset_key: format(delta, 'f')
+                        for asset_key, delta in manual['asset_deltas'].items()
+                    }
+                    manual_cash['manual_external_principal_usdt'] = format(
+                        manual['usdt_external_principal'], 'f'
+                    )
+                    updated = prepare_forward_earn_state(state, current, manual_cash)
+                    cash = manual_cash
         except Exception as exc:
             reason_code = (
                 str(exc)
@@ -145,7 +163,9 @@ def maybe_rebase_daily_state_for_balance_change(
             raise ExecutionIntegrityError("earn_forward_accounting_unverified") from None
         previous = state["earn_accrual_checkpoint"]
         try:
-            principal = Decimal(str(cash["new_deposit_principal_usdt"]))
+            principal = Decimal(str(cash["new_deposit_principal_usdt"])) + Decimal(
+                str(cash.get("manual_external_principal_usdt", "0"))
+            )
             frozen_equity = Decimal(str(total_equity))
         except (KeyError, TypeError, InvalidOperation):
             raise ExecutionIntegrityError("earn_forward_accounting_unverified") from None
