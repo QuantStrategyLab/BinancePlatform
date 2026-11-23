@@ -838,6 +838,7 @@ jobs:
           RECOVERY_ID: ${{ inputs.recovery_id }}
           RECOVERY_CANDIDATE_SHA256: ${{ inputs.recovery_candidate_sha256 }}
           BINANCE_RECOVERY_REVIEWER_ID: ${{ vars.BINANCE_RECOVERY_REVIEWER_ID }}
+          BINANCE_FROZEN_EXPECTED_SHA256: ${{ vars.BINANCE_FROZEN_EXPECTED_SHA256 }}
           RECONCILIATION_RECOVERY_SYNC_TOKEN: ${{ (inputs.recovery_action == 'prepare' || inputs.accounting_migration_action == 'scope-preview') && secrets.RECONCILIATION_RECOVERY_SYNC_TOKEN || '' }}
           RECONCILIATION_RECOVERY_CONTROLLER_TOKEN: ${{ (inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate') && secrets.RECONCILIATION_RECOVERY_CONTROLLER_TOKEN || '' }}
           GITHUB_TOKEN: ${{ (inputs.recovery_action == 'diagnose' || inputs.recovery_action == 'prepare' || inputs.recovery_action == 'verify' || inputs.recovery_action == 'activate' || inputs.recovery_action == 'prepare-github' || inputs.recovery_action == 'verify-github' || inputs.recovery_action == 'activate-github') && secrets.GITHUB_TOKEN || '' }}
