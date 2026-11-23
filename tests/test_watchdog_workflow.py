@@ -245,7 +245,8 @@ class WatchdogWorkflowTests(unittest.TestCase):
     def test_watchdog_installs_locked_internal_dependency(self) -> None:
         text = self.workflow_text
 
-        self.assertIn("python -m pip install --upgrade pip uv", text)
+        self.assertIn("astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e", text)
+        self.assertIn("enable-cache: true", text)
         self.assertIn("uv sync --frozen --no-dev", text)
         self.assertIn("uv run --no-sync python - <<'PY'", text)
 
