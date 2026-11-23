@@ -57,7 +57,7 @@ class DecisionMapperTests(unittest.TestCase):
                     next_order_id_fn=lambda _runtime, _prefix, symbol: f"buy-{symbol}",
                     set_symbol_trade_state_fn=lambda state, symbol, value: state.update({symbol: value}),
                     record_trend_action_fn=lambda *_args: None,
-                    runtime_set_trade_state_fn=lambda *_args: None,
+                    runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
                     runtime_notify_fn=lambda *_args: None,
                 )
 
