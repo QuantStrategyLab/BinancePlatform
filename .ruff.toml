@@ -1,11 +1,16 @@
 target-version = "py311"
 
 [lint]
+extend-select = ["B", "C901"]
 ignore = ["E701", "E702", "E401", "F541"]
 
+[lint.mccabe]
+max-complexity = 15
+
 [lint.per-file-ignores]
-"tests/*.py" = ["E402"]
-"src/binance_platform/research/backtest.py" = ["E402"]
+"tests/**/*.py" = ["E402", "B", "C901"]
+"scripts/**/*.py" = ["B", "C901"]
+"src/binance_platform/research/backtest.py" = ["E402", "C901"]
 "src/binance_platform/run_cycle_replay.py" = ["E402"]
 # Platform entry split: main re-exports and runtime_wiring keep import aliases
 # for monkeypatch / cross-module access even when unused inside the file body.
@@ -14,3 +19,29 @@ ignore = ["E701", "E702", "E401", "F541"]
 # Preserve the byte-pinned upstream receiver used only by contract tests.
 "tests/fixtures/qrs_notification_contract/daily_digest_aggregator.py" = ["F841"]
 "tests/fixtures/qrs_notification_contract/unified_daily_digest.py" = ["F401"]
+# Legacy complexity / bugbear debt frozen in place; new files must pass B and C901 <= 15.
+"src/binance_platform/accounting_migration/candidate_migration.py" = ["C901"]
+"src/binance_platform/accounting_migration/diagnostics.py" = ["C901"]
+"src/binance_platform/application/account_facts.py" = ["C901"]
+"src/binance_platform/application/broker_reconciliation.py" = ["B", "C901"]
+"src/binance_platform/application/cycle_service.py" = ["C901"]
+"src/binance_platform/application/earn_accrual.py" = ["C901"]
+"src/binance_platform/application/execution_service.py" = ["C901"]
+"src/binance_platform/application/forward_reconciliation.py" = ["C901"]
+"src/binance_platform/application/interval_receipt_reader_candidate.py" = ["C901"]
+"src/binance_platform/application/interval_source_receipt_candidate.py" = ["C901"]
+"src/binance_platform/application/portfolio_service.py" = ["C901"]
+"src/binance_platform/application/_rebased_prospective.py" = ["C901"]
+"src/binance_platform/application/_rebased_continuity_proof.py" = ["C901"]
+"src/binance_platform/application/_rebased_continuity_diag.py" = ["C901"]
+"src/binance_platform/application/reconciliation_observation.py" = ["C901"]
+"src/binance_platform/infra/binance_runtime.py" = ["B"]
+"src/binance_platform/infra/btc_attribution.py" = ["C901"]
+"src/binance_platform/infra/btc_no_submit.py" = ["C901"]
+"src/binance_platform/live_risk_authority.py" = ["C901"]
+"src/binance_platform/notifications/digest_snapshot/digest_archive.py" = ["C901"]
+"src/binance_platform/notifications/unified_producer.py" = ["C901"]
+"src/binance_platform/runtime_support.py" = ["B", "C901"]
+"src/binance_platform/strategy_runtime.py" = ["C901"]
+"src/binance_platform/trade_state_support.py" = ["C901"]
+"src/binance_platform/trend_pool_support.py" = ["C901"]
