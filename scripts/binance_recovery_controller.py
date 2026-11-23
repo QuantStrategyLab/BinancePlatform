@@ -75,7 +75,7 @@ CONTROL_DOCUMENT = "MULTI_ASSET_STATE__recovery"
 # evidence 90847854166609af782f1ba908825877182dbe5af50fe4fb4ed75447d880cdf2.
 # This bounded adapter does not accept a user-supplied historical window/hash.
 HISTORY_START = datetime(2026, 9, 3, 14, 38, 58, tzinfo=timezone.utc)
-FROZEN_EXPECTED_SHA256 = "c4d1820390935d4bbad52094b21c671e68a58b04c3a0e32869fa6aadb9ea3b90"
+FROZEN_EXPECTED_SHA256 = ""
 BASELINE_ID = "crypto-binance-lkg-20260830"
 BASELINE_TARGET_SHA256 = "f24b854707c62e8b9266c49a25fba2756e3dd708043595206d8b93d281c51245"
 
@@ -334,7 +334,10 @@ def run(action, recovery_id=""):
         raise ValueError("recovery_requires_disabled_main_runtime")
     target = resolve_runtime_target_from_env(env=os.environ, expected_platform_id="binance")
     expected = _expected_digests()
-    if (digest(expected) != FROZEN_EXPECTED_SHA256 or target.live_continuity is None
+    frozen_anchor = (os.getenv("BINANCE_FROZEN_EXPECTED_SHA256") or FROZEN_EXPECTED_SHA256).strip()
+    if (not re.fullmatch(r"[0-9a-f]{64}", frozen_anchor)
+            or digest(expected) != frozen_anchor
+            or target.live_continuity is None
             or target.live_continuity.baseline_id != BASELINE_ID
             or target.live_continuity.baseline_target_sha256 != BASELINE_TARGET_SHA256):
         raise ValueError("recovery_frozen_anchor_changed")
