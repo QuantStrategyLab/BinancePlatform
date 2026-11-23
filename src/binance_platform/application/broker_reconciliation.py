@@ -874,17 +874,19 @@ def _collect_manual_convert_flows(
             raise ValueError("manual_flow_row_invalid")
         from_amount = _manual_flow_decimal(row.get("fromAmount"))
         to_amount = _manual_flow_decimal(row.get("toAmount"))
-        if from_asset in tracked_set or to_asset in tracked_set:
-            if from_asset in tracked_set:
-                asset_deltas[from_asset] -= from_amount
-            if to_asset in tracked_set:
-                asset_deltas[to_asset] += to_amount
-            if to_asset == "USDT" and from_asset not in tracked_set:
-                usdt_principal += to_amount
-            if from_asset == "USDT" and to_asset not in tracked_set:
-                usdt_principal -= from_amount
-            convert_count += 1
-            identities.append(("convert", order_id, create_time))
+        if from_asset not in tracked_set and to_asset not in tracked_set:
+            continue
+        non_usdt_tracked = tracked_set - {"USDT"}
+        if from_asset in non_usdt_tracked or to_asset in non_usdt_tracked:
+            raise ValueError("manual_flow_scope_unsupported")
+        if to_asset == "USDT":
+            asset_deltas["USDT"] += to_amount
+            usdt_principal += to_amount
+        else:
+            asset_deltas["USDT"] -= from_amount
+            usdt_principal -= from_amount
+        convert_count += 1
+        identities.append(("convert", order_id, create_time))
     return convert_count, usdt_principal
 
 
@@ -939,13 +941,15 @@ def _collect_manual_transfer_flows(
                 raise ValueError("manual_flow_row_invalid")
             asset = _manual_flow_asset(row.get("asset"))
             amount = _manual_flow_decimal(row.get("amount"))
-            if asset in tracked_set:
-                signed = amount if sign > 0 else -amount
-                asset_deltas[asset] += signed
-                if asset == "USDT":
-                    usdt_principal += signed
-                transfer_count += 1
-                identities.append(("transfer", transfer_type, tran_id, ts))
+            if asset not in tracked_set:
+                continue
+            if asset != "USDT":
+                raise ValueError("manual_flow_scope_unsupported")
+            signed = amount if sign > 0 else -amount
+            asset_deltas["USDT"] += signed
+            usdt_principal += signed
+            transfer_count += 1
+            identities.append(("transfer", transfer_type, tran_id, ts))
     return transfer_count, usdt_principal
 
 
@@ -990,9 +994,7 @@ def _collect_manual_dribblet_flows(
         details = row.get("userAssetDribbletDetails")
         if not isinstance(details, list) or not details:
             raise ValueError("manual_flow_row_invalid")
-        touched = "BNB" in tracked_set
-        if "BNB" in tracked_set:
-            asset_deltas["BNB"] += total_transferred
+        parsed_details: list[tuple[str, Decimal]] = []
         for detail in details:
             if not isinstance(detail, Mapping):
                 raise ValueError("manual_flow_row_invalid")
@@ -1001,12 +1003,21 @@ def _collect_manual_dribblet_flows(
                 raise ValueError("manual_flow_row_invalid")
             from_asset = _manual_flow_asset(detail.get("fromAsset"))
             detail_amount = _manual_flow_decimal(detail.get("amount"))
-            if from_asset in tracked_set:
-                asset_deltas[from_asset] -= detail_amount
-                touched = True
-        if touched:
-            dribblet_count += 1
-            identities.append(("dribblet", trans_id, operate_time))
+            parsed_details.append((from_asset, detail_amount))
+        touches_tracked = "BNB" in tracked_set or any(
+            from_asset in tracked_set for from_asset, _ in parsed_details
+        )
+        if not touches_tracked:
+            continue
+        if "BNB" not in tracked_set or any(
+            from_asset != "USDT" for from_asset, _ in parsed_details
+        ):
+            raise ValueError("manual_flow_scope_unsupported")
+        asset_deltas["BNB"] += total_transferred
+        for _from_asset, detail_amount in parsed_details:
+            asset_deltas["USDT"] -= detail_amount
+        dribblet_count += 1
+        identities.append(("dribblet", trans_id, operate_time))
     return dribblet_count
 
 
@@ -1060,10 +1071,13 @@ def _collect_manual_dividend_flows(
         if type(direction) is not int or direction != 1:
             raise ValueError("manual_flow_row_invalid")
         amount = _manual_flow_decimal(row.get("amount"))
-        if asset in tracked_set:
-            asset_deltas[asset] += amount
-            dividend_count += 1
-            identities.append(("dividend", row_id, tran_id, div_time))
+        if asset not in tracked_set:
+            continue
+        if asset not in {"USDT", "BNB"}:
+            raise ValueError("manual_flow_scope_unsupported")
+        asset_deltas[asset] += amount
+        dividend_count += 1
+        identities.append(("dividend", row_id, tran_id, div_time))
     return dividend_count
 
 

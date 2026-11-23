@@ -39,6 +39,7 @@ EARN_FORWARD_REASON_CODES = frozenset({
     "manual_flow_history_incomplete",
     "manual_flow_row_invalid",
     "manual_flow_unsettled",
+    "manual_flow_scope_unsupported",
 })
 
 

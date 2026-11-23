@@ -46,7 +46,7 @@ class _ManualClient:
         raise AssertionError(f"unexpected path: {path}")
 
 
-def test_collect_manual_flows_convert_boundary_and_intra_portfolio_cases():
+def test_collect_manual_flows_convert_usdt_boundary_and_out_of_scope_cases():
     client = _ManualClient(
         convert={
             "list": [
@@ -66,15 +66,6 @@ def test_collect_manual_flows_convert_boundary_and_intra_portfolio_cases():
                     "fromAmount": "10",
                     "toAsset": "FDUSD",
                     "toAmount": "10",
-                    "createTime": END_MS,
-                },
-                {
-                    "orderId": "c3",
-                    "orderStatus": "SUCCESS",
-                    "fromAsset": "BTC",
-                    "fromAmount": "0.001",
-                    "toAsset": "USDT",
-                    "toAmount": "60",
                     "createTime": END_MS,
                 },
                 {
@@ -104,13 +95,13 @@ def test_collect_manual_flows_convert_boundary_and_intra_portfolio_cases():
         client, start=START, end=END, tracked_assets=("USDT", "BTC", "BNB")
     )
 
-    assert result["asset_deltas"] == {"USDT": Decimal("100"), "BTC": Decimal("-0.001")}
+    assert result["asset_deltas"] == {"USDT": Decimal("40")}
     assert result["usdt_external_principal"] == Decimal("40")
-    assert result["convert_count"] == 3
-    assert len(result["identities"]) == 3
+    assert result["convert_count"] == 2
+    assert len(result["identities"]) == 2
 
 
-def test_collect_manual_flows_transfers_dust_and_all_dividends():
+def test_collect_manual_flows_transfers_dust_and_usdt_bnb_dividends():
     client = _ManualClient(
         transfers={
             "FUNDING_MAIN": {
@@ -129,7 +120,7 @@ def test_collect_manual_flows_transfers_dust_and_all_dividends():
             "UMFUTURE_MAIN": {
                 "total": 1,
                 "rows": [
-                    {"tranId": 14, "asset": "BTC", "amount": "0.02", "timestamp": END_MS, "status": "CONFIRMED"},
+                    {"tranId": 14, "asset": "SOL", "amount": "1", "timestamp": END_MS, "status": "CONFIRMED"},
                 ],
             },
         },
@@ -142,7 +133,6 @@ def test_collect_manual_flows_transfers_dust_and_all_dividends():
                     "totalTransferedAmount": "0.005",
                     "userAssetDribbletDetails": [
                         {"fromAsset": "USDT", "targetAsset": "BNB", "amount": "0.5"},
-                        {"fromAsset": "DOGE", "targetAsset": "BNB", "amount": "1"},
                     ],
                 }
             ],
@@ -163,14 +153,156 @@ def test_collect_manual_flows_transfers_dust_and_all_dividends():
 
     assert result["asset_deltas"] == {
         "USDT": Decimal("20.75"),
-        "BTC": Decimal("0.02"),
         "BNB": Decimal("0.006"),
     }
     assert result["usdt_external_principal"] == Decimal("20")
-    assert result["transfer_count"] == 3
+    assert result["transfer_count"] == 2
     assert result["dribblet_count"] == 1
     assert result["dividend_count"] == 2
-    assert len(result["identities"]) == 6
+    assert len(result["identities"]) == 5
+
+
+@pytest.mark.parametrize(
+    "kind,client_kwargs",
+    [
+        (
+            "convert_tracked_btc_to_usdt",
+            {
+                "convert": {
+                    "list": [
+                        {
+                            "orderId": "c_btc",
+                            "orderStatus": "SUCCESS",
+                            "fromAsset": "BTC",
+                            "fromAmount": "0.001",
+                            "toAsset": "USDT",
+                            "toAmount": "60",
+                            "createTime": END_MS,
+                        }
+                    ],
+                    "moreData": False,
+                }
+            },
+        ),
+        (
+            "convert_tracked_eth_to_usdt",
+            {
+                "convert": {
+                    "list": [
+                        {
+                            "orderId": "c_eth",
+                            "orderStatus": "SUCCESS",
+                            "fromAsset": "ETH",
+                            "fromAmount": "0.5",
+                            "toAsset": "USDT",
+                            "toAmount": "1000",
+                            "createTime": END_MS,
+                        }
+                    ],
+                    "moreData": False,
+                }
+            },
+        ),
+        (
+            "convert_untracked_to_tracked_bnb",
+            {
+                "convert": {
+                    "list": [
+                        {
+                            "orderId": "c_bnb",
+                            "orderStatus": "SUCCESS",
+                            "fromAsset": "USDC",
+                            "fromAmount": "10",
+                            "toAsset": "BNB",
+                            "toAmount": "0.02",
+                            "createTime": END_MS,
+                        }
+                    ],
+                    "moreData": False,
+                }
+            },
+        ),
+        (
+            "transfer_tracked_btc",
+            {
+                "transfers": {
+                    "UMFUTURE_MAIN": {
+                        "total": 1,
+                        "rows": [
+                            {"tranId": 14, "asset": "BTC", "amount": "0.02", "timestamp": END_MS, "status": "CONFIRMED"},
+                        ],
+                    }
+                }
+            },
+        ),
+        (
+            "transfer_tracked_bnb",
+            {
+                "transfers": {
+                    "MAIN_FUNDING": {
+                        "total": 1,
+                        "rows": [
+                            {"tranId": 15, "asset": "BNB", "amount": "1", "timestamp": END_MS, "status": "CONFIRMED"},
+                        ],
+                    }
+                }
+            },
+        ),
+        (
+            "dribblet_untracked_source_to_bnb",
+            {
+                "dribblet": {
+                    "total": 1,
+                    "userAssetDribblets": [
+                        {
+                            "transId": 22,
+                            "operateTime": END_MS,
+                            "totalTransferedAmount": "0.005",
+                            "userAssetDribbletDetails": [
+                                {"fromAsset": "DOGE", "targetAsset": "BNB", "amount": "1"},
+                            ],
+                        }
+                    ],
+                }
+            },
+        ),
+        (
+            "dribblet_tracked_eth_source_to_bnb",
+            {
+                "dribblet": {
+                    "total": 1,
+                    "userAssetDribblets": [
+                        {
+                            "transId": 23,
+                            "operateTime": END_MS,
+                            "totalTransferedAmount": "0.005",
+                            "userAssetDribbletDetails": [
+                                {"fromAsset": "ETH", "targetAsset": "BNB", "amount": "0.001"},
+                            ],
+                        }
+                    ],
+                }
+            },
+        ),
+        (
+            "dividend_tracked_btc",
+            {
+                "dividends": {
+                    "total": 1,
+                    "rows": [
+                        {"id": 4, "tranId": 104, "asset": "BTC", "divTime": END_MS, "amount": "0.001", "direction": 1}
+                    ],
+                }
+            },
+        ),
+    ],
+)
+def test_collect_manual_flows_rejects_unvalued_non_usdt_and_sleeve_mutating_flows(kind, client_kwargs):
+    client = _ManualClient(**client_kwargs)
+    with pytest.raises(ValueError, match="manual_flow_scope_unsupported"):
+        collect_manual_account_flows(
+            client, start=START, end=END, tracked_assets=("USDT", "BTC", "ETH", "BNB")
+        )
 
 
 def test_collect_manual_flows_half_open_boundary_excludes_start_and_includes_end():
@@ -533,6 +665,66 @@ def test_portfolio_fallback_unsettled_convert_surfaces_safe_reason_code():
     assert report["diagnostics"]["earn_accrual"] == {
         "status": "blocked",
         "reason_code": "manual_flow_unsettled",
+    }
+
+
+def test_portfolio_fallback_tracked_non_usdt_convert_blocks_with_scope_unsupported():
+    state, current, cash = materials()
+    state["earn_accrual_checkpoint"]["assets"]["ETH"] = {
+        "spot_free": "1",
+        "spot_locked": "0",
+        "products": {},
+        "quantity": "1",
+    }
+    state["earn_accounted_net_changes"]["ETH"] = "0"
+    state["last_balance_snapshot"]["ETH"] = 1.0
+    current["assets"]["ETH"] = {
+        "spot_free": "0",
+        "spot_locked": "0",
+        "products": {},
+        "quantity": "0",
+    }
+    current["assets"]["USDT"].update(spot_free="2100", quantity="2100")
+    before = copy.deepcopy(state)
+    client = _ManualClient(
+        convert={
+            "list": [
+                {
+                    "orderId": "c_eth_sell",
+                    "orderStatus": "SUCCESS",
+                    "fromAsset": "ETH",
+                    "fromAmount": "1",
+                    "toAsset": "USDT",
+                    "toAmount": "2000",
+                    "createTime": int(NOW.timestamp() * 1000),
+                }
+            ],
+            "moreData": False,
+        }
+    )
+    report = {}
+    runtime = SimpleNamespace(client=client, now_utc=NOW, earn_accrual_observation=current)
+    snapshot = {a: round(float(r["quantity"]), 8) for a, r in current["assets"].items()}
+
+    with pytest.raises(ExecutionIntegrityError):
+        maybe_rebase_daily_state_for_balance_change(
+            state,
+            runtime,
+            report,
+            1600.0,
+            0.0,
+            snapshot,
+            [],
+            collect_external_cash_flows_fn=lambda *_args, **_kwargs: cash,
+            runtime_set_trade_state_fn=lambda *_args, **_kwargs: None,
+            append_log_fn=lambda *_args: None,
+            translate_fn=lambda *_args, **_kwargs: "",
+        )
+
+    assert state == before
+    assert report["diagnostics"]["earn_accrual"] == {
+        "status": "blocked",
+        "reason_code": "manual_flow_scope_unsupported",
     }
 
 
