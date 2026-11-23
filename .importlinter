@@ -1,0 +1,14 @@
+[importlinter]
+root_package = binance_platform
+
+[importlinter:contract:application_no_entrypoints]
+name = Application and infra must not import entrypoints or http_routes
+type = forbidden
+source_modules =
+    binance_platform.application
+    binance_platform.infra
+    binance_platform.portfolio_loss_stoploss
+forbidden_modules =
+    binance_platform.entrypoints
+    binance_platform.http_routes
+    binance_platform.main
