@@ -8,8 +8,8 @@ ignore = ["E701", "E702", "E401", "F541"]
 max-complexity = 15
 
 [lint.per-file-ignores]
-"tests/*.py" = ["E402", "B", "C901"]
-"scripts/*.py" = ["B", "C901"]
+"tests/**/*.py" = ["E402", "B", "C901"]
+"scripts/**/*.py" = ["B", "C901"]
 "src/binance_platform/research/backtest.py" = ["E402", "C901"]
 "src/binance_platform/run_cycle_replay.py" = ["E402"]
 # Platform entry split: main re-exports and runtime_wiring keep import aliases

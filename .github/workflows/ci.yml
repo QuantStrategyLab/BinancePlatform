@@ -90,10 +90,10 @@ jobs:
         run: uv run --no-sync ruff check --exclude external .
 
       - name: Check architecture boundaries
-        run: PYTHONPATH=src uvx --from import-linter lint-imports
+        run: PYTHONPATH=src uvx --from import-linter==2.1 lint-imports
 
       - name: Run pyright on typed core modules
-        run: uvx pyright
+        run: uvx pyright==1.1.407
 
       - name: Check QPK pin and lock consistency
         run: |
