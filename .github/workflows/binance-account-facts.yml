@@ -72,6 +72,7 @@ jobs:
           BINANCE_ACCOUNT_FACTS_ENABLED: ${{ vars.BINANCE_ACCOUNT_FACTS_ENABLED || 'false' }}
           BINANCE_ACCOUNT_FACTS_READER_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || '' }}
           BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA || '' }}
+          BINANCE_RUNTIME_RELEASE_SHA: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA || '' }}
           SOURCE_MODE: ${{ inputs.source_mode || 'legacy_terminal' }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id || '' }}
           READER_PUBLIC_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || '' }}
@@ -105,7 +106,7 @@ jobs:
 
       - name: Download only the exact successful Runtime report artifact
         if: ${{ inputs.source_mode != 'direct_read' }}
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: binance-execution-report-${{ steps.preflight.outputs.source_run_id }}
           github-token: ${{ github.token }}
@@ -176,6 +177,7 @@ jobs:
           GITHUB_API_URL: ${{ github.api_url }}
           SOURCE_MODE: ${{ inputs.source_mode || 'legacy_terminal' }}
           BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA || '' }}
+          BINANCE_RUNTIME_RELEASE_SHA: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA || '' }}
         run: |
           set -euo pipefail
           uv run --no-sync python scripts/read_binance_account_facts.py --verify-current-source
@@ -186,6 +188,7 @@ jobs:
           FACTS_DIR: ${{ steps.private-dir.outputs.facts_dir }}
           BINANCE_ACCOUNT_FACTS_ENABLED: ${{ vars.BINANCE_ACCOUNT_FACTS_ENABLED || 'false' }}
           BINANCE_ACCOUNT_FACTS_SYNC_TOKEN: ${{ secrets.BINANCE_ACCOUNT_FACTS_SYNC_TOKEN }}
+          EXECUTION_EVIDENCE_SYNC_URL: ${{ vars.EXECUTION_EVIDENCE_SYNC_URL }}
         run: |
           set -euo pipefail
           uv run --no-sync python scripts/publish_binance_account_facts.py \
