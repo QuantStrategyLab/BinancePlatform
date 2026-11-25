@@ -188,7 +188,7 @@ def test_scope_preview_posts_stable_non_managed_spot_rows_once_without_files(
     assert len(requests) == 1
     url, token, payload = requests[0]
     assert url == (
-        "https://qsl-strategy-switch-console.pigbibi.workers.dev"
+        "https://qsl-strategy-switch-console.quantstrategylab.workers.dev"
         "/api/internal/binance-private-scope"
     )
     assert token == "synthetic sync token"

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-QRS_ENDPOINT = "https://qsl-strategy-switch-console.pigbibi.workers.dev/api/internal/binance-account-facts"
+QRS_ENDPOINT = "https://qsl-strategy-switch-console.quantstrategylab.workers.dev/api/internal/binance-account-facts"
 _USER_AGENT = "QSL-AccountFacts-Readiness/1.0"
 
 _READINESS_FIELDS = {"ok", "ready", "binding_valid", "account_options_readable", "unique_match"}

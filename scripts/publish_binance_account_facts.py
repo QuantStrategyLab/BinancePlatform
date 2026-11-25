@@ -16,7 +16,7 @@ if str(ROOT) not in sys.path:
 from binance_platform.application.account_facts import AccountFactsUnavailable, validate_account_facts_payload  # noqa: E402
 
 
-QRS_ENDPOINT = "https://qsl-strategy-switch-console.pigbibi.workers.dev/api/internal/binance-account-facts"
+QRS_ENDPOINT = "https://qsl-strategy-switch-console.quantstrategylab.workers.dev/api/internal/binance-account-facts"
 _USER_AGENT = "QSL-AccountFacts-Readiness/1.0"
 _HTTP_ERROR_LABELS = {
     (400, "invalid_binance_account_facts"): "http_400_report_invalid",

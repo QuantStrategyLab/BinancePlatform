@@ -37,7 +37,7 @@ NEW_BASIS = "trend_mark_plus_cash_flow_v1"
 PREVIEW_PATH = Path("reports/binance-accounting-migration-preview/candidate.json")
 REBASE_PROPOSAL_PATH = Path("reports/binance-accounting-rebase-proposal/proposal.cms")
 PRIVATE_SCOPE_CONSOLE_URL = (
-    "https://qsl-strategy-switch-console.pigbibi.workers.dev"
+    "https://qsl-strategy-switch-console.quantstrategylab.workers.dev"
     "/api/internal/binance-private-scope"
 )
 # Operator-approved current control from read-only Runtime 35501649014. One exact downgrade.

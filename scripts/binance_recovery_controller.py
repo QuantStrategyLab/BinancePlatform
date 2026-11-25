@@ -65,7 +65,7 @@ from scripts.migrate_daily_accounting_state import is_prospective_archive_docume
 from scripts.reconcile_frozen_live_baseline import _symbols_from_env
 
 REPOSITORY = "QuantStrategyLab/BinancePlatform"
-CONSOLE = "https://qsl-strategy-switch-console.pigbibi.workers.dev"
+CONSOLE = "https://qsl-strategy-switch-console.quantstrategylab.workers.dev"
 GITHUB_REVIEW_ENVIRONMENT = "binance-recovery-review"
 GITHUB_ACTIVATION_ENVIRONMENT = "live-trading"
 STAGE = "preflight"
