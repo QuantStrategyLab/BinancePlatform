@@ -34,7 +34,7 @@ from binance_platform.application.account_facts import (  # noqa: E402
 
 REPOSITORY = "QuantStrategyLab/BinancePlatform"
 LEGACY_RUNTIME_WORKFLOW_SHA = "9cfcf0531d1ea176e6f26590cf15edbd31bd6567"
-APPROVED_APPLICATION_SHA = "8cb56617115fa45028e34d788e71884b6a303d77"
+APPROVED_APPLICATION_SHA = "b45d8fd0c2a26d31cfd572cf8019806b39cd7b9e"
 RUNTIME_BRANCH = "runtime-production"
 DIRECT_READ_BRANCH = "runtime-production"
 EXPECTED_REPORT_ARTIFACT_PREFIX = "binance-execution-report-"

@@ -33,7 +33,7 @@ def test_same_wallet_target_produces_only_nonce_digest_without_old_reconciliatio
                 "source_binding_id": source, "target_id": "synthetic-target"},
                 "domain": "qsl.binance-daily-binding.v1", "nonce": "c" * 64}
     assert result == hashlib.sha256(json.dumps(expected, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-    assert result == "518747e23ea953d8be51c1133c48bb37ed31348099faed4ffd5b38a18df9b700"
+    assert result == "ebded2eae3fadc47911671eaa91c8f2ddecbd8c685fdb1c9ebe1b50e5f438f2c"
     assert "synthetic-account" not in result and source not in result
 
 

@@ -20,7 +20,7 @@ from binance_platform.application.account_facts import (
 )
 
 
-APP_SHA = "8cb56617115fa45028e34d788e71884b6a303d77"
+APP_SHA = "b45d8fd0c2a26d31cfd572cf8019806b39cd7b9e"
 PROTECTED_RUNTIME_SHA = "d" * 40
 READER_SHA = "a" * 40
 UID_DIGEST = "b" * 64
