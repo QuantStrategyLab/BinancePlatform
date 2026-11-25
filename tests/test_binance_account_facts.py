@@ -20,7 +20,7 @@ from binance_platform.application.account_facts import (
 )
 
 
-APP_SHA = "b45d8fd0c2a26d31cfd572cf8019806b39cd7b9e"
+APP_SHA = "1" * 40
 PROTECTED_RUNTIME_SHA = "d" * 40
 READER_SHA = "a" * 40
 UID_DIGEST = "b" * 64
@@ -695,6 +695,7 @@ def test_manual_terminal_accepts_only_current_pinned_runtime_and_8cb_app(monkeyp
         "GITHUB_REPOSITORY": "QuantStrategyLab/BinancePlatform",
         "GITHUB_REF": "refs/heads/runtime-production",
         "BINANCE_RUNTIME_WORKFLOW_SHA": PROTECTED_RUNTIME_SHA,
+        "BINANCE_RUNTIME_RELEASE_SHA": APP_SHA,
         "GITHUB_TOKEN": "synthetic-token",
         "GITHUB_API_URL": "https://api.example",
     }
@@ -713,6 +714,7 @@ def test_manual_terminal_accepts_protected_sha_when_runtime_selected_8cb(monkeyp
         "GITHUB_REPOSITORY": "QuantStrategyLab/BinancePlatform",
         "GITHUB_REF": "refs/heads/runtime-production",
         "BINANCE_RUNTIME_WORKFLOW_SHA": PROTECTED_RUNTIME_SHA,
+        "BINANCE_RUNTIME_RELEASE_SHA": APP_SHA,
         "GITHUB_TOKEN": "synthetic-token",
         "GITHUB_API_URL": "https://api.example",
     })
@@ -729,6 +731,7 @@ def test_manual_terminal_keeps_fixed_legacy_9cfc_path(monkeypatch):
         "GITHUB_REPOSITORY": "QuantStrategyLab/BinancePlatform",
         "GITHUB_REF": "refs/heads/runtime-production",
         "BINANCE_RUNTIME_WORKFLOW_SHA": PROTECTED_RUNTIME_SHA,
+        "BINANCE_RUNTIME_RELEASE_SHA": APP_SHA,
         "GITHUB_TOKEN": "synthetic-token",
         "GITHUB_API_URL": "https://api.example",
     })
@@ -744,6 +747,7 @@ def test_same_parent_runtime_read_is_allowed_only_for_exact_in_progress_run(monk
         run_id="501", run_attempt=1, repository="QuantStrategyLab/BinancePlatform",
         ref="refs/heads/runtime-production", github_sha="d" * 40,
         runtime_workflow_sha="d" * 40, token="synthetic", api_url="https://api.example",
+        expected_release_sha=APP_SHA,
     )
     assert result == {"run_id": "501", "report_artifact": "binance-execution-report-501"}
 
@@ -768,6 +772,7 @@ def test_same_parent_runtime_rejects_identity_or_retry_mismatch(monkeypatch, cha
         "ref": "refs/heads/runtime-production", "github_sha": "d" * 40,
         "runtime_workflow_sha": "d" * 40, "token": "synthetic",
         "api_url": "https://api.example",
+        "expected_release_sha": APP_SHA,
     }
     args.update(changes)
     with pytest.raises(reader.ReaderError, match=reason):
@@ -821,6 +826,7 @@ def test_same_parent_runtime_requires_unique_completed_strategy_inputs(monkeypat
             run_id="501", run_attempt=1, repository="QuantStrategyLab/BinancePlatform",
             ref="refs/heads/runtime-production", github_sha="d" * 40,
             runtime_workflow_sha="d" * 40, token="synthetic", api_url="https://api.example",
+            expected_release_sha=APP_SHA,
         )
 
 
@@ -834,6 +840,7 @@ def test_same_parent_rejects_actual_app_release_mismatch_even_when_protected_sha
             run_id="501", run_attempt=1, repository="QuantStrategyLab/BinancePlatform",
             ref="refs/heads/runtime-production", github_sha="d" * 40,
             runtime_workflow_sha="d" * 40, token="synthetic", api_url="https://api.example",
+            expected_release_sha=APP_SHA,
         )
 
 
@@ -1176,7 +1183,7 @@ def test_release_log_plain_text_requires_one_exact_approved_line(monkeypatch):
         f"(workflow github.sha={'f' * 40} is not used as the application execution identity)."
     )
     monkeypatch.setattr(reader, "_read_job_log_text", lambda _url, _token: release_line.encode())
-    reader._validate_release_log("1234", "synthetic-token", "https://api.example")
+    reader._validate_release_log("1234", "synthetic-token", "https://api.example", expected_release_sha=APP_SHA)
 
 
 @pytest.mark.parametrize(
@@ -1206,7 +1213,19 @@ def test_release_log_rejects_missing_or_duplicate_approved_line(monkeypatch, log
     }]})
     monkeypatch.setattr(reader, "_read_job_log_text", lambda _url, _token: log_text.encode())
     with pytest.raises(reader.ReaderError, match=reason):
-        reader._validate_release_log("1234", "synthetic-token", "https://api.example")
+        reader._validate_release_log("1234", "synthetic-token", "https://api.example", expected_release_sha=APP_SHA)
+
+
+def test_release_validation_requires_protected_runtime_release_sha():
+    from scripts import read_binance_account_facts as reader
+
+    for invalid in ("", "not-a-sha"):
+        with pytest.raises(reader.ReaderError, match="application_revision_mismatch"):
+            reader.verify_terminal_source_from_env({
+                "SOURCE_RUN_ID": "601",
+                "GITHUB_REPOSITORY": "QuantStrategyLab/BinancePlatform",
+                "BINANCE_RUNTIME_RELEASE_SHA": invalid,
+            })
 
 
 def test_manual_run_must_still_be_the_latest_qualifying_runtime(monkeypatch):

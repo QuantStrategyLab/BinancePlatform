@@ -72,6 +72,7 @@ jobs:
           BINANCE_ACCOUNT_FACTS_ENABLED: ${{ vars.BINANCE_ACCOUNT_FACTS_ENABLED || 'false' }}
           BINANCE_ACCOUNT_FACTS_READER_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || '' }}
           BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA || '' }}
+          BINANCE_RUNTIME_RELEASE_SHA: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA || '' }}
           SOURCE_MODE: ${{ inputs.source_mode || 'legacy_terminal' }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id || '' }}
           READER_PUBLIC_REVISION: ${{ vars.BINANCE_ACCOUNT_FACTS_READER_REVISION || '' }}
@@ -176,6 +177,7 @@ jobs:
           GITHUB_API_URL: ${{ github.api_url }}
           SOURCE_MODE: ${{ inputs.source_mode || 'legacy_terminal' }}
           BINANCE_RUNTIME_WORKFLOW_SHA: ${{ vars.BINANCE_RUNTIME_WORKFLOW_SHA || '' }}
+          BINANCE_RUNTIME_RELEASE_SHA: ${{ vars.BINANCE_RUNTIME_RELEASE_SHA || '' }}
         run: |
           set -euo pipefail
           uv run --no-sync python scripts/read_binance_account_facts.py --verify-current-source
