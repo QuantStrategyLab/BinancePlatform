@@ -34,12 +34,18 @@ from binance_platform.application.account_facts import (  # noqa: E402
 
 REPOSITORY = "QuantStrategyLab/BinancePlatform"
 LEGACY_RUNTIME_WORKFLOW_SHA = "9cfcf0531d1ea176e6f26590cf15edbd31bd6567"
-APPROVED_APPLICATION_SHA = "8cb56617115fa45028e34d788e71884b6a303d77"
 RUNTIME_BRANCH = "runtime-production"
 DIRECT_READ_BRANCH = "runtime-production"
 EXPECTED_REPORT_ARTIFACT_PREFIX = "binance-execution-report-"
 _GIT_SHA = re.compile(r"[0-9a-f]{40}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _approved_application_sha(env: Mapping[str, str]) -> str:
+    value = str(env.get("BINANCE_RUNTIME_RELEASE_SHA") or "")
+    if not _GIT_SHA.fullmatch(value):
+        raise _stop("application_revision_mismatch")
+    return value
 
 
 class ReaderError(ValueError):
@@ -147,7 +153,9 @@ def _read_job_log_text(url: str, token: str) -> bytes:
         raise _stop("trigger_logs_unavailable") from None
 
 
-def _validate_release_log(run_id: str, token: str, api_url: str) -> None:
+def _validate_release_log(run_id: str, token: str, api_url: str, *, expected_release_sha: str) -> None:
+    if not _GIT_SHA.fullmatch(expected_release_sha):
+        raise _stop("application_revision_mismatch")
     jobs_url = f"{api_url}/repos/{REPOSITORY}/actions/runs/{quote(run_id)}/jobs?per_page=100"
     jobs_payload = _api_json(jobs_url, token)
     jobs = jobs_payload.get("jobs") if isinstance(jobs_payload, dict) else None
@@ -180,7 +188,7 @@ def _validate_release_log(run_id: str, token: str, api_url: str) -> None:
         r"\(workflow github\.sha=[0-9a-f]{40} is not used as the application execution identity\)\.?\r?$",
         log_text,
     )
-    if release_lines != [APPROVED_APPLICATION_SHA]:
+    if release_lines != [expected_release_sha]:
         raise _stop("trigger_release_mismatch")
 
 
@@ -363,8 +371,11 @@ def _ensure_latest_parent_run(*, run_id: str, token: str, api_url: str) -> None:
 def verify_parent_run(
     *, run_id: str, run_attempt: int, repository: str, ref: str, github_sha: str,
     runtime_workflow_sha: str, token: str, api_url: str,
+    expected_release_sha: str,
 ) -> dict[str, str]:
     """Verify the exact in-progress Runtime parent and its completed read inputs."""
+    if not _GIT_SHA.fullmatch(expected_release_sha):
+        raise _stop("application_revision_mismatch")
     if (
         repository != REPOSITORY
         or not re.fullmatch(r"[1-9][0-9]{0,19}", str(run_id))
@@ -411,7 +422,7 @@ def verify_parent_run(
 
     # The protected setting and report binding identify the intended app, but
     # only the Runtime release-selection log proves what this parent ran.
-    _validate_release_log(str(run_id), token, api_url)
+    _validate_release_log(str(run_id), token, api_url, expected_release_sha=expected_release_sha)
 
     artifacts_result = _api_json(
         f"{api_url}/repos/{REPOSITORY}/actions/runs/{quote(str(run_id))}/artifacts?per_page=100",
@@ -456,6 +467,7 @@ def verify_current_source_from_env(env: Mapping[str, str]) -> None:
             runtime_workflow_sha=str(env.get("BINANCE_RUNTIME_WORKFLOW_SHA") or ""),
             token=str(env.get("GITHUB_TOKEN") or ""),
             api_url=str(env.get("GITHUB_API_URL") or "https://api.github.com"),
+            expected_release_sha=_approved_application_sha(env),
         )
     elif mode == "legacy_terminal":
         verify_terminal_source_from_env(env)
@@ -478,12 +490,15 @@ def verify_direct_reader_source_from_env(env: Mapping[str, str]) -> None:
 
 def verify_trigger_run(
     *, run_id: str, repository: str, token: str, api_url: str,
+    expected_release_sha: str,
     expected_workflow_sha: str = LEGACY_RUNTIME_WORKFLOW_SHA,
     expected_ref: str | None = None,
     require_attempt_one: bool = False,
     require_strategy_steps: bool = False,
 ) -> dict[str, str]:
     """Validate source run metadata, selected application SHA, and report artifact."""
+    if not _GIT_SHA.fullmatch(expected_release_sha):
+        raise _stop("application_revision_mismatch")
     if repository != REPOSITORY or not re.fullmatch(r"[1-9][0-9]{0,19}", str(run_id)):
         raise _stop("trigger_identity_invalid")
     url = f"{api_url}/repos/{REPOSITORY}/actions/runs/{quote(str(run_id))}"
@@ -509,7 +524,7 @@ def verify_trigger_run(
         or base_repo.get("full_name") != REPOSITORY
     ):
         raise _stop("trigger_identity_mismatch")
-    _validate_release_log(str(run_id), token, api_url)
+    _validate_release_log(str(run_id), token, api_url, expected_release_sha=expected_release_sha)
     _ensure_no_active_runtime_run(token=token, api_url=api_url)
     _ensure_latest_runtime_run(
         run_id=str(run_id), token=token, api_url=api_url,
@@ -546,6 +561,7 @@ def verify_trigger_run(
 
 
 def verify_terminal_source_from_env(env: Mapping[str, str]) -> dict[str, str]:
+    expected_release_sha = _approved_application_sha(env)
     run_id = str(env.get("SOURCE_RUN_ID") or "")
     repository = str(env.get("GITHUB_REPOSITORY") or "")
     token = str(env.get("GITHUB_TOKEN") or "")
@@ -563,13 +579,15 @@ def verify_terminal_source_from_env(env: Mapping[str, str]) -> dict[str, str]:
                 repository=repository,
                 token=token,
                 api_url=api_url,
+                expected_release_sha=expected_release_sha,
                 expected_workflow_sha=pinned_workflow_sha,
                 expected_ref=str(env.get("GITHUB_REF") or ""),
                 require_attempt_one=True,
                 require_strategy_steps=True,
             )
     return verify_trigger_run(
-        run_id=run_id, repository=repository, token=token, api_url=api_url
+        run_id=run_id, repository=repository, token=token, api_url=api_url,
+        expected_release_sha=expected_release_sha,
     )
 
 
@@ -727,7 +745,10 @@ def _target_identity(raw: str, *, allow_dry_run_only: bool = False) -> dict[str,
     return value
 
 
-def _binding(raw: str, target: Mapping[str, Any], expected_scope: str, reader_revision: str) -> Mapping[str, Any]:
+def _binding(
+    raw: str, target: Mapping[str, Any], expected_scope: str, reader_revision: str,
+    *, approved_application_revision: str | None = None,
+) -> Mapping[str, Any]:
     value = _json_no_duplicates(raw.encode("utf-8"))
     fields = {
         "platform", "account_key", "account_scope", "target_name", "service_name",
@@ -737,6 +758,7 @@ def _binding(raw: str, target: Mapping[str, Any], expected_scope: str, reader_re
     if not isinstance(value, Mapping) or set(value) != fields:
         raise _stop("binding_config_invalid")
     target_selectors = target.get("account_selector")
+    approved_app = value.get("approved_application_revision")
     if (
         value.get("platform") != "binance"
         or not isinstance(value.get("account_key"), str) or not value["account_key"].strip()
@@ -751,7 +773,8 @@ def _binding(raw: str, target: Mapping[str, Any], expected_scope: str, reader_re
         or value.get("account_selector") != target_selectors[0]
         or value.get("account_scope_sha256") != expected_scope
         or value.get("reader_revision") != reader_revision
-        or value.get("approved_application_revision") != APPROVED_APPLICATION_SHA
+        or not isinstance(approved_app, str) or not _GIT_SHA.fullmatch(approved_app)
+        or (approved_application_revision is not None and approved_app != approved_application_revision)
         or not isinstance(value.get("target_id"), str) or not value["target_id"].strip()
     ):
         raise _stop("binding_config_mismatch")
@@ -760,7 +783,7 @@ def _binding(raw: str, target: Mapping[str, Any], expected_scope: str, reader_re
         "id": build_source_binding_id(
             account_scope_sha256=expected_scope,
             reader_public_revision=reader_revision,
-            approved_application_revision=APPROVED_APPLICATION_SHA,
+            approved_application_revision=approved_app,
         ),
     }
     if value.get("source_binding") != expected_source_binding:
@@ -795,7 +818,7 @@ def _bound_scope(raw_binding: str) -> str:
     return scope
 
 
-def _authority_payload(env: Mapping[str, str]) -> Mapping[str, Any]:
+def _authority_payload(env: Mapping[str, str], *, approved_application_sha: str) -> Mapping[str, Any]:
     raw_text = str(env.get("BINANCE_RISK_AUTHORITY_JSON") or "")
     path_text = str(env.get("BINANCE_RISK_AUTHORITY_FILE") or "")
     if raw_text and path_text:
@@ -832,7 +855,7 @@ def _authority_payload(env: Mapping[str, str]) -> Mapping[str, Any]:
         payload.get("decision") != "APPROVE"
         or payload.get("authority_scope") != "LIVE"
         or payload.get("continuous_inputs_allowed") is not True
-        or payload.get("runner_revision") != APPROVED_APPLICATION_SHA
+        or payload.get("runner_revision") != approved_application_sha
         or not _SHA256.fullmatch(str(payload.get("config_sha256") or ""))
         or not _GIT_SHA.fullmatch(str(payload.get("strategy_revision") or ""))
         or not isinstance(payload.get("mandate"), Mapping)
@@ -905,7 +928,7 @@ def _collect_bound_account_facts(
         expected_account_scope_sha256=expected_scope,
         target_id=str(binding["target_id"]),
         reader_public_revision=reader_revision,
-        approved_application_revision=APPROVED_APPLICATION_SHA,
+        approved_application_revision=str(binding["approved_application_revision"]),
         observed_started_at=started_at,
         clock=lambda: datetime.now(timezone.utc),
     )
@@ -926,12 +949,15 @@ def read_account_facts(*, report_path: Path, output_path: Path, env: Mapping[str
     reader_revision = env.get("READER_PUBLIC_REVISION", "")
     if not _GIT_SHA.fullmatch(reader_revision):
         raise _stop("reader_revision_invalid")
-    if env.get("BINANCE_RUNTIME_RELEASE_SHA") != APPROVED_APPLICATION_SHA:
-        raise _stop("application_revision_mismatch")
+    approved_app_sha = _approved_application_sha(env)
     binding = _binding(
-        env.get("BINANCE_ACCOUNT_FACTS_BINDING_JSON", ""), target, expected_scope, reader_revision
+        env.get("BINANCE_ACCOUNT_FACTS_BINDING_JSON", ""),
+        target,
+        expected_scope,
+        reader_revision,
+        approved_application_revision=approved_app_sha,
     )
-    authority = _authority_payload(env)
+    authority = _authority_payload(env, approved_application_sha=approved_app_sha)
     _validate_authority_target(authority, target)
     report = _report_json(report_path)
     validate_strategy_report(report, target)
@@ -993,6 +1019,7 @@ def preflight(*, env: Mapping[str, str], output: Path) -> None:
             runtime_workflow_sha=str(env.get("BINANCE_RUNTIME_WORKFLOW_SHA") or ""),
             token=str(env.get("GITHUB_TOKEN") or ""),
             api_url=str(env.get("GITHUB_API_URL") or "https://api.github.com"),
+            expected_release_sha=_approved_application_sha(env),
         )
     elif mode == "legacy_terminal":
         result = verify_terminal_source_from_env(env)
