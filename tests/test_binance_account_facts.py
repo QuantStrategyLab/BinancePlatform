@@ -1861,6 +1861,26 @@ def test_publish_and_diagnosis_fail_closed_without_valid_console_origin(tmp_path
         env={"EXECUTION_EVIDENCE_SYNC_URL": "http://console.example.invalid"},
     )
     assert invalid_diag.category == "console_origin_invalid"
+    nfkc_diag = diagnosis.diagnose_receiver(
+        token="synthetic-token",
+        env={"EXECUTION_EVIDENCE_SYNC_URL": "https://private-console.example.invalid\uff1a443"},
+    )
+    assert nfkc_diag.category == "console_origin_invalid"
+    assert "private-console.example.invalid" not in nfkc_diag.category
+    empty_userinfo_diag = diagnosis.diagnose_receiver(
+        token="synthetic-token",
+        env={"EXECUTION_EVIDENCE_SYNC_URL": "https://@console.example.invalid"},
+    )
+    assert empty_userinfo_diag.category == "console_origin_invalid"
+    assert (
+        diagnosis.resolve_facts_endpoint(
+            {
+                "STRATEGY_SWITCH_CONSOLE_URL": "   ",
+                "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
+            }
+        )
+        == "https://console.example.invalid/api/internal/binance-account-facts"
+    )
 
 
 def test_receiver_diagnosis_is_one_authenticated_get_with_closed_success():

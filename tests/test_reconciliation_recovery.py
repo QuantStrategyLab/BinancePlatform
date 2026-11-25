@@ -370,6 +370,7 @@ def test_console_request_identifies_the_platform_and_never_redirects(monkeypatch
 
 
 def test_console_origin_resolves_from_protected_config_and_fails_closed():
+    from pathlib import Path
     import pytest
     from scripts import binance_recovery_controller as controller
 
@@ -381,6 +382,19 @@ def test_console_origin_resolves_from_protected_config_and_fails_closed():
         controller.console_origin({})
     with pytest.raises(ValueError, match="console_origin_invalid"):
         controller.console_origin({"EXECUTION_EVIDENCE_SYNC_URL": "http://console.example.invalid"})
+
+    workflow_text = (
+        Path(controller.__file__).resolve().parents[1]
+        / ".github"
+        / "workflows"
+        / "runtime-protected.yml"
+    ).read_text(encoding="utf-8")
+    strategy_start = workflow_text.index("- name: 4. Run trading strategy")
+    strategy_end = workflow_text.index("- name: Remove protected LIVE risk authority source", strategy_start)
+    assert (
+        "EXECUTION_EVIDENCE_SYNC_URL: ${{ vars.EXECUTION_EVIDENCE_SYNC_URL }}"
+        in workflow_text[strategy_start:strategy_end]
+    )
 
 
 def test_http_failure_reports_only_status_without_provider_body(monkeypatch, capsys):

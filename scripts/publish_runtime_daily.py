@@ -7,15 +7,21 @@ import json
 import os
 import sys
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from zoneinfo import ZoneInfo
 
-from binance_platform.console_origin import resolve_console_origin
-from scripts import execution_report_heartbeat as heartbeat
-from scripts.project_runtime_daily import PLATFORM, project_runtime_daily
-from scripts import read_binance_account_facts as reader
+ROOT = Path(__file__).resolve().parents[1]
+for _path in (ROOT / "src", ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+from binance_platform.console_origin import resolve_console_origin  # noqa: E402
+from scripts import execution_report_heartbeat as heartbeat  # noqa: E402
+from scripts.project_runtime_daily import PLATFORM, project_runtime_daily  # noqa: E402
+from scripts import read_binance_account_facts as reader  # noqa: E402
 
 _FACTS_URL: str | None = None
 

@@ -146,7 +146,12 @@ def diagnose_receiver(*, token: str, env=None, opener_factory=build_opener) -> R
     try:
         endpoint = resolve_facts_endpoint(env)
     except ValueError as exc:
-        return ReceiverDiagnosis(str(exc))
+        code = str(exc)
+        return ReceiverDiagnosis(
+            code
+            if code in {"console_origin_missing", "console_origin_invalid"}
+            else "console_origin_invalid"
+        )
     request = Request(
         endpoint,
         headers={
