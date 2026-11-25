@@ -310,7 +310,16 @@ def test_confirmation_failure_never_collects_broker_or_applies_state(monkeypatch
     from scripts import binance_recovery_controller as controller
     args, control = active_control()
     control["state"] = "RECONCILE_ONLY"
-    for name, value in {"GITHUB_REPOSITORY": controller.REPOSITORY, "GITHUB_REF": "refs/heads/main", "GITHUB_WORKFLOW_REF": controller.REPOSITORY + "/.github/workflows/main.yml@refs/heads/main", "RUNTIME_TARGET_ENABLED": "false", "RECONCILE_ONLY": "true", "GITHUB_RUN_ID": "124", "GITHUB_SHA": "a" * 40}.items():
+    for name, value in {
+        "GITHUB_REPOSITORY": controller.REPOSITORY,
+        "GITHUB_REF": "refs/heads/main",
+        "GITHUB_WORKFLOW_REF": controller.REPOSITORY + "/.github/workflows/main.yml@refs/heads/main",
+        "RUNTIME_TARGET_ENABLED": "false",
+        "RECONCILE_ONLY": "true",
+        "GITHUB_RUN_ID": "124",
+        "GITHUB_SHA": "a" * 40,
+        "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
+    }.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(controller, "FROZEN_EXPECTED_SHA256", calculate_broker_observation_sha256(args["expected"]))
     monkeypatch.setattr(controller, "BASELINE_ID", args["runtime_target"].live_continuity.baseline_id)
@@ -354,17 +363,45 @@ def test_console_request_identifies_the_platform_and_never_redirects(monkeypatch
         assert handler().redirect_request(None) is None
         return Opener()
     monkeypatch.setattr(controller, "build_opener", build)
-    assert controller.request_json(controller.CONSOLE, "test-token", payload={}) == {"ok": True}
+    assert controller.request_json("https://console.example.invalid", "test-token", payload={}) == {"ok": True}
     assert len(calls) == 1
     assert calls[0].get_header("User-agent") == "QuantStrategyLab-BinancePlatform/1.0 (reconciliation-controller)"
     assert calls[0].get_header("Authorization") == "Bearer test-token"
+
+
+def test_console_origin_resolves_from_protected_config_and_fails_closed():
+    from pathlib import Path
+    import pytest
+    from scripts import binance_recovery_controller as controller
+
+    assert (
+        controller.console_origin({"EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid/path"})
+        == "https://console.example.invalid"
+    )
+    with pytest.raises(ValueError, match="console_origin_missing"):
+        controller.console_origin({})
+    with pytest.raises(ValueError, match="console_origin_invalid"):
+        controller.console_origin({"EXECUTION_EVIDENCE_SYNC_URL": "http://console.example.invalid"})
+
+    workflow_text = (
+        Path(controller.__file__).resolve().parents[1]
+        / ".github"
+        / "workflows"
+        / "runtime-protected.yml"
+    ).read_text(encoding="utf-8")
+    strategy_start = workflow_text.index("- name: 4. Run trading strategy")
+    strategy_end = workflow_text.index("- name: Remove protected LIVE risk authority source", strategy_start)
+    assert (
+        "EXECUTION_EVIDENCE_SYNC_URL: ${{ vars.EXECUTION_EVIDENCE_SYNC_URL }}"
+        in workflow_text[strategy_start:strategy_end]
+    )
 
 
 def test_http_failure_reports_only_status_without_provider_body(monkeypatch, capsys):
     from urllib.error import HTTPError
     from scripts import binance_recovery_controller as controller
     def fail(*args):
-        raise HTTPError(controller.CONSOLE, 403, "private provider message", {}, None)
+        raise HTTPError("https://console.example.invalid", 403, "private provider message", {}, None)
     monkeypatch.setattr(controller, "run", fail)
     assert controller.main(["prepare"]) == 2
     result = json.loads(capsys.readouterr().out)

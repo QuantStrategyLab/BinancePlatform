@@ -45,4 +45,5 @@ jobs:
         shell: bash
         env:
           BINANCE_ACCOUNT_FACTS_SYNC_TOKEN: ${{ secrets.BINANCE_ACCOUNT_FACTS_SYNC_TOKEN }}
+          EXECUTION_EVIDENCE_SYNC_URL: ${{ vars.EXECUTION_EVIDENCE_SYNC_URL }}
         run: python3 scripts/diagnose_binance_account_facts_receiver.py

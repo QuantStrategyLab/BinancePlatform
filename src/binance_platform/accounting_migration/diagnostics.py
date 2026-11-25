@@ -24,7 +24,6 @@ from binance_platform.accounting_migration.common import (
     _BNB_DIAGNOSTIC_QUANTUM,
     _MAX_PRIVATE_SCOPE_BODY_BYTES,
     NEW_BASIS,
-    PRIVATE_SCOPE_CONSOLE_URL,
     REBASE_ARCHIVE_DOCUMENT,
     MigrationApplyUncertain,
     MigrationBlocked,
@@ -33,6 +32,7 @@ from binance_platform.accounting_migration.common import (
     _direction,
     _finite,
     _private_spot_account,
+    resolve_private_scope_console_url,
     _same_balance,
     _timestamp,
     is_prospective_archive_document,
@@ -1286,12 +1286,13 @@ def publish_private_spot_scope_preview(
 ) -> None:
     """POST one bounded private report and require its exact acknowledgement."""
     requester = request_json_fn or _default_request_json
+    endpoint = resolve_private_scope_console_url()
     payload = build_private_spot_scope_payload(
         preview, source_run_id=source_run_id, source_sha=source_sha
     )
     try:
         acknowledgement = requester(
-            PRIVATE_SCOPE_CONSOLE_URL, token, payload=payload
+            endpoint, token, payload=payload
         )
         expected_keys = {"ok", "observed_at", "source_run_id", "asset_count"}
         if (

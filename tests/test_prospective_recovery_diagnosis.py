@@ -536,6 +536,7 @@ def _controller_setup(monkeypatch, *, prepared=False, client_change=None, confir
         "GITHUB_RUN_ATTEMPT": "1", "BINANCE_API_KEY": "synthetic",
         "BINANCE_API_SECRET": "synthetic", "RECONCILIATION_RECOVERY_SYNC_TOKEN": "synthetic",
         "RECONCILIATION_RECOVERY_CONTROLLER_TOKEN": "synthetic",
+        "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
     }.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(controller, "FROZEN_EXPECTED_SHA256", digest(expected))

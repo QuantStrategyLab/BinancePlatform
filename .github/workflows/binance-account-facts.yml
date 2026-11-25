@@ -188,6 +188,7 @@ jobs:
           FACTS_DIR: ${{ steps.private-dir.outputs.facts_dir }}
           BINANCE_ACCOUNT_FACTS_ENABLED: ${{ vars.BINANCE_ACCOUNT_FACTS_ENABLED || 'false' }}
           BINANCE_ACCOUNT_FACTS_SYNC_TOKEN: ${{ secrets.BINANCE_ACCOUNT_FACTS_SYNC_TOKEN }}
+          EXECUTION_EVIDENCE_SYNC_URL: ${{ vars.EXECUTION_EVIDENCE_SYNC_URL }}
         run: |
           set -euo pipefail
           uv run --no-sync python scripts/publish_binance_account_facts.py \

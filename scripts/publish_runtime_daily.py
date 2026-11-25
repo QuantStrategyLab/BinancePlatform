@@ -7,15 +7,23 @@ import json
 import os
 import sys
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from zoneinfo import ZoneInfo
 
-from scripts import execution_report_heartbeat as heartbeat
-from scripts.project_runtime_daily import PLATFORM, project_runtime_daily
-from scripts.publish_binance_account_facts import QRS_ENDPOINT as _FACTS_URL
-from scripts import read_binance_account_facts as reader
+ROOT = Path(__file__).resolve().parents[1]
+for _path in (ROOT / "src", ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+from binance_platform.console_origin import resolve_console_origin  # noqa: E402
+from scripts import execution_report_heartbeat as heartbeat  # noqa: E402
+from scripts.project_runtime_daily import PLATFORM, project_runtime_daily  # noqa: E402
+from scripts import read_binance_account_facts as reader  # noqa: E402
+
+_FACTS_URL: str | None = None
 
 class _NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
@@ -65,8 +73,13 @@ def _auth_config(env):
     if (not token or token != token.strip() or url.scheme != "https" or not url.hostname
             or url.username or url.password or url.query or url.fragment):
         raise ValueError("daily_config_invalid")
-    if url.netloc != urlsplit(_FACTS_URL).netloc:
-        raise ValueError("daily_origin_invalid")
+    if _FACTS_URL is not None:
+        if url.netloc != urlsplit(_FACTS_URL).netloc:
+            raise ValueError("daily_origin_invalid")
+    elif (env.get("STRATEGY_SWITCH_CONSOLE_URL") or "").strip():
+        expected_origin = resolve_console_origin({"STRATEGY_SWITCH_CONSOLE_URL": env["STRATEGY_SWITCH_CONSOLE_URL"]})
+        if url.netloc != urlsplit(expected_origin).netloc:
+            raise ValueError("daily_origin_invalid")
     return token, f"https://{url.netloc}"
 
 

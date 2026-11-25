@@ -10,13 +10,15 @@ from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+for _path in (ROOT / "src", ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from binance_platform.application.account_facts import AccountFactsUnavailable, validate_account_facts_payload  # noqa: E402
+from binance_platform.console_origin import resolve_console_origin  # noqa: E402
 
 
-QRS_ENDPOINT = "https://qsl-strategy-switch-console.pigbibi.workers.dev/api/internal/binance-account-facts"
+FACTS_PATH = "/api/internal/binance-account-facts"
 _USER_AGENT = "QSL-AccountFacts-Readiness/1.0"
 _HTTP_ERROR_LABELS = {
     (400, "invalid_binance_account_facts"): "http_400_report_invalid",
@@ -73,12 +75,22 @@ def _http_failure_code(error: HTTPError) -> str:
         return f"account_facts_publish_http_{status}_body_invalid_json"
 
 
+def resolve_facts_endpoint(env) -> str:
+    try:
+        return resolve_console_origin(env) + FACTS_PATH
+    except ValueError as exc:
+        if str(exc) == "console_origin_missing":
+            raise PublishError("account_facts_endpoint_missing") from None
+        raise PublishError("account_facts_endpoint_invalid") from None
+
+
 def publish_account_facts(*, facts_path: Path, env) -> str:
     if env.get("BINANCE_ACCOUNT_FACTS_ENABLED") != "true":
         raise PublishError("account_facts_publish_disabled")
     token = str(env.get("BINANCE_ACCOUNT_FACTS_SYNC_TOKEN") or "")
     if not token or token != token.strip():
         raise PublishError("account_facts_sync_token_missing")
+    endpoint = resolve_facts_endpoint(env)
     try:
         details = facts_path.lstat()
         if facts_path.is_symlink() or not facts_path.is_file() or not 0 < details.st_size <= 5_000_000:
@@ -90,7 +102,7 @@ def publish_account_facts(*, facts_path: Path, env) -> str:
     except (AccountFactsUnavailable, OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         raise PublishError("account_facts_payload_invalid") from None
     request = Request(
-        QRS_ENDPOINT,
+        endpoint,
         data=body,
         headers={
             "Authorization": f"Bearer {token}",

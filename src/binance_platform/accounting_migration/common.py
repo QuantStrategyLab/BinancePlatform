@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from quant_platform_kit.binance import connect_client
 from quant_platform_kit.common.broker_reconciliation import (
     calculate_broker_observation_sha256 as digest,
 )
+
+from binance_platform.console_origin import resolve_console_origin
 
 from binance_platform.application.broker_reconciliation import (
     collect_read_only_reconciliation_observations,
@@ -36,10 +39,15 @@ SCHEMA_VERSION = "binance_daily_accounting_migration_candidate.v1"
 NEW_BASIS = "trend_mark_plus_cash_flow_v1"
 PREVIEW_PATH = Path("reports/binance-accounting-migration-preview/candidate.json")
 REBASE_PROPOSAL_PATH = Path("reports/binance-accounting-rebase-proposal/proposal.cms")
-PRIVATE_SCOPE_CONSOLE_URL = (
-    "https://qsl-strategy-switch-console.pigbibi.workers.dev"
-    "/api/internal/binance-private-scope"
-)
+PRIVATE_SCOPE_CONSOLE_PATH = "/api/internal/binance-private-scope"
+PRIVATE_SCOPE_CONSOLE_URL: str | None = None
+
+
+def resolve_private_scope_console_url(env: Mapping[str, str] | None = None) -> str:
+    """Resolve private-scope receiver URL from monkeypatched override or protected config."""
+    if PRIVATE_SCOPE_CONSOLE_URL is not None:
+        return PRIVATE_SCOPE_CONSOLE_URL
+    return resolve_console_origin(os.environ if env is None else env) + PRIVATE_SCOPE_CONSOLE_PATH
 # Operator-approved current control from read-only Runtime 35501649014. One exact downgrade.
 QUIESCE_CONTROL_SHA256 = "3ba1f2535a439960a43a46ea99f28911842b5dcf2c77cce30f55e6303947872b"
 QUIESCE_CONTROL_UPDATE_TIME = "2026-09-12T13:29:06.395700Z"
