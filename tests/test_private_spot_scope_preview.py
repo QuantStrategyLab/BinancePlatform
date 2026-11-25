@@ -128,6 +128,7 @@ def _post_rebase_setup(monkeypatch, tmp_path, accounts):
             "BINANCE_API_SECRET": "synthetic",
             "GITHUB_RUN_ID": "34620000001",
             "RECONCILIATION_RECOVERY_SYNC_TOKEN": "synthetic sync token",
+            "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
         },
     )
     return refs, archive_ref, client, output_path
@@ -187,10 +188,7 @@ def test_scope_preview_posts_stable_non_managed_spot_rows_once_without_files(
     assert archive_ref.calls == 2
     assert len(requests) == 1
     url, token, payload = requests[0]
-    assert url == (
-        "https://qsl-strategy-switch-console.quantstrategylab.workers.dev"
-        "/api/internal/binance-private-scope"
-    )
+    assert url == "https://console.example.invalid/api/internal/binance-private-scope"
     assert token == "synthetic sync token"
     assert payload == {
         "platform": "binance",
@@ -530,6 +528,7 @@ def test_scope_preview_selects_prospective_archive_from_valid_marker(
             "BINANCE_API_SECRET": "synthetic",
             "GITHUB_RUN_ID": "34620000001",
             "RECONCILIATION_RECOVERY_SYNC_TOKEN": "synthetic sync token",
+            "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
         },
     )
     requests = []

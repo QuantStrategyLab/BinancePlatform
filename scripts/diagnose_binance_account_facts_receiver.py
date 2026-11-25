@@ -4,11 +4,20 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-QRS_ENDPOINT = "https://qsl-strategy-switch-console.quantstrategylab.workers.dev/api/internal/binance-account-facts"
+ROOT = Path(__file__).resolve().parents[1]
+for _path in (ROOT / "src", ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
+
+from binance_platform.console_origin import resolve_console_origin  # noqa: E402
+
+FACTS_PATH = "/api/internal/binance-account-facts"
 _USER_AGENT = "QSL-AccountFacts-Readiness/1.0"
 
 _READINESS_FIELDS = {"ok", "ready", "binding_valid", "account_options_readable", "unique_match"}
@@ -127,11 +136,19 @@ def _read_once(request: Request, *, opener_factory=build_opener) -> tuple[int, b
             error.close()
 
 
-def diagnose_receiver(*, token: str, opener_factory=build_opener) -> ReceiverDiagnosis:
+def resolve_facts_endpoint(env=None) -> str:
+    return resolve_console_origin(os.environ if env is None else env) + FACTS_PATH
+
+
+def diagnose_receiver(*, token: str, env=None, opener_factory=build_opener) -> ReceiverDiagnosis:
     if not isinstance(token, str) or not token or token != token.strip():
         return ReceiverDiagnosis("token_missing")
+    try:
+        endpoint = resolve_facts_endpoint(env)
+    except ValueError as exc:
+        return ReceiverDiagnosis(str(exc))
     request = Request(
-        QRS_ENDPOINT,
+        endpoint,
         headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",

@@ -15,8 +15,9 @@ from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+for _path in (ROOT / "src", ROOT):
+    if str(_path) not in sys.path:
+        sys.path.insert(0, str(_path))
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.transaction import Transaction as FirestoreTransaction
@@ -60,12 +61,16 @@ from binance_platform.application.rebased_recovery import (
     validate_post_rebase_material,
     validate_post_rebase_source,
 )
+from binance_platform.console_origin import resolve_console_origin
 from binance_platform.live_services import get_firestore_client
 from scripts.migrate_daily_accounting_state import is_prospective_archive_document
 from scripts.reconcile_frozen_live_baseline import _symbols_from_env
 
 REPOSITORY = "QuantStrategyLab/BinancePlatform"
-CONSOLE = "https://qsl-strategy-switch-console.quantstrategylab.workers.dev"
+
+
+def console_origin(env=None) -> str:
+    return resolve_console_origin(os.environ if env is None else env)
 GITHUB_REVIEW_ENVIRONMENT = "binance-recovery-review"
 GITHUB_ACTIVATION_ENVIRONMENT = "live-trading"
 STAGE = "preflight"
@@ -600,7 +605,7 @@ def run(action, recovery_id=""):
                 ),
             )
             try:
-                acknowledgement = request_json(CONSOLE + "/api/internal/sync-reconciliation-recovery-source", os.getenv("RECONCILIATION_RECOVERY_SYNC_TOKEN", ""), payload=payload)
+                acknowledgement = request_json(console_origin() + "/api/internal/sync-reconciliation-recovery-source", os.getenv("RECONCILIATION_RECOVERY_SYNC_TOKEN", ""), payload=payload)
                 if (acknowledgement.get("ok") is not True or acknowledgement.get("source_id") != payload["source_id"]
                         or acknowledgement.get("recovery_count") != 1 or acknowledgement.get("generated_at") != payload["generated_at"]):
                     raise ValueError("recovery_publication_not_acknowledged")
@@ -710,7 +715,7 @@ def run(action, recovery_id=""):
             review_environment=GITHUB_ACTIVATION_ENVIRONMENT if action == "activate-github" else GITHUB_REVIEW_ENVIRONMENT,
         )
     else:
-        response = request_json(CONSOLE + "/api/internal/reconciliation-recovery-confirmation?" + urlencode({"recovery_id": recovery_id}), os.getenv("RECONCILIATION_RECOVERY_CONTROLLER_TOKEN", ""))
+        response = request_json(console_origin() + "/api/internal/reconciliation-recovery-confirmation?" + urlencode({"recovery_id": recovery_id}), os.getenv("RECONCILIATION_RECOVERY_CONTROLLER_TOKEN", ""))
         confirmation = verify_confirmation(response, recovery_id=recovery_id, candidate=candidate)
     STAGE = "post_confirmation_collection"
     # Broker reads begin only after the actual server-issued confirmation.

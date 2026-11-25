@@ -1587,7 +1587,10 @@ def test_publisher_accepts_only_qrs_idempotent_acknowledgements(tmp_path, monkey
         def open(self, request, timeout):
             calls.append((request, timeout))
             assert request.method == "POST"
-            assert request.full_url == publisher.QRS_ENDPOINT
+            assert (
+                request.full_url
+                == "https://console.example.invalid/api/internal/binance-account-facts"
+            )
             assert request.get_header("User-agent") == "QSL-AccountFacts-Readiness/1.0"
             assert timeout == 20
             return Response()
@@ -1604,6 +1607,7 @@ def test_publisher_accepts_only_qrs_idempotent_acknowledgements(tmp_path, monkey
         env={
             "BINANCE_ACCOUNT_FACTS_ENABLED": "true",
             "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-token",
+            "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
         },
     ) == ack_status
     assert len(calls) == 1
@@ -1639,6 +1643,7 @@ def test_publisher_rejects_legacy_recorded_ack(tmp_path, monkeypatch):
             env={
                 "BINANCE_ACCOUNT_FACTS_ENABLED": "true",
                 "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-token",
+                "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
             },
         )
 
@@ -1689,6 +1694,7 @@ def test_publisher_classifies_only_known_http_error_pairs_without_leaking_body(
             env={
                 "BINANCE_ACCOUNT_FACTS_ENABLED": "true",
                 "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-token",
+                "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
             },
         )
     assert str(raised.value) == f"account_facts_publish_{safe_label}"
@@ -1742,6 +1748,7 @@ def test_publisher_rejects_unknown_or_oversized_http_error_body_closed(
             env={
                 "BINANCE_ACCOUNT_FACTS_ENABLED": "true",
                 "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-token",
+                "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
             },
         )
     assert str(raised.value) == reason
@@ -1777,6 +1784,7 @@ def test_publisher_classifies_transport_failures_without_retry_or_leak(
             env={
                 "BINANCE_ACCOUNT_FACTS_ENABLED": "true",
                 "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-secret",
+                "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
             },
         )
     assert str(raised.value) == reason
@@ -1818,6 +1826,7 @@ def test_publisher_classifies_invalid_ack_without_leaking_or_retrying(tmp_path, 
             env={
                 "BINANCE_ACCOUNT_FACTS_ENABLED": "true",
                 "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-secret",
+                "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
             },
         )
     assert str(raised.value) == "account_facts_publish_ack_invalid"
@@ -1825,11 +1834,45 @@ def test_publisher_classifies_invalid_ack_without_leaking_or_retrying(tmp_path, 
     assert calls == [20]
 
 
+def test_publish_and_diagnosis_fail_closed_without_valid_console_origin(tmp_path):
+    from scripts import diagnose_binance_account_facts_receiver as diagnosis
+    from scripts import publish_binance_account_facts as publisher
+
+    facts_path = tmp_path / "account_facts.json"
+    facts_path.write_text("{}", encoding="utf-8")
+
+    for expected, env_url in (
+        ("account_facts_endpoint_missing", None),
+        ("account_facts_endpoint_invalid", "http://console.example.invalid"),
+    ):
+        env = {
+            "BINANCE_ACCOUNT_FACTS_ENABLED": "true",
+            "BINANCE_ACCOUNT_FACTS_SYNC_TOKEN": "synthetic-token",
+        }
+        if env_url is not None:
+            env["EXECUTION_EVIDENCE_SYNC_URL"] = env_url
+        with pytest.raises(publisher.PublishError, match=expected):
+            publisher.publish_account_facts(facts_path=facts_path, env=env)
+
+    missing_diag = diagnosis.diagnose_receiver(token="synthetic-token", env={})
+    assert missing_diag.category == "console_origin_missing"
+    invalid_diag = diagnosis.diagnose_receiver(
+        token="synthetic-token",
+        env={"EXECUTION_EVIDENCE_SYNC_URL": "http://console.example.invalid"},
+    )
+    assert invalid_diag.category == "console_origin_invalid"
+
+
 def test_receiver_diagnosis_is_one_authenticated_get_with_closed_success():
     from scripts import diagnose_binance_account_facts_receiver as diagnosis
     from scripts import publish_binance_account_facts as publisher
 
-    assert diagnosis.QRS_ENDPOINT == publisher.QRS_ENDPOINT
+    sample_env = {"EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid/ignored"}
+    assert (
+        diagnosis.resolve_facts_endpoint(sample_env)
+        == publisher.resolve_facts_endpoint(sample_env)
+        == "https://console.example.invalid/api/internal/binance-account-facts"
+    )
     calls = []
 
     class Response:
@@ -1861,12 +1904,19 @@ def test_receiver_diagnosis_is_one_authenticated_get_with_closed_success():
         handlers.extend(received_handlers)
         return Opener()
 
-    result = diagnosis.diagnose_receiver(token="synthetic-secret", opener_factory=opener_factory)
+    result = diagnosis.diagnose_receiver(
+        token="synthetic-secret",
+        env={"EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid"},
+        opener_factory=opener_factory,
+    )
     assert result.category == "ready"
     assert result.http_status == 200
     assert result.body_shape == "readiness"
     assert len(calls) == 1
-    assert calls[0].full_url == diagnosis.QRS_ENDPOINT
+    assert (
+        calls[0].full_url
+        == "https://console.example.invalid/api/internal/binance-account-facts"
+    )
     assert calls[0].method == "GET"
     assert calls[0].data is None
     assert calls[0].get_header("Authorization") == "Bearer synthetic-secret"
@@ -1914,7 +1964,11 @@ def test_receiver_diagnosis_emits_only_closed_status_and_body_metadata(
             )
             raise error
 
-    result = diagnosis.diagnose_receiver(token="synthetic-token", opener_factory=lambda _handler: Opener())
+    result = diagnosis.diagnose_receiver(
+        token="synthetic-token",
+        env={"EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid"},
+        opener_factory=lambda _handler: Opener(),
+    )
     assert result.category == category
     assert result.http_status == status
     assert result.body_shape == shape
@@ -1939,7 +1993,11 @@ def test_receiver_diagnosis_missing_token_and_transport_failure_never_retry():
             calls.append((request.method, timeout))
             raise OSError("private transport detail")
 
-    failed = diagnosis.diagnose_receiver(token="synthetic-token", opener_factory=lambda _handler: Opener())
+    failed = diagnosis.diagnose_receiver(
+        token="synthetic-token",
+        env={"EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid"},
+        opener_factory=lambda _handler: Opener(),
+    )
     assert failed.category == "transport"
     assert len(calls) == 1 and calls[0] == ("GET", 15)
 

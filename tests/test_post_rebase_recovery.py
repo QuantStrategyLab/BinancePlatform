@@ -732,6 +732,7 @@ def test_controller_prepare_routes_real_post_rebase_archive_and_returns_unresolv
         "BINANCE_API_KEY": "synthetic",
         "BINANCE_API_SECRET": "synthetic",
         "RECONCILIATION_RECOVERY_SYNC_TOKEN": "synthetic",
+        "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
     }.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(controller, "FROZEN_EXPECTED_SHA256", digest(expected))
@@ -903,6 +904,7 @@ def test_controller_verify_rejects_archive_metadata_change_before_confirmation_o
         "GITHUB_SHA": "c" * 40,
         "BINANCE_API_KEY": "synthetic",
         "BINANCE_API_SECRET": "synthetic",
+        "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
     }.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(controller, "FROZEN_EXPECTED_SHA256", digest(expected))
@@ -1011,6 +1013,7 @@ def _setup_post_rebase_controller_confirmation(monkeypatch, *, response_change=N
         "GITHUB_SHA": "c" * 40,
         "BINANCE_API_KEY": "synthetic",
         "BINANCE_API_SECRET": "synthetic",
+        "EXECUTION_EVIDENCE_SYNC_URL": "https://console.example.invalid",
     }.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setattr(controller, "FROZEN_EXPECTED_SHA256", digest(expected))
