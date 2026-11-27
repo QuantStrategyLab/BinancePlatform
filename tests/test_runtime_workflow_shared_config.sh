@@ -56,3 +56,6 @@ if grep -Fq 'GCP_SA_KEY:' "$workflow_file"; then
   echo "workflow should not pass GCP_SA_KEY anymore" >&2
   exit 1
 fi
+grep -Fq 'GCP_PROJECT_ID:' "$workflow_file"
+grep -Fq 'BINANCE_MONITOR_GCP_PROJECT_ID:' "$workflow_file"
+grep -Fq 'GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}' "$repo_dir/.github/workflows/main.yml"
