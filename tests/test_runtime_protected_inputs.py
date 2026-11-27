@@ -12,10 +12,14 @@ ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / ".github/workflows/main.yml"
 PROTECTED = ENTRY.with_name("runtime-protected.yml")
 PRIVATE_VARS = (
-    "RUNTIME_TARGET_JSON", "DIGEST_CANDIDATES_GCS_URI", "EXECUTION_REPORT_GCS_URI",
+    "RUNTIME_TARGET_JSON",
     "DIGEST_STORE_TARGET",
 )
-PRIVATE_SECRETS = ("GLOBAL_TELEGRAM_CHAT_ID",)
+PRIVATE_SECRETS = (
+    "DIGEST_CANDIDATES_GCS_URI",
+    "EXECUTION_REPORT_GCS_URI",
+    "GLOBAL_TELEGRAM_CHAT_ID",
+)
 
 
 def test_private_values_only_enter_through_reusable_secrets():
