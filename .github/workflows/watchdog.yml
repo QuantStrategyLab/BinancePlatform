@@ -10,9 +10,6 @@ permissions:
   contents: read
 
 env:
-  GCP_PROJECT_ID: ${{ vars.BINANCE_MONITOR_GCP_PROJECT_ID }}
-  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.BINANCE_MONITOR_GCP_WORKLOAD_IDENTITY_PROVIDER }}
-  GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.BINANCE_MONITOR_GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
   RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED || 'false' }}
   WATCHDOG_MAX_AGE_SECONDS: ${{ vars.WATCHDOG_MAX_AGE_SECONDS || '4500' }}
 
@@ -21,6 +18,10 @@ jobs:
     if: ${{ github.ref == 'refs/heads/main' && vars.RUNTIME_TARGET_ENABLED == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      GCP_PROJECT_ID: ${{ secrets.BINANCE_MONITOR_GCP_PROJECT_ID }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.BINANCE_MONITOR_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ secrets.BINANCE_MONITOR_GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
     steps:
       - name: Validate deployment identity configuration
         shell: bash

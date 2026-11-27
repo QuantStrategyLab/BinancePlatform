@@ -137,9 +137,6 @@ permissions:
   contents: read
 
 env:
-  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-  GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-  GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
   # One operator-facing stop control. Missing values fail closed as false;
   # only the literal repository value true enables the live strategy path.
   RUNTIME_TARGET_ENABLED: ${{ vars.RUNTIME_TARGET_ENABLED || 'false' }}
@@ -154,9 +151,9 @@ jobs:
       contents: read
       id-token: write
     env:
-      GCP_PROJECT_ID: ${{ vars.BINANCE_MONITOR_GCP_PROJECT_ID }}
-      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.BINANCE_MONITOR_GCP_WORKLOAD_IDENTITY_PROVIDER }}
-      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.BINANCE_MONITOR_GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
+      GCP_PROJECT_ID: ${{ secrets.BINANCE_MONITOR_GCP_PROJECT_ID }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.BINANCE_MONITOR_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ secrets.BINANCE_MONITOR_GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
       RUNTIME_HEARTBEAT_REPORT_PLATFORM: binance
       RUNTIME_HEARTBEAT_STRATEGY_PROFILE: crypto_live_pool_rotation
       BINANCE_ACCOUNT_FACTS_BINDING_JSON: ${{ secrets.BINANCE_ACCOUNT_FACTS_BINDING_JSON }}
@@ -212,6 +209,10 @@ jobs:
       actions: read
       contents: read
       id-token: write
+    env:
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+      GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ secrets.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}
     steps:
       - name: 0. Validate runtime target control
         id: runtime-target-control
