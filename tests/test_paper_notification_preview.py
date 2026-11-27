@@ -199,7 +199,8 @@ def test_workflow_static_safety_constraints():
     assert "scripts/send_paper_notification_preview.py" in WORKFLOW
     assert 'RUNTIME_TARGET_ENABLED: "false"' in WORKFLOW
     assert "secrets.TG_TOKEN" in WORKFLOW
-    assert "vars.GLOBAL_TELEGRAM_CHAT_ID" in WORKFLOW
+    assert "secrets.GLOBAL_TELEGRAM_CHAT_ID" in WORKFLOW
+    assert "vars.GLOBAL_TELEGRAM_CHAT_ID" not in WORKFLOW
     assert "uv sync --frozen --no-dev" in WORKFLOW
     assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in WORKFLOW
     assert "environment: binance-runtime" not in WORKFLOW

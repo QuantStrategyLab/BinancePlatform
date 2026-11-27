@@ -266,6 +266,6 @@ jobs:
           NOTIFICATION_EXECUTION_ASSESSMENT_PATH: ${{ steps.execution-heartbeat.outputs.path }}
           NOTIFY_LANG: ${{ vars.NOTIFY_LANG || 'zh' }}
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
-          GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
+          GLOBAL_TELEGRAM_CHAT_ID: ${{ secrets.GLOBAL_TELEGRAM_CHAT_ID }}
         run: uv run --no-sync python scripts/observe_notification_health.py
 

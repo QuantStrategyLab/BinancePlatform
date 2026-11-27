@@ -28,7 +28,7 @@ jobs:
       RUNTIME_TARGET_ENABLED: "false"
       NOTIFY_LANG: ${{ vars.NOTIFY_LANG || 'zh' }}
       PREVIEW_SEND: ${{ inputs.send }}
-      GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
+      GLOBAL_TELEGRAM_CHAT_ID: ${{ secrets.GLOBAL_TELEGRAM_CHAT_ID }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6

@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 5
     env:
       TG_TOKEN: ${{ secrets.TG_TOKEN }}
-      GLOBAL_TELEGRAM_CHAT_ID: ${{ vars.GLOBAL_TELEGRAM_CHAT_ID }}
+      GLOBAL_TELEGRAM_CHAT_ID: ${{ secrets.GLOBAL_TELEGRAM_CHAT_ID }}
       # OS user whose crontab runs dispatch-runtime.sh. Must equal the runner's
       # own user: the installer writes $HOME/... and a runner user must never
       # write a script that another (e.g. sudo-capable) user executes.

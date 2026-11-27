@@ -11,10 +11,11 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / ".github/workflows/main.yml"
 PROTECTED = ENTRY.with_name("runtime-protected.yml")
-PRIVATE = (
+PRIVATE_VARS = (
     "RUNTIME_TARGET_JSON", "DIGEST_CANDIDATES_GCS_URI", "EXECUTION_REPORT_GCS_URI",
-    "DIGEST_STORE_TARGET", "GLOBAL_TELEGRAM_CHAT_ID",
+    "DIGEST_STORE_TARGET",
 )
+PRIVATE_SECRETS = ("GLOBAL_TELEGRAM_CHAT_ID",)
 
 
 def test_private_values_only_enter_through_reusable_secrets():
@@ -24,8 +25,13 @@ def test_private_values_only_enter_through_reusable_secrets():
     assert "runs-on:" not in entry and "steps:" not in entry
     assert "workflow_call:" in protected and "workflow_dispatch:" not in protected
     assert "environment: binance-runtime" in protected
-    for name in PRIVATE:
+    for name in PRIVATE_VARS:
         assert f"PRIVATE_{name}: ${{{{ vars.{name}" in secret_mapping
+        assert f"vars.{name}" not in protected
+        assert f"{name}: ${{{{ secrets.PRIVATE_{name}" in protected
+    for name in PRIVATE_SECRETS:
+        assert f"PRIVATE_{name}: ${{{{ secrets.{name}" in secret_mapping
+        assert f"vars.{name}" not in secret_mapping
         assert f"vars.{name}" not in protected
         assert f"{name}: ${{{{ secrets.PRIVATE_{name}" in protected
     assert "BINANCE_AUTHORITY_APP_PRIVATE_KEY" not in entry + protected
