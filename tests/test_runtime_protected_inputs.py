@@ -31,7 +31,7 @@ def test_private_values_only_enter_through_reusable_secrets():
         assert f"{name}: ${{{{ secrets.PRIVATE_{name}" in protected
     for name in PRIVATE_SECRETS:
         assert f"PRIVATE_{name}: ${{{{ secrets.{name}" in secret_mapping
-        assert f"vars.{name}" not in secret_mapping
+        assert f"vars.{name}" not in entry
         assert f"vars.{name}" not in protected
         assert f"{name}: ${{{{ secrets.PRIVATE_{name}" in protected
     assert "BINANCE_AUTHORITY_APP_PRIVATE_KEY" not in entry + protected
