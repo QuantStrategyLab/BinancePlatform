@@ -90,7 +90,7 @@ class WatchdogWorkflowTests(unittest.TestCase):
             "GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT",
         ):
             variable_name = f"BINANCE_MONITOR_{name}"
-            self.assertIn(f"{name}: ${{{{ vars.{variable_name} }}}}", text)
+            self.assertIn(f"{name}: ${{{{ secrets.{variable_name} }}}}", text)
         self.assertIn(
             "for name in GCP_PROJECT_ID GCP_WORKLOAD_IDENTITY_PROVIDER "
             "GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT; do",
@@ -235,7 +235,7 @@ class WatchdogWorkflowTests(unittest.TestCase):
     def test_production_runtime_keeps_its_existing_identity_contract(self) -> None:
         text = PRODUCTION_RUNTIME_WORKFLOW.read_text(encoding="utf-8")
         for name in IDENTITY_NAMES:
-            self.assertIn(f"{name}: ${{{{ vars.{name} }}}}", text)
+            self.assertIn(f"{name}: ${{{{ secrets.{name} }}}}", text)
         script = _preflight_script(text)
         self.assertIn(
             'readonly EXPECTED_OIDC_IDENTITY_SHA256="68e87a5dc1bbe2e41af33d526514034246c6487fb7b716596cc75fe1c739a6b9"',

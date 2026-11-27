@@ -25,9 +25,9 @@ fi
 grep -Fq 'id-token: write' "$workflow_file"
 grep -Fq 'workload_identity_provider: ${{ env.GCP_WORKLOAD_IDENTITY_PROVIDER }}' "$workflow_file"
 grep -Fq 'service_account: ${{ env.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}' "$workflow_file"
-grep -Fq 'GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}' "$workflow_file"
-grep -Fq 'GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}' "$workflow_file"
-grep -Fq 'GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ vars.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}' "$workflow_file"
+grep -Fq 'GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}' "$workflow_file"
+grep -Fq 'GCP_WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}' "$workflow_file"
+grep -Fq 'GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT: ${{ secrets.GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT }}' "$workflow_file"
 grep -Fq 'for name in GCP_PROJECT_ID GCP_WORKLOAD_IDENTITY_PROVIDER GCP_WORKLOAD_IDENTITY_SERVICE_ACCOUNT; do' "$workflow_file"
 grep -Fq 'echo "::error::Required repository variable ${name} is not configured."' "$workflow_file"
 grep -Eq 'readonly EXPECTED_OIDC_IDENTITY_SHA256="[0-9a-f]{64}"' "$workflow_file"
@@ -56,3 +56,6 @@ if grep -Fq 'GCP_SA_KEY:' "$workflow_file"; then
   echo "workflow should not pass GCP_SA_KEY anymore" >&2
   exit 1
 fi
+grep -Fq 'GCP_PROJECT_ID:' "$workflow_file"
+grep -Fq 'BINANCE_MONITOR_GCP_PROJECT_ID:' "$workflow_file"
+grep -Fq 'GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}' "$repo_dir/.github/workflows/main.yml"
