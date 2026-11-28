@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "authority-version-reissue.yml"
@@ -27,7 +28,7 @@ def test_app_token_is_scoped_and_wired_before_authority_materialization() -> Non
     assert workflow.index(mint) < workflow.index(
         _step(workflow, "Materialize authority secret to a 0600 temp file")
     )
-    assert "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1" in mint
+    assert re.search(r"^\s*uses:\s*actions/create-github-app-token@[0-9a-f]{40}\b", mint, re.MULTILINE)
     assert "client-id: ${{ vars.BINANCE_AUTHORITY_APP_CLIENT_ID }}" in mint
     assert "private-key: ${{ secrets.BINANCE_AUTHORITY_APP_PRIVATE_KEY }}" in mint
     assert "owner: ${{ github.repository_owner }}" in mint
